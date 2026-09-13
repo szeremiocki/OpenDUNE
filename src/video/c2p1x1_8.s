@@ -9,7 +9,9 @@
 ; prototypes :
 ; void c2p1x1_8_falcon(const void * chunky, void * planar, long screen_size);
 ; void c2p1x1_8_tt(const void * chunky, void * planar, long screen_size);
-; void c2p1x1_4_st(const void * chunky, void * planar, long screen_size, void * pal);
+; void c2p1x1_4_st(void * planar, const void * chunky, long screen_size, const uint16 * pal64k);
+; pal64k is a 65536-entry (128KB) word table indexed by a pixel-pair
+; (chunky[i]<<8 | chunky[i+1]): pal64k[idx] = (remap[chunky[i]]<<8) | remap[chunky[i+1]]
 ;
 ; c2p1x1_8_tt function double each 320 pixel line in the planar buffer,
 ; so a 320x200(320x240) screen is converted to 320x400(320x480) to
@@ -632,7 +634,7 @@ _c2p1x1_8_tt_partial:
 
 _c2p1x1_4_st:
 	movem.l	d2-d7/a2-a6,-(sp)
-	move.l	60(sp),a3							; a3 = color remapping table
+	move.l	60(sp),a3							; a3 = 64K word pair-LUT (65536 entries, chunky pixel-pair -> packed 4bit-color pair)
 	move.l	56(sp),d0
 	move.l	52(sp),a0							; a0 = src
 	move.l	48(sp),a1							; a1 = dst
@@ -644,54 +646,57 @@ _c2p1x1_4_st:
 	moveq.l	#0,d4								; color reduction lookup
 
 .start:
-    ; read pixels 0-3 and reduce to 16 colors
-    move.b  (a0)+,d4
-    move.b  (a3,d4.w),d0
-    lsl.l   #8,d0
-    move.b  (a0)+,d4
-    or.b    (a3,d4.w),d0
-    lsl.l   #8,d0
-    move.b  (a0)+,d4
-    or.b    (a3,d4.w),d0
-    lsl.l   #8,d0
-    move.b  (a0)+,d4
-    or.b    (a3,d4.w),d0
-	; read pixels 4-7 and reduce to 16 colors
-    move.b  (a0)+,d4
-    move.b  (a3,d4.w),d2
-    lsl.l   #8,d2
-    move.b  (a0)+,d4
-    or.b    (a3,d4.w),d2
-    lsl.l   #8,d2
-    move.b  (a0)+,d4
-    or.b    (a3,d4.w),d2
-    lsl.l   #8,d2
-    move.b  (a0)+,d4
-    or.b    (a3,d4.w),d2
-    ; read pixels 8-11 and reduce to 16 colors
-    move.b  (a0)+,d4
-    move.b  (a3,d4.w),d1
-    lsl.l   #8,d1
-    move.b  (a0)+,d4
-    or.b    (a3,d4.w),d1
-    lsl.l   #8,d1
-    move.b  (a0)+,d4
-    or.b    (a3,d4.w),d1
-    lsl.l   #8,d1
-    move.b  (a0)+,d4
-    or.b    (a3,d4.w),d1
-    ; read pixels 12-15 and reduce to 16 colors
-    move.b  (a0)+,d4
-    move.b  (a3,d4.w),d3
-    lsl.l   #8,d3
-    move.b  (a0)+,d4
-    or.b    (a3,d4.w),d3
-    lsl.l   #8,d3
-    move.b  (a0)+,d4
-    or.b    (a3,d4.w),d3
-    lsl.l   #8,d3
-    move.b  (a0)+,d4
-    or.b    (a3,d4.w),d3
+	; read pixels 0-3 (as 2 pixel-pairs) and reduce to 16 colors
+	; a3 = word-indexed 64K pair LUT: pal_word[(pixA<<8)|pixB] = (remap[pixA]<<8)|remap[pixB]
+	; NOTE: (a3,d4.l) is an UNSCALED index on 68000 (no x2 scale factor,
+	; that's 68020+ only) -- d4 must be doubled to a byte offset first,
+	; since the LUT holds 16-bit words, or odd pixel-pair values cause
+	; an odd effective address -> Address Error.
+	; NOTE 2: MOVE.W into d4 only writes the low word, so d4's high word
+	; must be re-cleared every time before doubling -- otherwise a carry
+	; out of a previous iteration's ADD.L (whenever a pixel-pair value
+	; was >= $8000) would leak into the next lookup's offset.
+	moveq.l	#0,d4			; cheap: clear high word (4c) before word load
+	move.w	(a0)+,d4
+	add.l	d4,d4			; scale word-index to byte offset
+	move.w	(a3,d4.l),d0		; d0 low word = [remap(pix0)<<8 | remap(pix1)]
+	swap	d0			; move that word into d0's high half
+	moveq.l	#0,d4
+	move.w	(a0)+,d4
+	add.l	d4,d4
+	move.w	(a3,d4.l),d0		; d0 low word = [remap(pix2)<<8 | remap(pix3)]
+	; d0 bytes (MSB..LSB) = remap(pix0),remap(pix1),remap(pix2),remap(pix3)
+	; -- identical layout to the old 4x byte-lookup version.
+	; read pixels 4-7 (as 2 pixel-pairs) and reduce to 16 colors
+	moveq.l	#0,d4
+	move.w	(a0)+,d4
+	add.l	d4,d4
+	move.w	(a3,d4.l),d2
+	swap	d2
+	moveq.l	#0,d4
+	move.w	(a0)+,d4
+	add.l	d4,d4
+	move.w	(a3,d4.l),d2
+	; read pixels 8-11 (as 2 pixel-pairs) and reduce to 16 colors
+	moveq.l	#0,d4
+	move.w	(a0)+,d4
+	add.l	d4,d4
+	move.w	(a3,d4.l),d1
+	swap	d1
+	moveq.l	#0,d4
+	move.w	(a0)+,d4
+	add.l	d4,d4
+	move.w	(a3,d4.l),d1
+	; read pixels 12-15 (as 2 pixel-pairs) and reduce to 16 colors
+	moveq.l	#0,d4
+	move.w	(a0)+,d4
+	add.l	d4,d4
+	move.w	(a3,d4.l),d3
+	swap	d3
+	moveq.l	#0,d4
+	move.w	(a0)+,d4
+	add.l	d4,d4
+	move.w	(a3,d4.l),d3
 
 	lsl.l	#4,d0								; shift into high nibble
 	lsl.l	#4,d1								; shift into high nibble

@@ -73,6 +73,65 @@ const uint8 s_palette4BitPC[16*4] =
 
 static uint8 s_palette4BitMap[256];
 
+/* 64K word pair-LUT for c2p1x1_4_st: indexed by a chunky pixel-pair
+ * (pixelA<<8 | pixelB), returns (remap[pixelA]<<8 | remap[pixelB]).
+ * Patched incrementally from s_palette4BitMap whenever the palette
+ * changes - see Rebuild_Palette4BitPairMap(). 128KB resident. */
+static uint16 s_palette4BitPairMap[65536];
+
+/* Only the rows/columns touched by the changed color range [from, from+length)
+ * need patching: entries where hi (pixelA) is in range are a full contiguous
+ * 256-word row each; entries where lo (pixelB) is in range are one column
+ * across all 256 rows. For small changes (typical: 1-8 colors from palette
+ * animation/cycling) this is orders of magnitude cheaper than rebuilding all
+ * 65536 entries. Falls back to a full rebuild when length is large enough
+ * (e.g. fades) that the row+column patch would touch most of the table anyway. */
+static void Rebuild_Palette4BitPairMap(int from, int length)
+{
+	int hi, lo;
+	int to = from + length;
+
+	if (length >= 64) {
+		/* large change (fade etc.): full rebuild is simpler and not much
+		 * costlier than the partial patch would be at this size */
+		for (hi = 0; hi < 256; hi++) {
+			uint16 h = (uint16)(s_palette4BitMap[hi] << 8);
+			uint16 *row = &s_palette4BitPairMap[hi << 8];
+
+			for (lo = 0; lo < 256; lo++) {
+				row[lo] = h | s_palette4BitMap[lo];
+			}
+		}
+		return;
+	}
+
+	/* patch every row for each changed hi (pixelA) */
+	for (hi = from; hi < to; hi++) {
+		uint16 h = (uint16)(s_palette4BitMap[hi] << 8);
+		uint16 *row = &s_palette4BitPairMap[hi << 8];
+
+		for (lo = 0; lo < 256; lo++) {
+			row[lo] = h | s_palette4BitMap[lo];
+		}
+	}
+
+	/* patch the changed lo (pixelB) column in every row not already
+	 * fully rewritten above */
+	for (hi = 0; hi < 256; hi++) {
+		uint16 h;
+		uint16 *row;
+
+		if (hi >= from && hi < to) continue; /* already handled above */
+
+		h = (uint16)(s_palette4BitMap[hi] << 8);
+		row = &s_palette4BitPairMap[hi << 8];
+
+		for (lo = from; lo < to; lo++) {
+			row[lo] = h | s_palette4BitMap[lo];
+		}
+	}
+}
+
 static inline uint8 Palette_FindClosestColor(uint8 r, uint8 g, uint8 b)
 {
 	uint8 i;
@@ -454,7 +513,7 @@ void Video_Tick(void)
 		} else if (s_machine_type == MCH_ST || s_machine_type == MCH_STE || s_machine_type == MCH_MEGA_STE) {
 			data += (s_screenOffset << 2);
 			if (width == SCREEN_WIDTH) {
-				c2p1x1_4_st(screen, data, height*SCREEN_WIDTH, s_palette4BitMap);
+				c2p1x1_4_st(screen, data, height*SCREEN_WIDTH, s_palette4BitPairMap);
 			} else {
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
 				uint16 y;
@@ -462,7 +521,7 @@ void Video_Tick(void)
 					if (g_dirty_blocks[y] != 0) {
 						left = __builtin_ctz(g_dirty_blocks[y]) << 4;
 						width = ((32 - __builtin_clz(g_dirty_blocks[y])) << 4) - left;
-						c2p1x1_4_st(screen + (left >> 1), data + left, width, s_palette4BitMap);
+						c2p1x1_4_st(screen + (left >> 1), data + left, width, s_palette4BitPairMap);
 					}
 					screen += SCREEN_WIDTH >> 1;
 					data += SCREEN_WIDTH;
@@ -471,7 +530,7 @@ void Video_Tick(void)
 				screen += (left >> 1);
 				data += left;
 				while(height > 0) {
-					c2p1x1_4_st(screen, data, width, s_palette4BitMap);
+					c2p1x1_4_st(screen, data, width, s_palette4BitPairMap);
 					screen += SCREEN_WIDTH >> 1;
 					data += SCREEN_WIDTH;
 					height--;
@@ -568,6 +627,7 @@ void Video_SetPalette(void *palette, int from, int length)
 			blue = *p++;
 			s_palette4BitMap[i] = Palette_FindClosestColor(red, green, blue);
 		}
+		Rebuild_Palette4BitPairMap(from, length);
 		/* repaint only when a large amount of colors are changing, for fading and so on */
 		if (length >= 128)
 			s_screen_needrepaint = true;
