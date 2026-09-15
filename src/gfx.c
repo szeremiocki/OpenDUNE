@@ -168,7 +168,12 @@ uint32 g_dirty_blocks[200];
 #endif
 #endif
 
-static Screen s_screenActiveID = SCREEN_0;
+/* The active screen. Exposed (rather than static) so that the
+ * GFX_Screen_SetDirty() macro in gfx.h can test the target screen inline
+ * and discard the call entirely for non-visible screens. s_screenActiveID
+ * remains as an alias so the rest of this file is unchanged. */
+Screen g_screenActiveID = SCREEN_0;
+#define s_screenActiveID g_screenActiveID
 
 #if 0
 /**
@@ -285,14 +290,15 @@ void GFX_DirtyStats_Report(void)
 }
 #endif /* GFX_DIRTY_SOURCE_STATS */
 
-void GFX_Screen_SetDirty(Screen screenID, uint16 left, uint16 top, uint16 right, uint16 bottom)
+void GFX_Screen_SetDirty_(uint16 left, uint16 top, uint16 right, uint16 bottom)
 {
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
 	uint32 mask;
 	uint16 y;
 #endif
-	if(screenID == SCREEN_ACTIVE) screenID = s_screenActiveID;
-	if(screenID != SCREEN_0) return;
+	/* The SCREEN_ACTIVE resolution and the SCREEN_0 test are done by the
+	 * GFX_Screen_SetDirty() macro in gfx.h, so callers that target another
+	 * screen never reach here and the screen ID need not be passed. */
 	s_screen0_is_dirty = true;
 	if (left < s_screen0_dirty_area.left) s_screen0_dirty_area.left = left;
 	if (top < s_screen0_dirty_area.top) s_screen0_dirty_area.top = top;
