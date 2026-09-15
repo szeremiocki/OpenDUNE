@@ -768,6 +768,30 @@ make_compiler_cflags() {
 			cc_version="${cc_version}0"
 		fi
 
+		# GCC 15 and later default to -std=gnu23, where 'bool' is a keyword.
+		# OpenDUNE provides its own 'typedef ... bool', which is a hard error
+		# under C23. Probe the compiler's *default* standard and pin it back to
+		# gnu17 if it is newer. Probing __STDC_VERSION__ rather than the version
+		# number keeps this correct for any compiler/distro default.
+		# This is prepended to $flags, so an explicit -std in the user's CFLAGS
+		# still takes precedence.
+		if [ -z "`echo \" $CFLAGS \" | grep -- ' -std='`" ]; then
+			echo '#if __STDC_VERSION__ > 201710L
+			#error too new
+			#endif
+			int main(void){return 0;}' > tmp.std.$$.c
+			if ! $1 -E tmp.std.$$.c > /dev/null 2>&1 ; then
+				if $1 -std=gnu17 -E tmp.std.$$.c > /dev/null 2>&1 ; then
+					log 1 "using -std=gnu17 (compiler defaults to a newer standard)"
+					flags="-std=gnu17 $flags"
+				else
+					log 1 "WARNING: compiler defaults to a post-C17 standard but does not accept -std=gnu17"
+					log 1 "WARNING: the build may fail on OpenDUNE's 'bool' typedef"
+				fi
+			fi
+			rm -f tmp.std.$$.c
+		fi
+
 		if [ "$os" != "TOS" ] && [ "$os" != "DOS" ] && [ $cc_version -lt 70 ] ; then
 			if [ "$with_asound" = "0" ] ; then
 				flags="$flags -ansi"
@@ -887,7 +911,14 @@ make_cflags_and_ldflags() {
 		fi
 
 		if [ "$os" = "TOS" ] ; then
-			CFLAGS="-Ofast -fomit-frame-pointer $CFLAGS"
+			# -fno-split-paths: -O3/-Ofast enables -fsplit-paths, which
+			# duplicates blocks on paths joining at a loop header. On m68k this
+			# breaks the induction-variable form GCC needs to emit (An)+
+			# postincrement addressing, so hot byte loops (notably the
+			# GUI_DrawSprite inner loop) lose their tight 7-instruction form and
+			# spill the destination pointer instead. Disabling it restores the
+			# same code -O2 generates, worth ~16 cycles per sprite pixel.
+			CFLAGS="-Ofast -fno-split-paths -fomit-frame-pointer $CFLAGS"
 		elif [ "$os" = "HAIKU" -a $cc_version -lt 40 ] ; then
 			CFLAGS="-O2 -fomit-frame-pointer $CFLAGS"
 		else

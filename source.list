@@ -199,6 +199,7 @@ unit.c
 video/video_fps.c
 #if TOS
 video/c2p1x1_8.s
+video/atari_copyrows.s
 #else
 video/hqx_init.c
 video/hq2x_8b.c

@@ -673,14 +673,23 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool drawToMai
 	}
 
 	/* draw explosions */
+	{
+	Explosion *explosions = Explosion_Get_ByIndex(0);
+
 	for (i = 0; i < EXPLOSION_MAX; i++) {
-		Explosion *e = Explosion_Get_ByIndex(i);
+		Explosion *e = explosions + i;
+
+		/* Inactive slots are by far the common case, so reject them before
+		 * doing any work. Tile_PackTile() and the BitArray_Test() below used
+		 * to run for all EXPLOSION_MAX slots every frame, which cost ~34% of
+		 * this function. Marking isDirty on a slot with no commands is dead
+		 * anyway: Explosion_Create() clears isDirty when it claims a slot. */
+		if (e->commands == NULL) continue;
 
 		curPos = Tile_PackTile(e->position);
 
 		if (BitArray_Test(g_dirtyViewport, curPos)) e->isDirty = true;
 
-		if (e->commands == NULL) continue;
 		if (!e->isDirty && !forceRedraw) continue;
 		if (e->spriteID == 0) continue;
 
@@ -691,6 +700,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool drawToMai
 
 		/*GUI_Widget_Viewport_GetSprite_HousePalette(g_sprites[e->spriteID], e->houseID, paletteHouse);*/
 		GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[e->spriteID], x, y, 2, DRAWSPRITE_FLAG_WIDGETPOS | DRAWSPRITE_FLAG_CENTER/*, paletteHouse*/);
+	}
 	}
 
 	/* draw air units */

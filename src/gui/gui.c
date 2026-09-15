@@ -1263,18 +1263,48 @@ void GUI_DrawSprite(Screen screenID, const uint8 *sprite, int16 posX, int16 posY
 			assert((flags & 0xF00) < 0x800);
 			switch (flags & 0xF00) {
 				case 0:
-					while (count > 0) {
-						uint8 v = *sprite++;
-						if (v == 0) {
-							v = *sprite++; /* run length encoding of transparent pixels */
-							if ((flags & DRAWSPRITE_FLAG_RTL) != 0) buf -= v;
-							else buf += v;
-							count -= v;
-						} else {
-							*buf = v;
-							buf += buf_incr;
-							count--;
+					/* ENHANCEMENT -- This is by far the hottest sprite loop
+					 * (35% of GUI_DrawSprite, 5% of all cycles in an m68000
+					 * profile). GUI_DrawSprite is a large va_arg function and
+					 * the compiler spills buf_incr to the stack, so the 68000
+					 * reloaded the increment from (A7,d16) - an 18 cycle
+					 * access - for every single opaque pixel. Hoisting the
+					 * pointer and count into locals and specialising on the
+					 * fixed direction lets both stay in registers. */
+					if ((flags & DRAWSPRITE_FLAG_RTL) != 0) {
+						uint8 *d = buf;
+						int16 n = count;
+
+						while (n > 0) {
+							uint8 v = *sprite++;
+							if (v == 0) {
+								v = *sprite++; /* run length encoding of transparent pixels */
+								d -= v;
+								n -= v;
+							} else {
+								*d-- = v;
+								n--;
+							}
 						}
+						buf = d;
+						count = n;
+					} else {
+						uint8 *d = buf;
+						int16 n = count;
+
+						while (n > 0) {
+							uint8 v = *sprite++;
+							if (v == 0) {
+								v = *sprite++; /* run length encoding of transparent pixels */
+								d += v;
+								n -= v;
+							} else {
+								*d++ = v;
+								n--;
+							}
+						}
+						buf = d;
+						count = n;
 					}
 					break;
 

@@ -59,6 +59,63 @@ static uint16 s_SquareTable[256];
 static uint16 s_screenOffset = 0;
 static bool s_screen_needrepaint = false;
 
+#ifdef GFX_STORE_DIRTY_AREA_BLOCKS
+/* The 68000 has no bit scan instruction, so __builtin_ctz/__builtin_clz/
+ * __builtin_popcount each compile into a libgcc call (___ctzsi2 etc). These
+ * run once or twice per dirty screen line, every frame, and showed up as
+ * ~1.9% of all cycles in a Hatari profile. g_dirty_blocks[] only ever uses
+ * the low 20 bits (SCREEN_WIDTH / 16 = 20 blocks), so a small nibble table
+ * replaces the calls with a few shifts and byte loads. */
+static const uint8 s_nibbleFirstSet[16] = {	/* lowest set bit, 4 if none */
+	4, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0
+};
+static const uint8 s_nibbleLastSet[16] = {	/* highest set bit + 1, 0 if none */
+	0, 1, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4
+};
+#ifdef VIDEO_C2P_STATS
+static const uint8 s_nibbleCount[16] = {
+	0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4
+};
+#endif
+
+/* Index of the lowest set bit. Must not be called with mask == 0. */
+static uint16 Video_FirstDirtyBlock(uint32 mask)
+{
+	uint16 base = 0;
+
+	while ((mask & 0xF) == 0) {
+		mask >>= 4;
+		base += 4;
+	}
+	return base + s_nibbleFirstSet[mask & 0xF];
+}
+
+/* Index of the highest set bit, plus one. Returns 0 when mask == 0. */
+static uint16 Video_LastDirtyBlock(uint32 mask)
+{
+	uint16 base = 0;
+
+	while ((mask >> 4) != 0) {
+		mask >>= 4;
+		base += 4;
+	}
+	return base + s_nibbleLastSet[mask & 0xF];
+}
+
+#ifdef VIDEO_C2P_STATS
+static uint16 Video_CountDirtyBlocks(uint32 mask)
+{
+	uint16 n = 0;
+
+	while (mask != 0) {
+		n += s_nibbleCount[mask & 0xF];
+		mask >>= 4;
+	}
+	return n;
+}
+#endif
+#endif /* GFX_STORE_DIRTY_AREA_BLOCKS */
+
 static bool s_showFPS = false;
 
 /* Instrumentation for the ST/STE chunky-to-planar path.
@@ -113,7 +170,7 @@ static uint32 Video_C2PStats_CountDirty(uint16 top, uint16 bottom)
 
 	if (bottom > SCREEN_HEIGHT) bottom = SCREEN_HEIGHT;
 	for (y = top; y < bottom; y++) {
-		dirty += (uint32)__builtin_popcount(g_dirty_blocks[y]) << 4;
+		dirty += (uint32)Video_CountDirtyBlocks(g_dirty_blocks[y]) << 4;
 	}
 	return dirty;
 #else
@@ -642,8 +699,9 @@ void Video_Tick(void)
 				uint16 y;
 				for (y = area->top; y < area->bottom; y++) {
 					if (g_dirty_blocks[y] != 0) {
-						left = __builtin_ctz(g_dirty_blocks[y]) << 4;
-						width = ((32 - __builtin_clz(g_dirty_blocks[y])) << 4) - left;
+						uint32 blocks = g_dirty_blocks[y];
+						left = Video_FirstDirtyBlock(blocks) << 4;
+						width = (Video_LastDirtyBlock(blocks) << 4) - left;
 						c2p1x1_8_tt_partial(screen + left, data + left, width);
 					}
 					screen += 2*SCREEN_WIDTH;
@@ -668,8 +726,9 @@ void Video_Tick(void)
 				uint16 y;
 				for (y = area->top; y < area->bottom; y++) {
 					if (g_dirty_blocks[y] != 0) {
-						left = __builtin_ctz(g_dirty_blocks[y]) << 4;
-						width = ((32 - __builtin_clz(g_dirty_blocks[y])) << 4) - left;
+						uint32 blocks = g_dirty_blocks[y];
+						left = Video_FirstDirtyBlock(blocks) << 4;
+						width = (Video_LastDirtyBlock(blocks) << 4) - left;
 						c2p1x1_8_falcon(screen + left, data + left, width);
 					}
 					screen += SCREEN_WIDTH;
@@ -722,14 +781,15 @@ void Video_Tick(void)
 				uint16 y;
 				for (y = area->top; y < area->bottom; y++) {
 					if (g_dirty_blocks[y] != 0) {
-						left = __builtin_ctz(g_dirty_blocks[y]) << 4;
-						width = ((32 - __builtin_clz(g_dirty_blocks[y])) << 4) - left;
+						uint32 blocks = g_dirty_blocks[y];
+						left = Video_FirstDirtyBlock(blocks) << 4;
+						width = (Video_LastDirtyBlock(blocks) << 4) - left;
 #ifdef VIDEO_C2P_STATS
 						s_statLineCalls++;
 						s_statTickLines++;
 						s_statLinePixels += (uint32)width;
 						Video_C2PStats_Box("line", y, y + 1, left, (uint32)width,
-						                   (uint32)__builtin_popcount(g_dirty_blocks[y]) << 4,
+						                   (uint32)Video_CountDirtyBlocks(g_dirty_blocks[y]) << 4,
 						                   g_dirty_blocks[y]);
 #endif
 						c2p1x1_4_st(screen + (left >> 1), data + left, width, s_palette4BitPairMap);
