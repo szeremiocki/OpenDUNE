@@ -33,6 +33,17 @@ extern void *GFX_Screen_Get_ByIndex(Screen screenID);
 
 extern void GFX_DrawTile(uint16 spriteID, uint16 x, uint16 y, uint8 houseID);
 extern void GFX_Init_TilesInfo(uint16 widthSize, uint16 heightSize);
+extern void GFX_Init_DecodedTiles(uint32 tilesDataLength);
+extern void GFX_FreeDecodedTiles(void);
+
+/* One-shot measurement of the tile count and the RAM cost of pre-decoding
+ * tiles to byte-per-pixel. The tile data lives in the game's PAK files, so
+ * this can only be measured on the target. Results go to error.log.
+ * Build with -DGFX_TILE_SIZE_STATS_ENABLE. */
+#if defined(GFX_TILE_SIZE_STATS_ENABLE)
+#define GFX_TILE_SIZE_STATS
+extern void GFX_Report_TilesInfo(uint32 tilesDataLength);
+#endif
 extern void GFX_InvalidateTileLut(void);
 extern void GFX_PutPixel(uint16 x, uint16 y, uint8 colour);
 extern void GFX_Screen_Copy2(int16 xSrc, int16 ySrc, int16 xDst, int16 yDst, int16 width, int16 height, Screen screenSrc, Screen screenDst, bool skipNull);

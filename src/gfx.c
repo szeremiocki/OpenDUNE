@@ -26,6 +26,35 @@ static uint16 s_tileWidth    = 0;	/* "icon" sprites width in bytes. each bytes c
 static uint8  s_tileMode     = 0;
 static uint8  s_tileByteSize = 0;	/* size in byte of one sprite pixel data = s_tileHeight * s_tileWidth / 2 */
 
+/* ENHANCEMENT -- Tiles pre-decoded to one byte per pixel at load time.
+ *
+ * g_tilesPixels packs two pixels per byte, so GFX_DrawTile had to split each
+ * byte and map both nibbles through the tile's palette on every draw. That
+ * expansion is a pure function of the tile data and its palette, so it is
+ * hoisted to load time: tiles are decoded once into 8-bit chunky pixels and
+ * the inner loop becomes a block copy.
+ *
+ * This is possible because g_iconRPAL entries are not RGB palettes but 16
+ * bytes of 8-bit indices into the main 256-colour palette; the drawn pixel
+ * is an ordinary main-palette index either way.
+ *
+ * Measured on ICON.ICN: 389 tiles of 16x16, 128 bytes packed -> 256 decoded,
+ * so the cache costs 97 KB (49 KB more than the packed data it supplements)
+ * against 979 KB free. If the allocation fails the old nibble-LUT path is
+ * used unchanged, so this degrades gracefully.
+ *
+ * House recolouring (the 0x9x band, ~1.5% of calls) synthesises a palette
+ * per call and cannot be pre-decoded; those calls keep the old path.
+ *
+ * Measured on m68000, at a comparable workload (viewport tiles 11838 ->
+ * 11665): GFX_DrawTile 6.706% -> 2.853% of runtime, 12818 -> 5932 cycles
+ * per call (-53.7%). The opaque inner loop went from 80.09 cycles per
+ * source byte to 8.71, and the transparent one from 98.18 per byte to
+ * 45.02 per pixel. */
+static uint8 *s_tilesDecoded = NULL;	/* tileCount * (s_tileByteSize * 2) bytes, or NULL */
+static uint8 *s_tileHasTransparency = NULL;	/* one flag per tile */
+static uint16 s_tileCount = 0;
+
 /* ENHANCEMENT -- Nibble-expansion lookup tables for GFX_DrawTile.
  *
  * Each source byte holds two pixels (4 MSB = left, 4 LSB = right), so the
@@ -426,6 +455,77 @@ void GFX_DrawTile(uint16 tileID, uint16 x, uint16 y, uint8 houseID)
 
 	if (!s_tileLutInit) GFX_InvalidateTileLut();
 
+	/* ENHANCEMENT -- Pre-decoded fast path, taken before any palette or LUT
+	 * work: those exist only to expand nibbles, which is already done. */
+	if (s_tilesDecoded != NULL && houseID == 0 && tileID < s_tileCount) {
+		const uint8 *dr = s_tilesDecoded + ((uint32)tileID * s_tileByteSize * 2);
+		const uint16 rowBytes = s_tileWidth * 2;
+
+		wptr = GFX_Screen_GetActive();
+		wptr += y * SCREEN_WIDTH + x;
+
+		if (!s_tileHasTransparency[tileID]) {
+			/* Longword copy needs both pointers long-aligned. The map draws
+			 * come from viewport.c with left = x << 4 and SCREEN_WIDTH 320,
+			 * so they always are; widget.c passes an arbitrary left, hence
+			 * the runtime test and the byte fallback. */
+			if ((((size_t)wptr | (size_t)dr | rowBytes) & 3) == 0) {
+				/* 16x16 is the only geometry ICON.ICN actually uses, so the
+				 * 16-byte row is straight-lined; the generic loop stays for
+				 * the other sizes GFX_Init_TilesInfo can produce. */
+				if (rowBytes == 16) {
+					for (j = 0; j < s_tileHeight; j++) {
+						const uint32 *r32 = (const uint32 *)dr;
+						uint32 *w32 = (uint32 *)wptr;
+
+						w32[0] = r32[0];
+						w32[1] = r32[1];
+						w32[2] = r32[2];
+						w32[3] = r32[3];
+						dr += 16;
+						wptr += SCREEN_WIDTH;
+					}
+				} else {
+					uint16 longs = rowBytes >> 2;
+
+					for (j = 0; j < s_tileHeight; j++) {
+						uint32 *w32 = (uint32 *)wptr;
+						const uint32 *r32 = (const uint32 *)dr;
+
+						for (i = 0; i < longs; i++) *w32++ = *r32++;
+						dr += rowBytes;
+						wptr += SCREEN_WIDTH;
+					}
+				}
+			} else {
+				for (j = 0; j < s_tileHeight; j++) {
+					memcpy(wptr, dr, rowBytes);
+					dr += rowBytes;
+					wptr += SCREEN_WIDTH;
+				}
+			}
+		} else {
+			/* An end-pointer walk keeps both operands in post-increment
+			 * form. Indexing by a counter instead made GCC emit
+			 * MOVE.B (A2,D0.L) at 16 cycles where (A2)+ costs 8. */
+			for (j = 0; j < s_tileHeight; j++) {
+				uint8 *w = wptr;
+				const uint8 *r = dr;
+				const uint8 *rEnd = dr + rowBytes;
+
+				do {
+					uint8 c = *r++;
+
+					if (c != 0) *w = c;
+					w++;
+				} while (r != rEnd);
+				dr = rEnd;
+				wptr += SCREEN_WIDTH;
+			}
+		}
+		return;
+	}
+
 	paletteIndex = g_iconRTBL[tileID];
 	icon_palette = g_iconRPAL + (paletteIndex << 4);
 
@@ -507,6 +607,106 @@ void GFX_DrawTile(uint16 tileID, uint16 x, uint16 y, uint8 houseID)
 		}
 	}
 }
+
+/**
+ * Discard the pre-decoded tile cache.
+ */
+void GFX_FreeDecodedTiles(void)
+{
+	free(s_tilesDecoded);
+	s_tilesDecoded = NULL;
+	free(s_tileHasTransparency);
+	s_tileHasTransparency = NULL;
+	s_tileCount = 0;
+}
+
+/**
+ * Pre-decode every tile from 2-pixels-per-byte to one byte per pixel,
+ * applying each tile's palette. Must be called after g_tilesPixels,
+ * g_iconRTBL and g_iconRPAL are all loaded, and after GFX_Init_TilesInfo.
+ *
+ * Failure is not fatal: GFX_DrawTile falls back to decoding per draw.
+ *
+ * @param tilesDataLength Size of the decoded SSET chunk, in bytes.
+ */
+void GFX_Init_DecodedTiles(uint32 tilesDataLength)
+{
+	uint32 decodedSize;
+	uint16 tileID;
+
+	GFX_FreeDecodedTiles();
+
+	if (s_tileMode == 4 || s_tileByteSize == 0) return;
+	if (g_tilesPixels == NULL || g_iconRTBL == NULL || g_iconRPAL == NULL) return;
+
+	s_tileCount = (uint16)(tilesDataLength / s_tileByteSize);
+	if (s_tileCount == 0) return;
+
+	decodedSize = (uint32)s_tileCount * s_tileByteSize * 2;
+	s_tilesDecoded = malloc(decodedSize);
+	s_tileHasTransparency = malloc(s_tileCount);
+	if (s_tilesDecoded == NULL || s_tileHasTransparency == NULL) {
+		Warning("Tile pre-decode disabled: out of memory (%lu bytes)\n",
+		        (unsigned long)decodedSize);
+		GFX_FreeDecodedTiles();
+		return;
+	}
+
+	for (tileID = 0; tileID < s_tileCount; tileID++) {
+		const uint8 *palette = g_iconRPAL + (g_iconRTBL[tileID] << 4);
+		const uint8 *r = g_tilesPixels + ((uint32)tileID * s_tileByteSize);
+		uint8 *w = s_tilesDecoded + ((uint32)tileID * s_tileByteSize * 2);
+		uint16 i;
+
+		/* A tile is transparent when colour 0 of its palette is 0; that is
+		 * the same test GFX_DrawTile applies, kept per tile so the draw
+		 * does not have to reach into the palette at all. */
+		s_tileHasTransparency[tileID] = (palette[0] == 0) ? 1 : 0;
+
+		for (i = 0; i < s_tileByteSize; i++) {
+			unsigned b = *r++;
+			*w++ = palette[b >> 4];
+			*w++ = palette[b & 0x0F];
+		}
+	}
+}
+
+#ifdef GFX_TILE_SIZE_STATS
+/**
+ * Report the tile geometry and what pre-decoding tiles to byte-per-pixel
+ * would cost in RAM. See ATARI_TODO_TILE_PREDECODE.md: the tile count is the
+ * gate on that idea and can only be measured on the target, since the data
+ * lives in the game's PAK files.
+ *
+ * @param tilesDataLength Size of the decoded SSET chunk, in bytes.
+ */
+void GFX_Report_TilesInfo(uint32 tilesDataLength)
+{
+	uint32 tileCount;
+	uint32 decodedLength;
+
+	if (s_tileByteSize == 0) {
+		Error("TILESTATS: s_tileByteSize is 0, cannot report\n");
+		return;
+	}
+
+	/* s_tileByteSize is the packed size: 2 pixels per byte. */
+	tileCount = tilesDataLength / s_tileByteSize;
+	decodedLength = tileCount * (uint32)s_tileByteSize * 2;
+
+	Error("TILESTATS: mode=%u %ux%u bytes (%ux%u px) byteSize=%u spacing=%u\n",
+	      (unsigned)s_tileMode, (unsigned)s_tileWidth, (unsigned)s_tileHeight,
+	      (unsigned)(s_tileWidth * 2), (unsigned)s_tileHeight,
+	      (unsigned)s_tileByteSize, (unsigned)s_tileSpacing);
+	Error("TILESTATS: SSET=%lu bytes, tiles=%lu, remainder=%lu\n",
+	      (unsigned long)tilesDataLength, (unsigned long)tileCount,
+	      (unsigned long)(tilesDataLength % s_tileByteSize));
+	Error("TILESTATS: decoded would be %lu bytes, extra %lu bytes (%lu KB)\n",
+	      (unsigned long)decodedLength,
+	      (unsigned long)(decodedLength - tilesDataLength),
+	      (unsigned long)((decodedLength - tilesDataLength + 1023) / 1024));
+}
+#endif /* GFX_TILE_SIZE_STATS */
 
 /**
  * Initialize sprite information.

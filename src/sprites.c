@@ -11,6 +11,10 @@
 #include "os/strings.h"
 #include "os/error.h"
 
+#if defined(TOS) && defined(GFX_TILE_SIZE_STATS_ENABLE)
+#include <mint/osbind.h>
+#endif
+
 #include "sprites.h"
 
 #include "opendune.h"
@@ -210,6 +214,25 @@ static uint32 Sprites_Decode(uint8 *source, uint8 *dest)
 	return size;
 }
 
+#ifdef GFX_TILE_SIZE_STATS
+/**
+ * Report free memory, to judge whether pre-decoded tiles would fit.
+ * See ATARI_TODO_TILE_PREDECODE.md.
+ */
+static void Tiles_Report_FreeMemory(void)
+{
+#if defined(TOS)
+	/* Malloc(-1) reports the largest free block without allocating it.
+	 * Under MiNT this is the largest contiguous block, not the total. */
+	long biggest = (long)Malloc(-1L);
+	Error("TILESTATS: largest free block %ld bytes (%ld KB)\n",
+	      biggest, biggest / 1024);
+#else
+	Error("TILESTATS: free memory probe is TOS-only\n");
+#endif
+}
+#endif /* GFX_TILE_SIZE_STATS */
+
 /**
  * Loads an ICN file.
  * NOTE : should be called "tiles"
@@ -243,6 +266,11 @@ static void Tiles_LoadICNFile(const char *filename)
 	ChunkFile_Read(fileIndex, HTOBE32(CC_SSET), g_tilesPixels, tilesDataLength);
 	tilesDataLength = Sprites_Decode(g_tilesPixels, g_tilesPixels);
 	/*g_tilesPixels = realloc(g_tilesPixels, tilesDataLength);*/
+#ifdef GFX_TILE_SIZE_STATS
+	GFX_Report_TilesInfo(tilesDataLength);
+	Tiles_Report_FreeMemory();
+#endif
+
 
 	/* Get the Table chunk */
 	free(g_iconRTBL);
@@ -257,6 +285,10 @@ static void Tiles_LoadICNFile(const char *filename)
 	/* The tile lookup tables identify a palette by its index into
 	 * g_iconRPAL, so they must be dropped when its contents change. */
 	GFX_InvalidateTileLut();
+
+	/* Pre-decode tiles to one byte per pixel. Needs the pixels, the table
+	 * and the palettes, so it has to come after all three are loaded. */
+	GFX_Init_DecodedTiles(tilesDataLength);
 
 	ChunkFile_Close(fileIndex);
 }
@@ -534,6 +566,7 @@ void Sprites_Uninit(void)
 	free(g_tilesPixels); g_tilesPixels = NULL;
 	free(g_iconRTBL); g_iconRTBL = NULL;
 	free(g_iconRPAL); g_iconRPAL = NULL;
+	GFX_FreeDecodedTiles();
 	GFX_InvalidateTileLut();
 
 	free(g_iconMap); g_iconMap = NULL;
