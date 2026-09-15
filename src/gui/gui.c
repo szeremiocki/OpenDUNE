@@ -1411,21 +1411,67 @@ void GUI_DrawSprite(Screen screenID, const uint8 *sprite, int16 posX, int16 posY
 
 				case (DRAWSPRITE_FLAG_REMAP | DRAWSPRITE_FLAG_SPRITEPAL):
 					/* remap +  sprite has palette */
-					while (count > 0) {
-						uint8 v = *sprite++;
-						if (v == 0) {
-							v = *sprite++; /* run length encoding of transparent pixels */
-							if ((flags & DRAWSPRITE_FLAG_RTL) != 0) buf -= v;
-							else buf += v;
-							count -= v;
+					/* ENHANCEMENT -- 176 cycles per opaque pixel on m68000,
+					 * the most expensive sprite path and the one that grows
+					 * late-game (house-coloured units). Four separate costs
+					 * were measured in the profile, all removable:
+					 *  - `v` is a uint8 promoted to int for the array index,
+					 *    so GCC emitted AND.L #$ff twice (1.8M cycles each)
+					 *    to re-zero-extend a value already known to be a byte
+					 *  - remapCount is 1 in every observed call, yet the
+					 *    generic for() paid TST/BLE/SUBA/ADDQ/CMP/BNE per
+					 *    pixel (4.5M cycles) to run its body exactly once
+					 *  - palette and buf_incr were re-read from the stack
+					 *    every pixel (3.8M cycles); this function is a large
+					 *    va_arg routine, so the register allocator spills
+					 * Holding the pixel and the intermediate lookup in
+					 * `unsigned` rather than `uint8` is what removes the
+					 * masking: GCC then knows the upper bits are already
+					 * clear and drops both AND.L instructions. */
+					{
+						const uint8 *s = sprite;
+						const uint8 *pal = palette;
+						const uint8 *rm = remap;
+						uint8 *d = buf;
+						int16 n = count;
+						int16 incr = buf_incr;
+
+						if (remapCount == 1) {
+							unsigned t;
+
+							while (n > 0) {
+								unsigned v = *s++;
+								if (v == 0) {
+									v = *s++; /* run length encoding of transparent pixels */
+									d += (int16)(incr * (int16)v);
+									n -= v;
+								} else {
+									t = pal[v];
+									*d = rm[t];
+									d += incr;
+									n--;
+								}
+							}
 						} else {
-							int16 i;
-							v = palette[v];
-							for(i = 0; i < remapCount; i++) v = remap[v];
-							*buf = v;
-							buf += buf_incr;
-							count--;
+							while (n > 0) {
+								unsigned v = *s++;
+								if (v == 0) {
+									v = *s++; /* run length encoding of transparent pixels */
+									d += (int16)(incr * (int16)v);
+									n -= v;
+								} else {
+									int16 i;
+									unsigned t = pal[v];
+									for (i = 0; i < remapCount; i++) t = rm[t];
+									*d = (uint8)t;
+									d += incr;
+									n--;
+								}
+							}
 						}
+						sprite = s;
+						buf = d;
+						count = n;
 					}
 					break;
 
