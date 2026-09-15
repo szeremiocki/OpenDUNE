@@ -254,6 +254,10 @@ static void Tiles_LoadICNFile(const char *filename)
 	g_iconRPAL = calloc(1, paletteLength);
 	ChunkFile_Read(fileIndex, HTOBE32(CC_RPAL), g_iconRPAL, paletteLength);
 
+	/* The tile lookup tables identify a palette by its index into
+	 * g_iconRPAL, so they must be dropped when its contents change. */
+	GFX_InvalidateTileLut();
+
 	ChunkFile_Close(fileIndex);
 }
 
@@ -530,6 +534,7 @@ void Sprites_Uninit(void)
 	free(g_tilesPixels); g_tilesPixels = NULL;
 	free(g_iconRTBL); g_iconRTBL = NULL;
 	free(g_iconRPAL); g_iconRPAL = NULL;
+	GFX_InvalidateTileLut();
 
 	free(g_iconMap); g_iconMap = NULL;
 }
