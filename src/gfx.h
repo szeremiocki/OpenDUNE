@@ -58,8 +58,40 @@ extern struct dirty_area * GFX_Screen_GetDirtyArea(Screen screenID);
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
 extern uint32 g_dirty_blocks[200];
 #endif
+
+/* Attribute dirty pixels to their producer, to size the "render terrain
+ * directly in planar" idea: only 16px-aligned opaque block writes can skip
+ * the chunky+c2p path, masked/unaligned sprite work cannot. */
+/* DISABLED BY DEFAULT: see the note on VIDEO_C2P_STATS in video_atari.c.
+ * These counters are reported through unbuffered Warning() writes from
+ * inside the video tick, which perturbs exactly what it measures. Build
+ * with -DGFX_DIRTY_SOURCE_STATS_ENABLE to collect them. */
+#if defined(TOS) && defined(GFX_STORE_DIRTY_AREA_BLOCKS) && defined(GFX_DIRTY_SOURCE_STATS_ENABLE)
+#define GFX_DIRTY_SOURCE_STATS
+#endif
+#ifdef GFX_DIRTY_SOURCE_STATS
+enum DirtySource {
+	DIRTY_SRC_VIEWPORT = 0,	/* GUI_Screen_Copy from the viewport tile rows */
+	DIRTY_SRC_SCREENCOPY,	/* other GFX_Screen_Copy / GUI_Screen_Copy */
+	DIRTY_SRC_SPRITE,	/* GUI_DrawSprite (mouse cursor, units, icons) */
+	DIRTY_SRC_MOUSERESTORE,	/* GFX_CopyFromBuffer: cursor background restore */
+	DIRTY_SRC_WSA,		/* WSA animation frames */
+	DIRTY_SRC_TEXT,		/* font glyph blits */
+	DIRTY_SRC_RECT,		/* filled rectangles / lines */
+	DIRTY_SRC_FULL,		/* whole-screen invalidations */
+	DIRTY_SRC_OTHER,
+	DIRTY_SRC_COUNT
+};
+extern void GFX_Screen_SetDirtySource(int source);
+extern void GFX_DirtyStats_Report(void);
+#else
+#define GFX_Screen_SetDirtySource(source)
+#define GFX_DirtyStats_Report()
+#endif
 #else
 #define GFX_Screen_SetDirty(screenID, left, top, right, bottom)
+#define GFX_Screen_SetDirtySource(source)
+#define GFX_DirtyStats_Report()
 #define GFX_Screen_SetClean(screenID)
 #define GFX_Screen_IsDirty(screenID) true
 #define GFX_Screen_GetDirtyArea(screenID) NULL

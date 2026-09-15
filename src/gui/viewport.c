@@ -31,6 +31,11 @@
 #include "../tools.h"
 #include "../unit.h"
 
+/* ENHANCEMENT -- Minimum time (in game ticks, 120Hz) that a scroll cursor is
+ * kept before it may revert to a non-scroll cursor. Absorbs the rapid
+ * flip-flopping caused by the very narrow scroll edge widgets. */
+#define VIEWPORT_CURSOR_HYSTERESIS 12
+
 static uint32 s_tickCursor;                                 /*!< Stores last time Viewport changed the cursor spriteID. */
 static uint32 s_tickMapScroll;                              /*!< Stores last time Viewport ran MapScroll function. */
 static uint32 s_tickClick;                                  /*!< Stores last time Viewport handled a click. */
@@ -64,11 +69,25 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 		/* HotSpots for different cursor types. */
 		static const XYPosition cursorHotSpots[6] = {{0, 0}, {5, 0}, {8, 5}, {5, 8}, {0, 5}, {8, 8}};
 
-		s_tickCursor = g_timerGame;
+		/* ENHANCEMENT -- The scroll edge widgets are only 2 to 16 pixels wide,
+		 * so a pointer resting near the border oscillates between an edge
+		 * widget and the viewport, flipping the cursor many times per second.
+		 * Every flip runs a mouse hide/restore, which marks a dirty block and
+		 * costs a c2p conversion. Switching *to* a scroll arrow stays instant
+		 * so the affordance still appears immediately, but switching *away*
+		 * from one is held back briefly to absorb the jitter. */
+		bool leavingScroll = (g_cursorSpriteID >= 1 && g_cursorSpriteID <= 4) &&
+			!(spriteID >= 1 && spriteID <= 4);
 
-		Sprites_SetMouseSprite(cursorHotSpots[spriteID].x, cursorHotSpots[spriteID].y, g_sprites[spriteID]);
+		if (leavingScroll && s_tickCursor + VIEWPORT_CURSOR_HYSTERESIS > g_timerGame) {
+			/* Keep the current scroll cursor a little longer. */
+		} else {
+			s_tickCursor = g_timerGame;
 
-		g_cursorSpriteID = spriteID;
+			Sprites_SetMouseSprite(cursorHotSpots[spriteID].x, cursorHotSpots[spriteID].y, g_sprites[spriteID]);
+
+			g_cursorSpriteID = spriteID;
+		}
 	}
 
 	if (w->index == 45) return true;
@@ -321,6 +340,32 @@ static bool GUI_Widget_Viewport_GetSprite_HousePalette(const uint8 *sprite, uint
 	}
 	return true;
 }
+
+#if defined(GFX_DIRTY_SOURCE_STATS)
+static uint32 s_eagerRows;
+static uint32 s_eagerTiles;
+static uint32 s_eagerTilesCopied;
+
+static void Viewport_CountEager(int16 realMin, int16 realMax, int16 usedMin, int16 usedMax)
+{
+	s_eagerRows++;
+	if (realMax >= realMin) s_eagerTiles += realMax - realMin + 1;
+	s_eagerTilesCopied += usedMax - usedMin + 1;
+}
+
+void Viewport_EagerReport(void)
+{
+	if (s_eagerRows == 0) return;
+	Warning("viewport rows: %u copied, wanted %u, copied %u (%u%% eager)\n",
+		(unsigned)s_eagerRows, (unsigned)s_eagerTiles, (unsigned)s_eagerTilesCopied,
+		(unsigned)(s_eagerTiles == 0 ? 100 : (s_eagerTilesCopied - s_eagerTiles) * 100 / s_eagerTiles));
+	s_eagerRows = 0;
+	s_eagerTiles = 0;
+	s_eagerTilesCopied = 0;
+}
+#else
+#define Viewport_CountEager(a,b,c,d) do { (void)(a); (void)(b); (void)(c); (void)(d); } while (0)
+#endif
 
 /**
  * Redraw parts of the viewport that require redrawing.
@@ -838,6 +883,8 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool drawToMai
 			for (i = 0; i < 10; i++) {
 				uint16 width;
 				uint16 height;
+				int16 realMin = minX[i];
+				int16 realMax = maxX[i];
 
 				if (hasScrolled) {
 					minX[i] = 0;
@@ -845,6 +892,8 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool drawToMai
 				}
 
 				if (maxX[i] < minX[i]) continue;
+
+				Viewport_CountEager(realMin, realMax, minX[i], maxX[i]);
 
 				x = minX[i] * 2;
 				y = (i << 4) + 0x28;
@@ -857,7 +906,9 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool drawToMai
 					init = true;
 				}
 
+				GFX_Screen_SetDirtySource(DIRTY_SRC_VIEWPORT);
 				GUI_Screen_Copy(x, y, x, y, width, height, SCREEN_ACTIVE, SCREEN_0);
+				GFX_Screen_SetDirtySource(DIRTY_SRC_SCREENCOPY);
 			}
 
 			if (init) GUI_Mouse_Show_InWidget();

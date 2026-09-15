@@ -106,6 +106,58 @@ bool GFX_Screen_IsActive(Screen screenID)
 }
 
 #ifdef GFX_STORE_DIRTY_AREA
+#ifdef GFX_DIRTY_SOURCE_STATS
+static int s_dirtySource = DIRTY_SRC_OTHER;
+static uint32 s_dirtyPx[DIRTY_SRC_COUNT];	/* pixels marked dirty, per producer */
+static uint32 s_dirtyAlignedPx[DIRTY_SRC_COUNT];/* of those, in fully 16px-aligned boxes */
+static uint32 s_dirtyCalls[DIRTY_SRC_COUNT];
+/* Blocks newly set by this producer, i.e. excluding blocks another producer
+ * already dirtied. This is the marginal cost each producer imposes on c2p. */
+static uint32 s_dirtyNewBlocks[DIRTY_SRC_COUNT];
+static uint32 s_dirtyReports = 0;
+
+static const char * const s_dirtySourceName[DIRTY_SRC_COUNT] = {
+	"viewport", "screencopy", "sprite", "mouserestore",
+	"wsa", "text", "rect", "fullscreen", "other"
+};
+
+void GFX_Screen_SetDirtySource(int source)
+{
+	s_dirtySource = source;
+}
+
+void GFX_DirtyStats_Report(void)
+{
+	int i;
+	uint32 totPx = 0, totNew = 0;
+
+	for (i = 0; i < DIRTY_SRC_COUNT; i++) {
+		totPx += s_dirtyPx[i];
+		totNew += s_dirtyNewBlocks[i];
+	}
+	if (totPx == 0) return;
+
+	Warning("dirty sources (report %lu):\n", (unsigned long)++s_dirtyReports);
+	for (i = 0; i < DIRTY_SRC_COUNT; i++) {
+		if (s_dirtyPx[i] == 0) continue;
+		Warning("  %-12s %6lu calls, %8lu px (%2lu%%), aligned %2lu%%, new blocks %lu px\n",
+		        s_dirtySourceName[i],
+		        (unsigned long)s_dirtyCalls[i],
+		        (unsigned long)s_dirtyPx[i],
+		        (unsigned long)(s_dirtyPx[i] * 100 / totPx),
+		        (unsigned long)(s_dirtyAlignedPx[i] * 100 / s_dirtyPx[i]),
+		        (unsigned long)(s_dirtyNewBlocks[i] << 4));
+	}
+	Warning("  TOTAL marked %lu px, c2p-relevant new blocks %lu px\n",
+	        (unsigned long)totPx, (unsigned long)(totNew << 4));
+
+	memset(s_dirtyPx, 0, sizeof(s_dirtyPx));
+	memset(s_dirtyAlignedPx, 0, sizeof(s_dirtyAlignedPx));
+	memset(s_dirtyCalls, 0, sizeof(s_dirtyCalls));
+	memset(s_dirtyNewBlocks, 0, sizeof(s_dirtyNewBlocks));
+}
+#endif /* GFX_DIRTY_SOURCE_STATS */
+
 void GFX_Screen_SetDirty(Screen screenID, uint16 left, uint16 top, uint16 right, uint16 bottom)
 {
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
@@ -122,6 +174,22 @@ void GFX_Screen_SetDirty(Screen screenID, uint16 left, uint16 top, uint16 right,
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
 	mask = (1 << ((right + 15) >> 4)) - 1;
 	mask -= (1 << (left >> 4)) - 1;
+#ifdef GFX_DIRTY_SOURCE_STATS
+	{
+		int src = s_dirtySource;
+		uint32 px = (uint32)(right - left) * (bottom - top);
+
+		s_dirtyCalls[src]++;
+		s_dirtyPx[src] += px;
+		/* A box is c2p-friendly only if both edges land on 16px block
+		 * boundaries: then the block mask covers exactly the box and a
+		 * planar-direct blit would need no read-modify-write. */
+		if ((left & 15) == 0 && (right & 15) == 0) s_dirtyAlignedPx[src] += px;
+		for (y = top; y < bottom; y++) {
+			s_dirtyNewBlocks[src] += __builtin_popcount(mask & ~g_dirty_blocks[y]);
+		}
+	}
+#endif
 	for (y = top; y < bottom; y++) g_dirty_blocks[y] |= mask;
 #endif
 }
@@ -450,6 +518,7 @@ void GFX_Screen_Copy(int16 xSrc, int16 ySrc, int16 xDst, int16 yDst, int16 width
 void GFX_ClearScreen(Screen screenID)
 {
 	memset(GFX_Screen_Get_ByIndex(screenID), 0, SCREEN_WIDTH * SCREEN_HEIGHT);
+	GFX_Screen_SetDirtySource(DIRTY_SRC_FULL);
 	GFX_Screen_SetDirty(screenID, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
 }
 
@@ -460,6 +529,7 @@ void GFX_ClearScreen(Screen screenID)
 void GFX_ClearBlock(Screen index)
 {
 	memset(GFX_Screen_Get_ByIndex(index), 0, GFX_Screen_GetSize_ByIndex(index));
+	GFX_Screen_SetDirtySource(DIRTY_SRC_FULL);
 	GFX_Screen_SetDirty(index, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
 }
 
@@ -486,6 +556,19 @@ void GFX_SetPalette(uint8 *palette)
 		   palette[to*3+2] != g_paletteActive[to*3+2]) break;
 	}
 	Video_SetPalette(palette + 3 * from, from, to - from + 1);
+
+#if defined(TOS) && defined(GFX_DIRTY_SOURCE_STATS)
+	if (to - from + 1 >= 128) {
+		int n = 0, j;
+		for (j = from; j <= to; j++) {
+			if (palette[j*3] != g_paletteActive[j*3] ||
+			    palette[j*3+1] != g_paletteActive[j*3+1] ||
+			    palette[j*3+2] != g_paletteActive[j*3+2]) n++;
+		}
+		Warning("palette span %d..%d (len %d) but only %d entries really changed\n",
+			from, to, to - from + 1, n);
+	}
+#endif
 
 	memcpy(g_paletteActive + 3 * from, palette + 3 * from, (to - from + 1) * 3);
 }
@@ -541,6 +624,7 @@ void GFX_CopyFromBuffer(int16 left, int16 top, uint16 width, uint16 height, uint
 	screen = GFX_Screen_Get_ByIndex(SCREEN_0);
 	screen += top * SCREEN_WIDTH + left;
 
+	GFX_Screen_SetDirtySource(DIRTY_SRC_MOUSERESTORE);
 	GFX_Screen_SetDirty(SCREEN_0, left, top, left + width, top + height);
 
 	while (height-- != 0) {

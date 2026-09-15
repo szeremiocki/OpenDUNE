@@ -235,6 +235,9 @@ extern void Widget_PaintCurrentWidget(void);
 /* viewport.c */
 extern bool GUI_Widget_Viewport_Click(Widget *w);
 extern void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool drawToMainScreen);
+#ifdef GFX_DIRTY_SOURCE_STATS
+extern void Viewport_EagerReport(void);
+#endif
 extern bool GUI_Widget_Viewport_DrawTile(uint16 packed);
 extern void GUI_Widget_Viewport_RedrawMap(Screen screenID);
 

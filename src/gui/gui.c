@@ -183,6 +183,7 @@ void GUI_DrawWiredRectangle(uint16 left, uint16 top, uint16 right, uint16 bottom
 	GUI_DrawLine(left, top, left, bottom, colour);
 	GUI_DrawLine(right, top, right, bottom, colour);
 
+	GFX_Screen_SetDirtySource(DIRTY_SRC_RECT);
 	GFX_Screen_SetDirty(SCREEN_ACTIVE, left, top, right+1, bottom+1);
 }
 
@@ -229,6 +230,7 @@ void GUI_DrawFilledRectangle(int16 left, int16 top, int16 right, int16 bottom, u
 		screen += SCREEN_WIDTH - width;
 	}
 
+	GFX_Screen_SetDirtySource(DIRTY_SRC_RECT);
 	GFX_Screen_SetDirty(SCREEN_ACTIVE, left, top, right + 1, bottom + 1);
 }
 
@@ -414,6 +416,7 @@ static void GUI_DrawChar(unsigned char c, uint16 x, uint16 y)
 	if (x >= SCREEN_WIDTH || (x + fc->width) > SCREEN_WIDTH) return;
 	if (y >= SCREEN_HEIGHT || (y + g_fontCurrent->height) > SCREEN_HEIGHT) return;
 
+	GFX_Screen_SetDirtySource(DIRTY_SRC_TEXT);
 	GFX_Screen_SetDirty(SCREEN_ACTIVE, x, y, x + fc->width, y + g_fontCurrent->height);
 	x += y * (uint16)SCREEN_WIDTH;
 	remainingWidth = SCREEN_WIDTH - fc->width;
@@ -617,6 +620,7 @@ void GUI_DrawText_Wrapper(const char *string, int16 left, int16 top, uint8 fgCol
  * @param reference The colour to use as reference.
  * @return true if the colour now equals the reference.
  */
+#ifndef TOS
 static bool GUI_Palette_ShiftColour(uint8 *palette, uint16 colour, uint16 reference)
 {
 	bool ret = false;
@@ -636,12 +640,24 @@ static bool GUI_Palette_ShiftColour(uint8 *palette, uint16 colour, uint16 refere
 
 	return ret;
 }
+#endif /* !TOS */
 
 /**
  * Animate the palette. Only works for some colours or something
  */
 void GUI_PaletteAnimate(void)
 {
+#ifndef TOS
+	/* On Atari ST/STE, these small per-tick palette-index color-cycle
+	 * animations (repair-button flash, selection-rectangle pulse, windtrap
+	 * glow) are disabled entirely: the Amiga port of this game does not
+	 * animate these UI colors either, and on ST/STE each such change -
+	 * however small - forces a costly re-quantization + chunky-pixel pair-
+	 * LUT patch (see ATARI_PROFILE_FINDINGS.md / c2p1x1_4_st palette
+	 * pipeline). Skipping them altogether removes the single largest
+	 * measured cycle cost in profiled play sessions, matching the visual
+	 * behavior of another official port rather than introducing a
+	 * platform-specific visual regression. */
 	static uint32 timerAnimation = 0;
 	static uint32 timerSelection = 0;
 	static uint32 timerToggle = 0;
@@ -708,9 +724,11 @@ void GUI_PaletteAnimate(void)
 	}
 
 	if (shouldSetPalette) GFX_SetPalette(g_palette1);
+#endif /* !TOS */
 
 	Sound_StartSpeech();
 }
+
 
 /**
  * Sets the activity description to the correct string for the active structure.
@@ -1172,6 +1190,7 @@ void GUI_DrawSprite(Screen screenID, const uint8 *sprite, int16 posX, int16 posY
 
 	assert((flags & 0xFF) < 4);
 
+	GFX_Screen_SetDirtySource(DIRTY_SRC_SPRITE);
 	GFX_Screen_SetDirty(screenID,
 	                    (g_widgetProperties[windowID].xBase << 3) + posX,
 	                    posY,
@@ -1974,7 +1993,7 @@ void GUI_DrawBorder(uint16 left, uint16 top, uint16 width, uint16 height, uint16
 {
 	uint16 *colourSchema;
 
-	if (!fill) GFX_Screen_SetDirty(SCREEN_ACTIVE, left, top, left + width, top + height);
+	if (!fill) { GFX_Screen_SetDirtySource(DIRTY_SRC_RECT); GFX_Screen_SetDirty(SCREEN_ACTIVE, left, top, left + width, top + height); }
 
 	width  -= 1;
 	height -= 1;
@@ -3883,6 +3902,7 @@ void GUI_Screen_FadeIn2(int16 x, int16 y, int16 width, int16 height, Screen scre
 
 			GFX_PutPixel(curX, curY, colour);
 		}
+		GFX_Screen_SetDirtySource(DIRTY_SRC_SPRITE);
 		GFX_Screen_SetDirty(screenDst, x, y, x + width, y + height);
 
 		Timer_Sleep(delay);

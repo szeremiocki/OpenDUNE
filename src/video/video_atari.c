@@ -61,6 +61,174 @@ static bool s_screen_needrepaint = false;
 
 static bool s_showFPS = false;
 
+/* Instrumentation for the ST/STE chunky-to-planar path.
+ * DISABLED BY DEFAULT: the reports are written with unbuffered Warning()
+ * calls from inside Video_Tick(), so enabling this measurably slows the
+ * game down (a visible hiccup every reporting period) and skews any
+ * profiling done while it is on. Build with -DVIDEO_C2P_STATS to turn it
+ * back on when investigating the c2p pipeline.
+ * Distinguishes the "full width snap" branch (which ignores g_dirty_blocks[]
+ * and converts whole lines) from the per line branch, and compares the
+ * converted pixel count against the number of pixels really marked dirty. */
+#ifdef VIDEO_C2P_STATS
+#define VIDEO_C2P_STATS_PERIOD 1000	/* report every N Video_Tick() calls */
+
+/* Per box logging: report every converted box where more than this
+ * percentage of the converted pixels were not actually dirty.
+ * Capped per period so the log does not flood. */
+#define VIDEO_C2P_STATS_VERBOSE
+#define VIDEO_C2P_STATS_WASTE_PCT 50
+#define VIDEO_C2P_STATS_MAX_LOGS 20
+/* A single tick converting more than this many pixels is a visible stutter:
+ * at ~40 cycles/pixel, 6400 px is already a whole 8MHz frame of work. Forced
+ * full repaints (palette fades) are deliberately excluded from all of this. */
+#define VIDEO_C2P_STATS_TICK_PX 6400
+#define VIDEO_C2P_STATS_MAX_SPIKES 12
+
+static uint32 s_statTicks = 0;		/* Video_Tick() calls */
+static uint32 s_statConverts = 0;	/* ticks that actually converted something */
+static uint32 s_statSnapCalls = 0;	/* c2p calls taking the full width branch */
+static uint32 s_statSnapPixels = 0;	/* pixels converted by that branch */
+static uint32 s_statLineCalls = 0;	/* c2p calls taking the per line branch */
+static uint32 s_statLinePixels = 0;	/* pixels converted by that branch */
+static uint32 s_statDirtyPixels = 0;	/* pixels really dirty (popcount based) */
+static uint32 s_statForcedRepaints = 0;	/* s_screen_needrepaint forced full frames */
+static uint32 s_statForcedPixels = 0;	/* pixels converted by forced repaints */
+static uint32 s_statTickPixels = 0;	/* pixels converted by the current tick */
+static uint32 s_statTickDirty = 0;	/* really dirty pixels of the current tick */
+static uint32 s_statTickLines = 0;	/* line branch calls of the current tick */
+static uint32 s_statPeakTickPx = 0;	/* worst single tick of this period */
+static uint32 s_statSpikes = 0;		/* ticks above the stutter threshold */
+#ifdef VIDEO_C2P_STATS_VERBOSE
+static uint32 s_statSpikesLogged = 0;
+static uint32 s_statLogged = 0;		/* boxes logged during this period */
+#endif
+
+/* Sum the truly dirty pixels of lines [top;bottom[ from the block masks. */
+static uint32 Video_C2PStats_CountDirty(uint16 top, uint16 bottom)
+{
+#ifdef GFX_STORE_DIRTY_AREA_BLOCKS
+	uint32 dirty = 0;
+	uint16 y;
+
+	if (bottom > SCREEN_HEIGHT) bottom = SCREEN_HEIGHT;
+	for (y = top; y < bottom; y++) {
+		dirty += (uint32)__builtin_popcount(g_dirty_blocks[y]) << 4;
+	}
+	return dirty;
+#else
+	(void)top;
+	(void)bottom;
+	return 0;
+#endif
+}
+
+/* Account one converted box, and log it when it wastes too much. */
+static void Video_C2PStats_Box(const char * kind, uint16 top, uint16 bottom,
+                               uint16 left, uint32 converted, uint32 dirty, uint32 mask)
+{
+	s_statDirtyPixels += dirty;
+	s_statTickPixels += converted;
+	s_statTickDirty += dirty;
+#ifdef VIDEO_C2P_STATS_VERBOSE
+	if (converted != 0 && s_statLogged < VIDEO_C2P_STATS_MAX_LOGS
+	 && (converted - dirty) * 100 > (uint32)VIDEO_C2P_STATS_WASTE_PCT * converted) {
+		s_statLogged++;
+		Warning("c2p %s box y=%hu..%hu x=%hu w=%lu: %lu px, dirty %lu px, waste %lu px (%lu%%) mask=%05lx\n",
+		        kind, top, bottom, left,
+		        (unsigned long)(bottom > top ? converted / (bottom - top) : converted),
+		        (unsigned long)converted, (unsigned long)dirty,
+		        (unsigned long)(converted - dirty),
+		        (unsigned long)(((converted - dirty) * 100) / converted),
+		        (unsigned long)mask);
+	}
+#else
+	(void)kind;
+	(void)top;
+	(void)bottom;
+	(void)left;
+	(void)converted;
+	(void)mask;
+#endif
+}
+
+/* Called once per converting tick. A stutter is a *single* tick doing too much
+ * work, which a 100-tick average completely hides, so report those directly. */
+static void Video_C2PStats_EndTick(void)
+{
+	if (s_screen_needrepaint) return;	/* forced repaint: not our problem */
+
+	if (s_statTickPixels > s_statPeakTickPx) s_statPeakTickPx = s_statTickPixels;
+
+	if (s_statTickPixels >= VIDEO_C2P_STATS_TICK_PX) {
+		s_statSpikes++;
+#ifdef VIDEO_C2P_STATS_VERBOSE
+		if (s_statSpikesLogged < VIDEO_C2P_STATS_MAX_SPIKES) {
+			s_statSpikesLogged++;
+			Warning("c2p SPIKE tick: %lu px in %lu lines, dirty %lu px, waste %lu px (%lu%%), ~%lu ms\n",
+			        (unsigned long)s_statTickPixels,
+			        (unsigned long)s_statTickLines,
+			        (unsigned long)s_statTickDirty,
+			        (unsigned long)(s_statTickPixels - s_statTickDirty),
+			        (unsigned long)((s_statTickPixels - s_statTickDirty) * 100 / s_statTickPixels),
+			        (unsigned long)(s_statTickPixels * 41 / 8000));
+		}
+#endif
+	}
+}
+
+static void Video_C2PStats_Report(void)
+{
+	uint32 total;
+
+	if (++s_statTicks < VIDEO_C2P_STATS_PERIOD) return;
+
+	total = s_statSnapPixels + s_statLinePixels;
+	if (s_statDirtyPixels > total) s_statDirtyPixels = total;	/* never underflow */
+
+	Warning("c2p stats over %lu ticks (%lu converting):\n",
+	        (unsigned long)s_statTicks, (unsigned long)s_statConverts);
+	Warning("  snap branch : %lu calls, %lu px\n",
+	        (unsigned long)s_statSnapCalls, (unsigned long)s_statSnapPixels);
+	Warning("  line branch : %lu calls, %lu px\n",
+	        (unsigned long)s_statLineCalls, (unsigned long)s_statLinePixels);
+	Warning("  converted %lu px, really dirty %lu px, waste %lu px (%lu%%)\n",
+	        (unsigned long)total, (unsigned long)s_statDirtyPixels,
+	        (unsigned long)(total - s_statDirtyPixels),
+	        (unsigned long)(total != 0 ? ((total - s_statDirtyPixels) * 100) / total : 0));
+	Warning("  peak tick %lu px (~%lu ms), %lu spikes >=%u px, avg %lu px/converting tick\n",
+	        (unsigned long)s_statPeakTickPx,
+	        (unsigned long)(s_statPeakTickPx * 41 / 8000),
+	        (unsigned long)s_statSpikes, VIDEO_C2P_STATS_TICK_PX,
+	        (unsigned long)(s_statConverts != 0 ? total / s_statConverts : 0));
+	if (s_statForcedRepaints != 0)
+		Warning("  (excluded: %lu forced full repaints, %lu px - palette fades)\n",
+		        (unsigned long)s_statForcedRepaints,
+		        (unsigned long)s_statForcedPixels);
+	GFX_DirtyStats_Report();
+#ifdef GFX_DIRTY_SOURCE_STATS
+	extern void Viewport_EagerReport(void);
+	Viewport_EagerReport();
+#endif
+
+	s_statTicks = 0;
+	s_statConverts = 0;
+	s_statSnapCalls = 0;
+	s_statSnapPixels = 0;
+	s_statLineCalls = 0;
+	s_statLinePixels = 0;
+	s_statDirtyPixels = 0;
+	s_statForcedRepaints = 0;
+	s_statForcedPixels = 0;
+	s_statPeakTickPx = 0;
+	s_statSpikes = 0;
+#ifdef VIDEO_C2P_STATS_VERBOSE
+	s_statLogged = 0;
+	s_statSpikesLogged = 0;
+#endif
+}
+#endif /* VIDEO_C2P_STATS */
+
 /* 4bit palette */
 #define MAKE_PC_COLOR(_r,_g,_b) _r>>2,_g>>2,_b>>2,0
 const uint8 s_palette4BitPC[16*4] =
@@ -424,9 +592,17 @@ void Video_Tick(void)
 	if (GFX_Screen_IsDirty(SCREEN_0) || s_screen_needrepaint) {
 		struct dirty_area * area;
 		int height = SCREEN_HEIGHT;
+#ifdef VIDEO_C2P_STATS
+		s_statTickPixels = 0;
+		s_statTickDirty = 0;
+		s_statTickLines = 0;
+#endif
 		int width = SCREEN_WIDTH;
 		int left = 0;
 
+#ifdef VIDEO_C2P_STATS
+		s_statConverts++;
+#endif
 		area = GFX_Screen_GetDirtyArea(SCREEN_0);
 		if (!s_screen_needrepaint && area != NULL) {
 			if (area->top >= area->bottom) {
@@ -512,7 +688,34 @@ void Video_Tick(void)
 			}
 		} else if (s_machine_type == MCH_ST || s_machine_type == MCH_STE || s_machine_type == MCH_MEGA_STE) {
 			data += (s_screenOffset << 2);
+#ifdef GFX_STORE_DIRTY_AREA_BLOCKS
+			/* Always take the per line path when the block masks are
+			 * available. The "full width" shortcut computed above converts
+			 * every line of the bounding box completely, which is very
+			 * wasteful as soon as a wide but thin element widens the box:
+			 * the scrolling message bar (widget 7) alone spans pixels
+			 * 8..312, so it sets all 20 block bits and forces the shortcut
+			 * for the whole bounding box height. */
+			if (s_screen_needrepaint || area == NULL) {
+#else
 			if (width == SCREEN_WIDTH) {
+#endif
+#ifdef VIDEO_C2P_STATS
+				if (s_screen_needrepaint) {
+					/* Legitimate: a palette change of >=128 entries
+					 * (fade/transition) invalidates every pixel's pen,
+					 * so the whole screen really is stale. Counted
+					 * separately and kept out of the waste figures. */
+					s_statForcedRepaints++;
+					s_statForcedPixels += (uint32)height * SCREEN_WIDTH;
+				} else {
+					s_statSnapCalls++;
+					s_statSnapPixels += (uint32)height * SCREEN_WIDTH;
+					Video_C2PStats_Box("snap", area->top, area->bottom, 0,
+					                   (uint32)height * SCREEN_WIDTH,
+					                   Video_C2PStats_CountDirty(area->top, area->bottom), 0);
+				}
+#endif
 				c2p1x1_4_st(screen, data, height*SCREEN_WIDTH, s_palette4BitPairMap);
 			} else {
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
@@ -521,6 +724,14 @@ void Video_Tick(void)
 					if (g_dirty_blocks[y] != 0) {
 						left = __builtin_ctz(g_dirty_blocks[y]) << 4;
 						width = ((32 - __builtin_clz(g_dirty_blocks[y])) << 4) - left;
+#ifdef VIDEO_C2P_STATS
+						s_statLineCalls++;
+						s_statTickLines++;
+						s_statLinePixels += (uint32)width;
+						Video_C2PStats_Box("line", y, y + 1, left, (uint32)width,
+						                   (uint32)__builtin_popcount(g_dirty_blocks[y]) << 4,
+						                   g_dirty_blocks[y]);
+#endif
 						c2p1x1_4_st(screen + (left >> 1), data + left, width, s_palette4BitPairMap);
 					}
 					screen += SCREEN_WIDTH >> 1;
@@ -540,6 +751,9 @@ void Video_Tick(void)
 		}
 
 		GFX_Screen_SetClean(SCREEN_0);
+#ifdef VIDEO_C2P_STATS
+		Video_C2PStats_EndTick();
+#endif
 		s_screen_needrepaint = false;
 	}
 
@@ -587,6 +801,10 @@ void Video_Tick(void)
 			}
 		}
 	}
+
+#ifdef VIDEO_C2P_STATS
+	Video_C2PStats_Report();
+#endif
 }
 
 /**
@@ -620,16 +838,46 @@ void Video_SetPalette(void *palette, int from, int length)
 		EsetPalette(from, length, rgb12);
 	} else if (s_machine_type == MCH_ST || s_machine_type == MCH_STE || s_machine_type == MCH_MEGA_STE) {
 		uint8 red,green,blue;
+		int changedFrom = -1, changedTo = -1;
+
+		/* Quantization (Palette_FindClosestColor against the fixed 16-pen
+		 * table) must always run for every changed index - a color shift
+		 * can legitimately move an index to a different pen at any time.
+		 * But Rebuild_Palette4BitPairMap() is expensive (O(256) word
+		 * writes per changed index - see ATARI_PROFILE_FINDINGS.md /
+		 * ATARI_PALETTE_ANIMATION_OPTIMIZATION.md) and is only actually
+		 * needed for indices whose *pen assignment* changed as a result.
+		 * Small, incremental animations (GUI_PaletteAnimate's repair/
+		 * selection/windtrap color cycling) very often re-quantize to the
+		 * *same* pen they already had (the RGB moved, but not far enough
+		 * to cross into a different pen's territory) - in that case the
+		 * chunky-pixel-to-pen mapping truly didn't change anywhere, and
+		 * patching the pair-LUT would be a no-op. Track the actual
+		 * sub-range of indices whose pen assignment changed and only
+		 * patch that (possibly empty) range. */
 		for (i = from; i < from + length; i++)
 		{
+			uint8 pen;
+
 			red = *p++;
 			green = *p++;
 			blue = *p++;
-			s_palette4BitMap[i] = Palette_FindClosestColor(red, green, blue);
+			pen = Palette_FindClosestColor(red, green, blue);
+			if (pen != s_palette4BitMap[i]) {
+				s_palette4BitMap[i] = pen;
+				if (changedFrom < 0) changedFrom = i;
+				changedTo = i;
+			}
 		}
-		Rebuild_Palette4BitPairMap(from, length);
-		/* repaint only when a large amount of colors are changing, for fading and so on */
-		if (length >= 128)
+		if (changedFrom >= 0)
+			Rebuild_Palette4BitPairMap(changedFrom, changedTo - changedFrom + 1);
+		/* Repaint only when a large amount of colors are changing, for fading
+		 * and so on. On ST/STE the screen only shows 16 quantized pens, so a
+		 * wide palette update whose colours all re-quantize to the pens they
+		 * already had (changedFrom < 0) leaves every on-screen pixel looking
+		 * exactly the same - forcing a full 64000px convert for it is pure
+		 * waste. Only force the repaint when a pen assignment really changed. */
+		if (length >= 128 && changedFrom >= 0)
 			s_screen_needrepaint = true;
 	} else {
 		Error("don't know how to set palette on this machine.\n");
