@@ -134,6 +134,13 @@ extern bool g_var_37B8;
 #define GUI_ClearScreen(screenID) GFX_ClearScreen(screenID)
 extern void GUI_DrawScreen(Screen screenID);
 extern void GUI_DrawSprite(Screen screenID, const uint8 *sprite, int16 posX, int16 posY, uint16 windowID, int flags, ...);
+
+/* One-shot survey for the sprite pre-decode idea; reports to error.log.
+ * Build with -DGUI_SPRITE_PREDECODE_STATS_ENABLE. */
+#if defined(GUI_SPRITE_PREDECODE_STATS_ENABLE)
+#define GUI_SPRITE_PREDECODE_STATS
+extern void GUI_Sprite_Stats_Report(void);
+#endif
 extern void GUI_DrawInterfaceAndRadar(Screen screenID);
 extern void GUI_Palette_RemapScreen(uint16 left, uint16 top, uint16 width, uint16 height, Screen screenID, const uint8 *remap);
 extern void GUI_Screen_Copy(int16 xSrc, int16 ySrc, int16 xDst, int16 yDst, int16 width, int16 height, Screen screenSrc, Screen screenDst);

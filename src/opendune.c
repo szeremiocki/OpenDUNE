@@ -1576,6 +1576,10 @@ void PrepareEnd(void)
 
 	GameLoop_Uninit();
 
+#ifdef GUI_SPRITE_PREDECODE_STATS
+	GUI_Sprite_Stats_Report();
+#endif
+
 	String_Uninit();
 	Sprites_Uninit();
 	Font_Uninit();

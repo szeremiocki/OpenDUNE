@@ -947,6 +947,107 @@ uint16 GUI_SplitText(char *str, uint16 maxwidth, char delimiter)
  * 0A: [16 bytes] = house colors (if flags & 0x01)
  * [1]A: xx bytes = data (depending on flags & 0x02 : 1 = raw, 0 = Format80 encoded)
  */
+#ifdef GUI_SPRITE_PREDECODE_STATS
+/* One-shot survey for the sprite pre-decode idea: how many distinct
+ * sprite x remap-table pairs a real playthrough actually draws, and what
+ * decoding them to byte-per-pixel would cost in RAM. Results go to
+ * error.log. Build with -DGUI_SPRITE_PREDECODE_STATS_ENABLE. */
+#define SPRSTAT_MAX 2048
+static struct {
+	const uint8 *sprite;
+	const uint8 *remap;
+	uint32 calls;
+	uint32 pixels;
+	uint16 decodedLength;
+	uint16 spritePal;
+} s_sprStat[SPRSTAT_MAX];
+static uint16 s_sprStatCount = 0;
+static uint32 s_sprStatCalls = 0;
+static uint32 s_sprStatOverflow = 0;
+
+static void GUI_Sprite_Stats_Record(const uint8 *sprite, int flags,
+                                    const uint8 *remap, int16 w, int16 h,
+                                    uint16 decodedLength)
+{
+	uint16 i;
+
+	/* Only the remap table distinguishes one house from another; the flag
+	 * itself is constant across them. */
+	if ((flags & DRAWSPRITE_FLAG_REMAP) == 0) remap = NULL;
+
+	s_sprStatCalls++;
+
+	for (i = 0; i < s_sprStatCount; i++) {
+		if (s_sprStat[i].sprite == sprite && s_sprStat[i].remap == remap) {
+			s_sprStat[i].calls++;
+			s_sprStat[i].pixels += (uint32)w * h;
+			return;
+		}
+	}
+
+	if (s_sprStatCount >= SPRSTAT_MAX) { s_sprStatOverflow++; return; }
+
+	s_sprStat[s_sprStatCount].sprite = sprite;
+	s_sprStat[s_sprStatCount].remap = remap;
+	s_sprStat[s_sprStatCount].calls = 1;
+	s_sprStat[s_sprStatCount].pixels = (uint32)w * h;
+	s_sprStat[s_sprStatCount].decodedLength = decodedLength;
+	s_sprStat[s_sprStatCount].spritePal =
+		((flags & DRAWSPRITE_FLAG_SPRITEPAL) != 0) ? 1 : 0;
+	s_sprStatCount++;
+}
+
+void GUI_Sprite_Stats_Report(void)
+{
+	uint16 i;
+	uint16 distinctSprites = 0;
+	uint32 bytesAll = 0, bytesPal = 0;
+	uint32 callsPal = 0;
+	uint16 pairsPal = 0;
+
+	/* distinct sprite pointers, ignoring the remap dimension */
+	for (i = 0; i < s_sprStatCount; i++) {
+		uint16 j;
+		bool seen = false;
+
+		for (j = 0; j < i; j++) {
+			if (s_sprStat[j].sprite == s_sprStat[i].sprite) { seen = true; break; }
+		}
+		if (!seen) {
+			distinctSprites++;
+			bytesAll += s_sprStat[i].decodedLength;
+		}
+		bytesPal += s_sprStat[i].decodedLength;	/* per pair: the pre-decode cost */
+		if (s_sprStat[i].spritePal) {
+			pairsPal++;
+			callsPal += s_sprStat[i].calls;
+		}
+	}
+
+	Error("SPRSTAT: calls=%lu pairs=%u distinct_sprites=%u overflow=%lu\n",
+	      (unsigned long)s_sprStatCalls, (unsigned)s_sprStatCount,
+	      (unsigned)distinctSprites, (unsigned long)s_sprStatOverflow);
+	Error("SPRSTAT: housecol pairs=%u calls=%lu (%lu%% of calls)\n",
+	      (unsigned)pairsPal, (unsigned long)callsPal,
+	      (unsigned long)(s_sprStatCalls ? callsPal * 100 / s_sprStatCalls : 0));
+	Error("SPRSTAT: decode all sprites once = %lu bytes (%lu KB)\n",
+	      (unsigned long)bytesAll, (unsigned long)(bytesAll + 1023) / 1024);
+	Error("SPRSTAT: decode per sprite x remap pair = %lu bytes (%lu KB)\n",
+	      (unsigned long)bytesPal, (unsigned long)(bytesPal + 1023) / 1024);
+
+	/* the pairs that actually carry the per-pixel palette cost */
+	for (i = 0; i < s_sprStatCount; i++) {
+		if (s_sprStat[i].spritePal && s_sprStat[i].calls > 20) {
+			Error("SPRSTAT:  pair sprite=%p remap=%p calls=%lu px=%lu declen=%u\n",
+			      (const void *)s_sprStat[i].sprite, (const void *)s_sprStat[i].remap,
+			      (unsigned long)s_sprStat[i].calls,
+			      (unsigned long)s_sprStat[i].pixels,
+			      (unsigned)s_sprStat[i].decodedLength);
+		}
+	}
+}
+#endif /* GUI_SPRITE_PREDECODE_STATS */
+
 void GUI_DrawSprite(Screen screenID, const uint8 *sprite, int16 posX, int16 posY, uint16 windowID, int flags, ...)
 {
 	/* variables for blur/sandworm effect */
@@ -983,10 +1084,18 @@ void GUI_DrawSprite(Screen screenID, const uint8 *sprite, int16 posX, int16 posY
 
 	uint8 *buf = NULL;
 	uint8 *b = NULL;
+	uint8 spritePalRemap[16];	/* sprite palette composed with the house remap */
+#ifdef GUI_SPRITE_PREDECODE_STATS
+	const uint8 *spriteOrigin;
+#endif
 	int16  count;
 	int16  buf_incr;
 
 	if (sprite == NULL) return;
+
+#ifdef GUI_SPRITE_PREDECODE_STATS
+	spriteOrigin = sprite;
+#endif
 
 	/* read additional arguments according to the flags */
 
@@ -1189,6 +1298,48 @@ void GUI_DrawSprite(Screen screenID, const uint8 *sprite, int16 posX, int16 posY
 	}
 
 	assert((flags & 0xFF) < 4);
+
+	/* ENHANCEMENT -- Compose the sprite palette with the house remap table.
+	 *
+	 * The REMAP|SPRITEPAL path cost 108.10 cycles per opaque pixel, its two
+	 * dependent lookups (MOVE.B (A3,D2.L) 16, AND.L 16, MOVE.B (A2,D2.L) 20)
+	 * converting a stored index into a screen colour. That conversion is
+	 * constant for a given sprite and remap table, and the stored index is
+	 * only 0..15 because a sprite palette is 16 bytes, so the whole of
+	 * rm[pal[v]] collapses into one 16-byte table built once per call. The
+	 * draw then takes the SPRITEPAL path, measured at 52.09 cycles/pixel.
+	 *
+	 * This deliberately leaves the RLE stream untouched. Pre-decoding
+	 * sprites to byte-per-pixel was considered and rejected: `0` introduces
+	 * a run of transparent pixels, unit sprites are small and sparse (64
+	 * pixels in 50 bytes is typical), and flattening them would replace
+	 * per-run skipping with a per-pixel test. The same mistake measured a
+	 * real regression in GFX_DrawTile's transparent loop.
+	 *
+	 * 16 entries is cheap against the opaque pixels per call this path
+	 * averages, and it cannot corrupt the stream because only the lookup
+	 * changes, never the data. */
+	if ((flags & (DRAWSPRITE_FLAG_REMAP | DRAWSPRITE_FLAG_SPRITEPAL))
+	     == (DRAWSPRITE_FLAG_REMAP | DRAWSPRITE_FLAG_SPRITEPAL)
+	    && (flags & DRAWSPRITE_FLAG_BLUR) == 0
+	    && palette != NULL && remap != NULL) {
+		int16 i;
+
+		for (i = 0; i < 16; i++) {
+			unsigned t = palette[i];
+			int16 r;
+
+			for (r = 0; r < remapCount; r++) t = remap[t];
+			spritePalRemap[i] = (uint8)t;
+		}
+		palette = spritePalRemap;
+		flags &= ~DRAWSPRITE_FLAG_REMAP;
+	}
+
+#ifdef GUI_SPRITE_PREDECODE_STATS
+	GUI_Sprite_Stats_Record(spriteOrigin, flags, remap, spriteWidth, spriteHeight,
+	                        spriteDecodedLength);
+#endif
 
 	GFX_Screen_SetDirtySource(DIRTY_SRC_SPRITE);
 	GFX_Screen_SetDirty(screenID,
