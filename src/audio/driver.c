@@ -242,14 +242,98 @@ void Driver_Sound_Stop(void)
 	}
 }
 
-void Driver_Voice_LoadFile(const char *filename, void *buffer, uint32 length)
+/**
+ * Growable, portable scratch buffer for raw file bytes read by
+ * Driver_Voice_LoadFile(), shared by every voice load (preloaded or
+ * ad-hoc). Ordinary heap memory -- unlike the ST-RAM DMA buffer in
+ * dsp_atari.c, nothing ever needs to read this via hardware DMA, so it
+ * stays plain malloc()/realloc() and portable across all DSP backends.
+ * Grows (rounded to 4KB, mirroring DSP_GrowStRamBuffer()'s policy) to fit
+ * the largest file seen so far; never shrinks back down during a session.
+ */
+static uint8 *s_voiceLoadBuffer;
+static uint32 s_voiceLoadBufferSize;
+
+static bool Driver_GrowVoiceLoadBuffer(uint32 needed)
 {
-	assert(buffer != NULL);
+	uint8 *newBuffer;
 
-	if (filename == NULL) return;
-	if (g_driverVoice->index == 0xFFFF) return;
+	if (needed <= s_voiceLoadBufferSize) return true;
 
-	File_ReadBlockFile(filename, buffer, length);
+	needed = (needed + 0x0FFF) & ~0x0FFFUL;
+
+	newBuffer = (uint8 *)realloc(s_voiceLoadBuffer, needed);
+	if (newBuffer == NULL) {
+		Warning("Driver_GrowVoiceLoadBuffer: realloc(%u) failed.\n", (unsigned int)needed);
+		return false;
+	}
+	s_voiceLoadBuffer = newBuffer;
+	s_voiceLoadBufferSize = needed;
+	return true;
+}
+
+/**
+ * Load a voice file's raw bytes and, on TOS, convert them to already
+ * signed and resampled-to-DMASOUND_FREQ PCM (see DSP_ConvertSample() in
+ * dsp_atari.c).
+ *
+ * This function owns all buffer management: it reads the raw file into
+ * its own growable scratch buffer (s_voiceLoadBuffer) and, on TOS, then
+ * converts that into the DSP's own ST RAM scratch buffer. The returned
+ * pointer is only valid until the next call to this function (or, on
+ * TOS, the next DSP_Play()) -- callers that need to keep the data around
+ * (preloaded voices) must copy it out into their own, correctly-sized
+ * allocation right away; see Sound_LoadVoc() in sound.c, which sizes its
+ * permanent allocation to the returned (already resampled, usually
+ * smaller) length instead of the original file size.
+ *
+ * @param filename The name of the file to load.
+ * @param outLength Set to the number of valid bytes in the returned
+ * buffer, or 0 on failure.
+ * @return Pointer to the loaded (and, on TOS, converted) sample data, or
+ * NULL on failure (outLength is 0 in that case).
+ */
+const void *Driver_Voice_LoadFile(const char *filename, uint32 *outLength)
+{
+	uint32 fileSize;
+	uint32 readLength;
+
+	*outLength = 0;
+
+	if (filename == NULL) return NULL;
+	if (g_driverVoice->index == 0xFFFF) return NULL;
+
+	if (!File_Exists_GetSize(filename, &fileSize)) return NULL;
+	fileSize += 1;
+	fileSize &= 0xFFFFFFFE;
+
+	if (!Driver_GrowVoiceLoadBuffer(fileSize)) return NULL;
+
+	readLength = File_ReadBlockFile(filename, s_voiceLoadBuffer, fileSize);
+
+#ifdef TOS
+	{
+		uint32 convLength;
+		const uint8 *converted;
+
+		/* DSP_ConvertSample() builds its result in a scratch ST RAM
+		 * buffer shared with DMA playback (see dsp_atari.c); make
+		 * sure nothing is currently playing from it. */
+		Driver_Voice_Stop();
+
+		converted = DSP_ConvertSample(s_voiceLoadBuffer, readLength, &convLength, filename);
+		if (converted == NULL || convLength == 0) {
+			Warning("Driver_Voice_LoadFile: DSP_ConvertSample() failed for '%s'.\n", filename);
+			return NULL;
+		}
+
+		*outLength = convLength;
+		return converted;
+	}
+#else
+	*outLength = readLength;
+	return s_voiceLoadBuffer;
+#endif
 }
 
 void Driver_Voice_Play(const uint8 *data, int16 priority)
@@ -411,6 +495,12 @@ static void Drivers_SoundMusic_Uninit(void)
 static void Drivers_Voice_Uninit(void)
 {
 	Drivers_Uninit(g_driverVoice);
+
+	if (s_voiceLoadBuffer != NULL) {
+		free(s_voiceLoadBuffer);
+		s_voiceLoadBuffer = NULL;
+	}
+	s_voiceLoadBufferSize = 0;
 
 	DSP_Uninit();
 }

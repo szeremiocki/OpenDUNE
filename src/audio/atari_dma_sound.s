@@ -2,11 +2,12 @@
 	xdef	_stop_dma_sound
 	xdef	_get_dma_status
 
-	; 2 arguments on stack: void * buffer, long len
+	; 3 arguments on stack: void * buffer, long len, long mode
 _set_dma_sound:
-	movem.l	d5-d6,-(sp)
-	move.l	16(sp),d6	; len
-	move.l	12(sp),d5	; buffer
+	movem.l	d5-d7,-(sp)
+	move.l	24(sp),d7	; mode
+	move.l	20(sp),d6	; len
+	move.l	16(sp),d5	; buffer
 	add.l	d5,d6	; d6 = buffer end
 
 	pea		setdma(pc)
@@ -14,7 +15,7 @@ _set_dma_sound:
 	trap	#14			; XBIOS
 	addq.l	#6,sp
 
-	movem.l	(sp)+,d5-d6
+	movem.l	(sp)+,d5-d7
 	rts
 
 _stop_dma_sound:
@@ -51,7 +52,7 @@ setdma:
 	;  12517HZ (d0=1)
 	;  25033HZ (d0=2)
 	;  50066HZ (d0=3)
-	moveq.l	#1,d0
+	move.l	d7,d0	; mode, passed in from set_dma_sound's 3rd argument
 	ori.b	#$80,d0		; set Mono Flag
 	move.b	d0,$FFFF8921.w
 

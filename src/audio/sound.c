@@ -344,11 +344,16 @@ void Sound_StartSound(uint16 index)
 
 		filename = g_table_voices[index].string;
 		if (filename[0] == '?') {
+			const void *loaded;
+			uint32 loadedLength;
+
 			snprintf(filenameBuffer, sizeof(filenameBuffer), filename + 1, g_playerHouseID < HOUSE_MAX ? g_table_houseInfo[g_playerHouseID].prefixChar : ' ');
 
-			Driver_Voice_LoadFile(filenameBuffer, g_readBuffer, g_readBufferSize);
-
-			Driver_Voice_Play(g_readBuffer, 0xFF);
+			/* Not preloaded/resident: play directly out of
+			 * Driver_Voice_LoadFile()'s own scratch buffer(s)
+			 * instead of copying through g_readBuffer first. */
+			loaded = Driver_Voice_LoadFile(filenameBuffer, &loadedLength);
+			if (loaded != NULL) Driver_Voice_Play((const uint8 *)loaded, 0xFF);
 		}
 	}
 }
@@ -432,24 +437,31 @@ bool Sound_StartSpeech(void)
 }
 
 /**
- * Load a voice file to a malloc'd buffer.
+ * Load a voice file to a malloc'd buffer, sized to fit the actual loaded
+ * data (which, on TOS, is the resampled+signed result from
+ * Driver_Voice_LoadFile() -- usually smaller than the original file; a
+ * few short low-rate sound effects are slightly larger). This keeps
+ * every preloaded voice's permanent, resident allocation as small as
+ * its actual playback data, instead of the original VOC file size.
  * @param filename The name of the file to load.
  * @return Where the file is loaded.
  */
 static void *Sound_LoadVoc(const char *filename, uint32 *retFileSize)
 {
-	uint32 fileSize;
+	const void *loaded;
 	void *res;
 
 	if (filename == NULL) return NULL;
-	if (!File_Exists_GetSize(filename, &fileSize)) return NULL;
 
-	fileSize += 1;
-	fileSize &= 0xFFFFFFFE;
+	loaded = Driver_Voice_LoadFile(filename, retFileSize);
+	if (loaded == NULL) return NULL;
 
-	*retFileSize = fileSize;
-	res = malloc(fileSize);
-	Driver_Voice_LoadFile(filename, res, fileSize);
+	res = malloc(*retFileSize);
+	if (res == NULL) {
+		*retFileSize = 0;
+		return NULL;
+	}
+	memcpy(res, loaded, *retFileSize);
 
 	return res;
 }
