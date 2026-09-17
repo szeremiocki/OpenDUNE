@@ -72,6 +72,7 @@ static const uint8 s_nibbleFirstSet[16] = {	/* lowest set bit, 4 if none */
 static const uint8 s_nibbleLastSet[16] = {	/* highest set bit + 1, 0 if none */
 	0, 1, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4
 };
+/*#define VIDEO_C2P_STATS 1*/
 #ifdef VIDEO_C2P_STATS
 static const uint8 s_nibbleCount[16] = {
 	0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4
@@ -100,6 +101,23 @@ static uint16 Video_LastDirtyBlock(uint32 mask)
 		base += 4;
 	}
 	return base + s_nibbleLastSet[mask & 0xF];
+}
+
+/* Index of the lowest *clear* bit. Must not be called with mask == ~0.
+ * Used to find where a run of contiguous dirty blocks ends: the caller
+ * shifts the mask down so that bit 0 is the first dirty block of the run,
+ * and the first clear bit is then the length of that run. Since
+ * g_dirty_blocks[] only ever uses the low 20 bits, the shifted-down mask
+ * always has clear bits left in its high end, so this always terminates. */
+static uint16 Video_FirstCleanBlock(uint32 mask)
+{
+	uint16 base = 0;
+
+	while ((mask & 0xF) == 0xF) {
+		mask >>= 4;
+		base += 4;
+	}
+	return base + s_nibbleFirstSet[(~mask) & 0xF];
 }
 
 #ifdef VIDEO_C2P_STATS
@@ -148,18 +166,67 @@ static uint32 s_statSnapCalls = 0;	/* c2p calls taking the full width branch */
 static uint32 s_statSnapPixels = 0;	/* pixels converted by that branch */
 static uint32 s_statLineCalls = 0;	/* c2p calls taking the per line branch */
 static uint32 s_statLinePixels = 0;	/* pixels converted by that branch */
+static uint32 s_statSpanPixels = 0;	/* what the old first..last span logic would have converted */
 static uint32 s_statDirtyPixels = 0;	/* pixels really dirty (popcount based) */
 static uint32 s_statForcedRepaints = 0;	/* s_screen_needrepaint forced full frames */
 static uint32 s_statForcedPixels = 0;	/* pixels converted by forced repaints */
 static uint32 s_statTickPixels = 0;	/* pixels converted by the current tick */
 static uint32 s_statTickDirty = 0;	/* really dirty pixels of the current tick */
-static uint32 s_statTickLines = 0;	/* line branch calls of the current tick */
+static uint32 s_statTickCalls = 0;	/* c2p calls issued by the current tick */
+static uint32 s_statTickRows = 0;	/* scanlines converted by the current tick */
 static uint32 s_statPeakTickPx = 0;	/* worst single tick of this period */
 static uint32 s_statSpikes = 0;		/* ticks above the stutter threshold */
 #ifdef VIDEO_C2P_STATS_VERBOSE
 static uint32 s_statSpikesLogged = 0;
 static uint32 s_statLogged = 0;		/* boxes logged during this period */
 #endif
+
+/* ENHANCEMENT (measurement only, not yet acted on) -- bucket every c2p'd
+ * pixel into one of three screen regions, so we can tell how much of the
+ * c2p workload is actually spent on the battlefield viewport versus the
+ * top credits bar and the right-hand sidebar, both of which are drawn
+ * from small, mostly-static widget sets (see widget.c's g_widgetProperties:
+ * widget 0 = full-width top bar, y<VIDEO_C2P_TOPBAR_HEIGHT; widget 3/6/8/
+ * etc = sidebar, x>=VIDEO_C2P_SIDEBAR_LEFT, spanning the full height).
+ * x=256 and y=40 are both exact 16px/word-aligned boundaries, so no pixel
+ * is ever split across two regions by the alignment c2p already requires.
+ * This does not itself save any cycles -- it exists to decide whether a
+ * separate direct-to-planar path for the top bar/sidebar (bypassing the
+ * chunky buffer and c2p entirely for those widgets) is worth building. */
+#define VIDEO_C2P_TOPBAR_HEIGHT 40
+#define VIDEO_C2P_SIDEBAR_LEFT 256
+static uint32 s_statTopBarPixels = 0;
+static uint32 s_statSidebarPixels = 0;
+static uint32 s_statBattlefieldPixels = 0;
+
+/* Split a converted [top,bottom) x [left,left+rowWidth) box across the
+ * top bar / sidebar / battlefield regions and add its pixel count to the
+ * matching counter(s). Handles boxes that straddle the y=40 boundary
+ * (splits rows) and/or the x=256 boundary (splits columns for the rows
+ * that are below the top bar). */
+static void Video_C2PStats_Region(uint16 top, uint16 bottom, uint16 left, uint16 rowWidth)
+{
+	uint16 topBarRows = 0;
+	uint16 fieldRows;
+	uint16 right = left + rowWidth;
+
+	if (top < VIDEO_C2P_TOPBAR_HEIGHT) {
+		uint16 topBarBottom = (bottom < VIDEO_C2P_TOPBAR_HEIGHT) ? bottom : VIDEO_C2P_TOPBAR_HEIGHT;
+		topBarRows = topBarBottom - top;
+		s_statTopBarPixels += (uint32)topBarRows * rowWidth;
+	}
+
+	fieldRows = (bottom - top) - topBarRows;
+	if (fieldRows != 0) {
+		uint16 battRight = (right < VIDEO_C2P_SIDEBAR_LEFT) ? right : VIDEO_C2P_SIDEBAR_LEFT;
+		uint16 sideLeft = (left > VIDEO_C2P_SIDEBAR_LEFT) ? left : VIDEO_C2P_SIDEBAR_LEFT;
+		uint32 battWidth = (battRight > left) ? (uint32)(battRight - left) : 0;
+		uint32 sideWidth = (right > sideLeft) ? (uint32)(right - sideLeft) : 0;
+
+		s_statBattlefieldPixels += (uint32)fieldRows * battWidth;
+		s_statSidebarPixels += (uint32)fieldRows * sideWidth;
+	}
+}
 
 /* Sum the truly dirty pixels of lines [top;bottom[ from the block masks. */
 static uint32 Video_C2PStats_CountDirty(uint16 top, uint16 bottom)
@@ -222,9 +289,10 @@ static void Video_C2PStats_EndTick(void)
 #ifdef VIDEO_C2P_STATS_VERBOSE
 		if (s_statSpikesLogged < VIDEO_C2P_STATS_MAX_SPIKES) {
 			s_statSpikesLogged++;
-			Warning("c2p SPIKE tick: %lu px in %lu lines, dirty %lu px, waste %lu px (%lu%%), ~%lu ms\n",
+			Warning("c2p SPIKE tick: %lu px in %lu rows / %lu calls, dirty %lu px, waste %lu px (%lu%%), ~%lu ms\n",
 			        (unsigned long)s_statTickPixels,
-			        (unsigned long)s_statTickLines,
+			        (unsigned long)s_statTickRows,
+			        (unsigned long)s_statTickCalls,
 			        (unsigned long)s_statTickDirty,
 			        (unsigned long)(s_statTickPixels - s_statTickDirty),
 			        (unsigned long)((s_statTickPixels - s_statTickDirty) * 100 / s_statTickPixels),
@@ -249,6 +317,11 @@ static void Video_C2PStats_Report(void)
 	        (unsigned long)s_statSnapCalls, (unsigned long)s_statSnapPixels);
 	Warning("  line branch : %lu calls, %lu px\n",
 	        (unsigned long)s_statLineCalls, (unsigned long)s_statLinePixels);
+	Warning("  line runs   : %lu px vs %lu px if spanned first..last (saved %lu px, %lu%%)\n",
+	        (unsigned long)s_statLinePixels, (unsigned long)s_statSpanPixels,
+	        (unsigned long)(s_statSpanPixels - s_statLinePixels),
+	        (unsigned long)(s_statSpanPixels != 0
+	                        ? ((s_statSpanPixels - s_statLinePixels) * 100) / s_statSpanPixels : 0));
 	Warning("  converted %lu px, really dirty %lu px, waste %lu px (%lu%%)\n",
 	        (unsigned long)total, (unsigned long)s_statDirtyPixels,
 	        (unsigned long)(total - s_statDirtyPixels),
@@ -258,6 +331,16 @@ static void Video_C2PStats_Report(void)
 	        (unsigned long)(s_statPeakTickPx * 41 / 8000),
 	        (unsigned long)s_statSpikes, VIDEO_C2P_STATS_TICK_PX,
 	        (unsigned long)(s_statConverts != 0 ? total / s_statConverts : 0));
+	{
+		uint32 regionTotal = s_statTopBarPixels + s_statSidebarPixels + s_statBattlefieldPixels;
+		Warning("  regions: topbar %lu px (%lu%%), sidebar %lu px (%lu%%), battlefield %lu px (%lu%%)\n",
+		        (unsigned long)s_statTopBarPixels,
+		        (unsigned long)(regionTotal != 0 ? (s_statTopBarPixels * 100) / regionTotal : 0),
+		        (unsigned long)s_statSidebarPixels,
+		        (unsigned long)(regionTotal != 0 ? (s_statSidebarPixels * 100) / regionTotal : 0),
+		        (unsigned long)s_statBattlefieldPixels,
+		        (unsigned long)(regionTotal != 0 ? (s_statBattlefieldPixels * 100) / regionTotal : 0));
+	}
 	if (s_statForcedRepaints != 0)
 		Warning("  (excluded: %lu forced full repaints, %lu px - palette fades)\n",
 		        (unsigned long)s_statForcedRepaints,
@@ -274,11 +357,15 @@ static void Video_C2PStats_Report(void)
 	s_statSnapPixels = 0;
 	s_statLineCalls = 0;
 	s_statLinePixels = 0;
+	s_statSpanPixels = 0;
 	s_statDirtyPixels = 0;
 	s_statForcedRepaints = 0;
 	s_statForcedPixels = 0;
 	s_statPeakTickPx = 0;
 	s_statSpikes = 0;
+	s_statTopBarPixels = 0;
+	s_statSidebarPixels = 0;
+	s_statBattlefieldPixels = 0;
 #ifdef VIDEO_C2P_STATS_VERBOSE
 	s_statLogged = 0;
 	s_statSpikesLogged = 0;
@@ -652,7 +739,8 @@ void Video_Tick(void)
 #ifdef VIDEO_C2P_STATS
 		s_statTickPixels = 0;
 		s_statTickDirty = 0;
-		s_statTickLines = 0;
+		s_statTickCalls = 0;
+		s_statTickRows = 0;
 #endif
 		int width = SCREEN_WIDTH;
 		int left = 0;
@@ -767,36 +855,156 @@ void Video_Tick(void)
 					 * separately and kept out of the waste figures. */
 					s_statForcedRepaints++;
 					s_statForcedPixels += (uint32)height * SCREEN_WIDTH;
+					Video_C2PStats_Region(0, (uint16)height, 0, SCREEN_WIDTH);
 				} else {
 					s_statSnapCalls++;
 					s_statSnapPixels += (uint32)height * SCREEN_WIDTH;
 					Video_C2PStats_Box("snap", area->top, area->bottom, 0,
 					                   (uint32)height * SCREEN_WIDTH,
 					                   Video_C2PStats_CountDirty(area->top, area->bottom), 0);
+					Video_C2PStats_Region(area->top, area->bottom, 0, SCREEN_WIDTH);
 				}
 #endif
 				c2p1x1_4_st(screen, data, height*SCREEN_WIDTH, s_palette4BitPairMap);
 			} else {
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
 				uint16 y;
-				for (y = area->top; y < area->bottom; y++) {
-					if (g_dirty_blocks[y] != 0) {
-						uint32 blocks = g_dirty_blocks[y];
-						left = Video_FirstDirtyBlock(blocks) << 4;
-						width = (Video_LastDirtyBlock(blocks) << 4) - left;
+				/* run list of the last decoded mask, see the band cache
+				 * comment below. 20 blocks per line allow 10 runs at most. */
+				uint32 cachedMask = 0;	/* 0 decodes to no runs, safe as "empty" */
+				uint16 runCount = 0;
+				uint16 runLeft[10];	/* first pixel of the run */
+				uint16 runWidth[10];	/* pixels in the run */
 #ifdef VIDEO_C2P_STATS
-						s_statLineCalls++;
-						s_statTickLines++;
-						s_statLinePixels += (uint32)width;
-						Video_C2PStats_Box("line", y, y + 1, left, (uint32)width,
-						                   (uint32)Video_CountDirtyBlocks(g_dirty_blocks[y]) << 4,
-						                   g_dirty_blocks[y]);
+				/* DEBUG AID -- the accounting below deliberately keeps its
+				 * running totals in locals and folds them into the global
+				 * counters only once, after the loop. Profiling the first
+				 * version of this instrumentation (opendune_dirty.txt) found
+				 * it burning 360 cycles per converted run, 40% of
+				 * Video_Tick(), as much as a c2p1x1_4_st call costs in fixed
+				 * overhead: nine "ADD.L Dn,$absolute" counters are ~28
+				 * cycles each on a 68000, and the region split added a
+				 * 17-instruction compare chain. That is enough to distort
+				 * the very measurements it exists to produce.
+				 * Everything a mask contributes (total pixels, and its split
+				 * either side of x=256) is the same for every line sharing
+				 * that mask, so those sums are computed once while decoding
+				 * and then added per line. The run loop itself carries no
+				 * accounting at all. */
+				uint32 cachedSpan = 0;
+				uint32 cachedPixels = 0;	/* pixels converted for this mask */
+				uint32 cachedBattfield = 0;	/* ...of which left of x=256 */
+				uint32 cachedSidebar = 0;	/* ...of which right of x=256 */
+				uint32 tickCalls = 0;
+				uint32 tickRows = 0;
+				uint32 tickPixels = 0;
+				uint32 tickSpan = 0;
+				uint32 tickTopBar = 0;
+				uint32 tickBattfield = 0;
+				uint32 tickSidebar = 0;
 #endif
-						c2p1x1_4_st(screen + (left >> 1), data + left, width, s_palette4BitPairMap);
+
+				for (y = area->top; y < area->bottom; y++) {
+					/* ENHANCEMENT -- convert each contiguous *run* of dirty
+					 * blocks separately, instead of one call spanning from
+					 * the first to the last dirty block of the line. That
+					 * span includes every clean block sandwiched between two
+					 * dirty ones, and measurements (VIDEO_C2P_STATS boxes in
+					 * error.log) showed lines wasting 60-80% of their
+					 * converted pixels that way, e.g. mask=04484 converting
+					 * 208 px for 64 truly dirty ones.
+					 * A c2p1x1_4_st call costs roughly 360 cycles of fixed
+					 * overhead (prologue/epilogue/argument pushes) against
+					 * ~686 cycles per converted 16-px block, so skipping even
+					 * a single clean block already pays for the extra call.
+					 *
+					 * ENHANCEMENT -- band cache. Decoding a mask into runs is
+					 * not free: profiling the previous first..last version
+					 * measured 313 cycles per line just to locate the span,
+					 * and splitting into runs costs more than that again.
+					 * GFX_Screen_SetDirty_() however ORs one and the same
+					 * mask into *every* scanline of a box, so vertically
+					 * adjacent lines almost always carry identical masks
+					 * (error.log shows every logged band as 2 to 5 identical
+					 * masks in a row). Decoding once per band and replaying
+					 * the cached run list on the other lines divides the
+					 * decode cost by the band height, for one long compare. */
+					uint32 blocks = g_dirty_blocks[y];
+
+					if (blocks != cachedMask) {
+						uint32 rest = blocks;
+
+						cachedMask = blocks;
+						runCount = 0;
+#ifdef VIDEO_C2P_STATS
+						cachedSpan = (blocks != 0) ? (uint32)
+							((Video_LastDirtyBlock(blocks) - Video_FirstDirtyBlock(blocks)) << 4) : 0;
+						cachedPixels = 0;
+						cachedBattfield = 0;
+						cachedSidebar = 0;
+#endif
+						while (rest != 0) {
+							uint16 runStart = Video_FirstDirtyBlock(rest);
+							uint16 runEnd = runStart + Video_FirstCleanBlock(rest >> runStart);
+
+							runLeft[runCount] = runStart << 4;
+							runWidth[runCount] = (runEnd - runStart) << 4;
+#ifdef VIDEO_C2P_STATS
+							{
+								uint16 runRight = runEnd << 4;
+								uint16 battRight = (runRight < VIDEO_C2P_SIDEBAR_LEFT) ? runRight : VIDEO_C2P_SIDEBAR_LEFT;
+								uint16 sideLeft = (runLeft[runCount] > VIDEO_C2P_SIDEBAR_LEFT) ? runLeft[runCount] : VIDEO_C2P_SIDEBAR_LEFT;
+
+								cachedPixels += runWidth[runCount];
+								if (battRight > runLeft[runCount]) cachedBattfield += (uint32)(battRight - runLeft[runCount]);
+								if (runRight > sideLeft) cachedSidebar += (uint32)(runRight - sideLeft);
+							}
+#endif
+							runCount++;
+
+							rest &= ~(((uint32)1 << runEnd) - 1);
+						}
+					}
+
+					if (runCount != 0) {
+						uint16 run;
+#ifdef VIDEO_C2P_STATS
+						/* all of these are per-mask constants, so they are
+						 * summed once per *line* and never inside the run
+						 * loop, which stays free of accounting entirely */
+						tickCalls += runCount;
+						tickRows++;
+						tickSpan += cachedSpan;
+						tickPixels += cachedPixels;
+						if (y < VIDEO_C2P_TOPBAR_HEIGHT) {
+							tickTopBar += cachedPixels;
+						} else {
+							tickBattfield += cachedBattfield;
+							tickSidebar += cachedSidebar;
+						}
+#endif
+						for (run = 0; run < runCount; run++) {
+							left = runLeft[run];
+							width = runWidth[run];
+							c2p1x1_4_st(screen + (left >> 1), data + left, width, s_palette4BitPairMap);
+						}
 					}
 					screen += SCREEN_WIDTH >> 1;
 					data += SCREEN_WIDTH;
 				}
+#ifdef VIDEO_C2P_STATS
+				s_statLineCalls += tickCalls;
+				s_statTickCalls += tickCalls;
+				s_statTickRows += tickRows;
+				s_statLinePixels += tickPixels;
+				s_statDirtyPixels += tickPixels;
+				s_statTickPixels += tickPixels;
+				s_statTickDirty += tickPixels;
+				s_statSpanPixels += tickSpan;
+				s_statTopBarPixels += tickTopBar;
+				s_statBattlefieldPixels += tickBattfield;
+				s_statSidebarPixels += tickSidebar;
+#endif
 #else
 				screen += (left >> 1);
 				data += left;
