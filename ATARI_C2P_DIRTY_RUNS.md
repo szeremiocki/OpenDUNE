@@ -293,3 +293,136 @@ c2p SPIKE tick: %lu px in %lu rows / %lu calls, ...
 
 No previously documented figure was derived from the mislabelled field --
 all cycle numbers above come from profile instruction counts, not from it.
+## Change 3 -- band batching in the assembly (one call per band, not per row)
+
+### The plan that the measurement killed
+
+The obvious next step looked like passing the whole `runLeft[]`/`runWidth[]`
+list to the assembly so one call could convert every run of a line. Counting
+the actual loop trip counts in `opendune_dirty2.txt` says otherwise:
+
+| quantity                        | count  |
+|---------------------------------|-------:|
+| scanlines examined              | 86,065 |
+| scanlines with at least one run | 68,694 |
+| c2p calls (runs)                | 74,224 |
+| **runs per converted line**     | **1.08** |
+
+Batching runs per line would have removed 74,224 - 68,694 = 5,530 calls,
+0.22% of the session, while *adding* per-run work inside the routine. It
+would have been a net loss. This also corrects an earlier claim in this
+file: run splitting did not meaningfully inflate the call count, it added
+only 8%.
+
+### What the call actually costs
+
+Itemised from the profile, per call:
+
+| where   | instructions                                  | cycles |
+|---------|-----------------------------------------------|-------:|
+| callee  | `MOVEM.L D2-D7/A2-A6` save + restore          |  196.2 |
+| callee  | 4 argument loads off the stack                |   64.0 |
+| callee  | mask/pointer setup, `MOVEQ`, `RTS`            |   56.1 |
+| caller  | argument `PEA`/`MOVE`/`JSR`/`LEA` in `Video_Tick` | 176.2 |
+| **total** |                                             | **492.5** |
+
+74,224 calls x 492.5 = 36.6M cycles = **2.91% of the whole session** (the
+earlier 1.87% figure counted only the callee half).
+
+### Where the repetition really is
+
+Not across runs, but across *rows*. `GFX_Screen_SetDirty_()` ORs one mask
+into every row of a box, so a band of consecutive rows shares identical
+geometry; this profile shows ~10 rows per distinct mask (8,627 nibble-scan
+iterations for 74,224 executed runs). The same horizontal run was being
+converted on ~10 successive rows, paying the full 492 cycles each time.
+
+So `c2p1x1_4_st` gained a line loop:
+
+```
+void c2p1x1_4_st(void *planar, void *chunky, uint32 count, uint32 lines, void *pal)
+```
+
+It converts `count` bytes, advances 320 chunky / 160 planar bytes, and
+repeats `lines` times. `a4`/`a5` hold the current line's src/dst, `a6`
+holds the byte count as a `LEA` index, and the termination test is a
+precomputed `srcEnd` on the stack -- the 4-plane body only ever touches
+`d0-d7`/`a0-a3`, so those registers were free. Per extra line the loop
+costs about 68 cycles (`MOVE.L` x2, `LEA` x3, `CMPA.L`, `BNE`) against the
+492 it saves.
+
+On the C side the band cache is **gone**, replaced by an explicit band
+scan: gather the maximal row range sharing a mask, decode that mask once,
+then issue one call per run for the whole band. This is simpler than the
+cache it replaces (no `cachedMask` bookkeeping) and decodes exactly as
+rarely, by construction.
+
+The two cold paths and the non-dirty-blocks fallback collapse into single
+calls too: the fallback's `while (height > 0)` loop is now `lines=height`.
+
+Modelled saving at the measured ~10 row band: **31.3M cycles, 2.49% of the
+session**. Unverified on hardware yet.
+
+### Verification
+
+- 200,000-screen differential test (banded boxes plus adversarial fully
+  random lines): the band loop, with the assembly's internal line stepping
+  expanded, produces **exactly the same set of (row, left, width)
+  conversions** as the previous per-row loop, and the `src`/`dst` pointer
+  arithmetic matches the per-row advance on every line.
+- Disassembled the routine: stack offsets are correct for the 11-register
+  `MOVEM` (44) plus return address, all five arguments are read *before*
+  `srcEnd` is pushed, `LEA (A0,A6.L),A2` and `CMPA.L (SP),A4` encode as
+  expected, the inner branch targets `.start` (skipping the per-line setup)
+  and the outer one targets `.nextline`.
+- A `lines == 0` guard was added: the line loop is a do-while and would
+  have run past `srcEnd`, where the C code it replaces was a
+  `while (height > 0)` loop that tolerated zero.
+- Both `VIDEO_C2P_STATS` configurations compile and link.
+
+### Note on the toolchain
+
+Use `/usr/bin/m68k-atari-mint-gcc` (MiNT 20250702, GCC 15.1.0), which emits
+**a.out** objects. A different m68k GCC earlier in `PATH` emits **ELF**,
+which links with "file format not recognized" against the rest of the tree.
+### On-hardware result (`opendune_bandscan.txt`)
+
+Measured, stats compiled out, against `opendune_dirty2.txt`. Normalised per
+converted 16-px block, because the two sessions differ in length and
+content (1.48G vs 1.26G cycles, 444,470 vs 356,509 blocks):
+
+| quantity                      | per-row |   band  | change |
+|-------------------------------|--------:|--------:|-------:|
+| c2p calls                     |  74,224 |   5,222 | **-93%** |
+| lines per call                |    1.00 |    17.7 |        |
+| blocks per call               |    4.80 |   85.11 |        |
+| c2p fixed cost per call       |   316.3 |   416.5 |  +100  |
+| c2p line loop, per line       |      -- |    64.3 |        |
+| `Video_Tick`, % of session    |   2.80% |   0.87% |        |
+| **dispatch, cyc per block**   | **164.4** | **47.1** | **-71.4%** |
+| inner loop, cyc per block     |   629.5 |   629.5 |    0.0 |
+| **total, cyc per block**      | **793.9** | **676.6** | **-14.8%** |
+
+Applying the old dispatch rate to this capture's block count, the change
+saves **52.2M cycles = 3.53% of the session** -- better than the 2.49%
+modelled, because the real band is 17.7 lines rather than the ~10
+estimated from the previous capture.
+
+The mechanism is confirmed exactly as intended:
+
+- The fixed per-call cost rose 316.3 -> 416.5 cycles (the `TST.L`/`MULU.W`
+  /push of `srcEnd` added ~100), but it is now paid 14.2x less often.
+- The new line loop costs 64.3 cycles per line, against the ~68 predicted,
+  and replaces the 492.5 cycles a per-row call used to cost.
+- `MOVEM.L` save+restore, 196 cycles, is now 0.147% of the session instead
+  of 1.16%.
+- The inner loop is unchanged at 629.5 cycles per block, exactly as it
+  should be -- the pixel work was not touched, only the dispatch around it.
+
+`Video_Tick` itself fell from 2.80% to 0.87% of the session even though it
+now runs the band scan, because it issues 93% fewer calls: the ~176 cycles
+of argument pushing per call dominated it.
+
+Dispatch is now 47.1 of 676.6 cycles per block, i.e. **93% of c2p time is
+the pixel conversion itself**. Further call-overhead work has almost
+nothing left to recover; any future gain has to come from the inner loop.

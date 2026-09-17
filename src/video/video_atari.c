@@ -26,7 +26,7 @@ extern void uninstall_ikbd_handler(void);
 extern void c2p1x1_8_falcon(void * planar, void * chunky, uint32 count);
 extern void c2p1x1_8_tt(void * planar, void * chunky, uint32 count);
 extern void c2p1x1_8_tt_partial(void * planar, void * chunky, uint32 count);
-extern void c2p1x1_4_st(void * planar, void * chunky, uint32 count, void * pal);
+extern void c2p1x1_4_st(void * planar, void * chunky, uint32 count, uint32 lines, void * pal);
 
 /* switch FPS display */
 extern void Video_SwitchFPSDisplay(uint8 key);
@@ -865,13 +865,11 @@ void Video_Tick(void)
 					Video_C2PStats_Region(area->top, area->bottom, 0, SCREEN_WIDTH);
 				}
 #endif
-				c2p1x1_4_st(screen, data, height*SCREEN_WIDTH, s_palette4BitPairMap);
+				c2p1x1_4_st(screen, data, height*SCREEN_WIDTH, 1, s_palette4BitPairMap);
 			} else {
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
 				uint16 y;
-				/* run list of the last decoded mask, see the band cache
-				 * comment below. 20 blocks per line allow 10 runs at most. */
-				uint32 cachedMask = 0;	/* 0 decodes to no runs, safe as "empty" */
+				/* 20 blocks per line allow 10 runs at most. */
 				uint16 runCount = 0;
 				uint16 runLeft[10];	/* first pixel of the run */
 				uint16 runWidth[10];	/* pixels in the run */
@@ -904,7 +902,7 @@ void Video_Tick(void)
 				uint32 tickSidebar = 0;
 #endif
 
-				for (y = area->top; y < area->bottom; y++) {
+				for (y = area->top; y < area->bottom; ) {
 					/* ENHANCEMENT -- convert each contiguous *run* of dirty
 					 * blocks separately, instead of one call spanning from
 					 * the first to the last dirty block of the line. That
@@ -913,32 +911,43 @@ void Video_Tick(void)
 					 * error.log) showed lines wasting 60-80% of their
 					 * converted pixels that way, e.g. mask=04484 converting
 					 * 208 px for 64 truly dirty ones.
-					 * A c2p1x1_4_st call costs roughly 360 cycles of fixed
-					 * overhead (prologue/epilogue/argument pushes) against
-					 * ~686 cycles per converted 16-px block, so skipping even
-					 * a single clean block already pays for the extra call.
+					 * A c2p1x1_4_st call costs roughly 492 cycles of fixed
+					 * overhead (316 in the callee, mostly its MOVEM register
+					 * save/restore, plus ~176 pushing arguments here)
+					 * against ~630 cycles per converted 16-px block, so
+					 * skipping even a single clean block already pays for
+					 * the extra call.
 					 *
-					 * ENHANCEMENT -- band cache. Decoding a mask into runs is
-					 * not free: profiling the previous first..last version
-					 * measured 313 cycles per line just to locate the span,
-					 * and splitting into runs costs more than that again.
-					 * GFX_Screen_SetDirty_() however ORs one and the same
-					 * mask into *every* scanline of a box, so vertically
-					 * adjacent lines almost always carry identical masks
-					 * (error.log shows every logged band as 2 to 5 identical
-					 * masks in a row). Decoding once per band and replaying
-					 * the cached run list on the other lines divides the
-					 * decode cost by the band height, for one long compare. */
+					 * ENHANCEMENT -- band batching. GFX_Screen_SetDirty_()
+					 * ORs one and the same mask into *every* scanline of a
+					 * box, so vertically adjacent lines carry identical
+					 * masks: profiling measured ~10 consecutive lines per
+					 * distinct mask. Gather that band first, then decode its
+					 * mask once and hand each run to the assembly with the
+					 * band's line count, so it converts the same horizontal
+					 * run on every line of the band from a single call.
+					 * That amortizes both the ~492 cycle call overhead and
+					 * the mask decode over the whole band. Measured runs per
+					 * line is only 1.08, so batching *runs* into one call
+					 * would have saved almost nothing -- the lines are where
+					 * the repetition is. */
 					uint32 blocks = g_dirty_blocks[y];
+					uint16 bandTop = y;
+					uint16 bandLines;
 
-					if (blocks != cachedMask) {
+					do {
+						y++;
+					} while (y < area->bottom && g_dirty_blocks[y] == blocks);
+					bandLines = y - bandTop;
+
+					if (blocks != 0) {
 						uint32 rest = blocks;
+						uint16 run;
 
-						cachedMask = blocks;
 						runCount = 0;
 #ifdef VIDEO_C2P_STATS
-						cachedSpan = (blocks != 0) ? (uint32)
-							((Video_LastDirtyBlock(blocks) - Video_FirstDirtyBlock(blocks)) << 4) : 0;
+						cachedSpan = (uint32)
+							((Video_LastDirtyBlock(blocks) - Video_FirstDirtyBlock(blocks)) << 4);
 						cachedPixels = 0;
 						cachedBattfield = 0;
 						cachedSidebar = 0;
@@ -964,33 +973,34 @@ void Video_Tick(void)
 
 							rest &= ~(((uint32)1 << runEnd) - 1);
 						}
-					}
-
-					if (runCount != 0) {
-						uint16 run;
 #ifdef VIDEO_C2P_STATS
-						/* all of these are per-mask constants, so they are
-						 * summed once per *line* and never inside the run
-						 * loop, which stays free of accounting entirely */
-						tickCalls += runCount;
-						tickRows++;
-						tickSpan += cachedSpan;
-						tickPixels += cachedPixels;
-						if (y < VIDEO_C2P_TOPBAR_HEIGHT) {
-							tickTopBar += cachedPixels;
-						} else {
-							tickBattfield += cachedBattfield;
-							tickSidebar += cachedSidebar;
+						/* everything a mask contributes is the same for
+						 * every line of the band, so it is summed once here
+						 * and scaled by the band height. The band may
+						 * straddle the top bar boundary, so split it. */
+						{
+							uint32 topLines = 0;
+
+							if (bandTop < VIDEO_C2P_TOPBAR_HEIGHT) {
+								topLines = (uint32)((y < VIDEO_C2P_TOPBAR_HEIGHT ? y : VIDEO_C2P_TOPBAR_HEIGHT) - bandTop);
+							}
+							tickCalls += (uint32)runCount;
+							tickRows += bandLines;
+							tickSpan += cachedSpan * bandLines;
+							tickPixels += cachedPixels * bandLines;
+							tickTopBar += cachedPixels * topLines;
+							tickBattfield += cachedBattfield * (bandLines - topLines);
+							tickSidebar += cachedSidebar * (bandLines - topLines);
 						}
 #endif
 						for (run = 0; run < runCount; run++) {
 							left = runLeft[run];
 							width = runWidth[run];
-							c2p1x1_4_st(screen + (left >> 1), data + left, width, s_palette4BitPairMap);
+							c2p1x1_4_st(screen + (left >> 1), data + left, width, bandLines, s_palette4BitPairMap);
 						}
 					}
-					screen += SCREEN_WIDTH >> 1;
-					data += SCREEN_WIDTH;
+					screen += (SCREEN_WIDTH >> 1) * bandLines;
+					data += SCREEN_WIDTH * bandLines;
 				}
 #ifdef VIDEO_C2P_STATS
 				s_statLineCalls += tickCalls;
@@ -1008,12 +1018,7 @@ void Video_Tick(void)
 #else
 				screen += (left >> 1);
 				data += left;
-				while(height > 0) {
-					c2p1x1_4_st(screen, data, width, s_palette4BitPairMap);
-					screen += SCREEN_WIDTH >> 1;
-					data += SCREEN_WIDTH;
-					height--;
-				}
+				c2p1x1_4_st(screen, data, width, height, s_palette4BitPairMap);
 #endif
 			}
 		}

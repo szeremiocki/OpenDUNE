@@ -632,18 +632,53 @@ _c2p1x1_8_tt_partial:
 
 
 
+; void c2p1x1_4_st(void *planar, void *chunky, uint32 count, uint32 lines, void *pal)
+;
+; Converts `count` chunky bytes per scanline for `lines` consecutive
+; scanlines, advancing by one ST-Low line (320 chunky bytes in, 160 planar
+; bytes out) between them.
+;
+; The line loop exists because the caller converts the same horizontal run
+; on many consecutive scanlines: GFX_Screen_SetDirty_() ORs one and the
+; same dirty mask into every row of a box, so a "band" of ~10 rows shares
+; identical geometry. Doing that band in one call instead of one call per
+; row amortizes this routine's fixed cost -- measured at 316 cycles of
+; callee overhead (96+100 of which are just the MOVEM register save and
+; restore) plus ~176 cycles of argument pushing in the caller, i.e. ~492
+; cycles that used to be paid per row and are now paid per band.
+;
+; Registers a4/a5/a6 are free for the line loop: the 4-plane body below
+; only touches d0-d7 and a0-a3.
 _c2p1x1_4_st:
 	movem.l	d2-d7/a2-a6,-(sp)
-	move.l	60(sp),a3							; a3 = 64K word pair-LUT (65536 entries, chunky pixel-pair -> packed 4bit-color pair)
-	move.l	56(sp),d0
-	move.l	52(sp),a0							; a0 = src
-	move.l	48(sp),a1							; a1 = dst
-	move.l	a0,a2
-	add.l	d0,a2								; a2 = end
+	move.l	64(sp),a3							; a3 = 64K word pair-LUT (65536 entries, chunky pixel-pair -> packed 4bit-color pair)
+	move.l	56(sp),d0							; d0 = bytes per line
+	move.l	52(sp),a4							; a4 = src of the current line
+	move.l	48(sp),a5							; a5 = dst of the current line
+	move.l	60(sp),d1							; d1 = line count
+	move.l	d0,a6								; a6 = bytes per line, as a LEA index
+
+	; The line loop below is a do-while, so a zero line count would wrap
+	; past srcEnd and run away. The callers never ask for that, but the
+	; check is once per call and this used to be a "while (height > 0)"
+	; loop on the C side, which did tolerate it.
+	tst.l	d1
+	beq.w	.noline
+
+	; srcEnd = src + lines*320, the line loop's termination test.
+	; mulu.w is a 16x16->32 multiply, and lines is at most 200.
+	mulu.w	#320,d1
+	add.l	a4,d1
+	move.l	d1,-(sp)							; (sp) = srcEnd
 
 	move.l	#$00ff00ff,d5						; mask
 	move.l	#$55555555,d6						; mask
 	moveq.l	#0,d4								; color reduction lookup
+
+.nextline:
+	move.l	a4,a0								; a0 = src
+	move.l	a5,a1								; a1 = dst
+	lea		(a0,a6.l),a2						; a2 = end of this line's run
 
 .start:
 	; read pixels 0-3 (as 2 pixel-pairs) and reduce to 16 colors
@@ -757,6 +792,13 @@ _c2p1x1_4_st:
 	cmp.l	a0,a2
 	bne.w	.start
 
+	lea		320(a4),a4							; next chunky scanline
+	lea		160(a5),a5							; next planar scanline
+	cmpa.l	(sp),a4
+	bne.w	.nextline
+
+	addq.l	#4,sp								; drop srcEnd
+.noline:
 	movem.l	(sp)+,d2-d7/a2-a6
 	rts
 
