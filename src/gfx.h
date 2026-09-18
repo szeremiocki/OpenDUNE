@@ -64,6 +64,12 @@ extern void GFX_CopyToBuffer(int16 left, int16 top, uint16 width, uint16 height,
 struct dirty_area { uint16 left; uint16 top; uint16 right; uint16 bottom; };
 #ifdef GFX_STORE_DIRTY_AREA
 extern void GFX_Screen_SetDirty_(uint16 left, uint16 top, uint16 right, uint16 bottom);
+/**
+ * Temporarily ignore every dirty mark. Used by the Atari direct-to-planar
+ * mouse cursor, which renders the sprite into SCREEN_0 only to read the
+ * pixels back and immediately undoes the change.
+ */
+extern void GFX_Screen_SetDirtySuppress(bool suppress);
 
 /* ENHANCEMENT -- Only SCREEN_0 is ever tracked, but an m68000 profile
  * showed 23145 calls of which just 1552 (6.7%) passed that test: the other

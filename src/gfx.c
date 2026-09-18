@@ -191,6 +191,7 @@ static const uint16 s_screenBufferSize[GFX_SCREEN_BUFFER_COUNT] = { 0xFA00, 0xFB
 static void *s_screenBuffer[GFX_SCREEN_BUFFER_COUNT] = { NULL, NULL, NULL, NULL };
 #ifdef GFX_STORE_DIRTY_AREA
 static bool s_screen0_is_dirty = false;
+static bool s_dirtySuppress = false;
 static struct dirty_area s_screen0_dirty_area = { 0, 0, 0, 0 };
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
 uint32 g_dirty_blocks[200];
@@ -319,12 +320,18 @@ void GFX_DirtyStats_Report(void)
 }
 #endif /* GFX_DIRTY_SOURCE_STATS */
 
+void GFX_Screen_SetDirtySuppress(bool suppress)
+{
+	s_dirtySuppress = suppress;
+}
+
 void GFX_Screen_SetDirty_(uint16 left, uint16 top, uint16 right, uint16 bottom)
 {
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
 	uint32 mask;
 	uint16 y;
 #endif
+	if (s_dirtySuppress) return;
 	/* The SCREEN_ACTIVE resolution and the SCREEN_0 test are done by the
 	 * GFX_Screen_SetDirty() macro in gfx.h, so callers that target another
 	 * screen never reach here and the screen ID need not be passed. */

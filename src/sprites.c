@@ -28,6 +28,7 @@
 #include "script/script.h"
 #include "string.h"
 #include "tile.h"
+#include "video/video.h"
 
 
 uint8 **g_sprites = NULL;
@@ -401,11 +402,31 @@ uint16 Sprites_LoadImage(const char *filename, Screen screenID, uint8 *palette)
 	return Sprites_LoadCPSFile(filename, screenID, palette) / 8000;
 }
 
+uint16 g_mouseSpriteIconIndex = 0xffff;	/*!< Index of `sprite` within g_sprites[], or 0xffff if not one of them.
+                                          *   ENHANCEMENT -- lets the Atari ST/STE direct-planar cursor identify
+                                          *   *which* MOUSE.SHP icon is being selected, so it can use a persistent
+                                          *   per-icon pre-shifted bitplane cache (see Video_Atari_CursorUseIcon())
+                                          *   instead of a pointer-identity cache key: g_mouseSprite is a single
+                                          *   realloc()'d buffer reused (same address) across every icon, so
+                                          *   comparing sprite pointers cannot tell two icons of the same size
+                                          *   apart. */
+
 void Sprites_SetMouseSprite(uint16 hotSpotX, uint16 hotSpotY, const uint8 *sprite)
 {
 	uint16 size;
 
 	if (sprite == NULL || g_mouseDisabled != 0) return;
+
+	g_mouseSpriteIconIndex = 0xffff;
+	if (g_sprites != NULL) {
+		uint16 i;
+		for (i = 0; i < s_spritesCount; i++) {
+			if (g_sprites[i] == sprite) {
+				g_mouseSpriteIconIndex = i;
+				break;
+			}
+		}
+	}
 
 	while (g_mouseLock != 0) sleepIdle();
 
@@ -525,6 +546,13 @@ bool Tile_IsUnveiled(uint16 tileID)
 void Sprites_Init(void)
 {
 	Sprites_Load("MOUSE.SHP", NULL, 7);              /*   0 -   6 */
+#ifdef TOS
+	/* ENHANCEMENT -- pre-shift every cursor icon into all 16 possible
+	 * horizontal sub-16px phases exactly once, right after it is loaded,
+	 * instead of re-rendering/re-transposing it on almost every mouse
+	 * move. See Video_Atari_CursorUseIcon() in video_atari.c. */
+	Video_Atari_CursorPreloadIcons();
+#endif /* TOS */
 	Sprites_Load(String_GenerateFilename("BTTN"), NULL, 5); /*   7 -  11 */
 	Sprites_Load("SHAPES.SHP", NULL, 99);            /*  12 - 110 */
 	Sprites_Load("UNITS2.SHP", NULL, 40);            /* 111 - 150 */

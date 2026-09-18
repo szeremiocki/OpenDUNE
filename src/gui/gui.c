@@ -4192,6 +4192,56 @@ void GUI_Mouse_Show(void)
 		GFX_CopyToBuffer(s_mouseSpriteLeft * 8, s_mouseSpriteTop, s_mouseSpriteWidth * 8, s_mouseSpriteHeight, g_mouseSpriteBuffer);
 	}
 
+#ifdef TOS
+	/* ENHANCEMENT -- On ST/STE the cursor is composited straight into the
+	 * planar screen by Video_Tick(), so it must never reach SCREEN_0: every
+	 * cursor move would otherwise dirty up to 32 blocks twice (sprite draw
+	 * plus background restore) at ~630 cycles of c2p each.
+	 *
+	 * The sprite is still rendered with the regular code, but into a
+	 * zeroed-out SCREEN_0 box that is handed to the video driver and
+	 * immediately overwritten again with the saved background. Colour 0 is
+	 * the sprite's transparent colour, so the box doubles as the mask. */
+
+	/* ENHANCEMENT -- try the persistent, pre-shifted per-icon bitplane
+	 * cache first: on a cache hit this is a pure table lookup (no chunky
+	 * render, no per-pixel transpose), so ordinary cursor movement now
+	 * costs nothing beyond picking the right phase out of the table.
+	 * Edge clipping (any of the four screen edges) is handled entirely
+	 * inside Video_Atari_CursorUseIcon() itself -- it only needs the raw,
+	 * unclipped (left, top) box position, not the pre-clamped
+	 * s_mouseSprite* values below. It only falls through to the slower
+	 * single-shift path for icons that were not preloaded. */
+	if (Video_Atari_CursorDirect() && g_mouseSpriteIconIndex != 0xffff) {
+		if (Video_Atari_CursorUseIcon(g_mouseSpriteIconIndex, (int16)left, (int16)top)) return;
+	}
+
+	if (g_mouseSpriteBuffer != NULL && Video_Atari_CursorDirect()
+	 && s_mouseSpriteWidth != 0 && s_mouseSpriteHeight != 0
+	 && s_mouseSpriteWidth * 8 <= SCREEN_WIDTH && s_mouseSpriteHeight <= SCREEN_HEIGHT) {
+		uint16 boxLeft = s_mouseSpriteLeft * 8;
+		uint16 boxWidth = s_mouseSpriteWidth * 8;
+
+		if (Video_Atari_CursorPrepare(g_mouseSprite, boxLeft, s_mouseSpriteTop,
+		                              boxWidth, s_mouseSpriteHeight,
+		                              (int16)(left - boxLeft),
+		                              (int16)(top - s_mouseSpriteTop))) {
+			uint8 *box = (uint8 *)GFX_Screen_Get_ByIndex(SCREEN_0)
+			           + s_mouseSpriteTop * SCREEN_WIDTH + boxLeft;
+			const uint8 *saved = (const uint8 *)g_mouseSpriteBuffer;
+			uint16 i;
+
+			GFX_Screen_SetDirtySuppress(true);
+			for (i = 0; i < s_mouseSpriteHeight; i++) memset(box + i * SCREEN_WIDTH, 0, boxWidth);
+			GUI_DrawSprite(SCREEN_0, g_mouseSprite, left, top, 0, 0);
+			Video_Atari_CursorBuild(box);
+			for (i = 0; i < s_mouseSpriteHeight; i++) memcpy(box + i * SCREEN_WIDTH, saved + i * boxWidth, boxWidth);
+			GFX_Screen_SetDirtySuppress(false);
+		}
+		return;
+	}
+#endif /* TOS */
+
 	GUI_DrawSprite(SCREEN_0, g_mouseSprite, left, top, 0, 0);
 }
 
@@ -4204,6 +4254,15 @@ void GUI_Mouse_Hide(void)
 	if (g_mouseDisabled == 1) return;
 
 	if (g_mouseHiddenDepth == 0 && s_mouseSpriteWidth != 0) {
+#ifdef TOS
+		/* the cursor never made it into SCREEN_0, see GUI_Mouse_Show() */
+		if (g_mouseSpriteBuffer != NULL && Video_Atari_CursorDirect()) {
+			Video_Atari_CursorHide();
+			s_mouseSpriteWidth = 0;
+			g_mouseHiddenDepth++;
+			return;
+		}
+#endif /* TOS */
 		if (g_mouseSpriteBuffer != NULL) {
 			GFX_CopyFromBuffer(s_mouseSpriteLeft * 8, s_mouseSpriteTop, s_mouseSpriteWidth * 8, s_mouseSpriteHeight, g_mouseSpriteBuffer);
 		}

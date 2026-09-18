@@ -56,6 +56,7 @@ extern uint16 *g_iconMap;
 
 /* Sprites loaded from *.SHP files */
 extern uint8 **g_sprites;
+extern uint16 g_mouseSpriteIconIndex;
 
 extern uint8 *g_fileRgnclkCPS;
 extern void *g_fileRegionINI;
