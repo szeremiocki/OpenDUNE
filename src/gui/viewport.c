@@ -1,6 +1,7 @@
 /** @file src/gui/viewport.c Viewport routines. */
 
 #include <stdio.h>
+#include <stdint.h>
 #include <string.h>
 #include "types.h"
 #include "../os/common.h"
@@ -309,24 +310,115 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 	return true;
 }
 
+/* ENHANCEMENT -- cache of the per-(spriteID, houseID) house-colour
+ * remap table computed by GUI_Widget_Viewport_GetSprite_HousePalette().
+ * That function is pure (its result depends only on the sprite's own
+ * static data plus houseID) and is called repeatedly -- often every
+ * tick, for every visible/dirty unit, structure, turret and sandworm --
+ * yet a given (spriteID, houseID) pair almost always yields the exact
+ * same 16-byte table it did last time. `g_sprites[]` is populated once
+ * by Sprites_Init() at startup and never reallocated/freed until
+ * process exit (Sprites_Uninit()), so this cache never needs
+ * invalidating for the lifetime of a session.
+ *
+ * Keyed by `spriteID` (the small, dense integer index into
+ * `g_sprites[]` that every call site already has on hand -- e.g.
+ * `groundSpriteID`, `turretSpriteID` -- rather than the sprite pointer
+ * itself): unlike a pointer, `spriteID * HOUSE_MAX + houseID` is
+ * already a small, dense, collision-free key by construction, so no
+ * actual hashing is needed, only a cheap multiply-by-6 (which GCC can
+ * even strength-reduce to shifts/adds) and a power-of-two mask -- no
+ * 32-bit multiply, no probing needed for the common case (only real
+ * hash-table collisions, from wraparound if the table were ever this
+ * full, would need it, and this table is sized generously so that
+ * never happens for the actual number of house-colourable sprites in
+ * this game's asset set). Open addressing is still used defensively:
+ * if the table were ever completely full, we just skip caching that
+ * entry (falls back to recomputing it every time) rather than doing
+ * anything unsafe. */
+#define PALETTE_HOUSE_CACHE_SIZE 512
+
+typedef struct PaletteHouseCacheEntry {
+	uint8 palette[16];
+	uint16 key;		/*!< spriteID * HOUSE_MAX + houseID; 0xffff means empty. */
+} PaletteHouseCacheEntry;
+
+static PaletteHouseCacheEntry s_paletteHouseCache[PALETTE_HOUSE_CACHE_SIZE];
+static bool s_paletteHouseCacheReady;
+
+/* ENHANCEMENT -- newlib's memcpy()/memmove() on this m68k-atari-mint
+ * toolchain is a generic, non-inlined library routine (confirmed via
+ * Hatari profile: every 16-byte memcpy() call here showed up as a JSR
+ * into `_memmove`, averaging ~670 cycles/call across all its callers --
+ * direction/overlap checks, alignment probing, a byte-at-a-time
+ * softening loop for misaligned tails -- none of which this fixed
+ * 16-byte, always-non-overlapping, byte-granularity copy needs. That
+ * call overhead alone was the dominant cost of a "cache hit", larger
+ * than the entire 16-entry compute loop it replaces. A plain unrolled
+ * byte-copy loop is both simpler and far cheaper here.
+ *
+ * NOTE: tried declaring `s_paletteHouseCache`'s `palette[16]` field
+ * `aligned(4)` and using `__builtin_assume_aligned()` to let GCC emit
+ * straight-line longword copies instead of a runtime alignment probe.
+ * GCC warned "alignment ... is greater than maximum object file
+ * alignment 2" -- this toolchain's m68k-atari a.out object format only
+ * supports up to 2-byte section alignment, so a *static* array's
+ * requested 4-byte alignment cannot actually be honoured by the linker.
+ * Asserting 4-byte alignment anyway (via `__builtin_assume_aligned`)
+ * would be unsafe: plain 68000 raises an address-error exception on a
+ * misaligned long-word access, so if the array ends up at an
+ * odd/2-byte-only address, that "optimization" would crash on real
+ * hardware. This byte-wise copy has no such assumption and is safe
+ * regardless of where the linker places the static array. */
+static void PaletteHouseCache_Copy16(uint8 *dst, const uint8 *src)
+{
+	int i;
+	for (i = 0; i < 16; i++) dst[i] = src[i];
+}
+
 /**
  * Get palette house of sprite for the viewport
  *
- * @param sprite The sprite
+ * @param spriteID Index of the sprite within g_sprites[].
  * @param houseID The House to recolour it with.
  * @param paletteHouse the palette to set
  */
-static bool GUI_Widget_Viewport_GetSprite_HousePalette(const uint8 *sprite, uint8 houseID, uint8 *paletteHouse)
+static bool GUI_Widget_Viewport_GetSprite_HousePalette(uint16 spriteID, uint8 houseID, uint8 *paletteHouse)
 {
+	const uint8 *sprite;
 	int i;
+	uint16 key;
+	uint16 slot;
+	uint16 probes;
 
+	sprite = g_sprites[spriteID];
 	if (sprite == NULL) return false;
 
 	/* flag 0x1 indicates if the sprite has a palette */
 	if ((sprite[0] & 0x1) == 0) return false;
 
+	if (!s_paletteHouseCacheReady) {
+		for (i = 0; i < PALETTE_HOUSE_CACHE_SIZE; i++) s_paletteHouseCache[i].key = 0xffff;
+		s_paletteHouseCacheReady = true;
+	}
+
+	key = spriteID * HOUSE_MAX + houseID;
+	slot = key & (PALETTE_HOUSE_CACHE_SIZE - 1);
+	for (probes = 0; probes < PALETTE_HOUSE_CACHE_SIZE; probes++) {
+		PaletteHouseCacheEntry *entry = &s_paletteHouseCache[slot];
+
+		if (entry->key == key) {
+			PaletteHouseCache_Copy16(paletteHouse, entry->palette);
+			return true;
+		}
+
+		if (entry->key == 0xffff) break;	/* empty slot: not cached yet */
+
+		slot = (slot + 1) & (PALETTE_HOUSE_CACHE_SIZE - 1);
+	}
+
 	if (houseID == 0) {
-		memcpy(paletteHouse, sprite + 10, 16);
+		PaletteHouseCache_Copy16(paletteHouse, sprite + 10);
 	} else {
 		for (i = 0; i < 16; i++) {
 			uint8 v = sprite[10 + i];
@@ -337,6 +429,16 @@ static bool GUI_Widget_Viewport_GetSprite_HousePalette(const uint8 *sprite, uint
 
 			paletteHouse[i] = v;
 		}
+	}
+
+	/* Cache the freshly computed table, if we found a free (or matching)
+	 * slot within PALETTE_HOUSE_CACHE_SIZE probes above. If the table is
+	 * completely full this just silently skips caching -- correctness
+	 * doesn't depend on it, only speed does. */
+	if (probes < PALETTE_HOUSE_CACHE_SIZE) {
+		PaletteHouseCacheEntry *entry = &s_paletteHouseCache[slot];
+		entry->key = key;
+		PaletteHouseCache_Copy16(entry->palette, paletteHouse);
 	}
 	return true;
 }
@@ -466,7 +568,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool drawToMai
 		if (!g_map[Tile_PackTile(u->o.position)].isUnveiled && !g_debugScenario) continue;
 
 		sprite = g_sprites[g_table_unitInfo[u->o.type].groundSpriteID];
-		GUI_Widget_Viewport_GetSprite_HousePalette(sprite, Unit_GetHouseID(u), paletteHouse);
+		GUI_Widget_Viewport_GetSprite_HousePalette(g_table_unitInfo[u->o.type].groundSpriteID, Unit_GetHouseID(u), paletteHouse);
 
 		if (Map_IsPositionInViewport(u->o.position, &x, &y)) {
 			GUI_DrawSprite(SCREEN_ACTIVE, sprite, x, y, 2, DRAWSPRITE_FLAG_BLUR | DRAWSPRITE_FLAG_WIDGETPOS | DRAWSPRITE_FLAG_CENTER);
@@ -581,7 +683,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool drawToMai
 
 			spriteFlags |= DRAWSPRITE_FLAG_WIDGETPOS | DRAWSPRITE_FLAG_CENTER;
 
-			if (GUI_Widget_Viewport_GetSprite_HousePalette(g_sprites[index], (u->deviated != 0) ? u->deviatedHouse : Unit_GetHouseID(u), paletteHouse)) {
+			if (GUI_Widget_Viewport_GetSprite_HousePalette(index, (u->deviated != 0) ? u->deviatedHouse : Unit_GetHouseID(u), paletteHouse)) {
 				spriteFlags |= DRAWSPRITE_FLAG_PAL;
 				GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[index], x, y, 2, spriteFlags, paletteHouse, g_paletteMapping2, 1);
 			} else {
@@ -646,7 +748,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool drawToMai
 
 				spriteID += values_32A4[orientation][0];
 
-				if (GUI_Widget_Viewport_GetSprite_HousePalette(g_sprites[spriteID], Unit_GetHouseID(u), paletteHouse)) {
+				if (GUI_Widget_Viewport_GetSprite_HousePalette(spriteID, Unit_GetHouseID(u), paletteHouse)) {
 					GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[spriteID],
 					               x + offsetX, y + offsetY,
 					               2, values_32A4[orientation][1] | DRAWSPRITE_FLAG_WIDGETPOS | DRAWSPRITE_FLAG_CENTER | DRAWSPRITE_FLAG_PAL, paletteHouse);
@@ -793,7 +895,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool drawToMai
 			}
 			if (ui->o.flags.blurTile) spriteFlags |= DRAWSPRITE_FLAG_BLUR;
 
-			if (GUI_Widget_Viewport_GetSprite_HousePalette(sprite, Unit_GetHouseID(u), paletteHouse)) {
+			if (GUI_Widget_Viewport_GetSprite_HousePalette(index, Unit_GetHouseID(u), paletteHouse)) {
 				GUI_DrawSprite(SCREEN_ACTIVE, sprite, x, y, 2, spriteFlags | DRAWSPRITE_FLAG_PAL, paletteHouse);
 			} else {
 				GUI_DrawSprite(SCREEN_ACTIVE, sprite, x, y, 2, spriteFlags);
