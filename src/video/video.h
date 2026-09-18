@@ -34,6 +34,31 @@ extern void Video_Atari_CursorHide(void);
  * hot path. See the "Cursor icon preload" section of video_atari.c. */
 extern void Video_Atari_CursorPreloadIcons(void);
 extern bool Video_Atari_CursorUseIcon(uint16 iconIndex, int16 left, int16 top);
+
+/* Fast path for GUI_SetPaletteAnimated(): on ST/STE every full-screen fade
+ * in this game goes uniformly to/from an all-black palette (cutscene and
+ * house-selection fade in/out - never an arbitrary cross-fade between two
+ * unrelated non-black palettes). For that specific, easily-detected case
+ * (whichever endpoint - "from" or "to" - is all zero) the 16 fixed hardware
+ * pens never need to be re-quantized nor the 65536-entry c2p pair-LUT
+ * rebuilt while the fade is in progress: only the actual RGB output of the
+ * 16 Setcolor() registers needs to ramp, in 1-step (ST: 3 bit/channel)
+ * increments/decrements between black and the pens' real catalog colors.
+ * Returns true if it handled the whole fade (data[] is left equal to the
+ * final palette[] and the caller does not need to do anything else), false
+ * if this isn't a through-black fade and the caller must fall back to the
+ * normal per-tick 256-entry software path. */
+extern bool Video_Atari_TryPaletteFadeThroughBlack(uint8 *data, const uint8 *palette, int16 ticksOfAnimation);
+
+/* Fast path for ShadeScreen()/UnshadeScreen() (options-menu dim/restore):
+ * on ST/STE the "shade" effect (halve every color's brightness, restore
+ * later) never needs the 256-entry quantization/pair-LUT machinery either
+ * - the 16 hardware pens can be halved/restored directly, instantly (no
+ * ramp - the original effect is an immediate, one-shot palette swap, not
+ * an animation). Outside of an active fade the 16 registers always sit at
+ * their fixed catalog values (see Video_Atari_TryPaletteFadeThroughBlack),
+ * so this is always safe to call in matched shade(true)/shade(false) pairs. */
+extern void Video_Atari_ShadeHwPalette(bool shade);
 #endif /* TOS */
 
 #endif /* VIDEO_VIDEO_H */

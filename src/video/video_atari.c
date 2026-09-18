@@ -18,7 +18,9 @@
 #include "../input/mouse.h"
 #include "../os/endian.h"
 #include "../os/error.h"
+#include "../os/sleep.h"
 #include "../sprites.h"
+#include "../timer.h"
 
 /* ATARI IKBD doc : https://www.kernel.org/doc/Documentation/input/atarikbd.txt
  * see  */
@@ -482,6 +484,189 @@ static inline uint8 Palette_FindClosestColor(uint8 r, uint8 g, uint8 b)
 		}
 	}
 	return bestItem;
+}
+
+/* Current hw register brightness for each of the 16 fixed pens, in the
+ * same 3-bit-per-channel 0-7 format Setcolor() uses (see the init loop in
+ * Video_Init() this mirrors). Index = pen*3 + {r=0,g=1,b=2}. Kept in sync
+ * whenever Video_Atari_TryPaletteFadeThroughBlack() ramps the registers,
+ * so a fade-out followed later by a fade-in always starts from wherever
+ * the hardware registers actually are (normally either the full catalog
+ * value or black, but never assumed - just tracked). */
+static uint8 s_hwPalette[16*3];
+static bool s_hwPaletteInit = false;
+
+static inline uint16 Video_Atari_HwColorWord(uint8 r3, uint8 g3, uint8 b3)
+{
+	return ((uint16)r3 << 8) | ((uint16)g3 << 4) | b3;
+}
+
+/* Ramp the 16 hardware color registers, in-place, from wherever they
+ * currently are (s_hwPalette) towards target[16*3] (also 0-7/channel),
+ * using the same additive step-size/clamp-on-overshoot scheme as the
+ * software 256-entry fade in GUI_SetPaletteAnimated() - just applied to
+ * 48 bytes instead of 768, and with no palette quantization or c2p
+ * pair-LUT rebuild anywhere in the loop. */
+static void Video_Atari_HwPaletteRamp(const uint8 *target, int16 ticksOfAnimation)
+{
+	int16 highestDiff = 0;
+	int16 diffPerTick, tickSlice, ticks;
+	uint16 tickCurrent = 0;
+	uint32 timerCurrent = g_timerSleep;
+	int i;
+	bool progress;
+
+	for (i = 0; i < 16*3; i++) {
+		int16 diff = (int16)target[i] - (int16)s_hwPalette[i];
+		if (diff < 0) diff = -diff;
+		if (diff > highestDiff) highestDiff = diff;
+	}
+	if (highestDiff == 0) return;
+
+	ticks = ticksOfAnimation << 8;
+	ticks /= highestDiff;
+	tickSlice = ticks;
+	diffPerTick = 1;
+	while (diffPerTick <= highestDiff && ticks < (2 << 8)) {
+		ticks += tickSlice;
+		diffPerTick++;
+	}
+
+	for (;;) {
+		progress = false;
+		tickCurrent  += (uint16)ticks;
+		timerCurrent += (uint32)(tickCurrent >> 8);
+		tickCurrent  &= 0xFF;
+
+		for (i = 0; i < 16; i++) {
+			bool changed = false;
+			int c;
+
+			for (c = 0; c < 3; c++) {
+				int16 goal = target[i*3+c];
+				int16 cur = s_hwPalette[i*3+c];
+
+				if (goal == cur) continue;
+				progress = true;
+				changed = true;
+				if (goal > cur) {
+					cur++;
+					if (cur > goal) cur = goal;
+				} else {
+					cur--;
+					if (cur < goal) cur = goal;
+				}
+				s_hwPalette[i*3+c] = (uint8)cur;
+			}
+
+			if (changed) {
+				Setcolor(i, Video_Atari_HwColorWord(s_hwPalette[i*3+0], s_hwPalette[i*3+1], s_hwPalette[i*3+2]));
+			}
+		}
+
+		if (!progress) break;
+		while (g_timerSleep < timerCurrent) sleepIdle();
+	}
+}
+
+/**
+ * Fast path for GUI_SetPaletteAnimated(). See the comment above the
+ * prototype in video.h for the full rationale. "data" is the 256*3 array
+ * of the currently active (on-screen) logical palette, "palette" is the
+ * 256*3 fade target - exactly what GUI_SetPaletteAnimated() already has.
+ */
+bool Video_Atari_TryPaletteFadeThroughBlack(uint8 *data, const uint8 *palette, int16 ticksOfAnimation)
+{
+	bool toBlack, fromBlack;
+	int i;
+	uint8 targetHw[16*3];
+
+	if (!s_hwPaletteInit) {
+		/* first call: derive the currently-programmed register values from
+		 * the fixed master palette, same formula as the Video_Init() setup
+		 * loop, so a fade started before any prior fade ever ran still has
+		 * a correct starting point to ramp from/to. */
+		for (i = 0; i < 16; i++) {
+			s_hwPalette[i*3+0] = (s_palette4BitPC[i*4+0] >> 3) & 7;
+			s_hwPalette[i*3+1] = (s_palette4BitPC[i*4+1] >> 3) & 7;
+			s_hwPalette[i*3+2] = (s_palette4BitPC[i*4+2] >> 3) & 7;
+		}
+		s_hwPaletteInit = true;
+	}
+
+	toBlack = true;
+	for (i = 0; i < 256*3 && toBlack; i++) if (palette[i] != 0) toBlack = false;
+
+	fromBlack = true;
+	for (i = 0; i < 256*3 && fromBlack; i++) if (data[i] != 0) fromBlack = false;
+
+	if (!toBlack && !fromBlack) return false;	/* not a through-black fade */
+
+	if (toBlack) {
+		/* Fade out: the on-screen quantization/pair-LUT already matches
+		 * "data" (the current, still fully-lit picture) - no need to touch
+		 * it at all, just ramp every register down to black. */
+		memset(targetHw, 0, sizeof(targetHw));
+		Video_Atari_HwPaletteRamp(targetHw, ticksOfAnimation);
+	} else {
+		/* Fade in: quantize/rebuild once, up front, against the *target*
+		 * (final, fully-lit) palette so every chunky pixel already shows
+		 * the right pen index throughout the whole fade; then ramp the
+		 * registers up from black to the fixed catalog. Screen is forced
+		 * black first (in case it wasn't already) so nothing flashes at
+		 * full brightness before the ramp starts. */
+		for (i = 0; i < 16; i++) {
+			targetHw[i*3+0] = (s_palette4BitPC[i*4+0] >> 3) & 7;
+			targetHw[i*3+1] = (s_palette4BitPC[i*4+1] >> 3) & 7;
+			targetHw[i*3+2] = (s_palette4BitPC[i*4+2] >> 3) & 7;
+		}
+		{
+			union { const uint8 *cp; void *p; } u;
+			u.cp = palette;
+			Video_SetPalette(u.p, 0, 256);
+		}
+		/* fromBlack is guaranteed true here (the toBlack&&fromBlack-both-
+		 * false case already returned above) - registers should already be
+		 * at/near black from the preceding fade-out, but ramp from
+		 * wherever s_hwPalette actually is rather than assuming. */
+		Video_Atari_HwPaletteRamp(targetHw, ticksOfAnimation);
+	}
+
+	memcpy(data, palette, 256*3);
+	return true;
+}
+
+/* Backup of the 16 hw registers' pre-shade values, saved by
+ * Video_Atari_ShadeHwPalette(true) and restored verbatim by
+ * Video_Atari_ShadeHwPalette(false) - restoring from this exact backup
+ * (rather than doubling the halved value back) avoids losing the low bit
+ * to integer division, matching the original code's pattern of restoring
+ * from its own g_palette_998A backup rather than re-deriving it. */
+static uint8 s_hwPaletteShadeBackup[16*3];
+
+void Video_Atari_ShadeHwPalette(bool shade)
+{
+	int i;
+
+	if (!s_hwPaletteInit) {
+		for (i = 0; i < 16; i++) {
+			s_hwPalette[i*3+0] = (s_palette4BitPC[i*4+0] >> 3) & 7;
+			s_hwPalette[i*3+1] = (s_palette4BitPC[i*4+1] >> 3) & 7;
+			s_hwPalette[i*3+2] = (s_palette4BitPC[i*4+2] >> 3) & 7;
+		}
+		s_hwPaletteInit = true;
+	}
+
+	if (shade) {
+		memcpy(s_hwPaletteShadeBackup, s_hwPalette, sizeof(s_hwPalette));
+		for (i = 0; i < 16*3; i++) s_hwPalette[i] /= 2;
+	} else {
+		memcpy(s_hwPalette, s_hwPaletteShadeBackup, sizeof(s_hwPalette));
+	}
+
+	for (i = 0; i < 16; i++) {
+		Setcolor(i, Video_Atari_HwColorWord(s_hwPalette[i*3+0], s_hwPalette[i*3+1], s_hwPalette[i*3+2]));
+	}
 }
 
 

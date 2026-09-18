@@ -108,6 +108,7 @@ extern uint32 g_dirty_blocks[200];
  * These counters are reported through unbuffered Warning() writes from
  * inside the video tick, which perturbs exactly what it measures. Build
  * with -DGFX_DIRTY_SOURCE_STATS_ENABLE to collect them. */
+/*#define GFX_DIRTY_SOURCE_STATS_ENABLE 1*/
 #if defined(TOS) && defined(GFX_STORE_DIRTY_AREA_BLOCKS) && defined(GFX_DIRTY_SOURCE_STATS_ENABLE)
 #define GFX_DIRTY_SOURCE_STATS
 #endif

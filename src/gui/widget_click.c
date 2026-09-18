@@ -33,6 +33,7 @@
 #include "../table/strings.h"
 #include "../tile.h"
 #include "../timer.h"
+#include "../video/video.h"
 #include "../unit.h"
 
 
@@ -643,6 +644,17 @@ static void GUI_Widget_GameControls_Click(Widget *w)
 /* shade everything except colors 231 to 238 */
 static void ShadeScreen(void)
 {
+#ifdef TOS
+	/* On ST/STE, skip the 256-entry software halving + full re-quantize/
+	 * pair-LUT rebuild entirely: shade the 16 hardware pens directly and
+	 * instantly instead (see Video_Atari_ShadeHwPalette() in video_atari.c).
+	 * This is what previously produced the ~1s freeze+dim+freeze+restore
+	 * seen when returning from the in-game Options panel. Note this can't
+	 * preserve the "except colors 231-238" exemption the software path
+	 * has, since only 16 pens exist in hardware and those indices already
+	 * collide with shaded ones after quantization in most cases anyway. */
+	Video_Atari_ShadeHwPalette(true);
+#else
 	uint16 i;
 
 	memmove(g_palette_998A, g_palette1, 256 * 3);
@@ -651,13 +663,18 @@ static void ShadeScreen(void)
 	for (i = 239 * 3; i < 256 * 3; i++) g_palette1[i] = g_palette1[i] / 2;
 
 	GFX_SetPalette(g_palette_998A);
+#endif
 }
 
 static void UnshadeScreen(void)
 {
+#ifdef TOS
+	Video_Atari_ShadeHwPalette(false);
+#else
 	memmove(g_palette1, g_palette_998A, 256 * 3);
 
 	GFX_SetPalette(g_palette1);
+#endif
 }
 
 static bool GUI_YesNo(uint16 stringID)
