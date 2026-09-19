@@ -489,7 +489,7 @@ static inline uint8 Palette_FindClosestColor(uint8 r, uint8 g, uint8 b)
 /* Current hw register brightness for each of the 16 fixed pens, in the
  * same 3-bit-per-channel 0-7 format Setcolor() uses (see the init loop in
  * Video_Init() this mirrors). Index = pen*3 + {r=0,g=1,b=2}. Kept in sync
- * whenever Video_Atari_TryPaletteFadeThroughBlack() ramps the registers,
+ * whenever Video_Atari_TryPaletteFadeUniform() ramps the registers,
  * so a fade-out followed later by a fade-in always starts from wherever
  * the hardware registers actually are (normally either the full catalog
  * value or black, but never assumed - just tracked). */
@@ -569,15 +569,65 @@ static void Video_Atari_HwPaletteRamp(const uint8 *target, int16 ticksOfAnimatio
 	}
 }
 
+/* Subtitle colours live at palette indices 215..220 (see the
+ * memcpy(&g_palette_998A[215*3], s_palettePartCurrent, 18) calls in
+ * cutscene.c). A "fade to white" deliberately leaves them alone, so they
+ * are the one range that legitimately differs from an otherwise uniform
+ * target. They are excluded from the uniformity test below. */
+#define PALETTE_SUBTITLE_FIRST	215
+#define PALETTE_SUBTITLE_LAST	220
+
+/* Return the single 0-63 intensity every channel of every (considered)
+ * palette entry holds, or -1 if the palette is not uniform.
+ *
+ * "Considered" excludes two ranges:
+ *  - the subtitle pens (see above),
+ *  - index 0, which is allowed to stay black while the rest goes to some
+ *    other uniform value (a fade to white memsets from index 1 upwards
+ *    and never touches index 0).
+ *
+ * Both exclusions make this an approximation rather than an identity: the
+ * register-only ramp drives *all 16* pens to the uniform value, so pixels
+ * whose chunky value is 0 (or a subtitle index) end up at the uniform
+ * brightness too instead of keeping their own colour. For a fade to black
+ * that is exact (they were black anyway). For a fade to white it means the
+ * flash is fully white rather than white-with-black-holes, which is the
+ * intended effect of the flash regardless. Revisit if a future fade target
+ * needs those pens preserved. */
+static int Video_Atari_PaletteUniformValue(const uint8 *pal)
+{
+	int i, c;
+	int value = -1;
+
+	/* establish (and verify) the uniform value over indices 1..255 */
+	for (i = 1; i < 256; i++) {
+		if (i >= PALETTE_SUBTITLE_FIRST && i <= PALETTE_SUBTITLE_LAST) continue;
+
+		for (c = 0; c < 3; c++) {
+			uint8 v = pal[i*3+c];
+
+			if (value < 0) value = v;
+			else if (v != value) return -1;
+		}
+	}
+
+	/* index 0 may hold the uniform value or stay black */
+	for (c = 0; c < 3; c++) {
+		if (pal[c] != value && pal[c] != 0) return -1;
+	}
+
+	return value;
+}
+
 /**
  * Fast path for GUI_SetPaletteAnimated(). See the comment above the
  * prototype in video.h for the full rationale. "data" is the 256*3 array
  * of the currently active (on-screen) logical palette, "palette" is the
  * 256*3 fade target - exactly what GUI_SetPaletteAnimated() already has.
  */
-bool Video_Atari_TryPaletteFadeThroughBlack(uint8 *data, const uint8 *palette, int16 ticksOfAnimation)
+bool Video_Atari_TryPaletteFadeUniform(uint8 *data, const uint8 *palette, int16 ticksOfAnimation)
 {
-	bool toBlack, fromBlack;
+	int toUniform, fromUniform;
 	int i;
 	uint8 targetHw[16*3];
 
@@ -594,27 +644,69 @@ bool Video_Atari_TryPaletteFadeThroughBlack(uint8 *data, const uint8 *palette, i
 		s_hwPaletteInit = true;
 	}
 
-	toBlack = true;
-	for (i = 0; i < 256*3 && toBlack; i++) if (palette[i] != 0) toBlack = false;
+	toUniform   = Video_Atari_PaletteUniformValue(palette);
+	fromUniform = Video_Atari_PaletteUniformValue(data);
 
-	fromBlack = true;
-	for (i = 0; i < 256*3 && fromBlack; i++) if (data[i] != 0) fromBlack = false;
+#ifdef PALETTE_FADE_DEBUG
+	Warning("PaletteFade: toUniform=%d fromUniform=%d ticks=%d hw=%02x%02x%02x..\n",
+	        toUniform, fromUniform, ticksOfAnimation,
+	        s_hwPalette[0], s_hwPalette[1], s_hwPalette[2]);
+#endif
 
-	if (!toBlack && !fromBlack) return false;	/* not a through-black fade */
+	if (toUniform < 0 && fromUniform < 0) {
+		/* Neither end of the fade is a uniform colour - falls back to the
+		 * original software-only quantize path below, which only ever
+		 * rebuilds the chunky->pen LUT and never touches Setcolor(). That
+		 * path implicitly
+		 * assumes the 16 hardware registers already sit at the fixed
+		 * catalog brightness (their historical, pre-hw-fade invariant).
+		 * If a previous uniform-target fade-out (or an Options-menu shade)
+		 * left the registers anywhere else - e.g. ramped down to literal
+		 * black - restore them to the catalog now, instantly, so the
+		 * fallback quantize path still displays correctly. */
+		uint8 catalogHw[16*3];
+		bool atCatalog = true;
 
-	if (toBlack) {
-		/* Fade out: the on-screen quantization/pair-LUT already matches
-		 * "data" (the current, still fully-lit picture) - no need to touch
-		 * it at all, just ramp every register down to black. */
-		memset(targetHw, 0, sizeof(targetHw));
+		for (i = 0; i < 16; i++) {
+			catalogHw[i*3+0] = (s_palette4BitPC[i*4+0] >> 3) & 7;
+			catalogHw[i*3+1] = (s_palette4BitPC[i*4+1] >> 3) & 7;
+			catalogHw[i*3+2] = (s_palette4BitPC[i*4+2] >> 3) & 7;
+		}
+		for (i = 0; i < 16*3 && atCatalog; i++) {
+			if (s_hwPalette[i] != catalogHw[i]) atCatalog = false;
+		}
+		if (!atCatalog) {
+#ifdef PALETTE_FADE_DEBUG
+			Warning("PaletteFade: restoring hw registers to catalog (fallback path)\n");
+#endif
+			memcpy(s_hwPalette, catalogHw, sizeof(s_hwPalette));
+			for (i = 0; i < 16; i++) {
+				Setcolor(i, Video_Atari_HwColorWord(s_hwPalette[i*3+0], s_hwPalette[i*3+1], s_hwPalette[i*3+2]));
+			}
+		}
+		return false;	/* not a uniform-target fade */
+	}
+
+	if (toUniform >= 0) {
+		/* Fade out to a uniform colour (black, white, ...): the on-screen
+		 * quantization/pair-LUT already matches "data" (the current, still
+		 * fully-lit picture) and stays valid - every pixel simply ends up
+		 * showing the same colour, so there is nothing to re-quantize.
+		 * Just ramp all 16 registers to that one intensity. The logical
+		 * palette is 6-bit per channel, the ST/STE registers are 3-bit. */
+		uint8 v3 = (uint8)((toUniform >> 3) & 7);
+
+		memset(targetHw, v3, sizeof(targetHw));
 		Video_Atari_HwPaletteRamp(targetHw, ticksOfAnimation);
 	} else {
-		/* Fade in: quantize/rebuild once, up front, against the *target*
-		 * (final, fully-lit) palette so every chunky pixel already shows
-		 * the right pen index throughout the whole fade; then ramp the
-		 * registers up from black to the fixed catalog. Screen is forced
-		 * black first (in case it wasn't already) so nothing flashes at
-		 * full brightness before the ramp starts. */
+		/* Fade in from a uniform colour to a real picture: quantize/rebuild
+		 * once, up front, against the *target* (final, fully-lit) palette
+		 * so every chunky pixel already shows the right pen index
+		 * throughout the whole fade; then ramp the registers to the fixed
+		 * catalog. Until the ramp moves them, all 16 registers still hold
+		 * the uniform value, so the screen keeps showing that flat colour
+		 * and the new picture is revealed by the ramp rather than
+		 * appearing abruptly. */
 		for (i = 0; i < 16; i++) {
 			targetHw[i*3+0] = (s_palette4BitPC[i*4+0] >> 3) & 7;
 			targetHw[i*3+1] = (s_palette4BitPC[i*4+1] >> 3) & 7;
@@ -625,9 +717,9 @@ bool Video_Atari_TryPaletteFadeThroughBlack(uint8 *data, const uint8 *palette, i
 			u.cp = palette;
 			Video_SetPalette(u.p, 0, 256);
 		}
-		/* fromBlack is guaranteed true here (the toBlack&&fromBlack-both-
-		 * false case already returned above) - registers should already be
-		 * at/near black from the preceding fade-out, but ramp from
+		/* fromUniform is guaranteed >= 0 here (the both-negative case
+		 * already returned above) - registers should already be at that
+		 * uniform intensity from the preceding fade-out, but ramp from
 		 * wherever s_hwPalette actually is rather than assuming. */
 		Video_Atari_HwPaletteRamp(targetHw, ticksOfAnimation);
 	}

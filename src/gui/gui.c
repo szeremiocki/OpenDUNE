@@ -5003,12 +5003,13 @@ void GUI_SetPaletteAnimated(uint8 *palette, int16 ticksOfAnimation)
 	memcpy(data, g_paletteActive, 256 * 3);
 
 #ifdef TOS
-	/* Fast path: full-screen fades to/from all-black never need to
-	 * re-quantize/rebuild anything, see Video_Atari_TryPaletteFadeThroughBlack()
-	 * in video_atari.c. Every other (non-through-black) animation - e.g.
-	 * in-game palette cycling effects - falls through to the normal path
-	 * below unchanged. */
-	if (Video_Atari_TryPaletteFadeThroughBlack(data, palette, ticksOfAnimation)) {
+	/* Fast path: full-screen fades to/from a uniform palette (all-black,
+	 * or the intro's all-white flash) never need to re-quantize/rebuild
+	 * anything, see Video_Atari_TryPaletteFadeUniform() in video_atari.c.
+	 * Every other animation - e.g. in-game palette cycling effects, or a
+	 * cross-fade between two unrelated pictures - falls through to the
+	 * normal path below unchanged. */
+	if (Video_Atari_TryPaletteFadeUniform(data, palette, ticksOfAnimation)) {
 		memcpy(g_paletteActive, data, 256 * 3);
 		return;
 	}

@@ -112,6 +112,19 @@ extern uint32 g_dirty_blocks[200];
 #if defined(TOS) && defined(GFX_STORE_DIRTY_AREA_BLOCKS) && defined(GFX_DIRTY_SOURCE_STATS_ENABLE)
 #define GFX_DIRTY_SOURCE_STATS
 #endif
+
+/* Logs every GFX_SetPalette() call (which palette range changed, and
+ * whether the call was a no-op) plus every fast-path decision in
+ * Video_Atari_TryPaletteFadeUniform(), including the uniform-value
+ * detection result and the current hardware register state. Off by
+ * default -- like the other *_STATS flags here, it writes through
+ * unbuffered Warning() and is only meant for tracing palette/fade
+ * behaviour. This is what identified the "intro cutscene stays black"
+ * bug (hardware registers left at black while a non-uniform fade took
+ * the software-only fallback path), and what measured the pair-LUT
+ * rebuild counts that motivated the uniform fast path, so it is kept
+ * for the next time fade behaviour needs investigating. */
+/* #define PALETTE_FADE_DEBUG 1 */
 #ifdef GFX_DIRTY_SOURCE_STATS
 enum DirtySource {
 	DIRTY_SRC_VIEWPORT = 0,	/* GUI_Screen_Copy from the viewport tile rows */

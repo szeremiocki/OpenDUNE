@@ -985,6 +985,9 @@ void GFX_SetPalette(uint8 *palette)
 		   palette[to*3+1] != g_paletteActive[to*3+1] ||
 		   palette[to*3+2] != g_paletteActive[to*3+2]) break;
 	}
+#ifdef PALETTE_FADE_DEBUG
+	Warning("GFX_SetPalette: from=%d to=%d (direct, non-animated)\n", from, to);
+#endif
 	Video_SetPalette(palette + 3 * from, from, to - from + 1);
 
 	memcpy(g_paletteActive + 3 * from, palette + 3 * from, (to - from + 1) * 3);
