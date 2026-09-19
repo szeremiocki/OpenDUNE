@@ -460,6 +460,17 @@ static void GameLoop_PlayAnimation(const HouseAnimation_Animation *animation)
 			do {
 				GameLoop_PlaySubtitle(animationStep);
 				displayed = WSA_DisplayFrame(wsa, frame++, posX, posY, SCREEN_0);
+				/* This tail loop drains the remaining WSA frames after the
+				 * timed loop above has ended. Unlike that loop it never ran
+				 * GameLoop_PalettePart_Update(), which is the only thing that
+				 * pumps Sound_StartSpeech() and advances the subtitle colour
+				 * fade. On original hardware each frame was fast enough that
+				 * nobody noticed; on a 68000 a single frame costs a large
+				 * fraction of a second, so the queued speech fragments simply
+				 * stopped being started for the whole duration of this loop
+				 * (measured: an 8.6 s silence in the middle of a sentence
+				 * during INTRO9, which is a mode 2 step). */
+				GameLoop_PalettePart_Update(false);
 				sleepIdle();
 			} while (displayed);
 		}
