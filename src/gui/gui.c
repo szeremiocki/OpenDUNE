@@ -3910,26 +3910,30 @@ void GUI_FactoryWindow_UpdateDetails(const FactoryWindowItem *item)
  * If \a selectionChanged, it draws the rectangle around the new entry.
  * In addition, the palette colour of the rectangle is slowly changed back and
  * forth between white and the house colour by palette changes, thus giving it
- * the appearance of glowing.
+ * the appearance of glowing. On TOS the outline stays white to avoid
+ * recurring palette remapping and planar cursor-cache rebuilds.
  * @param selectionChanged User has selected a new thing to build.
  */
 void GUI_FactoryWindow_UpdateSelection(bool selectionChanged)
 {
+#ifndef TOS
 	static uint32 paletteChangeTimer;
 	static int8 paletteColour;
 	static int8 paletteChange;
+#else
+	if (!selectionChanged) return;
+#endif
 
 	if (selectionChanged) {
 		uint16 y;
 
 		memset(g_palette1 + 255 * 3, 0x3F, 3);
 
-		/* calling GFX_SetPalette() now is useless as it will be done at the end of the function */
-		/*GFX_SetPalette(g_palette1);*/
-
+#ifndef TOS
 		paletteChangeTimer = 0;
 		paletteColour = 0;
 		paletteChange = 8;
+#endif
 
 		y = g_factoryWindowSelected * 32 + 24;
 
@@ -3937,7 +3941,9 @@ void GUI_FactoryWindow_UpdateSelection(bool selectionChanged)
 		GUI_DrawWiredRectangle(71, y - 1, 104, y + 24, 255);
 		GUI_DrawWiredRectangle(72, y, 103, y + 23, 255);
 		GUI_Mouse_Show_Safe();
-	} else {
+	}
+#ifndef TOS
+	else {
 		if (paletteChangeTimer > g_timerGUI) return;
 	}
 
@@ -3968,6 +3974,7 @@ void GUI_FactoryWindow_UpdateSelection(bool selectionChanged)
 
 		default: break;
 	}
+#endif
 
 	GFX_SetPalette(g_palette1);
 }
@@ -4188,6 +4195,15 @@ void GUI_Mouse_Show(void)
 	s_mouseSpriteHeight = g_mouseHeight;
 	if (top + g_mouseHeight >= SCREEN_HEIGHT) s_mouseSpriteHeight -= top + g_mouseHeight - SCREEN_HEIGHT;
 
+#ifdef TOS
+	/* Cached planar cursors save/restore their background in the video
+	 * driver. Try them before making a chunky backup for the fallback.
+	 * CursorUseIcon handles edge clipping using the raw hotspot position. */
+	if (Video_Atari_CursorDirect() && g_mouseSpriteIconIndex != 0xffff) {
+		if (Video_Atari_CursorUseIcon(g_mouseSpriteIconIndex, (int16)left, (int16)top)) return;
+	}
+#endif
+
 	if (g_mouseSpriteBuffer != NULL) {
 		GFX_CopyToBuffer(s_mouseSpriteLeft * 8, s_mouseSpriteTop, s_mouseSpriteWidth * 8, s_mouseSpriteHeight, g_mouseSpriteBuffer);
 	}
@@ -4202,19 +4218,6 @@ void GUI_Mouse_Show(void)
 	 * zeroed-out SCREEN_0 box that is handed to the video driver and
 	 * immediately overwritten again with the saved background. Colour 0 is
 	 * the sprite's transparent colour, so the box doubles as the mask. */
-
-	/* ENHANCEMENT -- try the persistent, pre-shifted per-icon bitplane
-	 * cache first: on a cache hit this is a pure table lookup (no chunky
-	 * render, no per-pixel transpose), so ordinary cursor movement now
-	 * costs nothing beyond picking the right phase out of the table.
-	 * Edge clipping (any of the four screen edges) is handled entirely
-	 * inside Video_Atari_CursorUseIcon() itself -- it only needs the raw,
-	 * unclipped (left, top) box position, not the pre-clamped
-	 * s_mouseSprite* values below. It only falls through to the slower
-	 * single-shift path for icons that were not preloaded. */
-	if (Video_Atari_CursorDirect() && g_mouseSpriteIconIndex != 0xffff) {
-		if (Video_Atari_CursorUseIcon(g_mouseSpriteIconIndex, (int16)left, (int16)top)) return;
-	}
 
 	if (g_mouseSpriteBuffer != NULL && Video_Atari_CursorDirect()
 	 && s_mouseSpriteWidth != 0 && s_mouseSpriteHeight != 0
