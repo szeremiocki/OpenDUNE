@@ -50,6 +50,12 @@ to enable the MT32 songs.
 TT Low (320x480 8bpp) is used on TT.
 ST Low (320x200 4bpp) is used on ST/STE.
 
+- Explosion screen shake on ST/STE changes the hardware screen base,
+without a full-screen c2p redraw or an extra screen allocation. The image
+moves down 4 lines on STE/Mega STE, or 8 lines on ST for its coarser
+address alignment. The exposed top rows read memory before the existing
+TOS screen and may show garbage; no padding is reserved or cleared.
+
 - on a Mega STE the CPU is switched to 16MHz with the cache enabled
 at startup, and put back to whatever it was on exit. Detected from the
 _MCH cookie, so nothing is touched on any other machine.

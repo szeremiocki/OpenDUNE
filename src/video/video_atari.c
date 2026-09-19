@@ -60,6 +60,18 @@ static enum {
 static int s_savedCpuSpeed = -1;	/* -1 = not touched, else value to restore */
 #define MEGASTE_CPUCTL	((volatile uint8 *)0xFFFF8E21UL)
 
+/* ST/STE video base address registers. The low byte only exists on the
+ * STE (on a plain ST the address is fixed at a 256 byte boundary), and
+ * must always be written *last*: writing the high or mid byte clears it
+ * again for ST compatibility. Supervisor mode only. */
+#define VIDEO_BASE_HIGH	((volatile uint8 *)0xFFFF8201UL)
+#define VIDEO_BASE_MID	((volatile uint8 *)0xFFFF8203UL)
+#define VIDEO_BASE_LOW	((volatile uint8 *)0xFFFF820DUL)
+
+#define ST_PLANAR_LINE_BYTES	(SCREEN_WIDTH / 2)	/* 4 bitplanes, 1 nibble/pixel */
+
+static uint32 s_stScreenBase = 0;	/* address to program, incl. shake offset */
+
 static uint32 s_paletteBackup[256];
 static uint16 s_SquareTable[256];
 
@@ -850,6 +862,19 @@ static void MegaSTE_SpeedUp(void)
 static void MegaSTE_SpeedRestore(void)
 {
 	*MEGASTE_CPUCTL = (uint8)s_savedCpuSpeed;
+}
+
+/* Supervisor callback: set the base reloaded by the shifter each frame.
+ * The explosion caller supplies the delay, not this register setter. */
+static void Video_ST_SetBase(void)
+{
+	uint32 base = s_stScreenBase;
+
+	*VIDEO_BASE_HIGH = (uint8)(base >> 16);
+	*VIDEO_BASE_MID  = (uint8)(base >> 8);
+	if (s_machine_type == MCH_STE || s_machine_type == MCH_MEGA_STE) {
+		*VIDEO_BASE_LOW = (uint8)base;
+	}
 }
 
 /**
@@ -1780,7 +1805,10 @@ void Video_Tick(void)
 #endif
 			}
 		} else if (s_machine_type == MCH_ST || s_machine_type == MCH_STE || s_machine_type == MCH_MEGA_STE) {
-			data += (s_screenOffset << 2);
+			/* No s_screenOffset shift of the chunky source here: on ST/STE
+			 * the explosion shake moves the shifter's base address instead
+			 * (see Video_SetOffset()), so the picture always occupies the
+			 * same place in the planar buffer. */
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
 			/* Always take the per line path when the block masks are
 			 * available. The "full width" shortcut computed above converts
@@ -2170,6 +2198,30 @@ void Video_SetOffset(uint16 offset)
 		/* Change Physbase(), but not Logbase() */
 		VsetScreen(-1, Logbase() + (4 * offset), -1, -1);
 		Vsync();
+	} else if (s_machine_type == MCH_ST || s_machine_type == MCH_STE || s_machine_type == MCH_MEGA_STE) {
+		/* Decrease the base to move the picture down without a c2p redraw.
+		 * We reuse TOS's screen without padding: the exposed top rows
+		 * intentionally read preceding RAM and may contain garbage.
+		 * Do not clear that memory, which we do not own. */
+		uint32 base = (uint32)Logbase();
+		/* offset*4 counts *chunky* bytes, and the chunky screen is
+		 * SCREEN_WIDTH bytes per line */
+		uint16 lines = (uint16)(((uint32)offset * 4) / SCREEN_WIDTH);
+		uint32 shift;
+
+		if (s_machine_type == MCH_ST && lines != 0) {
+			/* round up to a multiple of 8 lines, keeping the resulting
+			 * address 256 byte aligned */
+			lines = (uint16)((lines + 7) & ~7);
+		}
+		shift = (uint32)lines * ST_PLANAR_LINE_BYTES;
+		if (shift > base) {
+			Error("Screen shake offset exceeds the screen base address.\n");
+			return;
+		}
+
+		s_stScreenBase = base - shift;
+		Supexec(Video_ST_SetBase);
 	} else {
 		s_screenOffset = offset;
 		s_screen_needrepaint = true;	/* force repaint */

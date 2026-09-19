@@ -132,14 +132,20 @@ static void Explosion_Func_ScreenShake(Explosion *e, uint16 parameter)
 #endif
 
 	for(i = 0; i < 2; i++) {
-#if defined(_WIN32)
+#if defined(TOS)
+		/* sleepIdle() only pumps callbacks on TOS; use elapsed ticks so
+		 * the shifter has time to display each position. */
+		Timer_Sleep(2);
+#elif defined(_WIN32)
 		msleep(30);
 #else
 		sleepIdle();
 		sleepIdle();
 #endif
 		Video_SetOffset(320);
-#if defined(_WIN32)
+#if defined(TOS)
+		Timer_Sleep(2);
+#elif defined(_WIN32)
 		msleep(30);
 #else
 		sleepIdle();
