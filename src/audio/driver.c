@@ -280,8 +280,8 @@ static bool Driver_GrowVoiceLoadBuffer(uint32 needed)
  * This function owns all buffer management: it reads the raw file into
  * its own growable scratch buffer (s_voiceLoadBuffer) and, on TOS, then
  * converts that into the DSP's own ST RAM scratch buffer. The returned
- * pointer is only valid until the next call to this function (or, on
- * TOS, the next DSP_Play()) -- callers that need to keep the data around
+ * pointer is only valid until the next call to this function -- callers
+ * that need to keep the data around
  * (preloaded voices) must copy it out into their own, correctly-sized
  * allocation right away; see Sound_LoadVoc() in sound.c, which sizes its
  * permanent allocation to the returned (already resampled, usually

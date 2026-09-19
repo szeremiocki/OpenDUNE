@@ -10,6 +10,11 @@ extern bool DSP_Init(void);
 extern void DSP_Uninit(void);
 
 #ifdef TOS
+/* Resident samples must stay in DMA-visible ST RAM until playback ends.
+ * FreeSample stops DMA first if it is still referencing this sample. */
+extern void *DSP_AllocSample(uint32 length);
+extern void DSP_FreeSample(void *sample);
+
 /* Atari DMA sound needs signed 8bit PCM at a fixed hardware rate, but VOC
  * files store unsigned 8bit PCM at whatever rate the original recording
  * used (found to vary from ~4kHz to ~14.7kHz across this game's samples).
@@ -21,9 +26,11 @@ extern void DSP_Uninit(void);
  * The result is built in a shared ST RAM scratch buffer (since its size
  * can differ from the input) and is NOT written back into "data" -- the
  * caller must copy *outLength bytes out of the returned pointer into its
- * own (possibly reallocated) buffer before this function is called again
+ * own DSP_AllocSample() buffer before this function is called again
  * for another sample, and must ensure nothing is currently playing from
  * that scratch buffer (see Driver_Voice_Stop()) before calling this.
+ * The first PCM payload is word-aligned; odd PCM lengths are padded with
+ * signed silence so the hardware end address is also even.
  *
  * filename is for -DDSP_ATARI_FREQ_STATS_ENABLE logging only; pass NULL
  * if not available (it is otherwise ignored).

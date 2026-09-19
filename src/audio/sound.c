@@ -11,6 +11,7 @@
 #include "sound.h"
 
 #include "driver.h"
+#include "dsp.h"
 #include "mt32mpu.h"
 #include "../config.h"
 #include "../file.h"
@@ -153,6 +154,9 @@ void Voice_PlayAtTile(int16 voiceID, tile32 position)
 	if (g_enableVoices != 0 && index != 0xFFFF && g_voiceData[index] != NULL && g_table_voices[index].priority >= s_currentVoicePriority) {
 		s_currentVoicePriority = g_table_voices[index].priority;
 
+#ifdef TOS
+		Driver_Voice_Play(g_voiceData[index], s_currentVoicePriority);
+#else
 		/* g_readBuffer is a fixed READ_BUFFER_SIZE scratch buffer (see
 		 * opendune.h), sized to hold the largest sample this game can
 		 * produce. This bound is purely defensive: without it an
@@ -169,6 +173,7 @@ void Voice_PlayAtTile(int16 voiceID, tile32 position)
 		memmove(g_readBuffer, g_voiceData[index], g_voiceDataSize[index]);
 
 		Driver_Voice_Play(g_readBuffer, s_currentVoicePriority);
+#endif
 	} else {
 		Driver_Sound_Play(voiceID, volume);
 	}
@@ -193,8 +198,13 @@ void Voice_Play(int16 voiceID)
 static void Voice_UnloadVoice(uint16 voice)
 {
 	if (g_voiceData[voice] != NULL) {
+#ifdef TOS
+		DSP_FreeSample(g_voiceData[voice]);
+#else
 		free(g_voiceData[voice]);
+#endif
 		g_voiceData[voice] = NULL;
+		g_voiceDataSize[voice] = 0;
 	}
 }
 
@@ -452,8 +462,8 @@ bool Sound_StartSpeech(void)
 }
 
 /**
- * Load a voice file to a malloc'd buffer, sized to fit the actual loaded
- * data (which, on TOS, is the resampled+signed result from
+ * Load a voice file to an owned buffer (DMA-visible ST RAM on TOS), sized
+ * to fit the actual loaded data (which, on TOS, is the resampled+signed result from
  * Driver_Voice_LoadFile() -- usually smaller than the original file; a
  * few short low-rate sound effects are slightly larger). This keeps
  * every preloaded voice's permanent, resident allocation as small as
@@ -471,7 +481,11 @@ static void *Sound_LoadVoc(const char *filename, uint32 *retFileSize)
 	loaded = Driver_Voice_LoadFile(filename, retFileSize);
 	if (loaded == NULL) return NULL;
 
+#ifdef TOS
+	res = DSP_AllocSample(*retFileSize);
+#else
 	res = malloc(*retFileSize);
+#endif
 	if (res == NULL) {
 		*retFileSize = 0;
 		return NULL;

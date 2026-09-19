@@ -10,9 +10,8 @@
 #include "../os/error.h"
 
 #include "dsp.h"
-#include "../opendune.h"
 
-extern void set_dma_sound(void * buffer, uint32 len, uint32 mode);
+extern void set_dma_sound(const void *buffer, uint32 len, uint32 mode);
 extern void stop_dma_sound(void);	/* needs to be called in supervisor mode */
 extern uint32 get_dma_status(void);	/* needs to be called in supervisor mode */
 
@@ -32,9 +31,7 @@ extern uint32 get_dma_status(void);	/* needs to be called in supervisor mode */
  * dominated by 11.2-14.7kHz speech): 6258Hz keeps resampled+resident
  * voice data around ~0.8MB total instead of ~1.6MB at 12517Hz, which
  * matters a lot on stock ST/STE RAM sizes. This is a permanent choice,
- * not a runtime option -- DSP_ATARI_NO_RESAMPLE below simply documents
- * that DSP_ConvertAudio() (the old runtime resampler, now effectively
- * dead code since every sample is pre-converted) no longer needs to run. */
+ * not a runtime option; playback always uses the load-time conversion. */
 #define DSP_ATARI_NO_RESAMPLE_ENABLE
 #if defined(DSP_ATARI_NO_RESAMPLE_ENABLE)
 #define DSP_ATARI_NO_RESAMPLE
@@ -44,7 +41,7 @@ extern uint32 get_dma_status(void);	/* needs to be called in supervisor mode */
 
 /* Hardware playback-rate select for register $FFFF8921, must match
  * DMASOUND_FREQ above -- this is a SEPARATE setting from the frequency
- * DSP_ConvertAudio() targets when building the buffer; getting the two out
+ * DSP_ConvertSample() targets when building the buffer; getting the two out
  * of sync plays the buffer at the wrong speed regardless of how it was
  * built (0=6258Hz [not on Falcon], 1=12517Hz, 2=25033Hz, 3=50066Hz). */
 #if DMASOUND_FREQ == 6258
@@ -70,15 +67,6 @@ extern uint32 get_dma_status(void);	/* needs to be called in supervisor mode */
  * and never resized. */
 #define DMASOUND_BUFFER_SIZE	((((64UL*1024) * DMASOUND_FREQ / 12517) + 0x0FFF) & ~0x0FFFUL)
 
-/* Voice samples are staged in g_readBuffer (sized READ_BUFFER_SIZE) before
- * being handed here, so that buffer must be able to hold anything this one
- * can. Both are currently 32KB at DMASOUND_FREQ 6258Hz, which the largest
- * resampled sample in the game (WIND2BP.VOC, 31729 bytes) only just fits.
- * Changing DMASOUND_FREQ rescales this size but not READ_BUFFER_SIZE, so
- * catch the mismatch at compile time rather than as heap corruption. */
-typedef char dsp_atari_read_buffer_size_check[
-	(READ_BUFFER_SIZE >= DMASOUND_BUFFER_SIZE) ? 1 : -1];
-
 /* VOC files encode sample rate as a single byte "frequency divisor" (see
  * DSP_Play() below), not as a free Hz value, so DMASOUND_FREQ itself is
  * not always exactly representable; DMASOUND_VOC_DIVISOR is the divisor
@@ -90,10 +78,29 @@ typedef char dsp_atari_read_buffer_size_check[
 
 static uint8 *s_stRamBuffer;
 static uint32 s_stRamBufferSize;
+static const uint8 *s_playingSample;
 
 void DSP_Stop(void)
 {
 	Supexec(stop_dma_sound);
+	s_playingSample = NULL;
+}
+
+void *DSP_AllocSample(uint32 length)
+{
+	void *sample = (void *)Mxalloc(length, MX_STRAM);
+	if ((long)sample <= 0) {
+		Warning("Failed to allocate %u bytes of ST RAM for voice sample.\n", length);
+		return NULL;
+	}
+	return sample;
+}
+
+void DSP_FreeSample(void *sample)
+{
+	if (sample == NULL) return;
+	if (sample == s_playingSample) DSP_Stop();
+	Mfree(sample);
 }
 
 void DSP_Uninit(void)
@@ -122,10 +129,11 @@ bool DSP_Init(void)
 	/* allocate ST RAM buffer for audio */
 	s_stRamBufferSize = DMASOUND_BUFFER_SIZE;
 	s_stRamBuffer = (uint8 *)Mxalloc(s_stRamBufferSize, MX_STRAM);
-	if(s_stRamBuffer == NULL) {
+	if((long)s_stRamBuffer <= 0) {
 		Error("Failed to allocate %u bytes of ST RAM for DMA sound.\n",
 		      s_stRamBufferSize);
 		s_stRamBufferSize = 0;
+		s_stRamBuffer = NULL;
 		return false;
 	}
 	return true;
@@ -133,8 +141,7 @@ bool DSP_Init(void)
 
 /**
  * Check that "needed" bytes fit in s_stRamBuffer (the DMA-visible ST RAM
- * scratch buffer). Shared by DSP_ConvertAudio() and DSP_ConvertSample(),
- * both of which write into this same buffer.
+ * conversion scratch buffer).
  *
  * The buffer is allocated once, at DMASOUND_BUFFER_SIZE, in DSP_Init() and
  * never resized: that size is derived from DMASOUND_FREQ and already covers
@@ -154,77 +161,25 @@ static bool DSP_StRamBufferFits(uint32 needed)
 }
 
 /**
- * In Dune2, the frequency of the VOC files are all over the place.
- * Atari STE/TT/Falcon sound only supports a few fixed frequencies.
- * So, we convert all audio to one frequency. Sadly, our knowledge of
- * audio is not really good, so this is a linear scaler.
- *
- * Both the resampling and the unsigned->signed conversion this used to
- * also do here have moved to DSP_ConvertSample(), called once per sample
- * at load time (see Driver_Voice_LoadFile() in driver.c) instead of on
- * every single play. Data reaching this function is therefore already
- * signed and, in the DSP_ATARI_NO_RESAMPLE build, already at
- * DMASOUND_FREQ -- this function is kept as a fallback resampler for
- * builds where DSP_ATARI_NO_RESAMPLE is not defined.
- */
-static uint32 DSP_ConvertAudio(uint32 freq, const uint8 * src, uint32 len)
-{
-#if defined(DSP_ATARI_NO_RESAMPLE)
-	uint32 newlen = len;
-
-	VARIABLE_NOT_USED(freq);
-	Debug("playing %u samples at fixed %uHz, no resampling from %uHz.\n",
-	        len, DMASOUND_FREQ, freq);
-
-	if (!DSP_StRamBufferFits(newlen)) return 0;
-
-	memcpy(s_stRamBuffer, src, len);
-	return newlen;
-#else
-	uint32 newlen = len * DMASOUND_FREQ / freq;
-	uint8 *w;
-	uint8 sample;
-	uint32 i, j;
-
-	Debug("converting freq from %uHz to %u.\n",
-	        freq, DMASOUND_FREQ);
-
-	if (!DSP_StRamBufferFits(newlen)) return 0;
-
-	w = s_stRamBuffer;
-	for (i = 1, j = 0; i <= len; i++) {
-		sample = *src++;
-		while (j < i * DMASOUND_FREQ) {
-			*w++ = sample;
-			j += freq;
-		}
-	}
-	return newlen;
-#endif
-}
-
-/**
  * Convert a whole loaded VOC file to signed 8bit PCM already resampled to
- * DMASOUND_FREQ, once, at load time. This replaces per-play work that used
- * to happen in DSP_ConvertAudio() on every single play (see
+ * DMASOUND_FREQ, once, at load time (see
  * Driver_Voice_LoadFile() in driver.c, the single choke point every VOC
  * load -- preloaded or ad-hoc -- goes through).
  *
- * The VOC container format is kept: header and non-sound-data blocks are
- * copied verbatim, and each Block Type 1 (Sound data) is rewritten in
- * place with an updated 3-byte length and frequency-divisor byte to
- * describe the new, already-resampled+signed payload. This mirrors the
+ * The VOC container format is kept: odd-sized headers are padded to align
+ * the first PCM payload, and sound blocks get an updated length and rate.
+ * Odd PCM lengths get one signed-silence byte for an even DMA end address.
+ * Non-sound-data blocks are copied verbatim. This mirrors the
  * Create Voice File header skip and block-type/length parsing in
  * DSP_Play() -- if that parsing ever changes, update both.
  *
- * The result is built in s_stRamBuffer (bounds-checked via
- * DSP_StRamBufferFits() as it goes -- the same scratch buffer DSP_ConvertAudio() uses for DMA
- * playback), NOT in "data" itself, since the resampled size can differ
+ * The result is built in s_stRamBuffer, bounds-checked via
+ * DSP_StRamBufferFits(), NOT in "data" itself, since the resampled size can differ
  * from the original (most samples in this game are >6258Hz and shrink,
  * but a few short low-rate sound effects are <6258Hz and grow). The
- * caller is expected to realloc its own buffer to *outLength and copy the
+ * caller is expected to allocate its own ST RAM buffer and copy the
  * result out of s_stRamBuffer before the next call, since this scratch
- * buffer is shared/reused by every load and by DSP_Play() itself -- the
+ * buffer is shared/reused by every load and by non-preloaded speech -- the
  * caller MUST call Driver_Voice_Stop() first if a sample might currently
  * be playing from it (see Driver_Voice_LoadFile()).
  *
@@ -245,12 +200,15 @@ const uint8 *DSP_ConvertSample(const uint8 *data, uint32 length, uint32 *outLeng
 
 	*outLength = 0;
 
-	/* Create Voice File header, copied verbatim. */
+	if (length < 26) return NULL;
+
 	headerSize = READ_LE_UINT16(p + 20);
-	if (headerSize > length) return NULL;
-	if (!DSP_StRamBufferFits(headerSize)) return NULL;
+	if (headerSize < 26 || headerSize >= length || headerSize == 0xffff) return NULL;
+	written = (headerSize + 1u) & ~1u;
+	if (!DSP_StRamBufferFits(written)) return NULL;
 	memcpy(s_stRamBuffer, p, headerSize);
-	written = headerSize;
+	if (written != headerSize) s_stRamBuffer[headerSize] = 0;
+	WRITE_LE_UINT16(s_stRamBuffer + 20, written);
 	p += headerSize;
 
 	while (p < end) {
@@ -271,7 +229,7 @@ const uint8 *DSP_ConvertSample(const uint8 *data, uint32 length, uint32 *outLeng
 		 * -- this previously produced a garbage blockLen (observed
 		 * as a bogus ~16MB "needed" size reaching
 		 * DSP_StRamBufferFits()) that could corrupt the heap. */
-		if (p + 4 > end) { *outLength = 0; return NULL; }
+		if ((uint32)(end - p) < 4) { *outLength = 0; return NULL; }
 
 		blockLen = p[1] | (p[2] << 8) | (p[3] << 16);
 		if (blockLen > (uint32)(end - p) - 4) blockLen = (uint32)(end - p) - 4;
@@ -299,6 +257,7 @@ const uint8 *DSP_ConvertSample(const uint8 *data, uint32 length, uint32 *outLeng
 			uint8 *dst;
 			uint8 *w;
 			uint32 i, j;
+			uint32 paddedLength;
 
 			if (blockLen < 2) { *outLength = 0; return NULL; }
 
@@ -323,11 +282,9 @@ const uint8 *DSP_ConvertSample(const uint8 *data, uint32 length, uint32 *outLeng
 			      (unsigned long)freq, (unsigned long)payloadLen);
 #endif
 
-			/* Worst case output is one byte per input byte plus one
-			 * (integer-division rounding, upsampling case); grow
-			 * for that, then shrink the block length afterwards to
-			 * whatever was actually written. */
-			if (!DSP_StRamBufferFits(written + 4 + 2 + payloadLen * DMASOUND_FREQ / freq + 1)) {
+			/* Reserve ceil(resampled length), rounded to an even DMA length. */
+			paddedLength = ((payloadLen * DMASOUND_FREQ + freq - 1) / freq + 1) & ~1u;
+			if (!DSP_StRamBufferFits(written + 6 + paddedLength)) {
 				*outLength = 0;
 				return NULL;
 			}
@@ -347,7 +304,12 @@ const uint8 *DSP_ConvertSample(const uint8 *data, uint32 length, uint32 *outLeng
 
 			{
 				uint32 newPayloadLen = (uint32)(w - (dst + 6));
-				uint32 newBlockLen = newPayloadLen + 2;
+				uint32 newBlockLen;
+				if ((newPayloadLen & 1) != 0) {
+					*w = 0;
+					newPayloadLen++;
+				}
+				newBlockLen = newPayloadLen + 2;
 				dst[0] = 1;
 				dst[1] = newBlockLen & 0xFF;
 				dst[2] = (newBlockLen >> 8) & 0xFF;
@@ -367,8 +329,7 @@ const uint8 *DSP_ConvertSample(const uint8 *data, uint32 length, uint32 *outLeng
 void DSP_Play(const uint8 *data)
 {
 	uint32 len;
-	uint32 freq;
-	uint32 sampleLen;
+	const uint8 *sample = data;
 
 	/* skip Create Voice File header */
 	data += READ_LE_UINT16(data + 20);
@@ -392,9 +353,8 @@ void DSP_Play(const uint8 *data)
 	/* Sanity-check before the "-= 2" below: a corrupt/garbage buffer
 	 * (e.g. one whose real contents were clobbered by an overflowing
 	 * caller) can otherwise yield a nonsense multi-megabyte length, or
-	 * underflow to ~4GB when len < 2, and drag that straight into
-	 * DSP_ConvertAudio()'s buffer sizing and memcpy(). No sample in this
-	 * game legitimately exceeds the initial DMA buffer size. */
+	 * underflow to ~4GB when len < 2. No converted sample can exceed
+	 * the conversion scratch limit. */
 	if (len < 2 || len - 2 > DMASOUND_BUFFER_SIZE) {
 		Warning("DSP_Play: implausible VOC block length %lu, ignoring sample\n",
 		        (unsigned long)len);
@@ -405,13 +365,18 @@ void DSP_Play(const uint8 *data)
 	/* byte  0    frequency divisor
 	 * byte  1    codec id : 0 is "8bits unsigned PCM"
 	 * bytes 2..n audio data */
-	freq = 1000000 / (256 - data[0]);
-	if (data[1] != 0) Warning("Unsupported VOC codec 0x%02x\n", (int)data[1]);
-	sampleLen = DSP_ConvertAudio(freq, data + 2, len);
-
-	if(sampleLen > 0) {
-		set_dma_sound(s_stRamBuffer, sampleLen, DMASOUND_MODE);
+	if (data[0] != DMASOUND_VOC_DIVISOR || data[1] != 0 ||
+	    ((unsigned long)(data + 2) & 1) != 0 || (len & 1) != 0) {
+		Warning("DSP_Play: sample is not DMA-ready (rate=%u codec=%u length=%u).\n",
+		        (unsigned)data[0], (unsigned)data[1], len);
+		return;
 	}
+	if (len == 0) return;
+
+	/* All TOS callers use retained ST RAM or the ST RAM conversion scratch.
+	 * Neither source may be freed/overwritten until DMA has stopped. */
+	set_dma_sound(data + 2, len, DMASOUND_MODE);
+	s_playingSample = sample;
 }
 
 /**
