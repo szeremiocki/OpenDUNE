@@ -35,6 +35,11 @@ extern void Video_Atari_CursorHide(void);
 extern void Video_Atari_CursorPreloadIcons(void);
 extern bool Video_Atari_CursorUseIcon(uint16 iconIndex, int16 left, int16 top);
 
+/* Grid-aligned placement preview, below the planar cursor and above the
+ * scene. Coordinates are screen pixels; clipping is to the battlefield. */
+extern void Video_Atari_PlacementSet(int16 x, int16 y, uint16 width, uint16 height, bool invalid);
+extern void Video_Atari_PlacementHide(void);
+
 /* Fast path for GUI_SetPaletteAnimated(): on ST/STE the expensive
  * full-screen fades in this game all have one endpoint that is a *uniform*
  * palette - every entry the same colour. Fades to/from all-black are the
@@ -54,9 +59,9 @@ extern bool Video_Atari_CursorUseIcon(uint16 iconIndex, int16 left, int16 top);
 extern bool Video_Atari_TryPaletteFadeUniform(uint8 *data, const uint8 *palette, int16 ticksOfAnimation);
 
 /* Fast path for ShadeScreen()/UnshadeScreen() (options-menu dim/restore):
- * on ST/STE the "shade" effect (halve every color's brightness, restore
+ * on ST/STE the "shade" effect (subtract one intensity level, restore
  * later) never needs the 256-entry quantization/pair-LUT machinery either
- * - the 16 hardware pens can be halved/restored directly, instantly (no
+ * - the 16 hardware pens can be dimmed/restored directly, instantly (no
  * ramp - the original effect is an immediate, one-shot palette swap, not
  * an animation). Outside of an active fade the 16 registers always sit at
  * their fixed catalog values (see Video_Atari_TryPaletteFadeUniform),

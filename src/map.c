@@ -30,6 +30,7 @@
 #include "tile.h"
 #include "unit.h"
 #include "file.h"
+#include "video/video.h"
 
 
 uint16 g_mapTileID[64 * 64];
@@ -210,16 +211,29 @@ static void Map_InvalidateSelection(uint16 packed, bool enable)
 uint16 Map_SetSelectionObjectPosition(uint16 packed)
 {
 	static uint16 selectionPosition = 0xFFFF;
+#ifdef TOS
+	static bool selectionPlanar = false;
+	bool planar = Video_Atari_CursorDirect() && g_selectionType == SELECTIONTYPE_PLACE;
+#endif
 
 	uint16 oldPacked;
 
 	oldPacked = selectionPosition;
 
+#ifdef TOS
+	if (packed == oldPacked && planar == selectionPlanar) return oldPacked;
+
+	/* Clear a previous chunky outline when entering placement, but never
+	 * invalidate terrain just to move a planar placement preview. */
+	if (!selectionPlanar) Map_InvalidateSelection(oldPacked, false);
+	if (!planar) Map_InvalidateSelection(packed, true);
+	selectionPlanar = planar;
+#else
 	if (packed == oldPacked) return oldPacked;
 
 	Map_InvalidateSelection(oldPacked, false);
-
 	if (packed != 0xFFFF) Map_InvalidateSelection(packed, true);
+#endif
 
 	selectionPosition = packed;
 

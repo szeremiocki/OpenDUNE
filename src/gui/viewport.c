@@ -31,6 +31,7 @@
 #include "../timer.h"
 #include "../tools.h"
 #include "../unit.h"
+#include "../video/video.h"
 
 /* ENHANCEMENT -- Minimum time (in game ticks, 120Hz) that a scroll cursor is
  * kept before it may revert to a non-scroll cursor. Absorbs the rapid
@@ -584,7 +585,11 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool drawToMai
 		}
 	}
 
-	if (g_unitSelected == NULL && (g_selectionRectangleNeedRepaint || hasScrolled) && (Structure_Get_ByPackedTile(g_selectionRectanglePosition) != NULL || g_selectionType == SELECTIONTYPE_PLACE || g_debugScenario)) {
+	if (g_unitSelected == NULL && (g_selectionRectangleNeedRepaint || hasScrolled) && (Structure_Get_ByPackedTile(g_selectionRectanglePosition) != NULL || g_selectionType == SELECTIONTYPE_PLACE || g_debugScenario)
+#ifdef TOS
+	    && !(Video_Atari_CursorDirect() && g_selectionType == SELECTIONTYPE_PLACE)
+#endif
+	   ) {
 		uint16 x1 = (Tile_GetPackedX(g_selectionRectanglePosition) - Tile_GetPackedX(g_minimapPosition)) << 4;
 		uint16 y1 = ((Tile_GetPackedY(g_selectionRectanglePosition) - Tile_GetPackedY(g_minimapPosition)) << 4) + 0x28;
 		uint16 x2 = x1 + (g_selectionWidth << 4) - 1;

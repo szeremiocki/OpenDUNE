@@ -11,11 +11,11 @@
 
 #include "types.h"
 #include "video.h"
-#include "video_fps.h"
 #include "../gfx.h"
 #include "../gui/gui.h"
 #include "../input/input.h"
 #include "../input/mouse.h"
+#include "../opendune.h"
 #include "../os/endian.h"
 #include "../os/error.h"
 #include "../os/sleep.h"
@@ -154,6 +154,7 @@ static uint16 Video_CountDirtyBlocks(uint32 mask)
 #endif /* GFX_STORE_DIRTY_AREA_BLOCKS */
 
 static bool s_showFPS = false;
+static volatile bool s_fpsReset = true;
 
 /* Instrumentation for the ST/STE chunky-to-planar path.
  * DISABLED BY DEFAULT: the reports are written with unbuffered Warning()
@@ -743,8 +744,8 @@ bool Video_Atari_TryPaletteFadeUniform(uint8 *data, const uint8 *palette, int16 
 /* Backup of the 16 hw registers' pre-shade values, saved by
  * Video_Atari_ShadeHwPalette(true) and restored verbatim by
  * Video_Atari_ShadeHwPalette(false) - restoring from this exact backup
- * (rather than doubling the halved value back) avoids losing the low bit
- * to integer division, matching the original code's pattern of restoring
+ * (rather than adding back to clamped values) preserves the original
+ * zero components, matching the original code's pattern of restoring
  * from its own g_palette_998A backup rather than re-deriving it. */
 static uint8 s_hwPaletteShadeBackup[16*3];
 
@@ -763,7 +764,9 @@ void Video_Atari_ShadeHwPalette(bool shade)
 
 	if (shade) {
 		memcpy(s_hwPaletteShadeBackup, s_hwPalette, sizeof(s_hwPalette));
-		for (i = 0; i < 16*3; i++) s_hwPalette[i] /= 2;
+		for (i = 0; i < 16*3; i++) {
+			if (s_hwPalette[i] > 0) s_hwPalette[i]--;
+		}
 	} else {
 		memcpy(s_hwPalette, s_hwPaletteShadeBackup, sizeof(s_hwPalette));
 	}
@@ -994,20 +997,19 @@ void Video_SwitchFPSDisplay(uint8 key)
 	Debug("Video_SwitchFPSDisplay key=$%02x\n", key);
 	if(key & 0x80) {	/* key UP */
 		s_showFPS = !s_showFPS;
+		s_fpsReset = true;
 	}
 }
 
 static uint32 s_fps_chars[5];
 
-static void Video_Atari_DrawChar(uint8 * screen, uint16 x, uint8 digit)
+static void Video_Atari_DrawChar(uint16 x, uint8 digit)
 {
 	static const uint8 fontdigits[10] = {0167,044,0135,0155,056,0153,0173,045,0177,0157};
 	static const uint8 fonttestsegments[15] = {03,01,05, 02,0,04, 032,010,054, 020,0,040, 0120,0100,0140};
 	uint8 segments = fontdigits[digit];
 	int i, line;
 	uint32 pixels = 0;
-
-	(void)screen;
 
 	for (i = 0, line = 0; i<15; i++) {
 		pixels <<= 1;
@@ -1019,6 +1021,38 @@ static void Video_Atari_DrawChar(uint8 * screen, uint16 x, uint8 digit)
 			pixels = 0;
 		}
 	}
+}
+
+static void Video_Atari_UpdateFPS(void)
+{
+	static uint32 previousTime;
+	static uint32 updates;
+	uint32 now = Timer_GetTime();
+	uint32 elapsed;
+	uint32 fps;
+	uint16 x;
+
+	if (s_fpsReset) {
+		s_fpsReset = false;
+		previousTime = now;
+		updates = 0;
+		fps = 0;
+	} else {
+		updates++;
+		elapsed = now - previousTime;
+		if (elapsed < 1000) return;
+		fps = updates * 1000 / elapsed;
+		previousTime = now;
+		updates = 0;
+	}
+
+	memset(s_fps_chars, 0, sizeof(s_fps_chars));
+	x = 320 - 4;
+	do {
+		Video_Atari_DrawChar(x, fps % 10);
+		fps /= 10;
+		x -= 4;
+	} while (fps != 0);
 }
 
 /* ------------------------------------------------------------------------
@@ -1608,6 +1642,157 @@ static int Video_Atari_CursorOverlap(uint16 y, uint16 h, uint16 group, uint16 gr
 	return all ? 2 : 1;
 }
 
+/* Placement footprints are at most 3x3 tiles. Save only planar groups
+ * containing outline pixels; the chunky screens remain free of overlays. */
+#define PLACEMENT_MAX_H 48
+#define PLACEMENT_MAX_GROUPS 3
+
+typedef struct PlacementBlock {
+	uint16 y, group, mask;
+	uint16 saved[4];
+	bool refreshed;
+} PlacementBlock;
+
+static uint16 s_placeMask[PLACEMENT_MAX_H][PLACEMENT_MAX_GROUPS];
+static PlacementBlock s_placeBlocks[PLACEMENT_MAX_H * PLACEMENT_MAX_GROUPS];
+static uint16 s_placeBlockCount;
+static uint8 *s_placeDrawnBase;
+static int16 s_placeX, s_placeY;
+static uint16 s_placeWidth, s_placeHeight;
+static uint8 s_placePen;
+static bool s_placeInvalid, s_placeVisible, s_placeDirty;
+
+static void Video_Atari_PlacementCross(uint16 width, uint16 height)
+{
+	uint16 dx = width - 1, dy = height - 1;
+	uint16 steps = dx > dy ? dx : dy;
+	int16 error = steps / 2;
+	uint16 x = 0, y = 0, i;
+
+	/* Same midpoint stepping as GUI_DrawLine(), reflected for the other
+	 * diagonal. Generate before clipping so the cross keeps its slope. */
+	for (i = 0; i <= steps; i++) {
+		uint16 mirror = dx - x;
+		s_placeMask[y][x >> 4] |= 0x8000u >> (x & 15);
+		s_placeMask[y][mirror >> 4] |= 0x8000u >> (mirror & 15);
+		if (dx >= dy) {
+			x++;
+			error -= dy;
+			if (error < 0) { error += dx; y++; }
+		} else {
+			y++;
+			error -= dx;
+			if (error < 0) { error += dy; x++; }
+		}
+	}
+}
+
+void Video_Atari_PlacementSet(int16 x, int16 y, uint16 width, uint16 height, bool invalid)
+{
+	uint16 line, group;
+
+	if (!s_curDirect) return;
+	if (width == 0 || width > PLACEMENT_MAX_GROUPS * 16 ||
+	    height == 0 || height > PLACEMENT_MAX_H ||
+	    (x & 15) != 0 || (width & 15) != 0 || (height & 15) != 0) {
+		Warning("Invalid planar placement geometry: %hd,%hd %hux%hu\n", x, y, width, height);
+		Video_Atari_PlacementHide();
+		return;
+	}
+	if (width != s_placeWidth || height != s_placeHeight || invalid != s_placeInvalid) {
+		memset(s_placeMask, 0, sizeof(s_placeMask));
+		for (group = 0; group < width / 16; group++) {
+			s_placeMask[0][group] = 0xffff;
+			s_placeMask[height - 1][group] = 0xffff;
+		}
+		for (line = 1; line < height - 1; line++) {
+			s_placeMask[line][0] |= 0x8000;
+			s_placeMask[line][width / 16 - 1] |= 1;
+		}
+		if (invalid) Video_Atari_PlacementCross(width, height);
+		s_placeWidth = width;
+		s_placeHeight = height;
+		s_placeInvalid = invalid;
+		s_placeDirty = true;
+	}
+	if (!s_placeVisible || x != s_placeX || y != s_placeY) s_placeDirty = true;
+	s_placeX = x;
+	s_placeY = y;
+	s_placeVisible = true;
+}
+
+void Video_Atari_PlacementHide(void)
+{
+	if (s_placeVisible) {
+		s_placeVisible = false;
+		s_placeDirty = true;
+	}
+}
+
+/* Snapshot c2p coverage before SetClean clears the dirty blocks. Like the
+ * mouse, defer restoration until after conversion to avoid visible blinking. */
+static bool Video_Atari_PlacementBegin(void)
+{
+	uint16 i;
+	bool dirty, full, redraw;
+
+	if (!s_placeVisible && s_placeBlockCount == 0) {
+		s_placeDirty = false;
+		return false;
+	}
+	dirty = GFX_Screen_IsDirty(SCREEN_0);
+	full = s_screen_needrepaint || (dirty && GFX_Screen_GetDirtyArea(SCREEN_0) == NULL);
+	redraw = s_placeDirty || (s_placeVisible && s_placePen != s_palette4BitMap[255]);
+
+	for (i = 0; i < s_placeBlockCount; i++) {
+		PlacementBlock *block = &s_placeBlocks[i];
+		block->refreshed = full || (dirty && (g_dirty_blocks[block->y] & (1UL << block->group)) != 0);
+		if (block->refreshed) redraw = true;
+	}
+	return redraw;
+}
+
+static void Video_Atari_PlacementEnd(uint8 *base)
+{
+	uint16 i, line, group, plane;
+
+	for (i = 0; i < s_placeBlockCount; i++) {
+		const PlacementBlock *block = &s_placeBlocks[i];
+		uint16 *p = (uint16 *)s_placeDrawnBase + block->y * 80 + block->group * 4;
+		if (block->refreshed) continue;
+		for (plane = 0; plane < 4; plane++) {
+			p[plane] = (p[plane] & (uint16)~block->mask) | (block->saved[plane] & block->mask);
+		}
+	}
+	s_placeBlockCount = 0;
+	s_placeDirty = false;
+	if (!s_placeVisible) return;
+
+	s_placeDrawnBase = base;
+	s_placePen = s_palette4BitMap[255];
+	for (line = 0; line < s_placeHeight; line++) {
+		int16 y = s_placeY + line;
+		if (y < 40 || y >= SCREEN_HEIGHT) continue;
+		for (group = 0; group < s_placeWidth / 16; group++) {
+			int16 x = s_placeX + group * 16;
+			uint16 mask = s_placeMask[line][group];
+			uint16 *p;
+			PlacementBlock *block;
+
+			if (x < 0 || x >= 240 || mask == 0) continue;
+			p = (uint16 *)base + y * 80 + x / 4;
+			block = &s_placeBlocks[s_placeBlockCount++];
+			block->y = y;
+			block->group = x / 16;
+			block->mask = mask;
+			for (plane = 0; plane < 4; plane++) {
+				block->saved[plane] = p[plane];
+				p[plane] = (p[plane] & (uint16)~mask) | ((s_placePen & (1u << plane)) ? mask : 0);
+			}
+		}
+	}
+}
+
 /**
  * Runs every tick to handle video updates.
  */
@@ -1615,6 +1800,7 @@ void Video_Tick(void)
 {
 	uint8 *data = GFX_Screen_Get_ByIndex(SCREEN_0);
 	uint8 *screen = Logbase();
+	bool placementRedraw = false;
 	screen += s_center_image_offset;
 
 	/* send mouse event */
@@ -1624,9 +1810,12 @@ void Video_Tick(void)
 		                   s_mouse_left_btn, s_mouse_right_btn);
 	}
 
-	if (s_showFPS) {
-		memset(s_fps_chars, 0, sizeof(s_fps_chars));
-		Video_ShowFPS_2(screen, 320, Video_Atari_DrawChar);
+	if (s_curDirect) {
+		if (g_selectionType != SELECTIONTYPE_PLACE) Video_Atari_PlacementHide();
+		placementRedraw = Video_Atari_PlacementBegin();
+		/* The mouse backup may contain the old preview. Remove the mouse
+		 * first, then replace the preview, then save/draw the mouse again. */
+		if (placementRedraw) s_curDirty = true;
 	}
 
 	/* The cursor sits on top of the planar image: take it away before the
@@ -2059,10 +2248,15 @@ l_overlays:
 			Video_Atari_CursorErase();
 			s_curNeedErase = false;
 		}
+		if (placementRedraw) Video_Atari_PlacementEnd((uint8 *)Logbase() + s_center_image_offset);
 		/* `screen` was advanced by the c2p loop, recompute the frame base */
 		Video_Atari_CursorDraw((uint8 *)Logbase() + s_center_image_offset);
 		s_curDirty = false;
 	}
+
+	/* Count completed updates, including ticks with no dirty game pixels.
+	 * The resulting digits are displayed on the next video tick. */
+	if (s_showFPS) Video_Atari_UpdateFPS();
 
 #ifdef VIDEO_C2P_STATS
 	Video_C2PStats_Report();

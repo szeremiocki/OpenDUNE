@@ -720,6 +720,9 @@ bool GUI_Widget_Options_Click(Widget *w)
 	uint16 cursor = g_cursorSpriteID;
 	bool loop;
 
+#ifdef TOS
+	Video_Atari_PlacementHide();
+#endif
 	g_cursorSpriteID = 0;
 
 	Sprites_SetMouseSprite(0, 0, g_sprites[0]);

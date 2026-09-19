@@ -31,6 +31,21 @@ Based on a typical scene on level 1 :
 - 68000 build on ST/STE is 6-15fps (busy-quiet), Mega STE is 18fps
 - 68030 build is 60fps (the maximum frame rate)
 
+Press F8 to toggle the FPS counter. It shows integer video updates per
+second, refreshed approximately once a second using the TOS 200 Hz clock.
+The elapsed interval is measured, so slow frames and stalls are included.
+Updates with no dirty game pixels still count; this is not a count of
+distinct game images or CRT refreshes. Enabling it starts a fresh sample,
+showing zero until the first measurement is available.
+
+On ST/STE, the building-placement preview is drawn directly in planar
+memory, above the scene and below the mouse cursor. Moving it does not
+invalidate terrain or trigger chunky-to-planar conversion by itself.
+The footprint stays tile-aligned (up to 3x3 tiles), with an X for invalid
+locations, and is clipped to the battlefield. Ordinary selected-building
+outlines retain their original rendering. Options and modal messages
+hide the preview until gameplay drawing resumes.
+
 
 * Precompiled versions
 
