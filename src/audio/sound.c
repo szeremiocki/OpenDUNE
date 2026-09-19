@@ -6,6 +6,7 @@
 #include "../os/common.h"
 #include "../os/strings.h"
 #include "../os/sleep.h"
+#include "../os/error.h"
 
 #include "sound.h"
 
@@ -151,6 +152,20 @@ void Voice_PlayAtTile(int16 voiceID, tile32 position)
 
 	if (g_enableVoices != 0 && index != 0xFFFF && g_voiceData[index] != NULL && g_table_voices[index].priority >= s_currentVoicePriority) {
 		s_currentVoicePriority = g_table_voices[index].priority;
+
+		/* g_readBuffer is a fixed READ_BUFFER_SIZE scratch buffer (see
+		 * opendune.h), sized to hold the largest sample this game can
+		 * produce. This bound is purely defensive: without it an
+		 * oversized sample would silently overrun the buffer and corrupt
+		 * the heap, which is exactly what used to happen on TOS when
+		 * upsampled effects outgrew the old 28000-byte intro buffer. */
+		if (g_voiceDataSize[index] > g_readBufferSize) {
+			Warning("Voice_PlayAtTile: voice %d is %u bytes, exceeds %u-byte read buffer; skipping\n",
+			        (int)voiceID, (unsigned int)g_voiceDataSize[index],
+			        (unsigned int)g_readBufferSize);
+			return;
+		}
+
 		memmove(g_readBuffer, g_voiceData[index], g_voiceDataSize[index]);
 
 		Driver_Voice_Play(g_readBuffer, s_currentVoicePriority);

@@ -95,8 +95,15 @@ bool   g_debugGame = false;        /*!< When true, you can control the AI. */
 bool   g_debugScenario = false;    /*!< When true, you can review the scenario. There is no fog. The game is not running (no unit-movement, no structure-building, etc). You can click on individual tiles. */
 bool   g_debugSkipDialogs = false; /*!< When non-zero, you immediately go to house selection, and skip all intros. */
 
-void *g_readBuffer = NULL;
-uint32 g_readBufferSize = 0;
+/* Statically reserved rather than heap-allocated: this buffer is needed
+ * for essentially the whole run, is always the same size, and on TOS the
+ * BSS is part of the program's own TPA allocation -- so reserving it here
+ * costs one contiguous, permanently-valid block and takes it out of the
+ * heap entirely, where its repeated alloc/free used to cause
+ * fragmentation. See READ_BUFFER_SIZE in opendune.h for the sizing. */
+static uint8 s_readBuffer[READ_BUFFER_SIZE];
+void *g_readBuffer = s_readBuffer;
+uint32 g_readBufferSize = READ_BUFFER_SIZE;
 
 static bool  s_debugForceWin = false; /*!< When true, you immediately win the level. */
 
@@ -253,8 +260,6 @@ void GameLoop_Uninit(void)
 
 	Script_ClearInfo(g_scriptStructure);
 	Script_ClearInfo(g_scriptTeam);
-
-	free(g_readBuffer); g_readBuffer = NULL;
 
 	free(g_palette1); g_palette1 = NULL;
 	free(g_palette2); g_palette2 = NULL;
@@ -698,10 +703,6 @@ static void GameLoop_GameIntroAnimationMenu(void)
 		case STR_REPLAY_INTRODUCTION:
 			Music_Play(0);
 
-			free(g_readBuffer);
-			g_readBufferSize = (g_enableVoices == 0) ? 12000 : 28000;
-			g_readBuffer = calloc(1, g_readBufferSize);
-
 			GUI_Mouse_Hide_Safe();
 
 			Driver_Music_FadeOut();
@@ -718,10 +719,6 @@ static void GameLoop_GameIntroAnimationMenu(void)
 			}
 
 			Music_Play(0);
-
-			free(g_readBuffer);
-			g_readBufferSize = (g_enableVoices == 0) ? 12000 : 20000;
-			g_readBuffer = calloc(1, g_readBufferSize);
 
 			GUI_Mouse_Show_Safe();
 
@@ -939,12 +936,7 @@ static void GameLoop_Main(void)
 	if (g_palette2) Warning("g_palette2\n");
 	else g_palette2 = calloc(1, 256 * 3);
 
-	g_readBufferSize = 12000;
-	g_readBuffer = calloc(1, g_readBufferSize);
-
 	ReadProfileIni("PROFILE.INI");
-
-	free(g_readBuffer); g_readBuffer = NULL;
 
 	File_ReadBlockFile("IBM.PAL", g_palette1, 256 * 3);
 

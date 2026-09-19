@@ -41,6 +41,31 @@ extern bool g_viewport_fadein;
 
 extern int16 g_musicInBattle;
 
+/**
+ * Size of g_readBuffer, the general-purpose scratch buffer used for
+ * decompressed strings, INI parsing and, most demandingly, for staging a
+ * voice sample before it is handed to the sound driver.
+ *
+ * This is a single fixed size, allocated once at startup and never freed
+ * or resized while the game runs. The original code reallocated this
+ * buffer to several different sizes (12000/20000/28000) depending on the
+ * part of the game and whether voices were enabled; that churn fragmented
+ * the heap for no real benefit, and the 28000-byte intro variant was
+ * actually too small: on TOS every VOC is resampled to DMASOUND_FREQ at
+ * load time, which *upsamples* the low-rate sound effects, so
+ * WIND2BP.VOC grows from 26241 bytes to 31729 bytes and overran the
+ * buffer, corrupting the heap.
+ *
+ * 32KB covers that worst-case resampled sample and matches
+ * DMASOUND_BUFFER_SIZE, the ST RAM DMA buffer it is copied into. The
+ * margin is real but thin (31729 of 32768 bytes, ~1KB spare), and it
+ * only holds for the current DMASOUND_FREQ of 6258Hz: raising that
+ * frequency scales every resampled sample proportionally, so 12517Hz
+ * would need ~64KB here. dsp_atari.c static-asserts the two sizes stay
+ * consistent; if that assert fires, raise this value.
+ */
+#define READ_BUFFER_SIZE 32768
+
 extern void *g_readBuffer;
 extern uint32 g_readBufferSize;
 
