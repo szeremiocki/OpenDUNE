@@ -296,7 +296,9 @@ static uint16 GameLoop_PalettePart_Update(bool finishNow)
 
 	memcpy(&g_palette_998A[215 * 3], s_palettePartCurrent, 18);
 
+#if !defined(TOS)
 	GFX_SetPalette(g_palette_998A);
+#endif
 
 	return s_palettePartDirection;
 }
