@@ -1607,6 +1607,32 @@ static void Video_Atari_CursorErase(void)
 	s_curDrawn = false;
 }
 
+/**
+ * Unconditionally put the whole saved background back, with none of
+ * Video_Atari_CursorErase()'s "skip groups c2p already refreshed this
+ * tick" bookkeeping -- there is no c2p pass to defer to here, so there is
+ * nothing to skip. Used by callers that manipulate planar memory directly,
+ * outside the normal draw/c2p/erase tick cycle, and just need the cursor
+ * gone from wherever it currently sits before they do.
+ */
+static void Video_Atari_CursorEraseFull(void)
+{
+	uint16 line, i;
+	uint16 *p;
+
+	if (!s_curDrawn) return;
+
+	p = (uint16 *)(s_curDrawnBase + s_curDrawnY * (SCREEN_WIDTH >> 1)
+	                             + (s_curDrawnGroup << 3));
+	for (line = 0; line < s_curDrawnH; line++) {
+		const uint16 *s = s_curSave[line];
+
+		for (i = 0; i < (uint16)(s_curDrawnGroups << 2); i++) p[i] = s[i];
+		p += SCREEN_WIDTH >> 2;	/* 80 words per scanline */
+	}
+	s_curDrawn = false;
+}
+
 /** Save the planar background and composite the cursor over it. */
 static void Video_Atari_CursorDraw(uint8 *base)
 {
@@ -2184,6 +2210,16 @@ bool Video_Atari_ShiftPlanar(int16 x, int16 y, uint16 width, uint16 height, int1
 	if (width == 0 || height == 0) return false;
 	if (((x | (int16)width | dx) & 0xf) != 0) return false;
 	if (dx == 0 && dy == 0) return true;
+
+	/* A composited cursor is just baked-in pixels as far as this raw
+	 * memmove is concerned: left alone, it would get carried along to
+	 * the shifted position (a ghost/duplicate cursor where it used to
+	 * be -- or, if that spot lands in the vacated area that gets
+	 * blanked below, just as wrong the other way). We already have its
+	 * saved background sitting right there in planar format -- put it
+	 * back before touching anything; whatever still wants the cursor
+	 * visible will recomposite it at its current position next tick. */
+	Video_Atari_CursorEraseFull();
 
 	srcX = x;
 	dstX = (int16)(x + dx);
