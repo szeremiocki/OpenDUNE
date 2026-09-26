@@ -358,3 +358,73 @@ constraint any future enclave must respect.
 Host-side exhaustive check of the planar fill mask formula for all
 x/width combinations in 0..320; clean TOS build with no new warnings.
 Nothing has been run in Hatari or on hardware yet.
+
+### Enclave 2: the whole intro (`GameLoop_GameIntroAnimation`)
+
+The second enclave wraps `GameLoop_PrepareAnimation()` /
+`GameLoop_PlayAnimation()` / `GameLoop_FinishAnimation()`. Four things
+had to change for it.
+
+**Masked presentation.** `Video_Atari_PresentChunkyMasked()` /
+`Video_Atari_PresentGroupMasked()` present rectangles whose left edge or
+width is not a multiple of 16. The group-aligned interior still goes
+through `_c2p1x1_4_st`; only the (at most two) partially covered edge
+groups take a C read-modify-write that builds the four plane words a
+pixel at a time and merges them under a mask. It reads only source pixels
+inside the rectangle, so it is safe for tightly packed sources such as
+WSA frame buffers. Verified on the host against a reference planar
+renderer for all 51360 x/width combinations (51150 of them masked), with
+both full-width and packed strides.
+
+**16 pixel fade-in blocks.** `GUI_Screen_FadeIn()` dissolved in 8x2
+blocks, and the intro's region (x = 8..311) is not group aligned at
+either end, so every single block would have needed masking. The TOS
+path now builds its block list from the *screen's* 16 pixel group grid,
+clipped to the region: for the intro that is 20 blocks per row of which
+18 are perfectly aligned and only the two edge ones are masked, against
+38 misaligned blocks before. The dissolve is half as many copies and the
+coarser grid is not noticeable. Non-TOS builds take the same loop with a
+one-column block list, which is exactly the original behaviour.
+
+**No in-place WSA decode.** Intro steps 7, 15, 16, 17, 18 and 19 lack
+`HOUSEANIM_FLAGS_DISPLAYFRAME`, so `WSA_DisplayFrame()` would decode
+their deltas by XOR-ing them into the destination -- reading chunky
+`SCREEN_0` back. `GameLoop_PlayAnimation()` now forces
+`wsaReservedDisplayFrame` while presenting, so every frame is composed in
+the WSA's own buffer and reaches the screen through `WSA_DrawFrame()`,
+which the present hook already covers. It costs one width*height buffer;
+`WSA_LoadFile()` falls back to streaming the file from disk if that no
+longer fits.
+
+**Subtitles.** These are drawn by the ordinary chunky renderers
+(`GUI_DrawFilledRectangle`, `GUI_DrawText_Wrapper`) straight into
+`SCREEN_0`, which no hook can intercept. Rather than redirect them,
+`GameLoop_PlaySubtitle()` lets them write chunky `SCREEN_0` as before and
+then presents that band explicitly. Doing so is only safe because the
+band never overlaps a WSA picture, which the animation tables confirm:
+every step that shows one uses `top = 154` (below the 24..143 picture
+area), and every full-screen clear (`top == 85`, which clears from 0)
+belongs to a text-only mode 0 step. The band is full width, so it is
+always group aligned.
+
+The subtitle pens need the same quantize-ahead treatment as a picture.
+Colours 215..220 are blanked in `g_palette1` by
+`GameLoop_PrepareAnimation()` and only filled in by the step's fade-in,
+which runs *after* the text is drawn; presenting first would bake black
+pens into it. `GameLoop_PresentSubtitleBand()` therefore installs
+`s_palettePartTarget` into 215..220 via the new
+`Video_Atari_PresentPaletteRange()` before converting. Submitting just
+those six entries keeps `Rebuild_Palette4BitPairMap()` cheap and avoids
+moving pens under already presented picture pixels.
+
+**Fade to white.** `HOUSEANIM_FLAGS_FADETOWHITE` builds a palette that is
+white everywhere except colour 0 and the subtitle pens, which is just
+short of the uniform target `Video_Atari_TryPaletteFadeUniform()` needs
+in order to ramp the hardware registers. Since presented pixels keep the
+pens they were converted with, a software fade there would change nothing
+on screen. While presenting, the target is made exactly uniform white --
+which is the point of the effect -- so the registers ramp instead.
+
+The ordering-guard warning in `Video_SetPalette()` is now reported only
+once per enclave (`s_presentWarned`), because a software fade re-submits
+an intermediate palette on every step.

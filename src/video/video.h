@@ -95,6 +95,7 @@ extern bool Video_Atari_PresentEnter(void);
 extern void Video_Atari_PresentLeave(void);
 extern bool Video_Atari_PresentActive(void);
 extern void Video_Atari_PresentPalette(const uint8 *palette);
+extern void Video_Atari_PresentPaletteRange(const uint8 *palette, int from, int length);
 extern bool Video_Atari_PresentChunky(const void *src, uint16 srcStride,
                                       int16 x, int16 y, uint16 width, uint16 height);
 extern bool Video_Atari_PresentFill(int16 x, int16 y, uint16 width, uint16 height, uint8 colour);

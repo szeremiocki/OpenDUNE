@@ -1872,6 +1872,7 @@ static void Video_Atari_PlacementEnd(uint8 *base)
 
 static bool s_presentMode = false;
 static bool s_presentDrawn = false;	/* something was presented since the last quantization */
+static bool s_presentWarned = false;	/* ordering guard already reported this enclave */
 
 static uint8 *Video_Atari_PlanarBase(void)
 {
@@ -1934,6 +1935,80 @@ static void Video_Atari_PresentRun(const uint8 *src, uint16 srcStride,
 	}
 }
 
+/* Convert one partially covered 16 pixel group and merge it into what is
+ * already on screen. Only source pixels inside [x0,x1) are read, so this
+ * stays in bounds even when the source row is exactly as wide as the
+ * rectangle (a WSA frame buffer, for instance). */
+static void Video_Atari_PresentGroupMasked(const uint8 *srcRow, uint16 gx,
+                                           uint16 x0, uint16 x1, uint16 *p)
+{
+	uint16 a = (x0 > gx) ? (uint16)(x0 - gx) : 0;
+	uint16 b = (x1 < (uint16)(gx + 16)) ? (uint16)(x1 - gx) : 16;
+	uint16 mask = (uint16)((0xFFFFu >> a) & (0xFFFFu << (16 - b)));
+	uint16 pl[4];
+	uint16 i;
+
+	pl[0] = pl[1] = pl[2] = pl[3] = 0;
+
+	for (i = a; i < b; i++) {
+		uint8 pen = s_palette4BitMap[srcRow[gx + i - x0]];
+		uint16 bit = (uint16)(0x8000u >> i);
+
+		if (pen & 1) pl[0] |= bit;
+		if (pen & 2) pl[1] |= bit;
+		if (pen & 4) pl[2] |= bit;
+		if (pen & 8) pl[3] |= bit;
+	}
+
+	/* Only bits inside the mask were set above, so a plain merge is enough. */
+	p[0] = (uint16)((p[0] & (uint16)~mask) | pl[0]);
+	p[1] = (uint16)((p[1] & (uint16)~mask) | pl[1]);
+	p[2] = (uint16)((p[2] & (uint16)~mask) | pl[2]);
+	p[3] = (uint16)((p[3] & (uint16)~mask) | pl[3]);
+}
+
+/* Present a rectangle whose left edge and/or width are not multiples of
+ * 16. The interior, which is group aligned, still goes through the fast
+ * c2p; only the (at most two) partially covered edge groups take the
+ * read-modify-write path above. */
+static void Video_Atari_PresentRunMasked(const uint8 *src, uint16 srcStride,
+                                         uint16 x, uint16 y, uint16 w, uint16 h)
+{
+	uint16 x1 = (uint16)(x + w);
+	int gLeft = (int)(x >> 4);
+	int gRight = (int)((x1 - 1) >> 4);	/* group holding the last pixel */
+	int firstFull = ((x & 0xf) != 0) ? gLeft + 1 : gLeft;
+	int lastFull = ((x1 & 0xf) != 0) ? gRight - 1 : gRight;
+	/* A group is partial when its 16 pixel span is not wholly inside the
+	 * rectangle. When both edges fall in the same group, that one group
+	 * is partial and the single masked call below covers both edges. */
+	bool doLeft = ((x & 0xf) != 0) || (gLeft == gRight && (x1 & 0xf) != 0);
+	bool doRight = (gRight != gLeft) && ((x1 & 0xf) != 0);
+	uint8 *lineBase = Video_Atari_PlanarBase() + (uint32)y * ST_PLANAR_LINE_BYTES;
+	uint16 line;
+
+	if (lastFull >= firstFull) {
+		Video_Atari_PresentRun(src + (uint16)((firstFull << 4) - (int)x), srcStride,
+		                       (uint16)(firstFull << 4), y,
+		                       (uint16)((lastFull - firstFull + 1) << 4), h);
+	}
+
+	if (!doLeft && !doRight) return;
+
+	for (line = 0; line < h; line++) {
+		if (doLeft) {
+			Video_Atari_PresentGroupMasked(src, (uint16)(gLeft << 4), x, x1,
+			                               (uint16 *)lineBase + (gLeft << 2));
+		}
+		if (doRight) {
+			Video_Atari_PresentGroupMasked(src, (uint16)(gRight << 4), x, x1,
+			                               (uint16 *)lineBase + (gRight << 2));
+		}
+		src += srcStride;
+		lineBase += ST_PLANAR_LINE_BYTES;
+	}
+}
+
 bool Video_Atari_PresentActive(void)
 {
 	return s_presentMode;
@@ -1941,18 +2016,23 @@ bool Video_Atari_PresentActive(void)
 
 /* Install the quantization a following present must use, while the
  * hardware registers are still dark. See the section comment. */
-void Video_Atari_PresentPalette(const uint8 *palette)
+void Video_Atari_PresentPaletteRange(const uint8 *palette, int from, int length)
 {
 	union { const uint8 *cp; void *p; } u;
 
 	if (!s_presentMode) return;
 
 	u.cp = palette;
-	Video_SetPalette(u.p, 0, 256);
+	Video_SetPalette(u.p, from, length);
 	s_presentDrawn = false;
 	/* No chunky shadow exists to repaint from, and the caller guarantees
 	 * nothing has been presented under the old quantization yet. */
 	s_screen_needrepaint = false;
+}
+
+void Video_Atari_PresentPalette(const uint8 *palette)
+{
+	Video_Atari_PresentPaletteRange(palette, 0, 256);
 }
 
 bool Video_Atari_PresentEnter(void)
@@ -1980,6 +2060,7 @@ bool Video_Atari_PresentEnter(void)
 	s_curNeedErase = false;
 
 	s_presentDrawn = false;
+	s_presentWarned = false;
 	s_presentMode = true;
 	return true;
 }
@@ -2015,11 +2096,12 @@ bool Video_Atari_PresentChunky(const void *src, uint16 srcStride,
 
 	if (((x | (int16)width) & 0xf) != 0) {
 		/* c2p1x1_4_st converts whole 16 pixel groups only, and overwrites
-		 * them completely. A masked, read-modify-write variant is a later
-		 * step; until then refuse loudly rather than render wrongly. */
-		Warning("Video_Atari_PresentChunky: unaligned rect %hd,%hd %hux%hu\n",
-		        x, y, width, height);
-		return false;
+		 * them completely, so the partially covered edge groups need the
+		 * masked read-modify-write path. */
+		Video_Atari_PresentRunMasked((const uint8 *)src, srcStride,
+		                             (uint16)x, (uint16)y, width, height);
+		s_presentDrawn = true;
+		return true;
 	}
 
 	Video_Atari_PresentRun((const uint8 *)src, srcStride,
@@ -2599,7 +2681,11 @@ void Video_SetPalette(void *palette, int from, int length)
 		 * converted with. Enclaves avoid this by calling
 		 * Video_Atari_PresentPalette() before drawing (see the present
 		 * mode section comment); reaching here means that was missed. */
-		if (s_presentMode && s_presentDrawn && changedFrom >= 0) {
+		if (s_presentMode && s_presentDrawn && changedFrom >= 0 && !s_presentWarned) {
+			/* A software palette fade re-submits an intermediate palette on
+			 * every step, so report this once per enclave rather than
+			 * flooding the log. */
+			s_presentWarned = true;
 			Warning("Video_SetPalette: quantization changed after presenting (%d..%d)\n",
 			        changedFrom, changedTo);
 		}
