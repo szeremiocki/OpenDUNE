@@ -2925,6 +2925,45 @@ void GUI_Screen_Copy(int16 xSrc, int16 ySrc, int16 xDst, int16 yDst, int16 width
 	GFX_Screen_Copy(xSrc * 8, ySrc, xDst * 8, yDst, width * 8, height, screenSrc, screenDst);
 }
 
+/**
+ * Like GUI_Screen_Copy(), but source and destination are the same screen and
+ * may overlap (used to shift the viewport buffer in place while scrolling).
+ * See GFX_Screen_CopyOverlap() for the overlap-safety rationale.
+ */
+void GUI_Screen_CopyOverlap(int16 xSrc, int16 ySrc, int16 xDst, int16 yDst, int16 width, int16 height, Screen screen)
+{
+	if (width  > SCREEN_WIDTH / 8) width  = SCREEN_WIDTH / 8;
+	if (height > SCREEN_HEIGHT)    height = SCREEN_HEIGHT;
+
+	if (xSrc < 0) {
+		xDst -= xSrc;
+		width += xSrc;
+		xSrc = 0;
+	}
+
+	if (xSrc >= SCREEN_WIDTH / 8 || xDst >= SCREEN_WIDTH / 8) return;
+
+	if (xDst < 0) {
+		xSrc -= xDst;
+		width += xDst;
+		xDst = 0;
+	}
+
+	if (ySrc < 0) {
+		yDst -= ySrc;
+		height += ySrc;
+		ySrc = 0;
+	}
+
+	if (yDst < 0) {
+		ySrc -= yDst;
+		height += yDst;
+		yDst = 0;
+	}
+
+	GFX_Screen_CopyOverlap(xSrc * 8, ySrc, xDst * 8, yDst, width * 8, height, screen);
+}
+
 static uint32 GUI_FactoryWindow_CreateWidgets(void)
 {
 	uint16 i;
@@ -4938,7 +4977,13 @@ void GUI_DrawScreen(Screen screenID)
 
 			GUI_Mouse_Hide_InWidget(2);
 
-			GUI_Screen_Copy(max(-xOffset << 1, 0), 40 + max(-yOffset << 4, 0), max(0, xOffset << 1), 40 + max(0, yOffset << 4), xOverlap << 1, yOverlap << 4, SCREEN_0, SCREEN_1);
+			/* SCREEN_1 is the authoritative viewport buffer: shift its own
+			 * still-valid pixels in place instead of reading them back from
+			 * whatever happens to be currently displayed on SCREEN_0. Source
+			 * and destination overlap (most of the viewport survives a
+			 * scroll), so this needs the overlap-safe copy, not the
+			 * disjoint-rows GUI_Screen_Copy(). */
+			GUI_Screen_CopyOverlap(max(-xOffset << 1, 0), 40 + max(-yOffset << 4, 0), max(0, xOffset << 1), 40 + max(0, yOffset << 4), xOverlap << 1, yOverlap << 4, SCREEN_1);
 		} else {
 			g_viewport_forceRedraw = true;
 		}

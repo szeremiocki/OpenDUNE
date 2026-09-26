@@ -994,6 +994,63 @@ void GFX_Screen_Copy(int16 xSrc, int16 ySrc, int16 xDst, int16 yDst, int16 width
 }
 
 /**
+ * Copy a rectangle within a single screen buffer, where source and
+ * destination may overlap (e.g. shifting the viewport buffer in place
+ * while scrolling). Unlike GFX_Screen_Copy()/GFX_CopyRows(), which assume
+ * disjoint rows, this always uses memmove() per row (safe for horizontal
+ * overlap) and picks a row iteration order that never overwrites a source
+ * row before it has been read (safe for vertical overlap).
+ */
+void GFX_Screen_CopyOverlap(int16 xSrc, int16 ySrc, int16 xDst, int16 yDst, int16 width, int16 height, Screen screen)
+{
+	uint8 *base;
+	uint8 *src;
+	uint8 *dst;
+
+	if (xSrc >= SCREEN_WIDTH) return;
+	if (xSrc < 0) xSrc = 0;
+
+	if (ySrc >= SCREEN_HEIGHT) return;
+	if (ySrc < 0) ySrc = 0;
+
+	if (xDst >= SCREEN_WIDTH) return;
+	if (xDst < 0) xDst = 0;
+
+	if ((yDst + height) > SCREEN_HEIGHT) {
+		height = SCREEN_HEIGHT - 1 - yDst;
+	}
+	if (height <= 0) return;
+
+	if (yDst >= SCREEN_HEIGHT) return;
+	if (yDst < 0) yDst = 0;
+
+	if (width <= 0 || width > SCREEN_WIDTH) return;
+
+	base = GFX_Screen_Get_ByIndex(screen);
+	src = base + xSrc + ySrc * SCREEN_WIDTH;
+	dst = base + xDst + yDst * SCREEN_WIDTH;
+
+	if (yDst > ySrc) {
+		/* Destination rows are below source rows: copy bottom row first
+		 * so a lower destination row never clobbers a source row that a
+		 * higher iteration still needs to read. */
+		src += (height - 1) * SCREEN_WIDTH;
+		dst += (height - 1) * SCREEN_WIDTH;
+		while (height-- != 0) {
+			memmove(dst, src, width);
+			src -= SCREEN_WIDTH;
+			dst -= SCREEN_WIDTH;
+		}
+	} else {
+		while (height-- != 0) {
+			memmove(dst, src, width);
+			src += SCREEN_WIDTH;
+			dst += SCREEN_WIDTH;
+		}
+	}
+}
+
+/**
  * Clears the screen.
  */
 void GFX_ClearScreen(Screen screenID)
