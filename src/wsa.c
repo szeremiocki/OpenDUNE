@@ -15,6 +15,9 @@
 #include "codec/format80.h"
 #include "file.h"
 #include "gui/widget.h"
+#ifdef TOS
+#include "video/video.h"
+#endif
 
 
 /**
@@ -403,6 +406,16 @@ static void WSA_DrawFrame(int16 x, int16 y, int16 width, int16 height, uint16 wi
 
 	dst += y * SCREEN_WIDTH + x;
 
+#ifdef TOS
+	/* ST/STE present mode: the frame was decoded into the WSA's own
+	 * buffer, so it can go straight to the planar screen. Its rows are
+	 * "width + the clipped-away columns" apart, not SCREEN_WIDTH. */
+	if (GFX_Screen_Get_ByIndex(screenID) == GFX_Screen_Get_ByIndex(SCREEN_0)
+	 && Video_Atari_PresentChunky(src + skipBefore,
+	                              (uint16)(skipBefore + width + skipAfter),
+	                              x, y, (uint16)width, (uint16)height)) return;
+#endif
+
 	while (height-- != 0) {
 		src += skipBefore;
 		memcpy(dst, src, width);
@@ -439,6 +452,16 @@ bool WSA_DisplayFrame(void *wsa, uint16 frameNext, uint16 posX, uint16 posY, Scr
 	} else {
 		dst = GFX_Screen_Get_ByIndex(screenID);
 		dst += posX + posY * SCREEN_WIDTH;
+#ifdef TOS
+		/* This variant decodes (and XOR-accumulates) frames in place in
+		 * the destination screen, so it both writes and reads it. That
+		 * cannot work against a planar screen -- load such animations
+		 * with a reserved display frame when presenting. */
+		if (Video_Atari_PresentActive()
+		 && GFX_Screen_Get_ByIndex(screenID) == GFX_Screen_Get_ByIndex(SCREEN_0)) {
+			Warning("WSA_DisplayFrame() decodes into SCREEN_0 while presenting\n");
+		}
+#endif
 	}
 
 	if (header->frameCurrent == header->frames) {

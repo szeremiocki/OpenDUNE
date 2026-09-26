@@ -14,8 +14,16 @@
 #include "video/video.h"
 #include "os/error.h"
 
-uint8 g_paletteActive[256 * 3];
-uint8 *g_palette1 = NULL;
+/* ENHANCEMENT -- Atari ST/STE "present mode": while a planar presentation
+ * enclave is open (see Video_Atari_PresentEnter() in video/video_atari.c),
+ * chunky SCREEN_0 is neither displayed nor maintained. Writes aimed at it
+ * are converted straight into the planar screen instead. */
+#ifdef TOS
+#define GFX_IS_SCREEN0(screenID) \
+	(GFX_Screen_Get_ByIndex(screenID) == GFX_Screen_Get_ByIndex(SCREEN_0))
+#endif
+
+uint8 g_paletteActive[256 * 3];uint8 *g_palette1 = NULL;
 uint8 *g_palette2 = NULL;
 uint8 *g_paletteMapping1 = NULL;
 uint8 *g_paletteMapping2 = NULL;
@@ -935,6 +943,12 @@ void GFX_Screen_Copy(int16 xSrc, int16 ySrc, int16 xDst, int16 yDst, int16 width
 
 	GFX_Screen_SetDirty(screenDst, xDst, yDst, xDst + width, yDst + height);
 
+#ifdef TOS
+	if (GFX_IS_SCREEN0(screenDst) && !GFX_IS_SCREEN0(screenSrc)
+	 && Video_Atari_PresentChunky(src, SCREEN_WIDTH, xDst, yDst,
+	                              (uint16)width, (uint16)height)) return;
+#endif
+
 	if (width == SCREEN_WIDTH) {
 		memmove(dst, src, height * SCREEN_WIDTH);
 	} else {
@@ -947,6 +961,14 @@ void GFX_Screen_Copy(int16 xSrc, int16 ySrc, int16 xDst, int16 yDst, int16 width
  */
 void GFX_ClearScreen(Screen screenID)
 {
+#ifdef TOS
+	if (GFX_IS_SCREEN0(screenID)
+	 && Video_Atari_PresentFill(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0)) {
+		GFX_Screen_SetDirtySource(DIRTY_SRC_FULL);
+		GFX_Screen_SetDirty(screenID, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+		return;
+	}
+#endif
 	memset(GFX_Screen_Get_ByIndex(screenID), 0, SCREEN_WIDTH * SCREEN_HEIGHT);
 	GFX_Screen_SetDirtySource(DIRTY_SRC_FULL);
 	GFX_Screen_SetDirty(screenID, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);

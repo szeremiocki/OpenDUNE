@@ -67,6 +67,37 @@ extern bool Video_Atari_TryPaletteFadeUniform(uint8 *data, const uint8 *palette,
  * their fixed catalog values (see Video_Atari_TryPaletteFadeUniform),
  * so this is always safe to call in matched shade(true)/shade(false) pairs. */
 extern void Video_Atari_ShadeHwPalette(bool shade);
+
+/* Direct chunky->planar presentation ("present mode"), see the section
+ * comment in src/video/video_atari.c.
+ *
+ * Inside an enclave opened with Video_Atari_PresentEnter(), chunky
+ * SCREEN_0 is neither displayed nor maintained: visible rectangles are
+ * converted straight from the logical work buffer that already holds
+ * them into the planar screen, and Video_Tick() runs no c2p pass at all.
+ * Only sequences verified to never read SCREEN_0 back may do this - see
+ * ATARI_SCREEN0_PLANARIZATION.md.
+ *
+ * Presents happen immediately. Because c2p bakes pen numbers in and no
+ * chunky copy is left to re-convert, the quantization the pixels need
+ * must already be installed when they are drawn: call
+ * Video_Atari_PresentPalette() with the picture's real palette first.
+ * That is invisible at the time, because on ST/STE the quantization and
+ * the 16 hardware colour registers are independent and the registers are
+ * still black - exactly the state the following fade-in ramps up from.
+ *
+ * Both submit functions return false when present mode is off or the
+ * rectangle cannot be handled, in which case the caller must fall back
+ * to its normal chunky write. Video_Atari_PresentChunky() additionally
+ * requires x and width to be multiples of 16: c2p1x1_4_st() converts
+ * whole 16 pixel groups only. Present mode leaves the screen black. */
+extern bool Video_Atari_PresentEnter(void);
+extern void Video_Atari_PresentLeave(void);
+extern bool Video_Atari_PresentActive(void);
+extern void Video_Atari_PresentPalette(const uint8 *palette);
+extern bool Video_Atari_PresentChunky(const void *src, uint16 srcStride,
+                                      int16 x, int16 y, uint16 width, uint16 height);
+extern bool Video_Atari_PresentFill(int16 x, int16 y, uint16 width, uint16 height, uint8 colour);
 #endif /* TOS */
 
 #endif /* VIDEO_VIDEO_H */

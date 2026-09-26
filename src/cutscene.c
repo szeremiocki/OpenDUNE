@@ -28,6 +28,9 @@
 #include "table/strings.h"
 #include "timer.h"
 #include "wsa.h"
+#ifdef TOS
+#include "video/video.h"
+#endif
 
 
 static const HouseAnimation_Subtitle    *s_houseAnimation_subtitle = NULL;    /*!< Subtitle part of animation data. */
@@ -973,6 +976,16 @@ static void Gameloop_Logos(void)
 
 	oldScreenID = GFX_Screen_SetActive(SCREEN_0);
 
+#ifdef TOS
+	/* ST/STE: present straight to the planar screen for the whole logo
+	 * sequence. Everything it displays is either a flat clear or a full
+	 * screen picture that already exists in a logical buffer (SCREEN_1,
+	 * or the WSA's own reserved display frame), and nothing here reads
+	 * SCREEN_0 back, so the chunky copy and the per-tick c2p pass that
+	 * re-reads it are both pure overhead. See ATARI_SCREEN0_PLANARIZATION.md. */
+	Video_Atari_PresentEnter();
+#endif
+
 	GFX_SetPalette(g_palette2);
 	GFX_ClearScreen(SCREEN_0);
 
@@ -980,6 +993,11 @@ static void Gameloop_Logos(void)
 
 	frame = 0;
 	wsa = WSA_LoadFile("WESTWOOD.WSA", GFX_Screen_Get_ByIndex(SCREEN_1), GFX_Screen_GetSize_ByIndex(SCREEN_1) + GFX_Screen_GetSize_ByIndex(SCREEN_2) + GFX_Screen_GetSize_ByIndex(SCREEN_3), true);
+#ifdef TOS
+	/* Quantize against the animation's real palette before its first
+	 * frame is converted; the screen stays black until the fade below. */
+	Video_Atari_PresentPalette(g_palette_998A);
+#endif
 	WSA_DisplayFrame(wsa, frame++, 0, 0, SCREEN_0);
 
 	GUI_SetPaletteAnimated(g_palette_998A, 60);
@@ -1010,6 +1028,9 @@ static void Gameloop_Logos(void)
 	if (File_Exists("AND.CPS")) Sprites_LoadImage("AND.CPS", SCREEN_1, g_palette_998A);
 	else Sprites_LoadImage(String_GenerateFilename("AND"), SCREEN_1, g_palette_998A);
 
+#ifdef TOS
+	Video_Atari_PresentPalette(g_palette_998A);
+#endif
 	GUI_Screen_Copy(0, 0, 0, 0, SCREEN_WIDTH / 8, SCREEN_HEIGHT, SCREEN_1, SCREEN_0);
 
 	GUI_SetPaletteAnimated(g_palette_998A, 30);
@@ -1024,6 +1045,9 @@ static void Gameloop_Logos(void)
 
 	Sprites_LoadImage("VIRGIN.CPS", SCREEN_1, g_palette_998A);
 
+#ifdef TOS
+	Video_Atari_PresentPalette(g_palette_998A);
+#endif
 	GUI_Screen_Copy(0, 0, 0, 0, SCREEN_WIDTH / 8, SCREEN_HEIGHT, SCREEN_1, SCREEN_0);
 
 	GUI_SetPaletteAnimated(g_palette_998A, 30);
@@ -1036,6 +1060,10 @@ logos_exit:
 	GUI_SetPaletteAnimated(g_palette2, 30);
 
 	GUI_ClearScreen(SCREEN_0);
+
+#ifdef TOS
+	Video_Atari_PresentLeave();
+#endif
 
 	GFX_Screen_SetActive(oldScreenID);
 }

@@ -1834,6 +1834,213 @@ static void Video_Atari_PlacementEnd(uint8 *base)
 	}
 }
 
+/* ------------------------------------------------------------------
+ * Direct chunky -> planar presentation ("present mode")
+ *
+ * Normally every visible pixel is written twice: once by the game into
+ * the chunky 8bpp SCREEN_0, and once by Video_Tick()'s c2p pass reading
+ * that same byte back out of SCREEN_0 and transposing it into the planar
+ * screen. Present mode removes the middleman for screens whose logical
+ * image already lives in one of the off-screen work buffers: the source
+ * pixels are converted straight from that buffer into the planar screen,
+ * and chunky SCREEN_0 is not used at all.
+ *
+ * While present mode is on, chunky SCREEN_0 is NOT the visible surface
+ * and is not maintained. Nothing may read it back (see
+ * ATARI_SCREEN0_PLANARIZATION.md for the inventory of code that does);
+ * present mode is therefore only enabled around self-contained sequences
+ * that were checked to have no such readback. The first of those is
+ * Gameloop_Logos() in src/cutscene.c.
+ *
+ * Presentation bakes pen numbers in: c2p resolves every chunky byte
+ * through the current quantization, and unlike the normal path there is
+ * no chunky copy left to re-convert when that quantization later changes
+ * (which is what s_screen_needrepaint does for the c2p path). The game
+ * routinely draws a picture while the palette is still all black and
+ * only then fades it in, so presenting naively would bake black pens
+ * into everything.
+ *
+ * The fix exploits the fact that on ST/STE the software quantization and
+ * the 16 hardware colour registers are independent: Video_SetPalette()
+ * only rebuilds the chunky->pen tables and never calls Setcolor(), while
+ * the registers are moved only by the fade helpers. So an enclave calls
+ * Video_Atari_PresentPalette() with the picture's real palette *before*
+ * drawing it. The pens are then correct from the first converted pixel,
+ * and the picture stays invisible anyway because the registers are still
+ * black - exactly the state the following fade-in ramps up from.
+ */
+
+static bool s_presentMode = false;
+static bool s_presentDrawn = false;	/* something was presented since the last quantization */
+
+static uint8 *Video_Atari_PlanarBase(void)
+{
+	return (uint8 *)Logbase() + s_center_image_offset;
+}
+
+/* Flat-colour planar fill. Unlike the c2p path this handles rectangles
+ * that do not start/end on a 16 pixel group boundary, by masking the
+ * partially covered groups. */
+static void Video_Atari_PlanarFill(uint16 x, uint16 y, uint16 w, uint16 h, uint8 pen)
+{
+	uint8 *base = Video_Atari_PlanarBase() + (uint32)y * ST_PLANAR_LINE_BYTES;
+	uint16 first = (uint16)(x >> 4);
+	uint16 last = (uint16)((x + w + 15) >> 4);	/* exclusive */
+	uint16 g, line, plane;
+
+	for (line = 0; line < h; line++) {
+		uint16 *p = (uint16 *)base + (first << 2);
+
+		for (g = first; g < last; g++) {
+			uint16 gx = (uint16)(g << 4);
+			uint16 a = (x > gx) ? (uint16)(x - gx) : 0;
+			uint16 b = ((uint16)(x + w) < (uint16)(gx + 16)) ? (uint16)(x + w - gx) : 16;
+			uint16 mask = (uint16)((0xFFFFu >> a) & (0xFFFFu << (16 - b)));
+
+			for (plane = 0; plane < 4; plane++) {
+				uint16 set = (pen & (1u << plane)) ? mask : 0;
+
+				p[plane] = (mask == 0xFFFF) ? set
+				                            : (uint16)((p[plane] & (uint16)~mask) | set);
+			}
+			p += 4;
+		}
+		base += ST_PLANAR_LINE_BYTES;
+	}
+}
+
+static void Video_Atari_PresentRun(const uint8 *src, uint16 srcStride,
+                                   uint16 x, uint16 y, uint16 w, uint16 h)
+{
+	union { const uint8 *cp; void *p; } u;	/* c2p1x1_4_st takes a void* */
+	uint8 *dst = Video_Atari_PlanarBase() + (uint32)y * ST_PLANAR_LINE_BYTES + (x >> 1);
+
+	if (srcStride == SCREEN_WIDTH) {
+		/* c2p1x1_4_st walks whole scanlines itself, with the chunky and
+		 * planar strides hardcoded to 320/160 -- one call for the lot. */
+		u.cp = src;
+		c2p1x1_4_st(dst, u.p, w, h, s_palette4BitPairMap);
+	} else {
+		/* A source whose rows are not 320 bytes apart (a WSA frame buffer,
+		 * for instance) has to be handed over one line at a time. */
+		uint16 line;
+
+		for (line = 0; line < h; line++) {
+			u.cp = src;
+			c2p1x1_4_st(dst, u.p, w, 1, s_palette4BitPairMap);
+			src += srcStride;
+			dst += ST_PLANAR_LINE_BYTES;
+		}
+	}
+}
+
+bool Video_Atari_PresentActive(void)
+{
+	return s_presentMode;
+}
+
+/* Install the quantization a following present must use, while the
+ * hardware registers are still dark. See the section comment. */
+void Video_Atari_PresentPalette(const uint8 *palette)
+{
+	union { const uint8 *cp; void *p; } u;
+
+	if (!s_presentMode) return;
+
+	u.cp = palette;
+	Video_SetPalette(u.p, 0, 256);
+	s_presentDrawn = false;
+	/* No chunky shadow exists to repaint from, and the caller guarantees
+	 * nothing has been presented under the old quantization yet. */
+	s_screen_needrepaint = false;
+}
+
+bool Video_Atari_PresentEnter(void)
+{
+	if (s_machine_type != MCH_ST && s_machine_type != MCH_STE
+	 && s_machine_type != MCH_MEGA_STE) return false;
+	if (s_presentMode) return true;
+
+	/* Anything composited on top of the planar picture is about to be
+	 * overwritten by presented pixels that know nothing about it, and its
+	 * saved background would no longer match what is underneath. Take the
+	 * placement preview and the cursor down first. (Present mode is only
+	 * used by cutscenes, which hide the mouse anyway, but a cursor left
+	 * composited from an earlier screen would otherwise linger.) */
+	Video_Atari_PlacementHide();
+	Video_Atari_CursorHide();
+	if (s_curDrawn) {
+		uint16 line;
+
+		/* s_curEraseHit[] marks groups a c2p pass already refreshed; no
+		 * such pass is involved here, so every group must be restored. */
+		for (line = 0; line < s_curDrawnH; line++) s_curEraseHit[line] = 0;
+		Video_Atari_CursorErase();
+	}
+	s_curNeedErase = false;
+
+	s_presentDrawn = false;
+	s_presentMode = true;
+	return true;
+}
+
+void Video_Atari_PresentLeave(void)
+{
+	if (!s_presentMode) return;
+
+	s_presentMode = false;
+	s_presentDrawn = false;
+
+	/* The chunky SCREEN_0 shadow was not maintained while presenting, so
+	 * it no longer describes the visible picture and must not simply be
+	 * re-converted -- doing so would flash whatever was on screen before
+	 * the enclave. Put both representations into the same known state
+	 * (all black) instead and hand control back to the normal c2p path.
+	 * Every caller leaves on a blanked screen already (the cutscenes fade
+	 * to black before returning), so this is not a visible change. */
+	memset(GFX_Screen_Get_ByIndex(SCREEN_0), 0, SCREEN_WIDTH * SCREEN_HEIGHT);
+	Video_Atari_PlanarFill(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, s_palette4BitMap[0]);
+	GFX_Screen_SetClean(SCREEN_0);
+	s_screen_needrepaint = false;
+}
+
+bool Video_Atari_PresentChunky(const void *src, uint16 srcStride,
+                               int16 x, int16 y, uint16 width, uint16 height)
+{
+	if (!s_presentMode) return false;
+	if (src == NULL || width == 0 || height == 0) return false;
+	if (x < 0 || y < 0) return false;
+	if ((int)x + (int)width > SCREEN_WIDTH) return false;
+	if ((int)y + (int)height > SCREEN_HEIGHT) return false;
+
+	if (((x | (int16)width) & 0xf) != 0) {
+		/* c2p1x1_4_st converts whole 16 pixel groups only, and overwrites
+		 * them completely. A masked, read-modify-write variant is a later
+		 * step; until then refuse loudly rather than render wrongly. */
+		Warning("Video_Atari_PresentChunky: unaligned rect %hd,%hd %hux%hu\n",
+		        x, y, width, height);
+		return false;
+	}
+
+	Video_Atari_PresentRun((const uint8 *)src, srcStride,
+	                       (uint16)x, (uint16)y, width, height);
+	s_presentDrawn = true;
+	return true;
+}
+
+bool Video_Atari_PresentFill(int16 x, int16 y, uint16 width, uint16 height, uint8 colour)
+{
+	if (!s_presentMode) return false;
+	if (width == 0 || height == 0) return false;
+	if (x < 0 || y < 0) return false;
+	if ((int)x + (int)width > SCREEN_WIDTH) return false;
+	if ((int)y + (int)height > SCREEN_HEIGHT) return false;
+
+	Video_Atari_PlanarFill((uint16)x, (uint16)y, width, height, s_palette4BitMap[colour]);
+	s_presentDrawn = true;
+	return true;
+}
+
 /**
  * Runs every tick to handle video updates.
  */
@@ -1849,6 +2056,15 @@ void Video_Tick(void)
 		s_mouse_state_changed = false;
 		Mouse_EventHandler(s_mouse_x, s_mouse_y,
 		                   s_mouse_left_btn, s_mouse_right_btn);
+	}
+
+	if (s_presentMode) {
+		/* SCREEN_0 is not the visible surface here: presentation already
+		 * put the pixels on screen. Just drop the dirty state its unused
+		 * chunky shadow accumulated, so nothing is converted from it. */
+		GFX_Screen_SetClean(SCREEN_0);
+		s_screen_needrepaint = false;
+		goto l_overlays;
 	}
 
 	if (s_curDirect) {
@@ -2377,6 +2593,16 @@ void Video_SetPalette(void *palette, int from, int length)
 		 * aware) Video_Atari_CursorUseIcon() check. Rare event, cheap to
 		 * redo eagerly here. */
 		if (changedFrom >= 0) Video_Atari_CursorPreloadIcons();
+		/* Present mode has no chunky shadow to re-convert, so a
+		 * quantization change cannot be applied retroactively to pixels
+		 * that were already presented -- they keep the pens they were
+		 * converted with. Enclaves avoid this by calling
+		 * Video_Atari_PresentPalette() before drawing (see the present
+		 * mode section comment); reaching here means that was missed. */
+		if (s_presentMode && s_presentDrawn && changedFrom >= 0) {
+			Warning("Video_SetPalette: quantization changed after presenting (%d..%d)\n",
+			        changedFrom, changedTo);
+		}
 		/* Repaint only when a large amount of colors are changing, for fading
 		 * and so on. On ST/STE the screen only shows 16 quantized pens, so a
 		 * wide palette update whose colours all re-quantize to the pens they
