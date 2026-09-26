@@ -2148,7 +2148,11 @@ bool Video_Atari_PresentFill(int16 x, int16 y, uint16 width, uint16 height, uint
 
 /**
  * Shift a rectangle of the ST/STE planar screen buffer in place by
- * (dx, dy) pixels, without touching the chunky shadow or running c2p.
+ * (dx, dy) pixels, without touching the chunky shadow or running c2p, then
+ * blank whatever the shift exposed (proper move semantics: the vacated
+ * edge that had nothing to shift into it goes to black, it does not keep
+ * showing the pre-shift picture until some later, unrelated redraw
+ * happens to reach it).
  *
  * This is for the gameplay viewport scroll: it is always a whole number
  * of 16 pixel tiles in each direction, so x, width and dx are always a
@@ -2173,6 +2177,7 @@ bool Video_Atari_ShiftPlanar(int16 x, int16 y, uint16 width, uint16 height, int1
 	uint8 *dst;
 	int16 srcX, dstX, srcY, dstY;
 	uint16 bytes;
+	uint16 rows;
 
 	if (s_machine_type != MCH_ST && s_machine_type != MCH_STE
 	 && s_machine_type != MCH_MEGA_STE) return false;
@@ -2194,6 +2199,7 @@ bool Video_Atari_ShiftPlanar(int16 x, int16 y, uint16 width, uint16 height, int1
 
 	base = Video_Atari_PlanarBase();
 	bytes = width >> 1;	/* 8 bytes/group * (width>>4) groups == width>>1 */
+	rows = height;
 
 	src = base + (uint32)srcY * ST_PLANAR_LINE_BYTES + ((uint16)srcX >> 1);
 	dst = base + (uint32)dstY * ST_PLANAR_LINE_BYTES + ((uint16)dstX >> 1);
@@ -2203,19 +2209,39 @@ bool Video_Atari_ShiftPlanar(int16 x, int16 y, uint16 width, uint16 height, int1
 		 * so a lower destination row never clobbers a source row a
 		 * higher iteration still needs to read. memmove() per row
 		 * already handles horizontal overlap either way. */
-		src += (uint32)(height - 1) * ST_PLANAR_LINE_BYTES;
-		dst += (uint32)(height - 1) * ST_PLANAR_LINE_BYTES;
-		while (height-- != 0) {
+		src += (uint32)(rows - 1) * ST_PLANAR_LINE_BYTES;
+		dst += (uint32)(rows - 1) * ST_PLANAR_LINE_BYTES;
+		while (rows-- != 0) {
 			memmove(dst, src, bytes);
 			src -= ST_PLANAR_LINE_BYTES;
 			dst -= ST_PLANAR_LINE_BYTES;
 		}
 	} else {
-		while (height-- != 0) {
+		while (rows-- != 0) {
 			memmove(dst, src, bytes);
 			src += ST_PLANAR_LINE_BYTES;
 			dst += ST_PLANAR_LINE_BYTES;
 		}
+	}
+
+	/* Blank the vacated area: the source rectangle minus the destination
+	 * rectangle, which is an L-shape (up to two rectangles) when both dx
+	 * and dy are non-zero. The horizontal strip spans the full source
+	 * height; the vertical strip only spans the columns the horizontal
+	 * strip did not already cover, so the two never overlap. */
+	if (dx != 0) {
+		uint16 freeW = (uint16)((dx > 0) ? dx : -dx);
+		int16 freeX = (int16)((dx > 0) ? x : (x + width + dx));
+
+		Video_Atari_PlanarFill((uint16)freeX, (uint16)y, freeW, height, 0);
+	}
+	if (dy != 0) {
+		uint16 keepW = (uint16)(width - ((dx > 0) ? dx : -dx));
+		int16 keepX = (int16)(x + ((dx > 0) ? dx : 0));
+		uint16 freeH = (uint16)((dy > 0) ? dy : -dy);
+		int16 freeY = (int16)((dy > 0) ? y : (y + height + dy));
+
+		if (keepW != 0) Video_Atari_PlanarFill((uint16)keepX, (uint16)freeY, keepW, freeH, 0);
 	}
 	return true;
 }

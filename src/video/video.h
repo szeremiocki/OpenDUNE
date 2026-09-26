@@ -113,7 +113,10 @@ extern bool Video_Atari_PresentFill(int16 x, int16 y, uint16 width, uint16 heigh
 /* Shift a rectangle of the planar screen in place; see the definition in
  * video_atari.c for the full contract (group-aligned geometry only,
  * ST/STE only, independent of present mode). Used by the gameplay
- * viewport scroll to avoid re-running c2p on pixels that only moved. */
+ * viewport scroll to avoid re-running c2p on pixels that only moved.
+ * Proper "move" semantics: whatever the shift vacates (no source pixels
+ * to shift into it) is blanked to black by this function itself, so
+ * callers never need to separately clear the exposed edge. */
 extern bool Video_Atari_ShiftPlanar(int16 x, int16 y, uint16 width, uint16 height, int16 dx, int16 dy);
 #endif /* TOS */
 

@@ -5014,6 +5014,9 @@ void GUI_DrawScreen(Screen screenID)
 			for (x = 0; x < 15; x++) {
 				if (x >= xOffset && (xOffset + xOverlap) > x && y >= yOffset && (yOffset + yOverlap) > y && !g_viewport_forceRedraw) continue;
 
+				/* This tile is the vacated edge: Video_Atari_ShiftPlanar()
+				 * above already blanked it (proper move semantics), so no
+				 * separate clear is needed here -- just redraw it. */
 				Map_Update(x + viewportX + mapYBase, 0, true);
 			}
 		}
