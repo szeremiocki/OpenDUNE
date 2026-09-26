@@ -71,26 +71,36 @@ extern void Video_Atari_ShadeHwPalette(bool shade);
 /* Direct chunky->planar presentation ("present mode"), see the section
  * comment in src/video/video_atari.c.
  *
- * Inside an enclave opened with Video_Atari_PresentEnter(), chunky
- * SCREEN_0 is neither displayed nor maintained: visible rectangles are
- * converted straight from the logical work buffer that already holds
- * them into the planar screen, and Video_Tick() runs no c2p pass at all.
- * Only sequences verified to never read SCREEN_0 back may do this - see
- * ATARI_SCREEN0_PLANARIZATION.md.
+ * Inside an enclave opened with Video_Atari_PresentEnter(), every
+ * rectangle written to chunky SCREEN_0 is converted to the planar screen
+ * at the moment it is written, and the dirty blocks it covered are
+ * dropped, so Video_Tick()'s c2p pass has only what was written behind
+ * present mode's back left to do.
  *
- * Presents happen immediately. Because c2p bakes pen numbers in and no
- * chunky copy is left to re-convert, the quantization the pixels need
- * must already be installed when they are drawn: call
- * Video_Atari_PresentPalette() with the picture's real palette first.
- * That is invisible at the time, because on ST/STE the quantization and
- * the 16 hardware colour registers are independent and the registers are
- * still black - exactly the state the following fade-in ramps up from.
+ * This is write-through: the chunky copy still happens. SCREEN_0 is an
+ * XOR accumulator for WSA animations and is read back by several
+ * renderers, so it must stay valid -- see ATARI_SCREEN0_PLANARIZATION.md.
+ * What present mode buys is not skipping the chunky write but removing
+ * the one-tick lag and the partially converted frames that go with it:
+ * a picture appears atomically instead of being revealed by the next
+ * c2p pass.
+ *
+ * Because c2p bakes pen numbers in, pixels converted under one
+ * quantization keep it until something re-converts them. Calling
+ * Video_Atari_PresentPalette() with the picture's real palette before
+ * drawing avoids that entirely, and is invisible at the time: on ST/STE
+ * the quantization and the 16 hardware colour registers are independent,
+ * and the registers are still black -- exactly the state the following
+ * fade-in ramps up from. Getting it wrong is no longer a correctness
+ * problem, only a transient one, since the chunky shadow can always be
+ * re-converted.
  *
  * Both submit functions return false when present mode is off or the
- * rectangle cannot be handled, in which case the caller must fall back
- * to its normal chunky write. Video_Atari_PresentChunky() additionally
- * requires x and width to be multiples of 16: c2p1x1_4_st() converts
- * whole 16 pixel groups only. Present mode leaves the screen black. */
+ * rectangle cannot be handled; the caller's chunky write happens either
+ * way, so the fallback is simply to let Video_Tick() do the conversion.
+ * Video_Atari_PresentChunky() handles any x and width, using a masked
+ * read-modify-write for the edge groups that c2p1x1_4_st() -- which
+ * converts whole 16 pixel groups only -- cannot write directly. */
 extern bool Video_Atari_PresentEnter(void);
 extern void Video_Atari_PresentLeave(void);
 extern bool Video_Atari_PresentActive(void);

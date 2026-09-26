@@ -4000,55 +4000,22 @@ void GUI_Screen_FadeIn(uint16 xSrc, uint16 ySrc, uint16 xDst, uint16 yDst, uint1
 {
 	uint16 offsetsY[100];
 	uint16 offsetsX[40];
-	/* Block geometry, in the 8 pixel columns this function counts in. */
-	uint16 blockCol[40];	/* destination column of each block */
-	uint16 blockWidth[40];	/* its width in columns */
-	uint16 blocks = 0;
 	int x, y;
-
-	/* blockCol[]/blockWidth[]/offsetsX[] hold one entry per 8 pixel column. */
-	if (width > SCREEN_WIDTH / 8) width = SCREEN_WIDTH / 8;
 
 	if (screenDst == SCREEN_0) {
 		GUI_Mouse_Hide_InRegion(xDst << 3, yDst, (xDst + width) << 3, yDst + height);
 	}
 
-#ifdef TOS
-	/* On ST/STE the visible screen is planar and a 16 pixel group is the
-	 * smallest unit the c2p can write without a read-modify-write. Reveal
-	 * whole groups, aligned to the screen's group grid and clipped to the
-	 * region, rather than the original 8 pixel columns: half as many
-	 * blocks, and all but the (at most two) edge ones perfectly aligned.
-	 * The coarser grid is not noticeable in the dissolve. */
-	{
-		uint16 c;
-
-		for (c = xDst & ~1u; c < xDst + width; c += 2) {
-			uint16 c0 = (c > xDst) ? c : xDst;
-			uint16 c1 = ((uint16)(c + 2) < (uint16)(xDst + width)) ? (uint16)(c + 2) : (uint16)(xDst + width);
-
-			blockCol[blocks] = c0;
-			blockWidth[blocks] = (uint16)(c1 - c0);
-			blocks++;
-		}
-	}
-#else
-	for (blocks = 0; blocks < width; blocks++) {
-		blockCol[blocks] = (uint16)(xDst + blocks);
-		blockWidth[blocks] = 1;
-	}
-#endif
-
 	height /= 2;
 
-	for (x = 0; x < blocks; x++) offsetsX[x] = x;
+	for (x = 0; x < width;  x++) offsetsX[x] = x;
 	for (y = 0; y < height; y++) offsetsY[y] = y;
 
-	for (x = 0; x < blocks; x++) {
+	for (x = 0; x < width; x++) {
 		uint16 index;
 		uint16 temp;
 
-		index = Tools_RandomLCG_Range(0, blocks - 1);
+		index = Tools_RandomLCG_Range(0, width - 1);
 
 		temp = offsetsX[index];
 		offsetsX[index] = offsetsX[x];
@@ -4068,14 +4035,13 @@ void GUI_Screen_FadeIn(uint16 xSrc, uint16 ySrc, uint16 xDst, uint16 yDst, uint1
 
 	for (y = 0; y < height; y++) {
 		uint16 y2 = y;
-		for (x = 0; x < blocks; x++) {
-			uint16 block, offsetY, col;
+		for (x = 0; x < width; x++) {
+			uint16 offsetX, offsetY;
 
-			block = offsetsX[x];
+			offsetX = offsetsX[x];
 			offsetY = offsetsY[y2];
-			col = blockCol[block];
 
-			GUI_Screen_Copy(xSrc + (col - xDst), ySrc + offsetY * 2, col, yDst + offsetY * 2, blockWidth[block], 2, screenSrc, screenDst);
+			GUI_Screen_Copy(xSrc + offsetX, ySrc + offsetY * 2, xDst + offsetX, yDst + offsetY * 2, 1, 2, screenSrc, screenDst);
 
 			y2++;
 			if (y2 == height) y2 = 0;

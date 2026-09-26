@@ -165,43 +165,6 @@ static void GameLoop_DrawText(char *string, uint16 top)
 	}
 }
 
-#ifdef TOS
-/**
- * Hand the subtitle band over to the planar screen.
- *
- * Subtitles are drawn by the ordinary chunky renderers (GUI_DrawText_Wrapper,
- * GUI_DrawFilledRectangle) straight into SCREEN_0. In present mode nothing
- * converts that buffer any more, so the band that GameLoop_PlaySubtitle()
- * just cleared and wrote has to be presented explicitly.
- *
- * Presenting it from the chunky buffer is only safe because the band never
- * overlaps a WSA picture: in the intro every step that shows one uses
- * top = 154, below the 24..143 picture area, while every full-screen clear
- * (top == 85, which clears from 0) belongs to a text-only step. Were that
- * not so, the stale chunky picture area would be presented over the real one.
- */
-static void GameLoop_PresentSubtitleBand(uint16 top)
-{
-	uint16 bandTop = (top == 85) ? 0 : top;
-
-	if (!Video_Atari_PresentActive()) return;
-	if (bandTop >= SCREEN_HEIGHT) return;
-
-	/* Subtitle text is drawn in colours 215..220, which GameLoop_Prepare-
-	 * Animation() blanked in g_palette1 and which the step's fade-in only
-	 * installs *after* this call. A presented pixel bakes its pen in at
-	 * conversion time and there is no chunky shadow left to re-convert, so
-	 * quantize those six entries against the colour the text actually ends
-	 * up in before converting them. Only 215..220 are submitted: the rest
-	 * of the intro palette never changes, and re-quantizing it would risk
-	 * moving pens under already presented picture pixels. */
-	Video_Atari_PresentPaletteRange(s_palettePartTarget, 215, 6);
-
-	Video_Atari_PresentChunky((const uint8 *)GFX_Screen_Get_ByIndex(SCREEN_0) + (uint32)bandTop * SCREEN_WIDTH,
-	                          SCREEN_WIDTH, 0, (int16)bandTop,
-	                          SCREEN_WIDTH, (uint16)(SCREEN_HEIGHT - bandTop));
-}
-#endif
 
 static void GameLoop_PlaySubtitle(uint8 animation)
 {
@@ -296,11 +259,6 @@ static void GameLoop_PlaySubtitle(uint8 animation)
 		Font_Select(g_fontIntro);
 	}
 
-#ifdef TOS
-	/* Everything this call drew lives in the band cleared above, including
-	 * the copyright line at y=189. Present it in one go. */
-	GameLoop_PresentSubtitleBand(subtitle->top);
-#endif
 }
 
 /**
@@ -408,17 +366,6 @@ static void GameLoop_PlayAnimation(const HouseAnimation_Animation *animation)
 			}
 
 			snprintf(filenameBuffer, sizeof(filenameBuffer), "%.8s.WSA", animation->string);
-#ifdef TOS
-			/* Without a reserved display frame WSA_DisplayFrame() decodes
-			 * each frame by XOR-ing its deltas into the destination screen,
-			 * so it reads SCREEN_0 back as well as writing it. Present mode
-			 * does not maintain chunky SCREEN_0, so force the reserved
-			 * frame: the frame is then composed in the WSA's own buffer and
-			 * handed to WSA_DrawFrame(), which the present hook picks up.
-			 * Costs one width*height buffer; WSA_LoadFile() falls back to
-			 * streaming the file from disk if that no longer fits. */
-			if (Video_Atari_PresentActive()) wsaReservedDisplayFrame = true;
-#endif
 			wsa = WSA_LoadFile(filenameBuffer, wsa, wsaSize, wsaReservedDisplayFrame);
 		}
 
@@ -540,16 +487,6 @@ static void GameLoop_PlayAnimation(const HouseAnimation_Animation *animation)
 
 			memcpy(&g_palette_998A[215 * 3], s_palettePartCurrent, 18);
 
-#ifdef TOS
-			/* The ST/STE fade helper can ramp the 16 hardware registers,
-			 * leaving the pens presented pixels were baked with alone,
-			 * only when the target is one uniform colour. Colour 0 and the
-			 * subtitle pens above keep this just short of that. Make it
-			 * exactly uniform white -- which is the point of the effect --
-			 * so the registers ramp instead of the quantization shifting
-			 * underneath pixels that can no longer be re-converted. */
-			if (Video_Atari_PresentActive()) memset(g_palette_998A, 63, 256 * 3);
-#endif
 
 			GUI_SetPaletteAnimated(g_palette_998A, 15);
 
@@ -1157,10 +1094,9 @@ void GameLoop_GameIntroAnimation(void)
 		/* ST/STE: present the whole intro straight to the planar screen.
 		 * GameLoop_PrepareAnimation() has just cleared the screen and
 		 * loaded INTRO.PAL, and the logos left the hardware registers
-		 * dark, so this is the moment to install the intro's quantization.
-		 * Colours 215..220 (the subtitle pens) are deliberately left as
-		 * PrepareAnimation blanked them; GameLoop_PresentSubtitleBand()
-		 * installs the real ones just before any text is converted. */
+		 * dark, so this is the moment to install the intro's quantization,
+		 * so that presented pixels do not have to wait for the first
+		 * Video_SetPalette() of the run to get their pens. */
 		if (Video_Atari_PresentEnter()) Video_Atari_PresentPalette(g_palette1);
 #endif
 

@@ -254,10 +254,15 @@ cause byte-oriented renderers to corrupt planar memory.
 ## Implementation status: present mode (branch `atari-st-planar-present`)
 
 The first increment of the plan above is implemented. It is called
-*present mode*: an opt-in enclave inside which chunky `SCREEN_0` is not
-the visible surface and is not maintained, and pixels are converted
-straight from the work buffer that already holds the composed image into
-the planar screen.
+*present mode*: an opt-in enclave inside which every rectangle written to
+chunky `SCREEN_0` is converted to the planar screen at the moment it is
+written, instead of a tick later by `Video_Tick()`'s c2p pass.
+
+It went through two designs. The first was a **bypass**: hooked copies
+skipped the chunky write entirely and `Video_Tick()` skipped its c2p pass,
+on the theory that a sequence could be audited to never read `SCREEN_0`
+back. That was reverted; see *Why bypass was abandoned* below. The design
+in the tree is **write-through**.
 
 ### Mechanism
 
@@ -268,163 +273,145 @@ before `Video_Tick()`):
 | --- | --- |
 | `Video_Atari_PresentEnter()` / `Video_Atari_PresentLeave()` | Open/close an enclave. |
 | `Video_Atari_PresentActive()` | Query, used by the hooks. |
-| `Video_Atari_PresentChunky()` | Convert a rectangle of an 8bpp source (any stride) into the planar screen via `_c2p1x1_4_st`. |
+| `Video_Atari_PresentChunky()` | Convert a rectangle of an 8bpp source (any stride, any x/width) into the planar screen via `_c2p1x1_4_st`. |
 | `Video_Atari_PresentFill()` | Flat-colour planar fill, used for clears. |
-| `Video_Atari_PresentPalette()` | Install a quantization ahead of drawing (see below). |
+| `Video_Atari_PresentPalette()` / `…PaletteRange()` | Install a quantization ahead of drawing (see below). |
 
-`Video_Tick()` takes an early branch while present mode is on: it clears
-the dirty state and jumps straight to the overlay stage, so the whole c2p
-pass over chunky `SCREEN_0` is skipped.
+`_c2p1x1_4_st` writes whole 16-pixel groups and overwrites them
+completely, so a rectangle whose left edge or width is not a multiple of
+16 is split: the aligned interior goes through the fast path, and the (at
+most two) partially covered edge groups go through
+`Video_Atari_PresentGroupMasked()`, which builds the four plane words a
+pixel at a time and merges them under
+`mask = (0xFFFF >> a) & (0xFFFF << (16 - b))`. It reads only source pixels
+inside the rectangle, so tightly packed WSA frame buffers are safe. This
+was verified exhaustively on the host: 51,360 x/width combinations, 51,150
+of them exercising the masked path, zero mismatches against a reference
+converter.
+
+`Video_Tick()` runs its normal dirty-rectangle pass in present mode. What
+makes the presentation worth anything is that each hook calls
+`GFX_Screen_ClearDirtyRect()` for the rectangle it converted, dropping the
+corresponding bits from `g_dirty_blocks[]`. Only *whole* 16-pixel blocks
+are dropped — a partially covered block may still hold dirty pixels
+outside the rectangle. The dirty bounding box is deliberately left alone;
+`Video_Tick()` batches scanlines by block mask and skips bands whose mask
+came out zero, so a stale box costs a test per line and no conversion.
 
 ### Hooks
 
 Presentation is routed implicitly rather than through new call sites, so
-that the 36 existing `dst == SCREEN_0` copy sites need no edits:
+that the 36 existing `dst == SCREEN_0` copy sites need no edits. Each hook
+runs *after* the chunky write it shadows, and reads the freshly written
+bytes:
 
-- `GFX_Screen_Copy()` (`src/gfx.c`) — presents when `dst == SCREEN_0 && src != SCREEN_0`.
+- `GFX_Screen_Copy()` (`src/gfx.c`) — presents when `dst == SCREEN_0`,
+  reading the destination rectangle it just filled.
 - `GFX_ClearScreen()` (`src/gfx.c`) — present-fills when `dst == SCREEN_0`.
-- `WSA_DrawFrame()` (`src/wsa.c`) — presents the decoded frame, using the
-  source stride `skipBefore + width + skipAfter`.
+- `WSA_DisplayFrame()` (`src/wsa.c`) — presents the frame rectangle from
+  chunky `SCREEN_0` after the frame has been composed there, and after the
+  `GFX_Screen_SetDirty()` call whose bits it then clears. Hooking here
+  rather than in `WSA_DrawFrame()` covers the in-place XOR decode variant
+  (`displayInBuffer == false`) as well as the buffered one.
 
-Skipping `GFX_Screen_SetDirty()` is as essential as performing the
-conversion: a presenting copy that still marked the rectangle dirty would
-be immediately overwritten by `Video_Tick()` re-converting the stale
-chunky shadow. Present mode clears dirty state wholesale instead.
+Anything not hooked — `GUI_DrawText_Wrapper()`, `GUI_DrawFilledRectangle()`,
+sprite blits — simply leaves its dirty bits standing and reaches the screen
+through the ordinary c2p pass, exactly as outside present mode. Present
+mode is therefore an accelerator, never a correctness requirement.
 
-### Quantization timing, and why there is no deferral queue
+### Why bypass was abandoned
 
-Presentation bakes pen numbers in. The chunky path can fix pens
-retroactively — `Video_SetPalette()` raises `s_screen_needrepaint` and
-`Video_Tick()` re-converts everything — but once the chunky copy is gone
-there is nothing left to re-convert. Since the game routinely draws a
-picture while the palette is still black and only then fades it in,
-presenting naively would bake black pens into the whole image.
+The bypass design failed in the intro in a way that the `SCREEN_0`
+readback inventory earlier in this document does not capture: **chunky
+`SCREEN_0` is an XOR accumulator**, not just a source of readbacks.
 
-The solution is register-level: on ST/STE the software quantization and
-the 16 hardware colour registers are independent. `Video_SetPalette()`
-only rebuilds `s_palette4BitMap` / `s_palette4BitPairMap` and never calls
-`Setcolor()`; only the fade helpers move registers. So an enclave calls
-`Video_Atari_PresentPalette(<picture palette>)` *before* drawing. Pens
-are correct from the first converted pixel, and the picture stays
-invisible because the registers are still black — exactly the state the
-following `GUI_SetPaletteAnimated()` fade-in ramps up from.
+`WSA_DisplayFrame()` with `displayInBuffer == false` decodes each frame by
+XOR-ing its format-40 deltas into the destination screen, so it both reads
+and writes `SCREEN_0`. Worse, WSA files may carry no first frame at all
+(`firstFrameOffset == 0`), in which case they continue from whatever the
+*previous* animation left in `SCREEN_0`. `INTRO.PAK` has three of these:
 
-`Video_Atari_PresentPalette()` deliberately does **not** touch
-`g_paletteActive`. The game must keep believing the screen is black, so
-that the subsequent fade-in still takes the
-`Video_Atari_TryPaletteFadeUniform()` fade-in-from-uniform path. That
-path re-submits the same palette, which is then a no-op rebuild.
+| Step | File | Frames | First frame? |
+| --- | --- | --- | --- |
+| 15 | `INTRO7A` | 27 | yes (`FADEIN`) |
+| 16 | `INTRO7B` | 22 | **no** |
+| 17 | `INTRO8A` | 16 | yes (`FADEIN`) |
+| 18 | `INTRO8B` | 19 | **no** |
+| 19 | `INTRO8C` | 29 | **no** |
 
-An earlier design deferred presents in a queue until the palette was
-known. It was removed: queue entries stored a *pointer* to the source,
-but WSA frames are decoded into a buffer the next frame overwrites, so a
-deferred present could convert the wrong frame. Presents are now
-immediate.
+Under bypass these accumulated against a `SCREEN_0` that no hooked copy
+had written, so the picture progressively decayed into black with only
+moving edges left. The observed symptom matched the table exactly: the
+"insidious Ordos" scene looked correct until the `INTRO7A`→`INTRO7B` cut
+partway through it, the following Harkonnen scene reset cleanly because
+`INTRO8A` has a first frame, then decayed again at `INTRO8B`.
 
-`Video_SetPalette()` warns (`quantization changed after presenting`) when
-the quantization changes after something has been presented, which flags
-any enclave that got the ordering wrong.
+An attempted workaround — forcing `wsaReservedDisplayFrame` so every
+animation composes in its own buffer — cannot work, precisely because
+these files *need* the previous animation's output as their base.
 
-### Enclave 1: `Gameloop_Logos()`
+`GUI_Screen_FadeIn()` is load-bearing for the same reason: it is what
+copies the first frame from `SCREEN_1` into `SCREEN_0`, seeding the
+accumulator that the rest of the scene XOR-decodes against.
 
-`src/cutscene.c` enters present mode after `GFX_Screen_SetActive(SCREEN_0)`
-and leaves it at `logos_exit`, with `Video_Atari_PresentPalette(g_palette_998A)`
-before each of the three pictures (the WESTWOOD WSA, AND.CPS, VIRGIN.CPS).
-It was chosen because it has no `SCREEN_0` readback at all, the mouse is
-hidden throughout, every fade already takes a hardware path, and
-`WSA_LoadFile(..., true)` reserves a display frame so the in-place
-XOR-decode hazard does not apply.
+The general lesson is that auditing "does anything read `SCREEN_0` back"
+is not a tractable gate. Write-through removes the question.
 
-`Video_Atari_PresentLeave()` does not re-convert the chunky shadow (it is
-stale; converting it would flash pre-enclave content). It forces both
-representations to black and clears dirty state. **This is only safe
-because every current caller fades to black before returning** — a
-constraint any future enclave must respect.
+### Quantization timing
 
-### Known limitations
+Presentation bakes pen numbers in: `_c2p1x1_4_st` resolves every chunky
+byte through the current quantization, and converted pixels keep those
+pens until something re-converts them. Since the game routinely draws a
+picture while the palette is still all black and only then fades it in,
+presenting naively would bake black pens into everything.
 
-- `_c2p1x1_4_st` converts whole 16-pixel groups, so presented rectangles
-  must be 16-aligned in x and width. `Video_Atari_PresentChunky()` warns
-  (`unaligned rect`) and refuses otherwise; in present mode the chunky
-  fallback write is invisible, so such a rectangle would simply not
-  appear. All rectangles in enclave 1 are full-screen.
-- `GFX_Screen_Copy2()` and the direct planar overlays are not hooked.
-- Masked (read-modify-write) presentation does not exist yet; it is
-  required before `GameLoop_PlayAnimation()`'s `GUI_Screen_FadeIn/FadeIn2`
-  and the credits' row-span scrolling can be converted.
+The fix exploits the independence of the two palette mechanisms on
+ST/STE: `Video_SetPalette()` only rebuilds the chunky→pen tables and never
+touches the hardware registers, which are moved only by the fade helpers.
+An enclave therefore calls `Video_Atari_PresentPalette()` with the
+picture's real palette *before* drawing it. The pens are correct from the
+first converted pixel, and the picture stays invisible anyway because the
+registers are still black — exactly the state the following fade-in ramps
+up from.
+
+Under write-through this is an optimization rather than a correctness
+requirement. A wide palette change still raises `s_screen_needrepaint`,
+and `Video_Tick()` still re-converts the whole screen from a chunky shadow
+that is now guaranteed valid, so a mistimed quantization is a transient
+blemish rather than permanent corruption. The bypass-era ordering guard
+(`s_presentWarned`) and the `FADETOWHITE` uniform-white override have been
+removed accordingly.
+
+### Enclaves
+
+| Enclave | Site | Status |
+| --- | --- | --- |
+| Logos | `Gameloop_Logos()`, `src/cutscene.c` | Committed (`5d1cbd4d`), verified in Hatari. |
+| Whole intro | `GameLoop_GameIntroAnimation()`, `src/cutscene.c` | Committed as bypass (`de18666b`), converted to write-through, awaiting retest. |
+
+Both open the enclave immediately after the sequence's palette is loaded
+and the screen cleared, install the quantization with
+`Video_Atari_PresentPalette()`, and close it after the closing fade.
 
 ### Verification so far
 
-Host-side exhaustive check of the planar fill mask formula for all
-x/width combinations in 0..320; clean TOS build with no new warnings.
-Nothing has been run in Hatari or on hardware yet.
+- Logos: both logos appear correctly, and in fact better than the base
+  build, which briefly flashed partially converted buffer content at the
+  logo switch. Presenting under black registers makes each logo appear
+  atomically.
+- Masked present: exhaustive host test, 51,360 cases, zero failures.
+- Intro: the bypass build reproduced the WSA accumulator decay described
+  above. The write-through build has not yet been run on hardware or in
+  Hatari.
 
-### Enclave 2: the whole intro (`GameLoop_GameIntroAnimation`)
+### Known limitations
 
-The second enclave wraps `GameLoop_PrepareAnimation()` /
-`GameLoop_PlayAnimation()` / `GameLoop_FinishAnimation()`. Four things
-had to change for it.
-
-**Masked presentation.** `Video_Atari_PresentChunkyMasked()` /
-`Video_Atari_PresentGroupMasked()` present rectangles whose left edge or
-width is not a multiple of 16. The group-aligned interior still goes
-through `_c2p1x1_4_st`; only the (at most two) partially covered edge
-groups take a C read-modify-write that builds the four plane words a
-pixel at a time and merges them under a mask. It reads only source pixels
-inside the rectangle, so it is safe for tightly packed sources such as
-WSA frame buffers. Verified on the host against a reference planar
-renderer for all 51360 x/width combinations (51150 of them masked), with
-both full-width and packed strides.
-
-**16 pixel fade-in blocks.** `GUI_Screen_FadeIn()` dissolved in 8x2
-blocks, and the intro's region (x = 8..311) is not group aligned at
-either end, so every single block would have needed masking. The TOS
-path now builds its block list from the *screen's* 16 pixel group grid,
-clipped to the region: for the intro that is 20 blocks per row of which
-18 are perfectly aligned and only the two edge ones are masked, against
-38 misaligned blocks before. The dissolve is half as many copies and the
-coarser grid is not noticeable. Non-TOS builds take the same loop with a
-one-column block list, which is exactly the original behaviour.
-
-**No in-place WSA decode.** Intro steps 7, 15, 16, 17, 18 and 19 lack
-`HOUSEANIM_FLAGS_DISPLAYFRAME`, so `WSA_DisplayFrame()` would decode
-their deltas by XOR-ing them into the destination -- reading chunky
-`SCREEN_0` back. `GameLoop_PlayAnimation()` now forces
-`wsaReservedDisplayFrame` while presenting, so every frame is composed in
-the WSA's own buffer and reaches the screen through `WSA_DrawFrame()`,
-which the present hook already covers. It costs one width*height buffer;
-`WSA_LoadFile()` falls back to streaming the file from disk if that no
-longer fits.
-
-**Subtitles.** These are drawn by the ordinary chunky renderers
-(`GUI_DrawFilledRectangle`, `GUI_DrawText_Wrapper`) straight into
-`SCREEN_0`, which no hook can intercept. Rather than redirect them,
-`GameLoop_PlaySubtitle()` lets them write chunky `SCREEN_0` as before and
-then presents that band explicitly. Doing so is only safe because the
-band never overlaps a WSA picture, which the animation tables confirm:
-every step that shows one uses `top = 154` (below the 24..143 picture
-area), and every full-screen clear (`top == 85`, which clears from 0)
-belongs to a text-only mode 0 step. The band is full width, so it is
-always group aligned.
-
-The subtitle pens need the same quantize-ahead treatment as a picture.
-Colours 215..220 are blanked in `g_palette1` by
-`GameLoop_PrepareAnimation()` and only filled in by the step's fade-in,
-which runs *after* the text is drawn; presenting first would bake black
-pens into it. `GameLoop_PresentSubtitleBand()` therefore installs
-`s_palettePartTarget` into 215..220 via the new
-`Video_Atari_PresentPaletteRange()` before converting. Submitting just
-those six entries keeps `Rebuild_Palette4BitPairMap()` cheap and avoids
-moving pens under already presented picture pixels.
-
-**Fade to white.** `HOUSEANIM_FLAGS_FADETOWHITE` builds a palette that is
-white everywhere except colour 0 and the subtitle pens, which is just
-short of the uniform target `Video_Atari_TryPaletteFadeUniform()` needs
-in order to ramp the hardware registers. Since presented pixels keep the
-pens they were converted with, a software fade there would change nothing
-on screen. While presenting, the target is made exactly uniform white --
-which is the point of the effect -- so the registers ramp instead.
-
-The ordering-guard warning in `Video_SetPalette()` is now reported only
-once per enclave (`s_presentWarned`), because a software fade re-submits
-an intermediate palette on every step.
+- `GUI_Screen_FadeIn()` dissolves in 8-pixel columns, half the 16-pixel
+  group the c2p works in, so every block is a masked read-modify-write. A
+  16-pixel variant was written and measured correct (20 blocks: 18
+  aligned, 2 masked edges) but changed the look of the dissolve enough to
+  be noticeable, and has been reverted pending a decision.
+- Present mode writes planar pixels directly underneath anything
+  composited on the planar screen, so `Video_Atari_PresentEnter()` takes
+  the placement preview and the mouse cursor down, and `Video_Tick()`
+  keeps them down for the duration. Cutscenes hide the mouse anyway.

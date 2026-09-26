@@ -95,6 +95,11 @@ extern Screen g_screenActiveID;
 		} \
 	} while (0)
 extern void GFX_Screen_SetClean(Screen screenID);
+#ifdef GFX_STORE_DIRTY_AREA_BLOCKS
+extern void GFX_Screen_ClearDirtyRect(uint16 left, uint16 top, uint16 right, uint16 bottom);
+#else
+#define GFX_Screen_ClearDirtyRect(left, top, right, bottom)
+#endif
 extern bool GFX_Screen_IsDirty(Screen screenID);
 extern struct dirty_area * GFX_Screen_GetDirtyArea(Screen screenID);
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS

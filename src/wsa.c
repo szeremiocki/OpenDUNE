@@ -406,15 +406,6 @@ static void WSA_DrawFrame(int16 x, int16 y, int16 width, int16 height, uint16 wi
 
 	dst += y * SCREEN_WIDTH + x;
 
-#ifdef TOS
-	/* ST/STE present mode: the frame was decoded into the WSA's own
-	 * buffer, so it can go straight to the planar screen. Its rows are
-	 * "width + the clipped-away columns" apart, not SCREEN_WIDTH. */
-	if (GFX_Screen_Get_ByIndex(screenID) == GFX_Screen_Get_ByIndex(SCREEN_0)
-	 && Video_Atari_PresentChunky(src + skipBefore,
-	                              (uint16)(skipBefore + width + skipAfter),
-	                              x, y, (uint16)width, (uint16)height)) return;
-#endif
 
 	while (height-- != 0) {
 		src += skipBefore;
@@ -452,16 +443,6 @@ bool WSA_DisplayFrame(void *wsa, uint16 frameNext, uint16 posX, uint16 posY, Scr
 	} else {
 		dst = GFX_Screen_Get_ByIndex(screenID);
 		dst += posX + posY * SCREEN_WIDTH;
-#ifdef TOS
-		/* This variant decodes (and XOR-accumulates) frames in place in
-		 * the destination screen, so it both writes and reads it. That
-		 * cannot work against a planar screen -- load such animations
-		 * with a reserved display frame when presenting. */
-		if (Video_Atari_PresentActive()
-		 && GFX_Screen_Get_ByIndex(screenID) == GFX_Screen_Get_ByIndex(SCREEN_0)) {
-			Warning("WSA_DisplayFrame() decodes into SCREEN_0 while presenting\n");
-		}
-#endif
 	}
 
 	if (header->frameCurrent == header->frames) {
@@ -524,5 +505,23 @@ bool WSA_DisplayFrame(void *wsa, uint16 frameNext, uint16 posX, uint16 posY, Scr
 
 	GFX_Screen_SetDirtySource(DIRTY_SRC_WSA);
 	GFX_Screen_SetDirty(screenID, posX, posY, posX + header->width, posY + header->height);
+#ifdef TOS
+	/* ST/STE present mode is write-through: whichever path ran above, the
+	 * chunky SCREEN_0 shadow now holds the frame -- later WSAs in the same
+	 * scene XOR-decode against it -- so convert it to the planar screen
+	 * from there and drop the dirty blocks it just claimed. Doing it here
+	 * rather than in WSA_DrawFrame() covers the in-place decode variant
+	 * too, and runs after the SetDirty above rather than before it. */
+	if (GFX_Screen_Get_ByIndex(screenID) == GFX_Screen_Get_ByIndex(SCREEN_0)) {
+		const uint8 *screen0 = GFX_Screen_Get_ByIndex(SCREEN_0);
+
+		if (Video_Atari_PresentChunky(screen0 + posY * SCREEN_WIDTH + posX,
+		                              SCREEN_WIDTH, posX, posY,
+		                              header->width, header->height)) {
+			GFX_Screen_ClearDirtyRect(posX, posY, posX + header->width,
+			                          posY + header->height);
+		}
+	}
+#endif
 	return true;
 }
