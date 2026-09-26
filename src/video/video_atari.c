@@ -1015,10 +1015,19 @@ static void Video_Atari_DrawChar(uint16 x, uint8 digit)
 {
 	static const uint8 fontdigits[10] = {0167,044,0135,0155,056,0153,0173,045,0177,0157};
 	static const uint8 fonttestsegments[15] = {03,01,05, 02,0,04, 032,010,054, 020,0,040, 0120,0100,0140};
-	uint8 segments = fontdigits[digit];
+	static const uint8 slash[5] = {01, 01, 02, 04, 04};
+	uint8 segments;
 	int i, line;
 	uint32 pixels = 0;
 
+	if (digit == 10) {
+		for (line = 0; line < 5; line++) {
+			s_fps_chars[line] |= (uint32)(slash[line] << 1) << (320-4-x);
+		}
+		return;
+	}
+
+	segments = fontdigits[digit];
 	for (i = 0, line = 0; i<15; i++) {
 		pixels <<= 1;
 		if (segments & fonttestsegments[i])	pixels++;
@@ -1031,10 +1040,24 @@ static void Video_Atari_DrawChar(uint16 x, uint8 digit)
 	}
 }
 
+static uint16 Video_Atari_DrawFPSNumber(uint16 x, uint32 fps)
+{
+	do {
+		Video_Atari_DrawChar(x, fps % 10);
+		fps /= 10;
+		x -= 4;
+	} while (fps != 0);
+
+	return x;
+}
+
 static void Video_Atari_UpdateFPS(void)
 {
 	static uint32 previousTime;
 	static uint32 updates;
+	static uint32 averagePreviousTime;
+	static uint32 averageUpdates;
+	static uint32 averageFPS;
 	uint32 now = Timer_GetTime();
 	uint32 elapsed;
 	uint32 fps;
@@ -1043,10 +1066,22 @@ static void Video_Atari_UpdateFPS(void)
 	if (s_fpsReset) {
 		s_fpsReset = false;
 		previousTime = now;
+		averagePreviousTime = now;
 		updates = 0;
+		averageUpdates = 0;
+		averageFPS = 0;
 		fps = 0;
 	} else {
 		updates++;
+		averageUpdates++;
+
+		elapsed = now - averagePreviousTime;
+		if (elapsed >= 10000) {
+			averageFPS = averageUpdates * 1000 / elapsed;
+			averagePreviousTime = now;
+			averageUpdates = 0;
+		}
+
 		elapsed = now - previousTime;
 		if (elapsed < 1000) return;
 		fps = updates * 1000 / elapsed;
@@ -1056,11 +1091,9 @@ static void Video_Atari_UpdateFPS(void)
 
 	memset(s_fps_chars, 0, sizeof(s_fps_chars));
 	x = 320 - 4;
-	do {
-		Video_Atari_DrawChar(x, fps % 10);
-		fps /= 10;
-		x -= 4;
-	} while (fps != 0);
+	x = Video_Atari_DrawFPSNumber(x, averageFPS);
+	Video_Atari_DrawChar(x, 10);
+	Video_Atari_DrawFPSNumber(x - 4, fps);
 }
 
 /* ------------------------------------------------------------------------

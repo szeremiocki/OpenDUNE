@@ -4048,7 +4048,7 @@ void GUI_Screen_FadeIn(uint16 xSrc, uint16 ySrc, uint16 xDst, uint16 yDst, uint1
 		}
 
 		/* XXX -- This delays the system so you can in fact see the animation */
-		if ((y % 4) == 0) Timer_Sleep(1);
+		if ((y % 2) == 0) Timer_Sleep(1);
 	}
 
 	if (screenDst == SCREEN_0) {
@@ -4106,6 +4106,10 @@ void GUI_FactoryWindow_PrepareScrollList(void)
  */
 void GUI_Screen_FadeIn2(int16 x, int16 y, int16 width, int16 height, Screen screenSrc, Screen screenDst, uint16 delay, bool skipNull)
 {
+#ifdef TOS
+	GUI_Screen_FadeIn(x>>3, y, x>>3, y, width>>3, height, screenSrc, screenDst);
+	return;
+#endif
 	Screen oldScreenID;
 	uint16 i;
 	uint16 j;
