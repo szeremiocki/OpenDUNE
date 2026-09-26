@@ -984,14 +984,11 @@ void GFX_Screen_Copy(int16 xSrc, int16 ySrc, int16 xDst, int16 yDst, int16 width
 	/* Present mode is write-through: the chunky copy above still happens,
 	 * so code that reads SCREEN_0 back keeps working, and this converts
 	 * the same rectangle to the planar screen right away instead of
-	 * leaving it to the per-tick c2p pass. */
+	 * leaving it to the per-tick c2p pass. It clears the dirty blocks it
+	 * covered itself (it may widen the rectangle first). */
 	if (GFX_IS_SCREEN0(screenDst)) {
-		if (Video_Atari_PresentChunky(dst, SCREEN_WIDTH, xDst, yDst,
-		                              (uint16)width, (uint16)height)) {
-			GFX_Screen_ClearDirtyRect((uint16)xDst, (uint16)yDst,
-			                          (uint16)(xDst + width),
-			                          (uint16)(yDst + height));
-		}
+		Video_Atari_PresentChunky(dst, SCREEN_WIDTH, xDst, yDst,
+		                          (uint16)width, (uint16)height);
 	}
 #endif
 }
@@ -1006,9 +1003,7 @@ void GFX_ClearScreen(Screen screenID)
 	GFX_Screen_SetDirty(screenID, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
 #ifdef TOS
 	if (GFX_IS_SCREEN0(screenID)) {
-		if (Video_Atari_PresentFill(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0)) {
-			GFX_Screen_ClearDirtyRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
-		}
+		Video_Atari_PresentFill(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0);
 	}
 #endif
 }

@@ -509,18 +509,18 @@ bool WSA_DisplayFrame(void *wsa, uint16 frameNext, uint16 posX, uint16 posY, Scr
 	/* ST/STE present mode is write-through: whichever path ran above, the
 	 * chunky SCREEN_0 shadow now holds the frame -- later WSAs in the same
 	 * scene XOR-decode against it -- so convert it to the planar screen
-	 * from there and drop the dirty blocks it just claimed. Doing it here
-	 * rather than in WSA_DrawFrame() covers the in-place decode variant
-	 * too, and runs after the SetDirty above rather than before it. */
+	 * from there. It clears the dirty blocks it covered itself (it may
+	 * widen the rectangle to whole 16px groups first, which is safe here
+	 * since it is reading from SCREEN_0 itself, not a private buffer).
+	 * Doing this here rather than in WSA_DrawFrame() covers the in-place
+	 * decode variant too, and runs after the SetDirty above rather than
+	 * before it. */
 	if (GFX_Screen_Get_ByIndex(screenID) == GFX_Screen_Get_ByIndex(SCREEN_0)) {
 		const uint8 *screen0 = GFX_Screen_Get_ByIndex(SCREEN_0);
 
-		if (Video_Atari_PresentChunky(screen0 + posY * SCREEN_WIDTH + posX,
-		                              SCREEN_WIDTH, posX, posY,
-		                              header->width, header->height)) {
-			GFX_Screen_ClearDirtyRect(posX, posY, posX + header->width,
-			                          posY + header->height);
-		}
+		Video_Atari_PresentChunky(screen0 + posY * SCREEN_WIDTH + posX,
+		                         SCREEN_WIDTH, posX, posY,
+		                         header->width, header->height);
 	}
 #endif
 	return true;
