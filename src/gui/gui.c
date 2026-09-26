@@ -5016,8 +5016,15 @@ void GUI_DrawScreen(Screen screenID)
 
 				/* This tile is the vacated edge: Video_Atari_ShiftPlanar()
 				 * above already blanked it (proper move semantics), so no
-				 * separate clear is needed here -- just redraw it. */
-				Map_Update(x + viewportX + mapYBase, 0, true);
+				 * separate clear is needed here -- just redraw it. Once
+				 * the planar shift has already moved every other visible
+				 * tile to its correct new position, use the narrow update
+				 * (type 4) so marking this one tile dirty does not also
+				 * widen the SCREEN_1->SCREEN_0 copy range into the still-
+				 * correct neighbouring column via type 0's 8-neighbour
+				 * spread; without a planar shift, the neighbour spread is
+				 * harmless noise next to the full-row fallback anyway. */
+				Map_Update(x + viewportX + mapYBase, viewportPlanarShifted ? 4 : 0, true);
 			}
 		}
 	}

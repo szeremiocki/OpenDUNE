@@ -642,6 +642,27 @@ void Map_Update(uint16 packed, uint16 type, bool ignoreInvisible)
 		case 3:
 			BitArray_Set(g_dirtyViewport, packed);
 			return;
+
+		case 4: {
+			/* Same as type 0 for this exact tile, but deliberately without
+			 * spreading dirtiness to the 8 neighbouring tiles. That spread
+			 * exists so a tile whose content actually changed (unit moved
+			 * in/out, structure built, terrain changed) also refreshes
+			 * neighbours a sprite might visually overlap into -- none of
+			 * that applies to a viewport scroll's newly-exposed edge tile:
+			 * scrolling is synchronous (no other game state changes mid-
+			 * scroll) and the still-visible neighbours were already moved
+			 * to their correct new position by the planar shift, so
+			 * widening their redraw range here would only needlessly
+			 * re-copy/re-convert pixels that are already correct. */
+			if (BitArray_Test(g_dirtyMinimap, packed)) return;
+
+			g_dirtyViewportCount++;
+			BitArray_Set(g_dirtyViewport, packed);
+			if (BitArray_Test(g_displayedViewport, packed)) g_selectionRectangleNeedRepaint = true;
+			BitArray_Set(g_dirtyMinimap, packed);
+			return;
+		}
 	}
 }
 
