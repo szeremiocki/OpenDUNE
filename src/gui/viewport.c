@@ -475,9 +475,13 @@ void Viewport_EagerReport(void)
  *
  * @param forceRedraw If true, dirty flags are ignored, and everything is drawn.
  * @param hasScrolled Viewport position has changed
+ * @param planarShifted True if the pixels that scrolled were already shifted
+ *   directly in the planar screen (Video_Atari_ShiftPlanar()), so they do
+ *   not need presenting to SCREEN_0 again -- only the genuinely new edge
+ *   tiles Map_Update() drew do.
  * @param drawToMainScreen True if and only if we are drawing to the main screen and not some buffer screen.
  */
-void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool drawToMainScreen)
+void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShifted, bool drawToMainScreen)
 {
 	static const uint16 values_32A4[8][2] = {	/* index, flag passed to GUI_DrawSprite() */
 		{0, 0}, {1, 0}, {2, 0}, {3, 0},
@@ -1003,7 +1007,15 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool drawToMai
 				int16 realMin = minX[i];
 				int16 realMax = maxX[i];
 
-				if (hasScrolled) {
+				if (hasScrolled && !planarShifted) {
+					/* Without a matching planar-side shift, every pixel in
+					 * the row moved to a new screen position even though
+					 * most of its content is unchanged, so the whole row
+					 * has to be re-presented. When planarShifted is true
+					 * the moved pixels are already sitting at their new
+					 * position on screen, and only the tiles Map_Update()
+					 * actually redrew (already reflected in minX[i]/maxX[i]
+					 * above) are genuinely new. */
 					minX[i] = 0;
 					maxX[i] = 14;
 				}

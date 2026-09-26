@@ -4941,6 +4941,7 @@ void GUI_DrawScreen(Screen screenID)
 {
 	static uint32 s_timerViewportMessage = 0;
 	bool hasScrolled = false;
+	bool viewportPlanarShifted = false;
 	Screen oldScreenID;
 	uint16 xpos;
 
@@ -4984,6 +4985,22 @@ void GUI_DrawScreen(Screen screenID)
 			 * scroll), so this needs the overlap-safe copy, not the
 			 * disjoint-rows GUI_Screen_Copy(). */
 			GUI_Screen_CopyOverlap(max(-xOffset << 1, 0), 40 + max(-yOffset << 4, 0), max(0, xOffset << 1), 40 + max(0, yOffset << 4), xOverlap << 1, yOverlap << 4, SCREEN_1);
+
+#ifdef TOS
+			/* Mirror the same shift directly in the planar screen: those
+			 * pixels are already converted and on screen, only moved, so
+			 * this avoids re-running c2p on them. The rectangle is always
+			 * whole 16px tiles (viewport scrolling never happens at any
+			 * other granularity), so it is always c2p-group aligned. If
+			 * this declines (TT/Falcon, or the geometry is not aligned
+			 * after all), viewportPlanarShifted stays false and
+			 * GUI_Widget_Viewport_Draw() falls back to presenting the
+			 * whole row on scroll, exactly as it always did before this. */
+			viewportPlanarShifted = Video_Atari_ShiftPlanar(
+				(int16)max(-xOffset << 4, 0), (int16)(40 + max(-yOffset << 4, 0)),
+				(uint16)(xOverlap << 4), (uint16)(yOverlap << 4),
+				(int16)(xOffset << 4), (int16)(yOffset << 4));
+#endif
 		} else {
 			g_viewport_forceRedraw = true;
 		}
@@ -5027,7 +5044,7 @@ void GUI_DrawScreen(Screen screenID)
 		}
 	}
 
-	GUI_Widget_Viewport_Draw(g_viewport_forceRedraw, hasScrolled, !GFX_Screen_IsActive(SCREEN_0));
+	GUI_Widget_Viewport_Draw(g_viewport_forceRedraw, hasScrolled, viewportPlanarShifted, !GFX_Screen_IsActive(SCREEN_0));
 
 	g_viewport_forceRedraw = false;
 

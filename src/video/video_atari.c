@@ -2147,6 +2147,80 @@ bool Video_Atari_PresentFill(int16 x, int16 y, uint16 width, uint16 height, uint
 }
 
 /**
+ * Shift a rectangle of the ST/STE planar screen buffer in place by
+ * (dx, dy) pixels, without touching the chunky shadow or running c2p.
+ *
+ * This is for the gameplay viewport scroll: it is always a whole number
+ * of 16 pixel tiles in each direction, so x, width and dx are always a
+ * multiple of 16 (one c2p group = one interleaved-plane word = exactly
+ * one tile). That means the shift is a plain memmove of 8-byte group
+ * chunks per scanline -- no bit-level shifting across word boundaries
+ * is ever needed, unlike a general pixel-granular planar scroll would.
+ * The already-converted pixels being moved need no further c2p work;
+ * only whatever the caller newly draws at the exposed edge does.
+ *
+ * Returns false (does nothing) on TT/Falcon, whose planar layout this
+ * does not match, or if the geometry is not group aligned or would run
+ * outside the screen. Callers must be prepared for that: the pixels
+ * simply stay where they were and have to be re-presented/converted in
+ * full by whatever normally would, exactly as before this function
+ * existed.
+ */
+bool Video_Atari_ShiftPlanar(int16 x, int16 y, uint16 width, uint16 height, int16 dx, int16 dy)
+{
+	uint8 *base;
+	uint8 *src;
+	uint8 *dst;
+	int16 srcX, dstX, srcY, dstY;
+	uint16 bytes;
+
+	if (s_machine_type != MCH_ST && s_machine_type != MCH_STE
+	 && s_machine_type != MCH_MEGA_STE) return false;
+	if (width == 0 || height == 0) return false;
+	if (((x | (int16)width | dx) & 0xf) != 0) return false;
+	if (dx == 0 && dy == 0) return true;
+
+	srcX = x;
+	dstX = (int16)(x + dx);
+	srcY = y;
+	dstY = (int16)(y + dy);
+
+	if (srcX < 0 || dstX < 0) return false;
+	if ((int)srcX + (int)width > SCREEN_WIDTH) return false;
+	if ((int)dstX + (int)width > SCREEN_WIDTH) return false;
+	if (srcY < 0 || dstY < 0) return false;
+	if ((int)srcY + (int)height > SCREEN_HEIGHT) return false;
+	if ((int)dstY + (int)height > SCREEN_HEIGHT) return false;
+
+	base = Video_Atari_PlanarBase();
+	bytes = width >> 1;	/* 8 bytes/group * (width>>4) groups == width>>1 */
+
+	src = base + (uint32)srcY * ST_PLANAR_LINE_BYTES + ((uint16)srcX >> 1);
+	dst = base + (uint32)dstY * ST_PLANAR_LINE_BYTES + ((uint16)dstX >> 1);
+
+	if (dstY > srcY) {
+		/* Destination rows are below source rows: copy bottom row first
+		 * so a lower destination row never clobbers a source row a
+		 * higher iteration still needs to read. memmove() per row
+		 * already handles horizontal overlap either way. */
+		src += (uint32)(height - 1) * ST_PLANAR_LINE_BYTES;
+		dst += (uint32)(height - 1) * ST_PLANAR_LINE_BYTES;
+		while (height-- != 0) {
+			memmove(dst, src, bytes);
+			src -= ST_PLANAR_LINE_BYTES;
+			dst -= ST_PLANAR_LINE_BYTES;
+		}
+	} else {
+		while (height-- != 0) {
+			memmove(dst, src, bytes);
+			src += ST_PLANAR_LINE_BYTES;
+			dst += ST_PLANAR_LINE_BYTES;
+		}
+	}
+	return true;
+}
+
+/**
  * Runs every tick to handle video updates.
  */
 void Video_Tick(void)
