@@ -1036,7 +1036,16 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 				}
 
 				GFX_Screen_SetDirtySource(DIRTY_SRC_VIEWPORT);
-				GUI_Screen_Copy(x, y, x, y, width, height, SCREEN_ACTIVE, SCREEN_0);
+				if (Video_Atari_CursorDirect()) {
+					/* ST/STE: the tiles just drawn already sit in SCREEN_1
+					 * and Video_Tick()'s c2p pass reads viewport rows
+					 * straight out of SCREEN_1, so there is nothing left to
+					 * copy into SCREEN_0 -- only its dirty-block bits need
+					 * to be raised to make the c2p pass notice this rect. */
+					GFX_Screen_SetDirty(SCREEN_0, x * 8, y, (x + width) * 8, y + height);
+				} else {
+					GUI_Screen_Copy(x, y, x, y, width, height, SCREEN_ACTIVE, SCREEN_0);
+				}
 				GFX_Screen_SetDirtySource(DIRTY_SRC_SCREENCOPY);
 			}
 

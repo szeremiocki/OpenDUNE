@@ -2509,6 +2509,20 @@ void Video_Tick(void)
 #else
 			if (width == SCREEN_WIDTH) {
 #endif
+				if (s_screen_needrepaint) {
+					/* The viewport rectangle's pixels only live in SCREEN_1
+					 * now (see the SCREEN_0 dirty-mark-only change in
+					 * GUI_Widget_Viewport_Draw()): this full-screen path
+					 * still reads SCREEN_0 unconditionally, so it would
+					 * show stale viewport content if it ever fires here.
+					 * Gameplay never re-quantizes >=128 palette entries at
+					 * once on ST/STE (only the 16 hardware pens change),
+					 * so this is only expected from other contexts (e.g.
+					 * cutscene fades, which use their own present-mode path
+					 * instead of this one anyway) -- warn if that
+					 * assumption ever turns out wrong. */
+					Warning("Video_Tick: full SCREEN_0 repaint while viewport pixels live in SCREEN_1 -- viewport may show stale content this frame.\n");
+				}
 #ifdef VIDEO_C2P_STATS
 				if (s_screen_needrepaint) {
 					/* Legitimate: a palette change of >=128 entries
@@ -2535,6 +2549,17 @@ void Video_Tick(void)
 				uint16 runCount = 0;
 				uint16 runLeft[10];	/* first pixel of the run */
 				uint16 runWidth[10];	/* pixels in the run */
+				/* GUI_Widget_Viewport_Draw() draws tiles/sprites straight
+				 * into SCREEN_1 and, for this rectangle, only raises the
+				 * matching SCREEN_0 dirty-block bits instead of also
+				 * copying the pixels there (see the dirty-mark-only branch
+				 * added there): read those blocks from SCREEN_1 instead of
+				 * SCREEN_0. Everywhere else (top bar, sidebar, dialogs)
+				 * still goes through the SCREEN_0 shadow as before. */
+				const uint16 viewportTop = 0x28;	/* 40 */
+				const uint16 viewportBottom = 200;
+				const uint16 viewportRight = 240;	/* 15 tile columns * 16px */
+				uint8 *data1 = (uint8 *)GFX_Screen_Get_ByIndex(SCREEN_1) + area->top * SCREEN_WIDTH;
 #ifdef VIDEO_C2P_STATS
 				/* DEBUG AID -- the accounting below deliberately keeps its
 				 * running totals in locals and folds them into the global
@@ -2596,11 +2621,19 @@ void Video_Tick(void)
 					uint32 blocks = g_dirty_blocks[y];
 					uint16 bandTop = y;
 					uint16 bandLines;
+					/* A band must not straddle the viewport's top edge: rows
+					 * above it still read SCREEN_0 as-is, rows at/below it
+					 * (up to area->bottom <= viewportBottom, i.e. the
+					 * bottom of the screen) read SCREEN_1 instead, so the
+					 * two halves need their own bandLines/source pointers. */
+					uint16 growLimit = (bandTop < viewportTop) ? viewportTop : area->bottom;
+					bool viewportBand;
 
 					do {
 						y++;
-					} while (y < area->bottom && g_dirty_blocks[y] == blocks);
+					} while (y < growLimit && g_dirty_blocks[y] == blocks);
 					bandLines = y - bandTop;
+					viewportBand = (bandTop >= viewportTop && bandTop < viewportBottom);
 
 					if (blocks != 0) {
 						uint32 rest = blocks;
@@ -2658,11 +2691,21 @@ void Video_Tick(void)
 						for (run = 0; run < runCount; run++) {
 							left = runLeft[run];
 							width = runWidth[run];
-							c2p1x1_4_st(screen + (left >> 1), data + left, width, bandLines, s_palette4BitPairMap);
+							if (viewportBand && left < viewportRight) {
+								uint16 vpWidth = (left + width <= viewportRight) ? width : (viewportRight - left);
+
+								c2p1x1_4_st(screen + (left >> 1), data1 + left, vpWidth, bandLines, s_palette4BitPairMap);
+								if (vpWidth < width) {
+									c2p1x1_4_st(screen + ((left + vpWidth) >> 1), data + left + vpWidth, width - vpWidth, bandLines, s_palette4BitPairMap);
+								}
+							} else {
+								c2p1x1_4_st(screen + (left >> 1), data + left, width, bandLines, s_palette4BitPairMap);
+							}
 						}
 					}
 					screen += (SCREEN_WIDTH >> 1) * bandLines;
 					data += SCREEN_WIDTH * bandLines;
+					data1 += SCREEN_WIDTH * bandLines;
 				}
 #ifdef VIDEO_C2P_STATS
 				s_statLineCalls += tickCalls;
