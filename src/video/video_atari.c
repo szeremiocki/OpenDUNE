@@ -2282,6 +2282,61 @@ bool Video_Atari_ShiftPlanar(int16 x, int16 y, uint16 width, uint16 height, int1
 	return true;
 }
 
+#ifdef GFX_STORE_DIRTY_AREA_BLOCKS
+/**
+ * Convert a set of 16px-block dirty masks (one word per scanline, indexed
+ * from row 0 like g_dirty_blocks[]/g_dirty_blocks_viewport[]) to the planar
+ * screen, for rows [top, bottom). screen/data must already point at row
+ * top. This is the same band-batching + run-splitting c2p sweep
+ * Video_Tick() runs over SCREEN_0's dirty blocks, factored out so the
+ * viewport's independent SCREEN_1-sourced sweep (see g_dirty_blocks_viewport
+ * in gfx.h) gets it -- and any future tuning of it -- unchanged, with no
+ * awareness of which screen it is converting from needed on either side.
+ */
+static void Video_Atari_C2P_ConvertBlocks(uint8 *screen, uint8 *data, const uint32 *blocks, uint16 top, uint16 bottom)
+{
+	uint16 y;
+	uint16 runCount = 0;
+	uint16 runLeft[10];	/* first pixel of the run */
+	uint16 runWidth[10];	/* pixels in the run */
+
+	for (y = top; y < bottom; ) {
+		uint32 mask = blocks[y];
+		uint16 bandTop = y;
+		uint16 bandLines;
+
+		do {
+			y++;
+		} while (y < bottom && blocks[y] == mask);
+		bandLines = y - bandTop;
+
+		if (mask != 0) {
+			uint32 rest = mask;
+			uint16 run;
+
+			runCount = 0;
+			while (rest != 0) {
+				uint16 runStart = Video_FirstDirtyBlock(rest);
+				uint16 runEnd = runStart + Video_FirstCleanBlock(rest >> runStart);
+
+				runLeft[runCount] = runStart << 4;
+				runWidth[runCount] = (runEnd - runStart) << 4;
+				runCount++;
+				rest &= ~(((uint32)1 << runEnd) - 1);
+			}
+			for (run = 0; run < runCount; run++) {
+				uint16 left = runLeft[run];
+				uint16 width = runWidth[run];
+
+				c2p1x1_4_st(screen + (left >> 1), data + left, width, bandLines, s_palette4BitPairMap);
+			}
+		}
+		screen += (SCREEN_WIDTH >> 1) * bandLines;
+		data += SCREEN_WIDTH * bandLines;
+	}
+}
+#endif
+
 /**
  * Runs every tick to handle video updates.
  */
@@ -2549,17 +2604,6 @@ void Video_Tick(void)
 				uint16 runCount = 0;
 				uint16 runLeft[10];	/* first pixel of the run */
 				uint16 runWidth[10];	/* pixels in the run */
-				/* GUI_Widget_Viewport_Draw() draws tiles/sprites straight
-				 * into SCREEN_1 and, for this rectangle, only raises the
-				 * matching SCREEN_0 dirty-block bits instead of also
-				 * copying the pixels there (see the dirty-mark-only branch
-				 * added there): read those blocks from SCREEN_1 instead of
-				 * SCREEN_0. Everywhere else (top bar, sidebar, dialogs)
-				 * still goes through the SCREEN_0 shadow as before. */
-				const uint16 viewportTop = 0x28;	/* 40 */
-				const uint16 viewportBottom = 200;
-				const uint16 viewportRight = 240;	/* 15 tile columns * 16px */
-				uint8 *data1 = (uint8 *)GFX_Screen_Get_ByIndex(SCREEN_1) + area->top * SCREEN_WIDTH;
 #ifdef VIDEO_C2P_STATS
 				/* DEBUG AID -- the accounting below deliberately keeps its
 				 * running totals in locals and folds them into the global
@@ -2621,19 +2665,11 @@ void Video_Tick(void)
 					uint32 blocks = g_dirty_blocks[y];
 					uint16 bandTop = y;
 					uint16 bandLines;
-					/* A band must not straddle the viewport's top edge: rows
-					 * above it still read SCREEN_0 as-is, rows at/below it
-					 * (up to area->bottom <= viewportBottom, i.e. the
-					 * bottom of the screen) read SCREEN_1 instead, so the
-					 * two halves need their own bandLines/source pointers. */
-					uint16 growLimit = (bandTop < viewportTop) ? viewportTop : area->bottom;
-					bool viewportBand;
 
 					do {
 						y++;
-					} while (y < growLimit && g_dirty_blocks[y] == blocks);
+					} while (y < area->bottom && g_dirty_blocks[y] == blocks);
 					bandLines = y - bandTop;
-					viewportBand = (bandTop >= viewportTop && bandTop < viewportBottom);
 
 					if (blocks != 0) {
 						uint32 rest = blocks;
@@ -2691,21 +2727,11 @@ void Video_Tick(void)
 						for (run = 0; run < runCount; run++) {
 							left = runLeft[run];
 							width = runWidth[run];
-							if (viewportBand && left < viewportRight) {
-								uint16 vpWidth = (left + width <= viewportRight) ? width : (viewportRight - left);
-
-								c2p1x1_4_st(screen + (left >> 1), data1 + left, vpWidth, bandLines, s_palette4BitPairMap);
-								if (vpWidth < width) {
-									c2p1x1_4_st(screen + ((left + vpWidth) >> 1), data + left + vpWidth, width - vpWidth, bandLines, s_palette4BitPairMap);
-								}
-							} else {
-								c2p1x1_4_st(screen + (left >> 1), data + left, width, bandLines, s_palette4BitPairMap);
-							}
+							c2p1x1_4_st(screen + (left >> 1), data + left, width, bandLines, s_palette4BitPairMap);
 						}
 					}
 					screen += (SCREEN_WIDTH >> 1) * bandLines;
 					data += SCREEN_WIDTH * bandLines;
-					data1 += SCREEN_WIDTH * bandLines;
 				}
 #ifdef VIDEO_C2P_STATS
 				s_statLineCalls += tickCalls;
@@ -2734,6 +2760,28 @@ void Video_Tick(void)
 #endif
 		s_screen_needrepaint = false;
 	}
+
+#ifdef GFX_STORE_DIRTY_AREA_BLOCKS
+	/* Independent of the SCREEN_0 sweep above: the viewport rectangle's
+	 * tiles/sprites are drawn straight into SCREEN_1 and only raise their
+	 * own g_dirty_blocks_viewport bits (see GUI_Widget_Viewport_Draw() and
+	 * GFX_Screen_SetDirtyViewport()), so this can and does fire on ticks
+	 * where SCREEN_0 has nothing new (e.g. scrolling into already-explored,
+	 * unchanging terrain touches no sidebar/topbar pixel). Only reachable
+	 * with Video_Atari_CursorDirect(), i.e. ST/STE -- TT/Falcon still copy
+	 * the viewport into SCREEN_0 the old way and never dirty this. */
+	if (GFX_Screen_IsDirtyViewport()) {
+		struct dirty_area *vpArea = GFX_Screen_GetDirtyAreaViewport();
+
+		if (vpArea->top < vpArea->bottom) {
+			uint8 *vpData = (uint8 *)GFX_Screen_Get_ByIndex(SCREEN_1) + vpArea->top * SCREEN_WIDTH;
+			uint8 *vpScreen = Video_Atari_PlanarBase() + vpArea->top * (SCREEN_WIDTH >> 1);
+
+			Video_Atari_C2P_ConvertBlocks(vpScreen, vpData, g_dirty_blocks_viewport, vpArea->top, vpArea->bottom);
+		}
+		GFX_Screen_SetCleanViewport();
+	}
+#endif
 
 l_overlays:
 	if (s_showFPS) {

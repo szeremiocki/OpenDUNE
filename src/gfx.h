@@ -105,6 +105,19 @@ extern bool GFX_Screen_IsDirty(Screen screenID);
 extern struct dirty_area * GFX_Screen_GetDirtyArea(Screen screenID);
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
 extern uint32 g_dirty_blocks[200];
+
+/* Separate dirty tracking for the viewport rectangle's SCREEN_1 source (see
+ * the ST/STE dirty-mark-only branch in GUI_Widget_Viewport_Draw()). Kept
+ * entirely apart from the SCREEN_0 tracking above -- and only ever fed by
+ * that one call site -- so Video_Tick() can run its normal per-band/per-run
+ * c2p sweep unchanged over each set independently, one sourcing SCREEN_0 as
+ * before and the other sourcing SCREEN_1, with no per-run source-splitting
+ * needed. */
+extern uint32 g_dirty_blocks_viewport[200];
+extern void GFX_Screen_SetDirtyViewport(uint16 left, uint16 top, uint16 right, uint16 bottom);
+extern bool GFX_Screen_IsDirtyViewport(void);
+extern struct dirty_area * GFX_Screen_GetDirtyAreaViewport(void);
+extern void GFX_Screen_SetCleanViewport(void);
 #endif
 
 /* Attribute dirty pixels to their producer, to size the "render terrain

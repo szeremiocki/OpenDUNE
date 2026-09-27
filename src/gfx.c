@@ -203,6 +203,9 @@ static bool s_dirtySuppress = false;
 static struct dirty_area s_screen0_dirty_area = { 0, 0, 0, 0 };
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
 uint32 g_dirty_blocks[200];
+static bool s_screen1_is_dirty = false;
+static struct dirty_area s_screen1_dirty_area = { 0, 0, 0, 0 };
+uint32 g_dirty_blocks_viewport[200];
 #endif
 #endif
 
@@ -384,6 +387,55 @@ void GFX_Screen_SetClean(Screen screenID)
 	memset(g_dirty_blocks, 0, sizeof(g_dirty_blocks));
 #endif
 }
+
+#ifdef GFX_STORE_DIRTY_AREA_BLOCKS
+/**
+ * Mark a rectangle of the viewport dirty, sourced from SCREEN_1 rather than
+ * SCREEN_0 -- see the ST/STE dirty-mark-only branch in
+ * GUI_Widget_Viewport_Draw(). Deliberately its own function/state (not a
+ * screenID case folded into GFX_Screen_SetDirty_()/g_dirty_blocks above):
+ * SCREEN_1 is also used throughout the UI (dialogs, mentat, factory window,
+ * ...) as a plain off-screen compositing buffer that is later explicitly
+ * copied into SCREEN_0, and none of that incidental SCREEN_1 traffic must
+ * ever be mistaken for "new viewport content, safe to c2p straight from
+ * SCREEN_1". Only GUI_Widget_Viewport_Draw() calls this.
+ */
+void GFX_Screen_SetDirtyViewport(uint16 left, uint16 top, uint16 right, uint16 bottom)
+{
+	uint32 mask;
+	uint16 y;
+
+	s_screen1_is_dirty = true;
+	if (left < s_screen1_dirty_area.left) s_screen1_dirty_area.left = left;
+	if (top < s_screen1_dirty_area.top) s_screen1_dirty_area.top = top;
+	if (right > s_screen1_dirty_area.right) s_screen1_dirty_area.right = right;
+	if (bottom > s_screen1_dirty_area.bottom) s_screen1_dirty_area.bottom = bottom;
+
+	mask = (1 << ((right + 15) >> 4)) - 1;
+	mask -= (1 << (left >> 4)) - 1;
+	for (y = top; y < bottom; y++) g_dirty_blocks_viewport[y] |= mask;
+}
+
+bool GFX_Screen_IsDirtyViewport(void)
+{
+	return s_screen1_is_dirty;
+}
+
+struct dirty_area * GFX_Screen_GetDirtyAreaViewport(void)
+{
+	return &s_screen1_dirty_area;
+}
+
+void GFX_Screen_SetCleanViewport(void)
+{
+	s_screen1_is_dirty = false;
+	s_screen1_dirty_area.left = 0xffff;
+	s_screen1_dirty_area.top = 0xffff;
+	s_screen1_dirty_area.right = 0;
+	s_screen1_dirty_area.bottom = 0;
+	memset(g_dirty_blocks_viewport, 0, sizeof(g_dirty_blocks_viewport));
+}
+#endif
 
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
 /**
