@@ -1699,7 +1699,14 @@ static int Video_Atari_CursorOverlap(uint16 y, uint16 h, uint16 group, uint16 gr
 	if (h == 0 || groups == 0) return 2;
 	mask = (uint32)(((groups >= 20) ? 0xfffffu : ((1u << groups) - 1u)) << group);
 	for (line = 0; line < h; line++) {
-		uint32 hit = g_dirty_blocks[y + line] & mask;
+		/* The viewport rectangle's rows are converted from a second,
+		 * independent dirty mask now (see g_dirty_blocks_viewport in
+		 * gfx.h) -- the cursor most commonly sits right there, so its
+		 * overlap must be tested against whichever mask(s) actually
+		 * cover each of its rows. g_dirty_blocks_viewport is always 0
+		 * outside the viewport's own rows, so ORing it in here is safe
+		 * everywhere else too. */
+		uint32 hit = (g_dirty_blocks[y + line] | g_dirty_blocks_viewport[y + line]) & mask;
 
 		s_curEraseHit[line] = (uint16)(hit >> group);
 		if (hit != 0) any = true;
@@ -1807,13 +1814,17 @@ static bool Video_Atari_PlacementBegin(void)
 		s_placeDirty = false;
 		return false;
 	}
-	dirty = GFX_Screen_IsDirty(SCREEN_0);
+	dirty = GFX_Screen_IsDirty(SCREEN_0) || GFX_Screen_IsDirtyViewport();
 	full = s_screen_needrepaint || (dirty && GFX_Screen_GetDirtyArea(SCREEN_0) == NULL);
 	redraw = s_placeDirty || (s_placeVisible && s_placePen != s_palette4BitMap[255]);
 
 	for (i = 0; i < s_placeBlockCount; i++) {
 		PlacementBlock *block = &s_placeBlocks[i];
-		block->refreshed = full || (dirty && (g_dirty_blocks[block->y] & (1UL << block->group)) != 0);
+		/* Placement overlays, like the cursor, most often sit right in the
+		 * viewport, whose rows are now converted from a second, independent
+		 * dirty mask (see g_dirty_blocks_viewport in gfx.h and
+		 * Video_Atari_CursorOverlap() above) -- check both. */
+		block->refreshed = full || (dirty && ((g_dirty_blocks[block->y] | g_dirty_blocks_viewport[block->y]) & (1UL << block->group)) != 0);
 		if (block->refreshed) redraw = true;
 	}
 	return redraw;
@@ -2421,7 +2432,15 @@ void Video_Tick(void)
 	 * one tight back-to-back pair with the smallest possible gap. */
 	s_curNeedErase = false;
 	if (s_curDrawn) {
-		bool screenDirty = GFX_Screen_IsDirty(SCREEN_0);
+		/* GFX_Screen_IsDirty(SCREEN_0) alone used to be equivalent to "c2p
+		 * will run this tick", but the viewport's rows can now go dirty
+		 * (and get converted) entirely through their own independent mask
+		 * -- see g_dirty_blocks_viewport / GFX_Screen_IsDirtyViewport() --
+		 * with SCREEN_0 itself untouched (e.g. a unit walking through
+		 * unexplored darkness touches no sidebar/topbar pixel). Missing
+		 * that case here left a stale, un-erased cursor sitting over
+		 * planar pixels the viewport sweep below was about to overwrite. */
+		bool screenDirty = GFX_Screen_IsDirty(SCREEN_0) || GFX_Screen_IsDirtyViewport();
 		int overlap = screenDirty ? Video_Atari_CursorOverlap(
 			s_curDrawnY, s_curDrawnH, s_curDrawnGroup, s_curDrawnGroups) : 0;
 		bool fullyCovered = s_screen_needrepaint || overlap == 2;
