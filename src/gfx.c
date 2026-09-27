@@ -390,15 +390,17 @@ void GFX_Screen_SetClean(Screen screenID)
 
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
 /**
- * Mark a rectangle of the viewport dirty, sourced from SCREEN_1 rather than
- * SCREEN_0 -- see the ST/STE dirty-mark-only branch in
- * GUI_Widget_Viewport_Draw(). Deliberately its own function/state (not a
- * screenID case folded into GFX_Screen_SetDirty_()/g_dirty_blocks above):
- * SCREEN_1 is also used throughout the UI (dialogs, mentat, factory window,
- * ...) as a plain off-screen compositing buffer that is later explicitly
- * copied into SCREEN_0, and none of that incidental SCREEN_1 traffic must
- * ever be mistaken for "new viewport content, safe to c2p straight from
- * SCREEN_1". Only GUI_Widget_Viewport_Draw() calls this.
+ * Mark a rectangle dirty that is already final/ready in SCREEN_1, so it gets
+ * c2p'd straight from there instead of via SCREEN_0 -- see the ST/STE
+ * dirty-mark-only branch in GUI_Widget_Viewport_Draw() and the minimap
+ * rectangle update in Map_UpdateMinimapPosition(). Deliberately its own
+ * function/state (not a screenID case folded into GFX_Screen_SetDirty_()/
+ * g_dirty_blocks above): SCREEN_1 is also used throughout the UI (dialogs,
+ * mentat, factory window, ...) as a plain off-screen compositing buffer that
+ * is later explicitly copied into SCREEN_0, and none of that incidental
+ * SCREEN_1 traffic must ever be mistaken for "new content, safe to c2p
+ * straight from SCREEN_1". Only call this once the rectangle's SCREEN_1
+ * pixels are final.
  */
 void GFX_Screen_SetDirtyViewport(uint16 left, uint16 top, uint16 right, uint16 bottom)
 {

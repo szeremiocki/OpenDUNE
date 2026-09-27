@@ -315,9 +315,19 @@ void Map_UpdateMinimapPosition(uint16 packed, bool forceUpdate)
 	}
 
 	if (cleared && oldScreenID == SCREEN_0) {
-		GUI_Mouse_Hide_Safe();
-		GUI_Screen_Copy(32, 136, 32, 136, 8, 64, SCREEN_1, SCREEN_0);
-		GUI_Mouse_Show_Safe();
+#ifdef TOS
+		if (Video_Atari_CursorDirect()) {
+			/* Pixels are already final in SCREEN_1 (drawn above); just
+			 * mark the minimap rectangle dirty so the next c2p tick picks
+			 * it up straight from there, instead of copying to SCREEN_0. */
+			GFX_Screen_SetDirtyViewport(32 * 8, 136, 32 * 8 + 8 * 8, 136 + 64);
+		} else
+#endif
+		{
+			GUI_Mouse_Hide_Safe();
+			GUI_Screen_Copy(32, 136, 32, 136, 8, 64, SCREEN_1, SCREEN_0);
+			GUI_Mouse_Show_Safe();
+		}
 	}
 
 	GFX_Screen_SetActive(oldScreenID);
