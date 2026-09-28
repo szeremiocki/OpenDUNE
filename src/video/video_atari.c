@@ -2117,9 +2117,89 @@ static void Video_Atari_PresentTransparent(const uint8 *src, uint16 srcStride,
 	}
 }
 
+/* GFX_CopyToBuffer()/GFX_CopyFromBuffer() (modal message boxes, the drag
+ * preview and, in principle, the mouse cursor fallback) save a rectangle
+ * before overwriting it and blit it back verbatim afterwards. On ST/STE
+ * the planar screen is the only buffer guaranteed to hold what is
+ * actually visible -- direct-to-planar draws (see GUI_DrawSprite()'s
+ * toPlanar path) never touch SCREEN_0 or SCREEN_1 at all. So instead of
+ * saving/restoring through a chunky shadow that may not agree with the
+ * screen, these two save and restore the raw planar bytes of the
+ * (16px-group-aligned) rectangle directly: a plain per-line memcpy,
+ * blind to pixel content, palette or dirty-block accounting. The pair is
+ * exact -- restoring puts back exactly what was there, regardless of how
+ * it got drawn -- and self-consistent, since both compute the same
+ * widened rectangle from the same (x, width) the caller passes both
+ * times. Video_Atari_PresentRestore() still clears the dirty blocks it
+ * covers (same reasoning as Video_Atari_PresentChunky()) so a later
+ * Video_Tick() sweep never reconverts this rectangle from stale SCREEN_1
+ * content. Callers are expected to size their buffer for the chunky
+ * (1 byte/pixel) rectangle, same as on other platforms; the planar
+ * encoding is at most 2 pixels/byte, so that allocation is always enough
+ * as long as the rectangle is at least 16 pixels wide (true for every
+ * current caller -- the mouse cursor fallback this also covers is dead
+ * code under Video_Atari_CursorDirect(), see GUI_Mouse_Show()/Hide()). */
+bool Video_Atari_PresentSave(int16 x, int16 y, uint16 width, uint16 height, uint8 *buffer)
+{
+	uint16 left, right, bytesPerLine;
+	const uint8 *src;
+
+	if (buffer == NULL || width == 0 || height == 0) return false;
+	if (x < 0 || y < 0) return false;
+	if ((int)y + (int)height > SCREEN_HEIGHT) return false;
+
+	left = (uint16)(x & ~0xf);
+	right = (uint16)((x + width + 0xf) & ~0xf);
+	if (right > SCREEN_WIDTH) right = SCREEN_WIDTH;
+	bytesPerLine = (uint16)(((right - left) >> 4) << 3);
+
+	src = Video_Atari_PlanarBase() + (uint32)y * ST_PLANAR_LINE_BYTES + (uint32)(left >> 4) * 8;
+
+	while (height-- != 0) {
+		memcpy(buffer, src, bytesPerLine);
+		buffer += bytesPerLine;
+		src += ST_PLANAR_LINE_BYTES;
+	}
+	return true;
+}
+
+bool Video_Atari_PresentRestore(int16 x, int16 y, uint16 width, uint16 height, const uint8 *buffer)
+{
+	uint16 left, right, bytesPerLine;
+	uint8 *dst;
+
+	if (buffer == NULL || width == 0 || height == 0) return false;
+	if (x < 0 || y < 0) return false;
+	if ((int)y + (int)height > SCREEN_HEIGHT) return false;
+
+	left = (uint16)(x & ~0xf);
+	right = (uint16)((x + width + 0xf) & ~0xf);
+	if (right > SCREEN_WIDTH) right = SCREEN_WIDTH;
+	bytesPerLine = (uint16)(((right - left) >> 4) << 3);
+
+	dst = Video_Atari_PlanarBase() + (uint32)y * ST_PLANAR_LINE_BYTES + (uint32)(left >> 4) * 8;
+
+	{
+		uint16 h = height;
+		uint8 *d = dst;
+		const uint8 *s = buffer;
+
+		while (h-- != 0) {
+			memcpy(d, s, bytesPerLine);
+			d += ST_PLANAR_LINE_BYTES;
+			s += bytesPerLine;
+		}
+	}
+
+	GFX_Screen_ClearDirtyRect(left, (uint16)y, right, (uint16)(y + height));
+	return true;
+}
+
 bool Video_Atari_PresentChunkyTransparent(const void *src, uint16 srcStride,
                                           int16 x, int16 y, uint16 width, uint16 height)
 {
+	uint16 left, right;
+
 	if (src == NULL || width == 0 || height == 0) return false;
 	if (x < 0 || y < 0) return false;
 	if ((int)x + (int)width > SCREEN_WIDTH) return false;
@@ -2127,9 +2207,23 @@ bool Video_Atari_PresentChunkyTransparent(const void *src, uint16 srcStride,
 
 	Video_Atari_PresentTransparent((const uint8 *)src, srcStride,
 	                               (uint16)x, (uint16)y, width, height);
-	/* No GFX_Screen_ClearDirtyRect() call here: skip-write callers (see
-	 * GUI_DrawChar()) never mark this rectangle dirty in the first place,
-	 * so there is nothing to clear. */
+
+	/* ENHANCEMENT: skip-write callers (see GUI_DrawChar()/GUI_DrawSprite())
+	 * never mark this exact rectangle dirty themselves -- but an
+	 * unrelated, wider dirty mark (e.g. a full-screen GFX_ClearBlock()
+	 * when opening a menu) can still overlap it and linger, since nothing
+	 * else "consumes" that mark for this rectangle's blocks. Left alone,
+	 * a later Video_Tick() old-sweep pass would reconvert those blocks
+	 * from SCREEN_1 -- which this private-scratch-buffer present never
+	 * touched -- clobbering what was just drawn straight to planar with
+	 * stale SCREEN_1 content. Clear the (16px-aligned) dirty blocks this
+	 * covers, same as Video_Atari_PresentChunky(), so no such leftover
+	 * mark can survive past this present. */
+	left = (uint16)(x & ~0xf);
+	right = (uint16)((x + width + 0xf) & ~0xf);
+	if (right > SCREEN_WIDTH) right = SCREEN_WIDTH;
+	GFX_Screen_ClearDirtyRect(left, (uint16)y, right, (uint16)(y + height));
+
 	return true;
 }
 

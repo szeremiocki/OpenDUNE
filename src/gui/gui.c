@@ -1361,7 +1361,16 @@ void GUI_DrawSprite(Screen screenID, const uint8 *sprite, int16 posX, int16 posY
 
 	/* move pointer to 1st pixel of 1st row to draw */
 #ifdef TOS
-	toPlanar = GFX_Screen_IsActive(SCREEN_0) && Video_Atari_CursorDirect() &&
+	/* Must check the actual write target (screenID, already resolved into
+	 * buf above), not merely "is SCREEN_0 the currently active screen":
+	 * callers such as GUI_FactoryWindow_PrepareScrollList() explicitly
+	 * target SCREEN_1 without ever switching the active screen away from
+	 * SCREEN_0, so GFX_Screen_IsActive(SCREEN_0) would be true even though
+	 * this draw has nothing to do with SCREEN_0 -- wrongly hijacking a
+	 * SCREEN_1 draw into a stray write straight onto the visible planar
+	 * screen (seen as leftover sidebar/build-window graphics bleeding
+	 * into other screens, e.g. the CONST. YARD build panel). */
+	toPlanar = GFX_Screen_Get_ByIndex(screenID) == GFX_Screen_Get_ByIndex(SCREEN_0) && Video_Atari_CursorDirect() &&
 	           (flags & (DRAWSPRITE_FLAG_BLUR | DRAWSPRITE_FLAG_NO_PLANAR_DIRECT)) == 0 &&
 	           pixelCountPerRow > 0 && spriteHeight > 0 &&
 	           (uint32)pixelCountPerRow * (uint32)spriteHeight <= sizeof(spriteScratch);
@@ -2556,8 +2565,8 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 	static uint16 creditsAnimation = 0;           /* How many credits are shown in current animation of credits. */
 	static int16  creditsAnimationOffset = 0;     /* Offset of the credits for the animation of credits. */
 
-	Screen oldScreenID;
-	uint16 oldWidgetId;
+	Screen oldScreenID = SCREEN_ACTIVE;
+	uint16 oldWidgetId = 0;
 	House *h;
 	char charCreditsOld[7];
 	char charCreditsNew[7];
@@ -2566,6 +2575,33 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 	uint16 creditsNew;
 	uint16 creditsOld;
 	int16 offset;
+#ifdef TOS
+	bool direct = Video_Atari_CursorDirect();
+#else
+	bool direct = false;
+#endif
+	/* ENHANCEMENT: on ST/STE, draw straight into widget 5 -- the real
+	 * on-screen credits position -- instead of widget 4, an off-screen
+	 * SCREEN_1 scratch slot 40 pixels below it that gets copied up
+	 * afterwards. That scratch slot sits inside the sidebar's
+	 * structure-info panel (widget 6, y=42-124): during the digit
+	 * scroll animation, sprites are drawn well outside their nominal
+	 * 9px row (see the offset math below, which ranges roughly -14..+16
+	 * relative to the row), so the scratch write corrupts whatever the
+	 * info panel had just drawn there -- SCREEN_1 is shared, unlike the
+	 * planar screen it eventually gets composited to.
+	 *
+	 * Drawing at the real position instead relies on two things
+	 * GUI_DrawSprite() already does: its window-bounds clipping (against
+	 * g_widgetProperties[windowID].yBase/height) clips the scroll
+	 * exactly like the copy-up did, just without a wider scratch area to
+	 * clip out of; and its toPlanar path -- forced by passing SCREEN_0
+	 * explicitly, regardless of what is actually active -- composites
+	 * straight to the planar screen through a private per-call buffer.
+	 * No chunky buffer is written or read back at all, so there is
+	 * nothing left for another widget to corrupt. */
+	uint16 windowID = direct ? 5 : 4;
+	Screen drawScreenID = direct ? SCREEN_0 : SCREEN_ACTIVE;
 
 	if (s_tickCreditsAnimation > g_timerGUI && mode == 0) return;
 	s_tickCreditsAnimation = g_timerGUI + 1;
@@ -2579,9 +2615,12 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 
 	if (mode == 0 && h->credits == creditsAnimation && creditsAnimationOffset == 0) return;
 
-	oldScreenID = GFX_Screen_SetActive(SCREEN_1);
-
-	oldWidgetId = Widget_SetCurrentWidget(4);
+	if (direct) {
+		GUI_Mouse_Hide_InWidget(5);
+	} else {
+		oldScreenID = GFX_Screen_SetActive(SCREEN_1);
+		oldWidgetId = Widget_SetCurrentWidget(4);
+	}
 
 	creditsDiff = h->credits - creditsAnimation;
 	if (creditsDiff != 0) {
@@ -2619,7 +2658,7 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 		creditsNew += 1;
 	}
 
-	GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[12], 0, 0, 4, DRAWSPRITE_FLAG_WIDGETPOS);
+	GUI_DrawSprite(drawScreenID, g_sprites[12], 0, 0, windowID, DRAWSPRITE_FLAG_WIDGETPOS);
 
 	g_playerCredits = creditsOld;
 
@@ -2633,15 +2672,20 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 		spriteID = (charCreditsOld[i] == ' ') ? 13 : charCreditsOld[i] - 34;
 
 		if (charCreditsOld[i] != charCreditsNew[i]) {
-			GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[spriteID], left, offset - creditsAnimationOffset, 4, DRAWSPRITE_FLAG_WIDGETPOS);
+			GUI_DrawSprite(drawScreenID, g_sprites[spriteID], left, offset - creditsAnimationOffset, windowID, DRAWSPRITE_FLAG_WIDGETPOS);
 			if (creditsAnimationOffset == 0) continue;
 
 			spriteID = (charCreditsNew[i] == ' ') ? 13 : charCreditsNew[i] - 34;
 
-			GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[spriteID], left, offset + 8 - creditsAnimationOffset, 4, DRAWSPRITE_FLAG_WIDGETPOS);
+			GUI_DrawSprite(drawScreenID, g_sprites[spriteID], left, offset + 8 - creditsAnimationOffset, windowID, DRAWSPRITE_FLAG_WIDGETPOS);
 		} else {
-			GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[spriteID], left, 1, 4, DRAWSPRITE_FLAG_WIDGETPOS);
+			GUI_DrawSprite(drawScreenID, g_sprites[spriteID], left, 1, windowID, DRAWSPRITE_FLAG_WIDGETPOS);
 		}
+	}
+
+	if (direct) {
+		GUI_Mouse_Show_InWidget();
+		return;
 	}
 
 	if (!GFX_Screen_IsActive(oldScreenID)) {

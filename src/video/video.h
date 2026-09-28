@@ -119,6 +119,14 @@ extern bool Video_Atari_PresentFill(int16 x, int16 y, uint16 width, uint16 heigh
 extern bool Video_Atari_PresentChunkyTransparent(const void *src, uint16 srcStride,
                                       int16 x, int16 y, uint16 width, uint16 height);
 
+/* Save/restore the raw planar bytes of a (16px-group-aligned) rectangle
+ * verbatim -- see the definitions in video_atari.c for the full contract.
+ * Used by GFX_CopyToBuffer()/GFX_CopyFromBuffer() on ST/STE, where the
+ * planar screen -- not any chunky buffer -- is the only thing guaranteed
+ * to match what is actually visible. */
+extern bool Video_Atari_PresentSave(int16 x, int16 y, uint16 width, uint16 height, uint8 *buffer);
+extern bool Video_Atari_PresentRestore(int16 x, int16 y, uint16 width, uint16 height, const uint8 *buffer);
+
 /* Shift a rectangle of the planar screen in place; see the definition in
  * video_atari.c for the full contract (group-aligned geometry only,
  * ST/STE only, independent of present mode). Used by the gameplay

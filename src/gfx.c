@@ -1245,6 +1245,18 @@ void GFX_CopyFromBuffer(int16 left, int16 top, uint16 width, uint16 height, uint
 	if (width  > SCREEN_WIDTH - left) width  = SCREEN_WIDTH - left;
 	if (height > SCREEN_HEIGHT - top) height = SCREEN_HEIGHT - top;
 
+#ifdef TOS
+	/* ENHANCEMENT: the planar screen is authoritative on ST/STE -- see
+	 * GFX_CopyToBuffer(). Blit the raw planar bytes straight back
+	 * instead of going through the (unsynced) SCREEN_0 shadow, and clear
+	 * the dirty blocks this covers so a later Video_Tick() sweep never
+	 * repaints this rectangle from stale SCREEN_1 content. */
+	if (Video_Atari_CursorDirect()) {
+		Video_Atari_PresentRestore(left, top, width, height, buffer);
+		return;
+	}
+#endif
+
 	screen = GFX_Screen_Get_ByIndex(SCREEN_0);
 	screen += top * SCREEN_WIDTH + left;
 
@@ -1281,6 +1293,19 @@ void GFX_CopyToBuffer(int16 left, int16 top, uint16 width, uint16 height, uint8 
 
 	if (width  > SCREEN_WIDTH - left) width  = SCREEN_WIDTH - left;
 	if (height > SCREEN_HEIGHT - top) height = SCREEN_HEIGHT - top;
+
+#ifdef TOS
+	/* ENHANCEMENT: on ST/STE the planar screen -- not SCREEN_0 -- is the
+	 * only buffer guaranteed to hold what is actually visible, since
+	 * direct-to-planar draws (see GUI_DrawSprite()'s toPlanar path) never
+	 * touch SCREEN_0. Save the raw planar bytes instead so
+	 * GFX_CopyFromBuffer() can restore exactly what was there,
+	 * regardless of how it got drawn. */
+	if (Video_Atari_CursorDirect()) {
+		Video_Atari_PresentSave(left, top, width, height, buffer);
+		return;
+	}
+#endif
 
 	screen = GFX_Screen_Get_ByIndex(SCREEN_0);
 	screen += top * SCREEN_WIDTH + left;
