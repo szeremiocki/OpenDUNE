@@ -2051,6 +2051,88 @@ static void Video_Atari_PresentRunMasked(const uint8 *src, uint16 srcStride,
 	}
 }
 
+/* Like Video_Atari_PresentGroupMasked(), but a source byte of 0 means
+ * "transparent" (skip this pixel, leave the existing planar bit alone)
+ * instead of being a real colour to draw. Unlike the alignment-only mask
+ * above, this must inspect every covered pixel's content, not just its
+ * position -- there is no "fully covered, no need to check" fast case. */
+static void Video_Atari_PresentGroupMaskedTransparent(const uint8 *srcRow, uint16 gx,
+                                           uint16 x0, uint16 x1, uint16 *p)
+{
+	uint16 a = (x0 > gx) ? (uint16)(x0 - gx) : 0;
+	uint16 b = (x1 < (uint16)(gx + 16)) ? (uint16)(x1 - gx) : 16;
+	uint16 mask = 0;
+	uint16 pl[4];
+	uint16 i;
+
+	pl[0] = pl[1] = pl[2] = pl[3] = 0;
+
+	for (i = a; i < b; i++) {
+		uint8 src = srcRow[gx + i - x0];
+		uint16 bit;
+		uint8 pen;
+
+		if (src == 0) continue;
+
+		bit = (uint16)(0x8000u >> i);
+		mask |= bit;
+
+		pen = s_palette4BitMap[src];
+		if (pen & 1) pl[0] |= bit;
+		if (pen & 2) pl[1] |= bit;
+		if (pen & 4) pl[2] |= bit;
+		if (pen & 8) pl[3] |= bit;
+	}
+
+	p[0] = (uint16)((p[0] & (uint16)~mask) | pl[0]);
+	p[1] = (uint16)((p[1] & (uint16)~mask) | pl[1]);
+	p[2] = (uint16)((p[2] & (uint16)~mask) | pl[2]);
+	p[3] = (uint16)((p[3] & (uint16)~mask) | pl[3]);
+}
+
+/* Present a small, content-transparent rectangle (glyphs): every 16 pixel
+ * group the rectangle touches goes through the masked merge above, since
+ * a group may hold a mix of drawn and transparent pixels anywhere within
+ * it, not just at its edges. Rectangles are expected to be tiny (a
+ * handful of groups at most), so there is no need for the fast unmasked
+ * middle-groups path that Video_Atari_PresentRunMasked() has. */
+static void Video_Atari_PresentTransparent(const uint8 *src, uint16 srcStride,
+                                           uint16 x, uint16 y, uint16 w, uint16 h)
+{
+	uint16 x1 = (uint16)(x + w);
+	int gLeft = (int)(x >> 4);
+	int gRight = (int)((x1 - 1) >> 4);
+	uint8 *lineBase = Video_Atari_PlanarBase() + (uint32)y * ST_PLANAR_LINE_BYTES;
+	uint16 line;
+
+	for (line = 0; line < h; line++) {
+		int g;
+
+		for (g = gLeft; g <= gRight; g++) {
+			Video_Atari_PresentGroupMaskedTransparent(src, (uint16)(g << 4), x, x1,
+			                              (uint16 *)lineBase + (g << 2));
+		}
+		src += srcStride;
+		lineBase += ST_PLANAR_LINE_BYTES;
+	}
+}
+
+bool Video_Atari_PresentChunkyTransparent(const void *src, uint16 srcStride,
+                                          int16 x, int16 y, uint16 width, uint16 height)
+{
+	if (src == NULL || width == 0 || height == 0) return false;
+	if (x < 0 || y < 0) return false;
+	if ((int)x + (int)width > SCREEN_WIDTH) return false;
+	if ((int)y + (int)height > SCREEN_HEIGHT) return false;
+
+	Video_Atari_PresentTransparent((const uint8 *)src, srcStride,
+	                               (uint16)x, (uint16)y, width, height);
+	/* No GFX_Screen_ClearDirtyRect() call here: skip-write callers (see
+	 * GUI_DrawChar()) never mark this rectangle dirty in the first place,
+	 * so there is nothing to clear. */
+	return true;
+}
+
 bool Video_Atari_PresentActive(void)
 {
 	return s_presentMode;
@@ -2121,7 +2203,14 @@ void Video_Atari_PresentLeave(void)
 bool Video_Atari_PresentChunky(const void *src, uint16 srcStride,
                                int16 x, int16 y, uint16 width, uint16 height)
 {
-	if (!s_presentMode) return false;
+	/* EXPERIMENT: no longer gated on s_presentMode -- GFX_Screen_Copy()
+	 * calls this on every chunky write to SCREEN_0, present-mode enclave
+	 * or not. Cursor safety is not reimplemented here: every call site
+	 * that draws to SCREEN_0 is already expected to bracket itself with
+	 * GUI_Mouse_Hide_Safe()/Show_Safe() (which calls Video_Atari_CursorHide()
+	 * for CursorDirect), same as everywhere else in this codebase. If that
+	 * assumption is wrong for some call site, cursor corruption here is
+	 * the symptom to look for. */
 	if (src == NULL || width == 0 || height == 0) return false;
 	if (x < 0 || y < 0) return false;
 	if ((int)x + (int)width > SCREEN_WIDTH) return false;
@@ -2152,10 +2241,23 @@ bool Video_Atari_PresentChunky(const void *src, uint16 srcStride,
 		/* A private, tightly packed source (not SCREEN_WIDTH strided)
 		 * cannot be over-read outside [x, x+width): the masked
 		 * read-modify-write path is the only safe option. */
+		uint16 left = (uint16)(x & ~0xf);
+		uint16 right = (uint16)((x + width + 0xf) & ~0xf);
+
+		if (right > SCREEN_WIDTH) right = SCREEN_WIDTH;
+
 		Video_Atari_PresentRunMasked((const uint8 *)src, srcStride,
 		                             (uint16)x, (uint16)y, width, height);
-		GFX_Screen_ClearDirtyRect((uint16)x, (uint16)y,
-		                          (uint16)(x + width), (uint16)(y + height));
+		/* Widen the clear to the enclosing 16px block(s), same as the
+		 * fast unmasked path above: Video_Atari_PresentGroupMasked()
+		 * (via PresentRunMasked) merges into whatever a partially
+		 * covered edge group already held, so once this call returns
+		 * the whole group -- not just [x, x+width) -- is final, correct
+		 * planar content. Clearing only the exact, unaligned rectangle
+		 * would leave the rest of that edge group's dirty bit set,
+		 * which the old SCREEN_0-dirty-block sweep would later
+		 * reconvert from chunky data that was never written for it. */
+		GFX_Screen_ClearDirtyRect(left, (uint16)y, right, (uint16)(y + height));
 		return true;
 	}
 
@@ -2168,18 +2270,28 @@ bool Video_Atari_PresentChunky(const void *src, uint16 srcStride,
 
 bool Video_Atari_PresentFill(int16 x, int16 y, uint16 width, uint16 height, uint8 colour)
 {
-	if (!s_presentMode) return false;
+	/* EXPERIMENT: see Video_Atari_PresentChunky() -- no longer gated on
+	 * s_presentMode. */
 	if (width == 0 || height == 0) return false;
 	if (x < 0 || y < 0) return false;
 	if ((int)x + (int)width > SCREEN_WIDTH) return false;
 	if ((int)y + (int)height > SCREEN_HEIGHT) return false;
 
 	Video_Atari_PlanarFill((uint16)x, (uint16)y, width, height, s_palette4BitMap[colour]);
-	/* PlanarFill's own edge masking covers a rectangle that is not group
-	 * aligned, so unlike PresentChunky there is no reason to widen this
-	 * one -- only the exact rectangle drawn needs its dirty bits dropped. */
-	GFX_Screen_ClearDirtyRect((uint16)x, (uint16)y,
-	                          (uint16)(x + width), (uint16)(y + height));
+	/* Widen the clear to the enclosing 16px block(s): PlanarFill's own
+	 * edge masking merges into whatever a partially covered edge group
+	 * already held (same reasoning as PresentChunky's masked branch
+	 * above), so the whole group is final afterwards, not just [x,
+	 * x+width). Currently always called full-screen/block-aligned in
+	 * practice, so this is a no-op today, but keeps the invariant true
+	 * if that ever changes. */
+	{
+		uint16 left = (uint16)(x & ~0xf);
+		uint16 right = (uint16)((x + width + 0xf) & ~0xf);
+
+		if (right > SCREEN_WIDTH) right = SCREEN_WIDTH;
+		GFX_Screen_ClearDirtyRect(left, (uint16)y, right, (uint16)(y + height));
+	}
 	return true;
 }
 
@@ -2353,7 +2465,16 @@ static void Video_Atari_C2P_ConvertBlocks(uint8 *screen, uint8 *data, const uint
  */
 void Video_Tick(void)
 {
-	uint8 *data = GFX_Screen_Get_ByIndex(SCREEN_0);
+	/* EXPERIMENT: on ST/STE direct-cursor builds, GFX_Screen_Copy()/Copy2()
+	 * skip the chunky SCREEN_0 write and convert straight from their
+	 * (SCREEN_1) source instead, so SCREEN_0 itself may be stale wherever
+	 * that skip-write path was taken. Read this old dirty-block sweep's
+	 * source from SCREEN_1 too on those builds, since virtually every
+	 * SCREEN_0 writer already mirrors through SCREEN_1 first -- risking
+	 * only redundant double-conversion of blocks written straight to
+	 * SCREEN_0 for real, not corruption. TT/Falcon (which still fully
+	 * write SCREEN_0) keep reading from SCREEN_0 as before. */
+	uint8 *data = GFX_Screen_Get_ByIndex(Video_Atari_CursorDirect() ? SCREEN_1 : SCREEN_0);
 	uint8 *screen = Logbase();
 	bool placementRedraw = false;
 	screen += s_center_image_offset;

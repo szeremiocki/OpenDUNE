@@ -109,6 +109,15 @@ extern void Video_Atari_PresentPaletteRange(const uint8 *palette, int from, int 
 extern bool Video_Atari_PresentChunky(const void *src, uint16 srcStride,
                                       int16 x, int16 y, uint16 width, uint16 height);
 extern bool Video_Atari_PresentFill(int16 x, int16 y, uint16 width, uint16 height, uint8 colour);
+/* Like Video_Atari_PresentChunky(), but a source byte of 0 leaves the
+ * corresponding planar pixel untouched instead of drawing it -- i.e. 0 is
+ * "transparent", not "colour 0". Used for glyph rendering, where the
+ * source is a small private buffer (not SCREEN_0) built fresh per call, so
+ * 0 reliably means "this pixel was not drawn". Every covered 16 pixel
+ * group takes the masked merge path (there is no fast unmasked path: any
+ * group may contain transparent pixels). */
+extern bool Video_Atari_PresentChunkyTransparent(const void *src, uint16 srcStride,
+                                      int16 x, int16 y, uint16 width, uint16 height);
 
 /* Shift a rectangle of the planar screen in place; see the definition in
  * video_atari.c for the full contract (group-aligned geometry only,

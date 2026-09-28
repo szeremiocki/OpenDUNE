@@ -130,6 +130,14 @@ extern bool g_var_37B8;
 #define DRAWSPRITE_FLAG_WIDGETPOS 0x4000
 /* position posX,posY is relative to center of sprite */
 #define DRAWSPRITE_FLAG_CENTER 0x8000
+/* ENHANCEMENT -- ST/STE: force the old direct-SCREEN_0 write path, even
+ * when the destination would otherwise qualify for the private-scratch-
+ * buffer/present-transparent fast path (see GUI_DrawSprite()'s "toPlanar"
+ * handling). Needed by callers that write to SCREEN_0 as a deliberate
+ * scratch/compositing step and then read those pixels back (e.g. the
+ * mouse cursor icon builder in GUI_Mouse_Show()) -- for them "landing in
+ * SCREEN_0" is the whole point, not an implementation detail to skip. */
+#define DRAWSPRITE_FLAG_NO_PLANAR_DIRECT 0x10000
 
 #define GUI_ClearScreen(screenID) GFX_ClearScreen(screenID)
 extern void GUI_DrawScreen(Screen screenID);

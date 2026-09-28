@@ -219,9 +219,21 @@ void GUI_DrawFilledRectangle(int16 left, int16 top, int16 right, int16 bottom, u
 	if (left > right) return;
 	if (top > bottom) return;
 
-	screen += left + top * SCREEN_WIDTH;
 	width = right - left + 1;
 	height = bottom - top + 1;
+
+#ifdef TOS
+	/* EXPERIMENT: skip-write style barrier -- on ST/STE direct-cursor
+	 * builds, skip the chunky memset entirely and fill the planar screen
+	 * straight away instead (a solid colour fill has a direct planar
+	 * equivalent, so there is no need to write SCREEN_0 at all here). */
+	if (GFX_Screen_IsActive(SCREEN_0) && Video_Atari_CursorDirect()) {
+		Video_Atari_PresentFill(left, top, width, height, colour);
+		return;
+	}
+#endif
+
+	screen += left + top * SCREEN_WIDTH;
 	for (y = 0; y < height; y++) {
 		/* TODO : use memset() */
 		for (x = 0; x < width; x++) {
@@ -399,7 +411,7 @@ void GUI_DisplayText(const char *str, int importance, ...)
  */
 static void GUI_DrawChar(unsigned char c, uint16 x, uint16 y)
 {
-	uint8 *screen = GFX_Screen_GetActive();
+	uint8 *screen;
 
 	FontChar *fc;
 
@@ -407,6 +419,16 @@ static void GUI_DrawChar(unsigned char c, uint16 x, uint16 y)
 	uint8 i;
 	uint8 j;
 	const uint8 * fontData;
+	uint16 startX = x;
+	uint16 startY = y;
+#ifdef TOS
+	/* EXPERIMENT: sized generously above any font this codebase actually
+	 * loads (6p/8p UI fonts, the larger intro font); guarded by the size
+	 * check below regardless, so an unexpectedly large glyph just falls
+	 * back to the old direct-SCREEN_0 path instead of overflowing this. */
+	uint8 glyphBuf[32 * 32];
+	bool toPlanar;
+#endif
 
 	if (g_fontCurrent == NULL) return;
 
@@ -416,10 +438,39 @@ static void GUI_DrawChar(unsigned char c, uint16 x, uint16 y)
 	if (x >= SCREEN_WIDTH || (x + fc->width) > SCREEN_WIDTH) return;
 	if (y >= SCREEN_HEIGHT || (y + g_fontCurrent->height) > SCREEN_HEIGHT) return;
 
+#ifdef TOS
+	toPlanar = GFX_Screen_IsActive(SCREEN_0) && Video_Atari_CursorDirect() &&
+	           fc->width <= 32 && g_fontCurrent->height <= 32;
+
+	if (toPlanar) {
+		/* Write into a small private scratch buffer instead of SCREEN_0.
+		 * SCREEN_0 is not reliably maintained any more (most writers skip
+		 * it entirely), so "leave this byte untouched" can no longer mean
+		 * "transparent, background shows through" -- the byte could be
+		 * stale garbage. A freshly zeroed private buffer restores that
+		 * guarantee: 0 really does mean "not drawn here" for
+		 * Video_Atari_PresentChunkyTransparent() below, which merges only
+		 * the non-zero (opaque) pixels into the planar screen and leaves
+		 * every other pixel alone -- no dirty mark needed either, since
+		 * the merge already happened. */
+		memset(glyphBuf, 0, (size_t)fc->width * g_fontCurrent->height);
+		screen = glyphBuf;
+		x = 0;
+		remainingWidth = 0;
+	} else {
+		screen = GFX_Screen_GetActive();
+		GFX_Screen_SetDirtySource(DIRTY_SRC_TEXT);
+		GFX_Screen_SetDirty(SCREEN_ACTIVE, x, y, x + fc->width, y + g_fontCurrent->height);
+		x += y * (uint16)SCREEN_WIDTH;
+		remainingWidth = SCREEN_WIDTH - fc->width;
+	}
+#else
+	screen = GFX_Screen_GetActive();
 	GFX_Screen_SetDirtySource(DIRTY_SRC_TEXT);
 	GFX_Screen_SetDirty(SCREEN_ACTIVE, x, y, x + fc->width, y + g_fontCurrent->height);
 	x += y * (uint16)SCREEN_WIDTH;
 	remainingWidth = SCREEN_WIDTH - fc->width;
+#endif
 
 	if (g_colours[0] != 0) {
 		/* fill unused lines with g_colours[0] */
@@ -428,11 +479,13 @@ static void GUI_DrawChar(unsigned char c, uint16 x, uint16 y)
 			x += remainingWidth;
 		}
 	} else {
-		/* unused lines are left untouched (transparent) */
-		x += fc->unusedLines * (uint16)SCREEN_WIDTH;
+		/* unused lines are left untouched (transparent). Row stride is
+		 * fc->width + remainingWidth either way (SCREEN_WIDTH normally,
+		 * or the tightly packed glyphBuf width when writing to planar). */
+		x += fc->unusedLines * (uint16)(fc->width + remainingWidth);
 	}
 
-	if (fc->usedLines == 0) return;
+	if (fc->usedLines == 0) goto l_present;
 
 	fontData = fc->data;
 	for (j = 0; j < fc->usedLines; j++) {
@@ -444,13 +497,22 @@ static void GUI_DrawChar(unsigned char c, uint16 x, uint16 y)
 		x += remainingWidth;
 	}
 
-	if (g_colours[0] == 0) return;
+	if (g_colours[0] == 0) goto l_present;
 
 	/* fill unused lines with g_colours[0] */
 	for (j = fc->unusedLines + fc->usedLines; j < g_fontCurrent->height; j++) {
 		for (i = 0; i < fc->width; i++) screen[x++] = g_colours[0];
 		x += remainingWidth;
 	}
+
+l_present:
+#ifdef TOS
+	if (toPlanar) {
+		Video_Atari_PresentChunkyTransparent(glyphBuf, fc->width,
+		                                     startX, startY, fc->width, g_fontCurrent->height);
+	}
+#endif
+	return;
 }
 
 /**
@@ -1084,6 +1146,27 @@ void GUI_DrawSprite(Screen screenID, const uint8 *sprite, int16 posX, int16 posY
 	const uint8 *palette = NULL;
 	uint16 spriteDecodedLength; /* if encoded with Format80 */
 	uint8 spriteBuffer[20000];	/* for sprites encoded with Format80 : maximum size for credits images is 19841, elsewere it is 3456 */
+	uint16 rowStride = SCREEN_WIDTH;	/* per-row pointer advance; overridden below when writing into a tightly packed scratch buffer */
+#ifdef TOS
+	/* EXPERIMENT: same private-scratch-buffer + present-transparent pattern
+	 * as GUI_DrawChar(). Gated on the clipped draw rect's total byte size
+	 * fitting spriteScratch below (covers UI icons/buttons, e.g. the
+	 * MENTAT/OPTIONS sidebar buttons at 78x16); anything bigger (units,
+	 * structures, the sandworm, credits images) falls back to the old
+	 * direct-SCREEN_0 path. DRAWSPRITE_FLAG_BLUR is excluded: that mode
+	 * reads already-drawn neighbouring pixels back out of the destination
+	 * buffer (the sandworm blur effect), which only makes sense against
+	 * the real screen, not a freshly zeroed private one.
+	 * DRAWSPRITE_FLAG_NO_PLANAR_DIRECT is an explicit caller opt-out for
+	 * call sites that deliberately write to SCREEN_0 as scratch space and
+	 * read the pixels back afterwards (e.g. the mouse cursor icon builder
+	 * in GUI_Mouse_Show(), which fell victim to exactly that when this
+	 * fast path first shipped without the exclusion). */
+	uint8 spriteScratch[128 * 32];
+	bool toPlanar = false;
+	int16 screenX = 0, screenY = 0;
+	int16 spriteHeightDraw = 0;
+#endif
 
 	uint8 *buf = NULL;
 	uint8 *b = NULL;
@@ -1277,9 +1360,34 @@ void GUI_DrawSprite(Screen screenID, const uint8 *sprite, int16 posX, int16 posY
 	}
 
 	/* move pointer to 1st pixel of 1st row to draw */
-	buf += posY * SCREEN_WIDTH + posX;
-	if ((flags & DRAWSPRITE_FLAG_BOTTOMUP) != 0) {
-		buf += (spriteHeight - 1) * SCREEN_WIDTH;
+#ifdef TOS
+	toPlanar = GFX_Screen_IsActive(SCREEN_0) && Video_Atari_CursorDirect() &&
+	           (flags & (DRAWSPRITE_FLAG_BLUR | DRAWSPRITE_FLAG_NO_PLANAR_DIRECT)) == 0 &&
+	           pixelCountPerRow > 0 && spriteHeight > 0 &&
+	           (uint32)pixelCountPerRow * (uint32)spriteHeight <= sizeof(spriteScratch);
+
+	if (toPlanar) {
+		/* Write into a small private scratch buffer instead of SCREEN_0,
+		 * for the same reason as GUI_DrawChar(): SCREEN_0 is no longer
+		 * reliably maintained, so a zeroed private buffer is needed to
+		 * make "untouched byte" reliably mean "transparent" for
+		 * Video_Atari_PresentChunkyTransparent() below. */
+		memset(spriteScratch, 0, (size_t)pixelCountPerRow * spriteHeight);
+		screenX = (g_widgetProperties[windowID].xBase << 3) + posX;
+		screenY = posY;
+		spriteHeightDraw = spriteHeight;
+		rowStride = pixelCountPerRow;
+		buf = spriteScratch;
+		if ((flags & DRAWSPRITE_FLAG_BOTTOMUP) != 0) {
+			buf += (uint32)(spriteHeight - 1) * rowStride;
+		}
+	} else
+#endif
+	{
+		buf += posY * SCREEN_WIDTH + posX;
+		if ((flags & DRAWSPRITE_FLAG_BOTTOMUP) != 0) {
+			buf += (spriteHeight - 1) * SCREEN_WIDTH;
+		}
 	}
 
 	if ((flags & DRAWSPRITE_FLAG_RTL) != 0) {
@@ -1345,6 +1453,9 @@ void GUI_DrawSprite(Screen screenID, const uint8 *sprite, int16 posX, int16 posY
 #endif
 
 	GFX_Screen_SetDirtySource(DIRTY_SRC_SPRITE);
+#ifdef TOS
+	if (!toPlanar)
+#endif
 	GFX_Screen_SetDirty(screenID,
 	                    (g_widgetProperties[windowID].xBase << 3) + posX,
 	                    posY,
@@ -1681,13 +1792,19 @@ void GUI_DrawSprite(Screen screenID, const uint8 *sprite, int16 posX, int16 posY
 			}
 		}
 
-		if ((flags & DRAWSPRITE_FLAG_BOTTOMUP) != 0)	b -= SCREEN_WIDTH;
-		else b += SCREEN_WIDTH;
+		if ((flags & DRAWSPRITE_FLAG_BOTTOMUP) != 0)	b -= rowStride;
+		else b += rowStride;
 		buf = b;
 
 		Ycounter -= 0x100;
 		if ((Ycounter & 0xFF00) != 0) sprite = spriteSave;
 	} while (--spriteHeight > 0);
+#ifdef TOS
+	if (toPlanar) {
+		Video_Atari_PresentChunkyTransparent(spriteScratch, rowStride,
+		                                     screenX, screenY, rowStride, spriteHeightDraw);
+	}
+#endif
 }
 
 /**
@@ -2246,7 +2363,17 @@ void GUI_DrawBorder(uint16 left, uint16 top, uint16 width, uint16 height, uint16
 {
 	uint16 *colourSchema;
 
-	if (!fill) { GFX_Screen_SetDirtySource(DIRTY_SRC_RECT); GFX_Screen_SetDirty(SCREEN_ACTIVE, left, top, left + width, top + height); }
+	/* ENHANCEMENT -- On ST/STE, GUI_DrawFilledRectangle()/GUI_DrawLine()
+	 * below already present straight to planar and need no dirty mark of
+	 * their own. This explicit mark predates that conversion; left as-is
+	 * it becomes a stale dirty rect that nothing ever clears, later
+	 * reprocessed by the old c2p sweep from SCREEN_1 and overwriting the
+	 * just-drawn planar content (e.g. a menu box border+text). Skip it
+	 * for the direct-planar case, same as those two functions do. */
+	if (!fill && !(GFX_Screen_IsActive(SCREEN_0) && Video_Atari_CursorDirect())) {
+		GFX_Screen_SetDirtySource(DIRTY_SRC_RECT);
+		GFX_Screen_SetDirty(SCREEN_ACTIVE, left, top, left + width, top + height);
+	}
 
 	width  -= 1;
 	height -= 1;
@@ -2801,6 +2928,17 @@ void GUI_DrawLine(int16 x1, int16 y1, int16 x2, int16 y2, uint8 colour)
 
 		x2 -= x1 - 1;
 
+#ifdef TOS
+		/* EXPERIMENT: skip-write style barrier -- horizontal segment has
+		 * a direct planar fill equivalent, so skip the chunky memset
+		 * entirely on ST/STE direct-cursor builds (this is the fast path
+		 * GUI_DrawBorder's top/bottom edges always take). */
+		if (GFX_Screen_IsActive(SCREEN_0) && Video_Atari_CursorDirect()) {
+			Video_Atari_PresentFill(x1, y1, (uint16)x2, 1, colour);
+			return;
+		}
+#endif
+
 		screen += y1 * SCREEN_WIDTH + x1;
 
 		memset(screen, colour, x2);
@@ -2819,6 +2957,15 @@ void GUI_DrawLine(int16 x1, int16 y1, int16 x2, int16 y2, uint8 colour)
 
 	x2 -= x1;
 	if (x2 == 0) {
+#ifdef TOS
+		/* EXPERIMENT: same skip-write barrier as the horizontal case above,
+		 * for vertical segments (GUI_DrawBorder's left/right edges). */
+		if (GFX_Screen_IsActive(SCREEN_0) && Video_Atari_CursorDirect()) {
+			Video_Atari_PresentFill(x1, y1, 1, (uint16)y2, colour);
+			return;
+		}
+#endif
+
 		screen += x1;
 
 		while (y2-- != 0) {
@@ -4285,7 +4432,7 @@ void GUI_Mouse_Show(void)
 
 			GFX_Screen_SetDirtySuppress(true);
 			for (i = 0; i < s_mouseSpriteHeight; i++) memset(box + i * SCREEN_WIDTH, 0, boxWidth);
-			GUI_DrawSprite(SCREEN_0, g_mouseSprite, left, top, 0, 0);
+			GUI_DrawSprite(SCREEN_0, g_mouseSprite, left, top, 0, DRAWSPRITE_FLAG_NO_PLANAR_DIRECT);
 			Video_Atari_CursorBuild(box);
 			for (i = 0; i < s_mouseSpriteHeight; i++) memcpy(box + i * SCREEN_WIDTH, saved + i * boxWidth, boxWidth);
 			GFX_Screen_SetDirtySuppress(false);
@@ -4294,7 +4441,13 @@ void GUI_Mouse_Show(void)
 	}
 #endif /* TOS */
 
-	GUI_DrawSprite(SCREEN_0, g_mouseSprite, left, top, 0, 0);
+	GUI_DrawSprite(SCREEN_0, g_mouseSprite, left, top, 0,
+#ifdef TOS
+	               DRAWSPRITE_FLAG_NO_PLANAR_DIRECT
+#else
+	               0
+#endif
+	              );
 }
 
 /**

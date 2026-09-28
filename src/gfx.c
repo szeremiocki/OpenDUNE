@@ -907,13 +907,29 @@ void GFX_Screen_Copy2(int16 xSrc, int16 ySrc, int16 xDst, int16 yDst, int16 widt
 	if (width < 0 || width >= SCREEN_WIDTH) return;
 	if (height < 0 || height >= SCREEN_HEIGHT) return;
 
-	GFX_Screen_SetDirty(screenDst, xDst, yDst, xDst + width, yDst + height);
-
 	src = GFX_Screen_Get_ByIndex(screenSrc);
 	dst = GFX_Screen_Get_ByIndex(screenDst);
 
 	src += xSrc + ySrc * SCREEN_WIDTH;
 	dst += xDst + yDst * SCREEN_WIDTH;
+
+#ifdef TOS
+	/* Same skip-the-shadow-write experiment as GFX_Screen_Copy(): every
+	 * SCREEN_0-destination caller of this function turns out to source
+	 * from SCREEN_1 already (skipNull is never true for those calls), so
+	 * convert straight from the source buffer to planar and skip the
+	 * chunky write + dirty mark entirely. The one exception (a
+	 * SCREEN_0->SCREEN_1 read-back used by the factory scroll list) is
+	 * left untouched -- it doesn't hit this branch since screenDst there
+	 * is SCREEN_1, not SCREEN_0. */
+	if (GFX_IS_SCREEN0(screenDst) && Video_Atari_CursorDirect() && !skipNull) {
+		Video_Atari_PresentChunky(src, SCREEN_WIDTH, xDst, yDst,
+		                          (uint16)width, (uint16)height);
+		return;
+	}
+#endif
+
+	GFX_Screen_SetDirty(screenDst, xDst, yDst, xDst + width, yDst + height);
 
 	while (height-- != 0) {
 		if (skipNull) {
@@ -1026,8 +1042,20 @@ void GFX_Screen_Copy(int16 xSrc, int16 ySrc, int16 xDst, int16 yDst, int16 width
 	src += xSrc + ySrc * SCREEN_WIDTH;
 	dst += xDst + yDst * SCREEN_WIDTH;
 
-	GFX_Screen_SetDirty(screenDst, xDst, yDst, xDst + width, yDst + height);
+#ifdef TOS
+	/* EXPERIMENT: skip the chunky SCREEN_0 shadow write entirely on
+	 * ST/STE direct-cursor builds -- convert straight from the source
+	 * buffer to planar instead. Anything that still reads SCREEN_0 back
+	 * later will see stale/garbage data; that is deliberately left
+	 * unaddressed for now to see what breaks. */
+	if (GFX_IS_SCREEN0(screenDst) && Video_Atari_CursorDirect()) {
+		Video_Atari_PresentChunky(src, SCREEN_WIDTH, xDst, yDst,
+		                          (uint16)width, (uint16)height);
+		return;
+	}
+#endif
 
+	GFX_Screen_SetDirty(screenDst, xDst, yDst, xDst + width, yDst + height);
 	if (width == SCREEN_WIDTH) {
 		memmove(dst, src, height * SCREEN_WIDTH);
 	} else {
@@ -1109,14 +1137,23 @@ void GFX_Screen_CopyOverlap(int16 xSrc, int16 ySrc, int16 xDst, int16 yDst, int1
  */
 void GFX_ClearScreen(Screen screenID)
 {
+#ifdef TOS
+	/* EXPERIMENT: skip-write barrier, same convention as GFX_Screen_Copy()/
+	 * Copy2(). Presenting straight to planar already makes the clear
+	 * visible; leaving the full-screen chunky write AND (crucially) the
+	 * full-screen dirty mark in place below would poison every dirty
+	 * block for the next old-sweep pass, which (for ST/STE) sources from
+	 * SCREEN_1 -- silently repainting the whole screen from SCREEN_1 and
+	 * erasing anything drawn straight-to-planar afterward (borders, text)
+	 * that SCREEN_1 never mirrored. */
+	if (GFX_IS_SCREEN0(screenID) && Video_Atari_CursorDirect()) {
+		Video_Atari_PresentFill(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0);
+		return;
+	}
+#endif
 	memset(GFX_Screen_Get_ByIndex(screenID), 0, SCREEN_WIDTH * SCREEN_HEIGHT);
 	GFX_Screen_SetDirtySource(DIRTY_SRC_FULL);
 	GFX_Screen_SetDirty(screenID, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
-#ifdef TOS
-	if (GFX_IS_SCREEN0(screenID)) {
-		Video_Atari_PresentFill(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0);
-	}
-#endif
 }
 
 /**
