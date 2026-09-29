@@ -734,7 +734,19 @@ static void GameLoop_GameIntroAnimationMenu(void)
 		case STR_HALL_OF_FAME:
 			GUI_HallOfFame_Show(0xFFFF);
 
+#ifndef TOS
+			/* DOS-era "blank the palette while the next frame is being
+			 * built" trick. On ST/STE this scrambles the 256->16 pen
+			 * quantization LUT to a single (black) pen, which
+			 * Video_SetPalette() flags as a large pen change; nothing
+			 * before the drawMenu block's direct-to-planar border/text
+			 * draws consumes that pending full-repaint, so a later
+			 * ordinary Video_Tick() composites a stale (border/text-less)
+			 * SCREEN_1 over SCREEN_0, wiping the just-drawn border. The
+			 * drawMenu block already goes through its own animated
+			 * fade-in, so this extra blank is unnecessary on TOS. */
 			GFX_SetPalette(g_palette2);
+#endif
 
 			hasFame = File_Exists_Personal("SAVEFAME.DAT");
 			drawMenu = true;
@@ -746,14 +758,21 @@ static void GameLoop_GameIntroAnimationMenu(void)
 			GUI_ClearScreen(SCREEN_0);
 			GUI_Mouse_Show_Safe();
 
-			GFX_SetPalette(g_palette1);
+			GUI_SetPaletteAnimated(g_palette1, 10);
 
 			if (GUI_Widget_SaveLoad_Click(false)) {
 				loadGame = true;
 				if (g_gameMode == GM_RESTART) break;
 				g_gameMode = GM_NORMAL;
 			} else {
+#ifndef TOS
+				/* See the STR_HALL_OF_FAME case above for why this is
+				 * skipped on TOS: it is the exact same vestigial
+				 * DOS blank-palette trick, and it's the reason the
+				 * "main options" border used to fail to redraw after
+				 * cancelling out of Load Game. */
 				GFX_SetPalette(g_palette2);
+#endif
 
 				drawMenu = true;
 			}
