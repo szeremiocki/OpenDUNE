@@ -2335,42 +2335,6 @@ bool Video_Atari_PresentChunky(const void *src, uint16 srcStride,
 	if ((int)x + (int)width > SCREEN_WIDTH) return false;
 	if ((int)y + (int)height > SCREEN_HEIGHT) return false;
 
-	if (srcStride == SCREEN_WIDTH && ((x | (int16)width) & 0xf) != 0) {
-		/* This source is a whole chunky SCREEN_0 row, which write-through
-		 * keeps valid everywhere, not just inside this rectangle -- unlike
-		 * a private buffer it is safe to read a few pixels either side of
-		 * it. Round out to whole 16 pixel groups and take the fast
-		 * unmasked c2p over the wider rectangle instead of the per-pixel
-		 * masked path: converting a handful of already-correct
-		 * neighbouring pixels again is nearly free, a scalar
-		 * read-modify-write loop over every edge column of a picture
-		 * (every scanline, every frame) is not. */
-		uint16 left = (uint16)(x & ~0xf);
-		uint16 right = (uint16)((x + width + 0xf) & ~0xf);
-		const uint8 *adjSrc = (const uint8 *)src - (x - left);
-
-		if (right > SCREEN_WIDTH) right = SCREEN_WIDTH;
-
-		if (((uint32)adjSrc) & 1) {
-			/* Widening to the enclosing 16px group and shifting src back
-			 * to match only produces a word-aligned pointer when x and
-			 * the original xSrc this buffer was read from share parity.
-			 * A caller repositioning content horizontally (e.g. a map
-			 * sprite placed at an odd x) can break that, which would
-			 * fault _c2p1x1_4_st's word-wide reads. Route through the
-			 * masked path instead: it already falls back to a safe
-			 * per-pixel merge whenever the same misalignment shows up in
-			 * its own "full middle groups" fast case. */
-			Video_Atari_PresentRunMasked((const uint8 *)src, srcStride,
-			                             (uint16)x, (uint16)y, width, height);
-		} else {
-			Video_Atari_PresentRun(adjSrc, srcStride,
-			                       left, (uint16)y, (uint16)(right - left), height);
-		}
-		GFX_Screen_ClearDirtyRect(left, (uint16)y, right, (uint16)(y + height));
-		return true;
-	}
-
 	if (((x | (int16)width) & 0xf) != 0) {
 		/* A private, tightly packed source (not SCREEN_WIDTH strided)
 		 * cannot be over-read outside [x, x+width): the masked
