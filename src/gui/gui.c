@@ -1115,6 +1115,54 @@ void GUI_Sprite_Stats_Report(void)
 }
 #endif /* GUI_SPRITE_PREDECODE_STATS */
 
+#ifdef TOS
+/* Shared-buffer batching for GUI_DrawSprite()'s direct-to-planar path.
+ * Normally each call composites its own tightly-cropped private scratch
+ * buffer straight to planar as soon as it finishes decoding, so drawing
+ * several layers on top of each other (e.g. a background sprite plus a
+ * handful of digit glyphs, as GUI_DrawCredits() does every animation
+ * tick) produces that many separate, immediately-visible planar writes.
+ * On real ST/STE hardware the display can be mid-scan between any two
+ * of those writes, so a multi-layer update can flicker/tear.
+ *
+ * A caller that wants several GUI_DrawSprite() calls composited
+ * off-screen and presented in one shot can bracket them with
+ * GUI_DrawSprite_BeginBatch()/EndBatch(): while active, calls that
+ * would otherwise use the private per-call scratch buffer write into
+ * the caller-supplied buffer instead (still respecting the RLE
+ * transparency of the sprite data, so later layers don't punch holes in
+ * earlier ones), and no present happens until EndBatch(). */
+static uint8 *s_spriteBatchBuf = NULL;
+static uint16 s_spriteBatchStride = 0;
+static int16  s_spriteBatchOriginX = 0;
+static int16  s_spriteBatchOriginY = 0;
+static int16  s_spriteBatchW = 0;
+static int16  s_spriteBatchH = 0;
+
+void GUI_DrawSprite_BeginBatch(uint8 *buffer, int16 originX, int16 originY, int16 width, int16 height)
+{
+	s_spriteBatchBuf = buffer;
+	s_spriteBatchStride = (uint16)width;
+	s_spriteBatchOriginX = originX;
+	s_spriteBatchOriginY = originY;
+	s_spriteBatchW = width;
+	s_spriteBatchH = height;
+
+	memset(buffer, 0, (size_t)width * height);
+}
+
+void GUI_DrawSprite_EndBatch(void)
+{
+	if (s_spriteBatchBuf != NULL) {
+		Video_Atari_PresentChunkyTransparent(s_spriteBatchBuf, s_spriteBatchStride,
+		                                     s_spriteBatchOriginX, s_spriteBatchOriginY,
+		                                     s_spriteBatchStride, s_spriteBatchH);
+	}
+
+	s_spriteBatchBuf = NULL;
+}
+#endif
+
 void GUI_DrawSprite(Screen screenID, const uint8 *sprite, int16 posX, int16 posY, uint16 windowID, int flags, ...)
 {
 	/* variables for blur/sandworm effect */
@@ -1166,6 +1214,7 @@ void GUI_DrawSprite(Screen screenID, const uint8 *sprite, int16 posX, int16 posY
 	 * fast path first shipped without the exclusion). */
 	uint8 spriteScratch[128 * 32];
 	bool toPlanar = false;
+	bool batched = false;
 	int16 screenX = 0, screenY = 0;
 	int16 spriteHeightDraw = 0;
 #endif
@@ -1378,19 +1427,33 @@ void GUI_DrawSprite(Screen screenID, const uint8 *sprite, int16 posX, int16 posY
 	           (uint32)pixelCountPerRow * (uint32)spriteHeight <= sizeof(spriteScratch);
 
 	if (toPlanar) {
-		/* Write into a small private scratch buffer instead of SCREEN_0,
-		 * for the same reason as GUI_DrawChar(): SCREEN_0 is no longer
-		 * reliably maintained, so a zeroed private buffer is needed to
-		 * make "untouched byte" reliably mean "transparent" for
-		 * Video_Atari_PresentChunkyTransparent() below. */
-		memset(spriteScratch, 0, (size_t)pixelCountPerRow * spriteHeight);
 		screenX = (g_widgetProperties[windowID].xBase << 3) + posX;
 		screenY = posY;
 		spriteHeightDraw = spriteHeight;
-		rowStride = pixelCountPerRow;
-		buf = spriteScratch;
+
+		if (s_spriteBatchBuf != NULL &&
+		    screenX >= s_spriteBatchOriginX && screenY >= s_spriteBatchOriginY &&
+		    screenX + pixelCountPerRow <= s_spriteBatchOriginX + s_spriteBatchW &&
+		    screenY + spriteHeight <= s_spriteBatchOriginY + s_spriteBatchH) {
+			/* Batch mode active (see GUI_DrawSprite_BeginBatch()) and this
+			 * draw fits inside the batch rect: composite into the caller's
+			 * shared buffer instead of the private per-call scratch buffer,
+			 * and let the caller's EndBatch() do the one and only present. */
+			rowStride = s_spriteBatchStride;
+			buf = s_spriteBatchBuf + (uint32)(screenY - s_spriteBatchOriginY) * rowStride + (screenX - s_spriteBatchOriginX);
+			batched = true;
+		} else {
+			/* Write into a small private scratch buffer instead of SCREEN_0,
+			 * for the same reason as GUI_DrawChar(): SCREEN_0 is no longer
+			 * reliably maintained, so a zeroed private buffer is needed to
+			 * make "untouched byte" reliably mean "transparent" for
+			 * Video_Atari_PresentChunkyTransparent() below. */
+			memset(spriteScratch, 0, (size_t)pixelCountPerRow * spriteHeight);
+			rowStride = pixelCountPerRow;
+			buf = spriteScratch;
+		}
 		if ((flags & DRAWSPRITE_FLAG_BOTTOMUP) != 0) {
-			buf += (uint32)(spriteHeight - 1) * rowStride;
+			buf += (uint32)(spriteHeightDraw - 1) * rowStride;
 		}
 	} else
 #endif
@@ -1811,7 +1874,7 @@ void GUI_DrawSprite(Screen screenID, const uint8 *sprite, int16 posX, int16 posY
 		if ((Ycounter & 0xFF00) != 0) sprite = spriteSave;
 	} while (--spriteHeight > 0);
 #ifdef TOS
-	if (toPlanar) {
+	if (toPlanar && !batched) {
 		Video_Atari_PresentChunkyTransparent(spriteScratch, rowStride,
 		                                     screenX, screenY, rowStride, spriteHeightDraw);
 	}
@@ -2604,6 +2667,15 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 	 * nothing left for another widget to corrupt. */
 	uint16 windowID = direct ? 5 : 4;
 	Screen drawScreenID = direct ? SCREEN_0 : SCREEN_ACTIVE;
+#ifdef TOS
+	/* Batch buffer for the direct-planar path: sized generously above
+	 * widget 5's actual 64x9 footprint. All the sprite draws below still
+	 * get clipped to the widget's real bounds by GUI_DrawSprite() itself,
+	 * so composing them here first and presenting once at the end (see
+	 * GUI_DrawSprite_BeginBatch()/EndBatch() below) avoids the flicker of
+	 * several separate small planar writes per animation tick. */
+	uint8 creditsBatchBuf[64 * 16];
+#endif
 
 	if (s_tickCreditsAnimation > g_timerGUI && mode == 0) return;
 	s_tickCreditsAnimation = g_timerGUI + 1;
@@ -2619,6 +2691,13 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 
 	if (direct) {
 		GUI_Mouse_Hide_InWidget(5);
+#ifdef TOS
+		GUI_DrawSprite_BeginBatch(creditsBatchBuf,
+		                          g_widgetProperties[windowID].xBase << 3,
+		                          g_widgetProperties[windowID].yBase,
+		                          g_widgetProperties[windowID].width << 3,
+		                          g_widgetProperties[windowID].height);
+#endif
 	} else {
 		oldScreenID = GFX_Screen_SetActive(SCREEN_1);
 		oldWidgetId = Widget_SetCurrentWidget(4);
@@ -2686,6 +2765,9 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 	}
 
 	if (direct) {
+#ifdef TOS
+		GUI_DrawSprite_EndBatch();
+#endif
 		GUI_Mouse_Show_InWidget();
 		return;
 	}
