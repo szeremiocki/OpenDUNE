@@ -1236,7 +1236,7 @@ bool GUI_Production_Down_Click(Widget *w)
 		} else {
 			GUI_FactoryWindow_DrawDetails();
 
-			GUI_FactoryWindow_FailScrollList(1);
+//			GUI_FactoryWindow_FailScrollList(1);
 		}
 	}
 
@@ -1280,7 +1280,7 @@ bool GUI_Production_Up_Click(Widget *w)
 		} else {
 			GUI_FactoryWindow_DrawDetails();
 
-			GUI_FactoryWindow_FailScrollList(-1);
+//			GUI_FactoryWindow_FailScrollList(-1);
 		}
 	}
 

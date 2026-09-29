@@ -183,8 +183,10 @@ void GUI_DrawWiredRectangle(uint16 left, uint16 top, uint16 right, uint16 bottom
 	GUI_DrawLine(left, top, left, bottom, colour);
 	GUI_DrawLine(right, top, right, bottom, colour);
 
+#ifndef TOS
 	GFX_Screen_SetDirtySource(DIRTY_SRC_RECT);
 	GFX_Screen_SetDirty(SCREEN_ACTIVE, left, top, right+1, bottom+1);
+#endif
 }
 
 /**
@@ -4003,7 +4005,15 @@ void GUI_DrawText_Monospace(char *string, uint16 left, uint16 top, uint8 fgColou
 void GUI_FactoryWindow_B495_0F30(void)
 {
 	GUI_Mouse_Hide_Safe();
+	uint16 y = g_factoryWindowSelected * 32 + 24;
+	GUI_DrawWiredRectangle(71, y - 1, 104, y + 24,  GFX_GetPixel(72, 23));
+/* this was factory item sprite restored without selection rectangle;
+ * pulled from private buffer in screen_1; maybe it should be private scratch buffer,
+ * beacuse hiding stuff in screen_1 ends badly (see credits scroll rendering buffer,
+ * which I was tracking for better part of the day
+ *
 	GFX_Screen_Copy2(69, ((g_factoryWindowSelected + 1) * 32) + 5, 69, (g_factoryWindowSelected * 32) + 21, 38, 30, SCREEN_1, SCREEN_0, false);
+*/
 	GUI_Mouse_Show_Safe();
 }
 
@@ -4175,7 +4185,7 @@ void GUI_FactoryWindow_UpdateSelection(bool selectionChanged)
 
 		GUI_Mouse_Hide_Safe();
 		GUI_DrawWiredRectangle(71, y - 1, 104, y + 24, 255);
-		GUI_DrawWiredRectangle(72, y, 103, y + 23, 255);
+//		GUI_DrawWiredRectangle(72, y, 103, y + 23, 255);
 		GUI_Mouse_Show_Safe();
 	}
 #ifndef TOS
@@ -4290,10 +4300,20 @@ void GUI_FactoryWindow_PrepareScrollList(void)
 {
 	FactoryWindowItem *item;
 
+/*
+ * this is the screen_1 buffer which stores drawed sprites;
+ * for now I see that it is mainly used to remove
+ * selection rectangle after switching to other
+ * factory item; later it will probably be used also
+ * for scroling...
+ * For now I am removing it because it breaks screen_1
+ * authoritativeness -- maybe it should be explitic
+ * scratch buffer for loaded factory item sprites
+ *
 	GUI_Mouse_Hide_Safe();
 	GUI_Screen_Copy(9, 24, 9, 40, 4, 128, SCREEN_0, SCREEN_1);
 	GUI_Mouse_Show_Safe();
-
+*/
 	item = GUI_FactoryWindow_GetItem(-1);
 
 	if (item != NULL) {

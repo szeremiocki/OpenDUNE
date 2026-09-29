@@ -1162,6 +1162,20 @@ void GFX_ClearScreen(Screen screenID)
  */
 void GFX_ClearBlock(Screen index)
 {
+#ifdef TOS
+	/* EXPERIMENT: skip-write barrier, same convention as GFX_Screen_Copy()/
+	 * Copy2(). Presenting straight to planar already makes the clear
+	 * visible; leaving the full-screen chunky write AND (crucially) the
+	 * full-screen dirty mark in place below would poison every dirty
+	 * block for the next old-sweep pass, which (for ST/STE) sources from
+	 * SCREEN_1 -- silently repainting the whole screen from SCREEN_1 and
+	 * erasing anything drawn straight-to-planar afterward (borders, text)
+	 * that SCREEN_1 never mirrored. */
+	if (GFX_IS_SCREEN0(index) && Video_Atari_CursorDirect()) {
+		Video_Atari_PresentFill(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0);
+		return;
+	}
+#endif
 	memset(GFX_Screen_Get_ByIndex(index), 0, GFX_Screen_GetSize_ByIndex(index));
 	GFX_Screen_SetDirtySource(DIRTY_SRC_FULL);
 	GFX_Screen_SetDirty(index, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
