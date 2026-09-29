@@ -2030,9 +2030,34 @@ static void Video_Atari_PresentRunMasked(const uint8 *src, uint16 srcStride,
 	uint16 line;
 
 	if (lastFull >= firstFull) {
-		Video_Atari_PresentRun(src + (uint16)((firstFull << 4) - (int)x), srcStride,
-		                       (uint16)(firstFull << 4), y,
-		                       (uint16)((lastFull - firstFull + 1) << 4), h);
+		const uint8 *fullSrc = src + (uint16)((firstFull << 4) - (int)x);
+
+		if (((uint32)fullSrc) & 1) {
+			/* The fast c2p path needs a word-aligned source pointer.
+			 * When the copy's source and destination x coordinates
+			 * differ in parity (e.g. a map sprite placed at an odd
+			 * pixel column), this alignment shift lands on an odd
+			 * address that would fault _c2p1x1_4_st's word-wide
+			 * pixel-pair reads. Fall back to the safe per-pixel merge
+			 * for these groups instead (same primitive already used
+			 * for the partial edge groups below). */
+			const uint8 *mSrc = src;
+			uint8 *mLineBase = lineBase;
+			int g;
+
+			for (line = 0; line < h; line++) {
+				for (g = firstFull; g <= lastFull; g++) {
+					Video_Atari_PresentGroupMasked(mSrc, (uint16)(g << 4), x, x1,
+					                               (uint16 *)mLineBase + (g << 2));
+				}
+				mSrc += srcStride;
+				mLineBase += ST_PLANAR_LINE_BYTES;
+			}
+		} else {
+			Video_Atari_PresentRun(fullSrc, srcStride,
+			                       (uint16)(firstFull << 4), y,
+			                       (uint16)((lastFull - firstFull + 1) << 4), h);
+		}
 	}
 
 	if (!doLeft && !doRight) return;
@@ -2322,11 +2347,26 @@ bool Video_Atari_PresentChunky(const void *src, uint16 srcStride,
 		 * (every scanline, every frame) is not. */
 		uint16 left = (uint16)(x & ~0xf);
 		uint16 right = (uint16)((x + width + 0xf) & ~0xf);
+		const uint8 *adjSrc = (const uint8 *)src - (x - left);
 
 		if (right > SCREEN_WIDTH) right = SCREEN_WIDTH;
 
-		Video_Atari_PresentRun((const uint8 *)src - (x - left), srcStride,
-		                       left, (uint16)y, (uint16)(right - left), height);
+		if (((uint32)adjSrc) & 1) {
+			/* Widening to the enclosing 16px group and shifting src back
+			 * to match only produces a word-aligned pointer when x and
+			 * the original xSrc this buffer was read from share parity.
+			 * A caller repositioning content horizontally (e.g. a map
+			 * sprite placed at an odd x) can break that, which would
+			 * fault _c2p1x1_4_st's word-wide reads. Route through the
+			 * masked path instead: it already falls back to a safe
+			 * per-pixel merge whenever the same misalignment shows up in
+			 * its own "full middle groups" fast case. */
+			Video_Atari_PresentRunMasked((const uint8 *)src, srcStride,
+			                             (uint16)x, (uint16)y, width, height);
+		} else {
+			Video_Atari_PresentRun(adjSrc, srcStride,
+			                       left, (uint16)y, (uint16)(right - left), height);
+		}
 		GFX_Screen_ClearDirtyRect(left, (uint16)y, right, (uint16)(y + height));
 		return true;
 	}
