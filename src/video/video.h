@@ -25,7 +25,9 @@ extern void * Video_GetFrameBuffer(uint16 size);
 extern bool Video_Atari_CursorDirect(void);
 extern bool Video_Atari_CursorPrepare(const void *sprite, uint16 x, uint16 y,
                                       uint16 w, uint16 h, int16 dx, int16 dy);
-extern void Video_Atari_CursorBuild(const uint8 *chunky);
+#define VIDEO_ATARI_CURSOR_MAX_WIDTH 96
+#define VIDEO_ATARI_CURSOR_MAX_HEIGHT 64
+extern void Video_Atari_CursorBuild(const uint8 *chunky, uint16 stride);
 extern void Video_Atari_CursorHide(void);
 
 /* Persistent, pre-shifted (all 16 sub-16px horizontal phases) bitplane cache

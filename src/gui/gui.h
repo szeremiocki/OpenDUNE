@@ -133,15 +133,19 @@ extern bool g_var_37B8;
 /* ENHANCEMENT -- ST/STE: force the old direct-SCREEN_0 write path, even
  * when the destination would otherwise qualify for the private-scratch-
  * buffer/present-transparent fast path (see GUI_DrawSprite()'s "toPlanar"
- * handling). Needed by callers that write to SCREEN_0 as a deliberate
- * scratch/compositing step and then read those pixels back (e.g. the
- * mouse cursor icon builder in GUI_Mouse_Show()) -- for them "landing in
- * SCREEN_0" is the whole point, not an implementation detail to skip. */
+ * handling). Also preserves the legacy chunky cursor path on machines
+ * without a direct-planar cursor. Cursor preparation uses private memory
+ * instead, through GUI_DrawSpriteToBuffer(). */
 #define DRAWSPRITE_FLAG_NO_PLANAR_DIRECT 0x10000
 
 #define GUI_ClearScreen(screenID) GFX_ClearScreen(screenID)
 extern void GUI_DrawScreen(Screen screenID);
 extern void GUI_DrawSprite(Screen screenID, const uint8 *sprite, int16 posX, int16 posY, uint16 windowID, int flags, ...);
+#ifdef TOS
+/* Plain sprite draw, clipped to a tightly packed private buffer. No present
+ * or screen-buffer access; transparent pixels leave the buffer unchanged. */
+extern void GUI_DrawSpriteToBuffer(uint8 *buffer, uint16 width, uint16 height, const uint8 *sprite, int16 x, int16 y);
+#endif
 
 /* One-shot survey for the sprite pre-decode idea; reports to error.log.
  * Build with -DGUI_SPRITE_PREDECODE_STATS_ENABLE. */

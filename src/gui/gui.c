@@ -1172,7 +1172,31 @@ void GUI_DrawSprite_EndBatch(void)
 }
 #endif
 
+static void GUI_DrawSpriteInternal(Screen screenID, const uint8 *sprite, int16 posX, int16 posY,
+                                  uint16 windowID, int flags, va_list *ap,
+                                  uint8 *target, uint16 targetWidth, uint16 targetHeight);
+
 void GUI_DrawSprite(Screen screenID, const uint8 *sprite, int16 posX, int16 posY, uint16 windowID, int flags, ...)
+{
+	va_list ap;
+
+	va_start(ap, flags);
+	GUI_DrawSpriteInternal(screenID, sprite, posX, posY, windowID, flags, &ap, NULL, 0, 0);
+	va_end(ap);
+}
+
+#ifdef TOS
+void GUI_DrawSpriteToBuffer(uint8 *buffer, uint16 width, uint16 height,
+                           const uint8 *sprite, int16 x, int16 y)
+{
+	assert(buffer != NULL && width > 0 && width <= SCREEN_WIDTH && height > 0 && height <= SCREEN_HEIGHT);
+	GUI_DrawSpriteInternal(SCREEN_0, sprite, x, y, 0, 0, NULL, buffer, width, height);
+}
+#endif
+
+static void GUI_DrawSpriteInternal(Screen screenID, const uint8 *sprite, int16 posX, int16 posY,
+                                  uint16 windowID, int flags, va_list *ap,
+                                  uint8 *target, uint16 targetWidth, uint16 targetHeight)
 {
 	/* variables for blur/sandworm effect */
 	static const uint8 blurOffsets[8] = {1, 3, 2, 5, 4, 3, 2, 1};
@@ -1180,8 +1204,6 @@ void GUI_DrawSprite(Screen screenID, const uint8 *sprite, int16 posX, int16 posY
 	uint16 blurOffset = 1;
 	uint16 blurRandomValueIncr = 0x8B55;
 	uint16 blurRandomValue     = 0x51EC;
-
-	va_list ap;
 
 	int16  top;
 	int16  bottom;
@@ -1217,10 +1239,8 @@ void GUI_DrawSprite(Screen screenID, const uint8 *sprite, int16 posX, int16 posY
 	 * buffer (the sandworm blur effect), which only makes sense against
 	 * the real screen, not a freshly zeroed private one.
 	 * DRAWSPRITE_FLAG_NO_PLANAR_DIRECT is an explicit caller opt-out for
-	 * call sites that deliberately write to SCREEN_0 as scratch space and
-	 * read the pixels back afterwards (e.g. the mouse cursor icon builder
-	 * in GUI_Mouse_Show(), which fell victim to exactly that when this
-	 * fast path first shipped without the exclusion). */
+	 * callers that need the legacy chunky write path. Private buffer
+	 * rendering bypasses planar presentation independently of this flag. */
 	uint8 spriteScratch[128 * 32];
 	bool toPlanar = false;
 	bool batched = false;
@@ -1245,14 +1265,12 @@ void GUI_DrawSprite(Screen screenID, const uint8 *sprite, int16 posX, int16 posY
 
 	/* read additional arguments according to the flags */
 
-	va_start(ap, flags);
-
-	if ((flags & DRAWSPRITE_FLAG_PAL) != 0) palette = va_arg(ap, uint8*);
+	if ((flags & DRAWSPRITE_FLAG_PAL) != 0) palette = va_arg(*ap, uint8*);
 
 	/* Remap */
 	if ((flags & DRAWSPRITE_FLAG_REMAP) != 0) {
-		remap = va_arg(ap, uint8*);
-		remapCount = (int16)va_arg(ap, int);
+		remap = va_arg(*ap, uint8*);
+		remapCount = (int16)va_arg(*ap, int);
 		if (remapCount == 0) flags &= ~DRAWSPRITE_FLAG_REMAP;
 	}
 
@@ -1263,26 +1281,32 @@ void GUI_DrawSprite(Screen screenID, const uint8 *sprite, int16 posX, int16 posY
 		blurRandomValueIncr = 0x100;
 	}
 
-	if ((flags & DRAWSPRITE_FLAG_BLURINCR) != 0) blurRandomValueIncr = (uint16)va_arg(ap, int);
+	if ((flags & DRAWSPRITE_FLAG_BLURINCR) != 0) blurRandomValueIncr = (uint16)va_arg(*ap, int);
 
 	if ((flags & DRAWSPRITE_FLAG_ZOOM) != 0) {
-		zoomRatioX = (uint16)va_arg(ap, int);
-		zoomRatioY = (uint16)va_arg(ap, int);
+		zoomRatioX = (uint16)va_arg(*ap, int);
+		zoomRatioY = (uint16)va_arg(*ap, int);
 	}
 
-	va_end(ap);
-
-	buf = GFX_Screen_Get_ByIndex(screenID);
-	buf += g_widgetProperties[windowID].xBase << 3;
-
-	width = g_widgetProperties[windowID].width << 3;
-	top = g_widgetProperties[windowID].yBase;
-	bottom = top + g_widgetProperties[windowID].height;
-
-	if ((flags & DRAWSPRITE_FLAG_WIDGETPOS) != 0) {
-		posY += g_widgetProperties[windowID].yBase;
+	if (target != NULL) {
+		buf = target;
+		rowStride = targetWidth;
+		width = targetWidth;
+		top = 0;
+		bottom = targetHeight;
 	} else {
-		posX -= g_widgetProperties[windowID].xBase << 3;
+		buf = GFX_Screen_Get_ByIndex(screenID);
+		buf += g_widgetProperties[windowID].xBase << 3;
+
+		width = g_widgetProperties[windowID].width << 3;
+		top = g_widgetProperties[windowID].yBase;
+		bottom = top + g_widgetProperties[windowID].height;
+
+		if ((flags & DRAWSPRITE_FLAG_WIDGETPOS) != 0) {
+			posY += g_widgetProperties[windowID].yBase;
+		} else {
+			posX -= g_widgetProperties[windowID].xBase << 3;
+		}
 	}
 
 	spriteFlags = READ_LE_UINT16(sprite);
@@ -1430,7 +1454,7 @@ void GUI_DrawSprite(Screen screenID, const uint8 *sprite, int16 posX, int16 posY
 	 * SCREEN_1 draw into a stray write straight onto the visible planar
 	 * screen (seen as leftover sidebar/build-window graphics bleeding
 	 * into other screens, e.g. the CONST. YARD build panel). */
-	toPlanar = GFX_Screen_Get_ByIndex(screenID) == GFX_Screen_Get_ByIndex(SCREEN_0) && Video_Atari_CursorDirect() &&
+	toPlanar = target == NULL && GFX_Screen_Get_ByIndex(screenID) == GFX_Screen_Get_ByIndex(SCREEN_0) && Video_Atari_CursorDirect() &&
 	           (flags & (DRAWSPRITE_FLAG_BLUR | DRAWSPRITE_FLAG_NO_PLANAR_DIRECT)) == 0 &&
 	           pixelCountPerRow > 0 && spriteHeight > 0 &&
 	           (uint32)pixelCountPerRow * (uint32)spriteHeight <= sizeof(spriteScratch);
@@ -1467,9 +1491,9 @@ void GUI_DrawSprite(Screen screenID, const uint8 *sprite, int16 posX, int16 posY
 	} else
 #endif
 	{
-		buf += posY * SCREEN_WIDTH + posX;
+		buf += posY * rowStride + posX;
 		if ((flags & DRAWSPRITE_FLAG_BOTTOMUP) != 0) {
-			buf += (spriteHeight - 1) * SCREEN_WIDTH;
+			buf += (spriteHeight - 1) * rowStride;
 		}
 	}
 
@@ -4590,46 +4614,42 @@ void GUI_Mouse_Show(void)
 	}
 #endif
 
-	if (g_mouseSpriteBuffer != NULL) {
-		GFX_CopyToBuffer(s_mouseSpriteLeft * 8, s_mouseSpriteTop, s_mouseSpriteWidth * 8, s_mouseSpriteHeight, g_mouseSpriteBuffer);
-	}
-
 #ifdef TOS
-	/* ENHANCEMENT -- On ST/STE the cursor is composited straight into the
-	 * planar screen by Video_Tick(), so it must never reach SCREEN_0: every
-	 * cursor move would otherwise dirty up to 32 blocks twice (sprite draw
-	 * plus background restore) at ~630 cycles of c2p each.
-	 *
-	 * The sprite is still rendered with the regular code, but into a
-	 * zeroed-out SCREEN_0 box that is handed to the video driver and
-	 * immediately overwritten again with the saved background. Colour 0 is
-	 * the sprite's transparent colour, so the box doubles as the mask. */
-
 	if (g_mouseSpriteBuffer != NULL && Video_Atari_CursorDirect()
 	 && s_mouseSpriteWidth != 0 && s_mouseSpriteHeight != 0
 	 && s_mouseSpriteWidth * 8 <= SCREEN_WIDTH && s_mouseSpriteHeight <= SCREEN_HEIGHT) {
 		uint16 boxLeft = s_mouseSpriteLeft * 8;
 		uint16 boxWidth = s_mouseSpriteWidth * 8;
+		uint16 boxHeight = s_mouseSpriteHeight;
+		uint8 *box;
 
+		if (boxWidth > VIDEO_ATARI_CURSOR_MAX_WIDTH) boxWidth = VIDEO_ATARI_CURSOR_MAX_WIDTH;
+		if (boxHeight > VIDEO_ATARI_CURSOR_MAX_HEIGHT) boxHeight = VIDEO_ATARI_CURSOR_MAX_HEIGHT;
+
+		/* Allocate before Prepare updates its cache key, so allocation
+		 * failure cannot leave an unbuilt cursor marked as cached. */
+		box = (uint8 *)calloc((size_t)boxWidth, boxHeight);
+		if (box == NULL) {
+			Warning("Unable to allocate cursor scratch buffer\n");
+			Video_Atari_CursorHide();
+			return;
+		}
 		if (Video_Atari_CursorPrepare(g_mouseSprite, boxLeft, s_mouseSpriteTop,
-		                              boxWidth, s_mouseSpriteHeight,
+		                              boxWidth, boxHeight,
 		                              (int16)(left - boxLeft),
 		                              (int16)(top - s_mouseSpriteTop))) {
-			uint8 *box = (uint8 *)GFX_Screen_Get_ByIndex(SCREEN_0)
-			           + s_mouseSpriteTop * SCREEN_WIDTH + boxLeft;
-			const uint8 *saved = (const uint8 *)g_mouseSpriteBuffer;
-			uint16 i;
-
-			GFX_Screen_SetDirtySuppress(true);
-			for (i = 0; i < s_mouseSpriteHeight; i++) memset(box + i * SCREEN_WIDTH, 0, boxWidth);
-			GUI_DrawSprite(SCREEN_0, g_mouseSprite, left, top, 0, DRAWSPRITE_FLAG_NO_PLANAR_DIRECT);
-			Video_Atari_CursorBuild(box);
-			for (i = 0; i < s_mouseSpriteHeight; i++) memcpy(box + i * SCREEN_WIDTH, saved + i * boxWidth, boxWidth);
-			GFX_Screen_SetDirtySuppress(false);
+			GUI_DrawSpriteToBuffer(box, boxWidth, boxHeight, g_mouseSprite,
+			                       (int16)(left - boxLeft), (int16)(top - s_mouseSpriteTop));
+			Video_Atari_CursorBuild(box, boxWidth);
 		}
+		free(box);
 		return;
 	}
 #endif /* TOS */
+
+	if (g_mouseSpriteBuffer != NULL) {
+		GFX_CopyToBuffer(s_mouseSpriteLeft * 8, s_mouseSpriteTop, s_mouseSpriteWidth * 8, s_mouseSpriteHeight, g_mouseSpriteBuffer);
+	}
 
 	GUI_DrawSprite(SCREEN_0, g_mouseSprite, left, top, 0,
 #ifdef TOS

@@ -18,6 +18,7 @@
 #include "../opendune.h"
 #include "../os/endian.h"
 #include "../os/error.h"
+#include "../os/math.h"
 #include "../os/sleep.h"
 #include "../sprites.h"
 #include "../timer.h"
@@ -1104,26 +1105,21 @@ static void Video_Atari_UpdateFPS(void)
  * background restore), and each 16x16 cursor covers up to 32 blocks of
  * chunky-to-planar work at ~630 cycles a block.
  *
- * Instead the cursor is kept out of SCREEN_0 entirely and composited
- * straight into the planar screen at the end of Video_Tick(), after the
- * c2p pass has refreshed the background below it.  Per tick:
- *
- *   1. restore the planar words saved under the previous cursor position,
- *   2. run the normal dirty-rectangle c2p,
- *   3. save the planar words at the new position and OR the cursor in.
+ * Planar writers maintain a cursor-free backup and synchronously composite
+ * the mouse over changed groups. Video_Tick only reconciles requested cursor
+ * position, appearance and visibility with the cursor actually drawn.
  *
  * The bitplane form of the sprite only depends on its content and on the
  * horizontal position modulo 16, so it is cached and rebuilt only when one
  * of those (or the palette) actually changes.
  * ------------------------------------------------------------------------ */
 
-#define CURSOR_MAX_H      64
-#define CURSOR_MAX_GROUPS 6		/* 16 pixel groups, ie. 96 pixels wide */
+#define CURSOR_MAX_H      VIDEO_ATARI_CURSOR_MAX_HEIGHT
+#define CURSOR_MAX_GROUPS (VIDEO_ATARI_CURSOR_MAX_WIDTH / 16)
 
 static bool s_curVisible = false;	/* the game wants a cursor displayed */
 static bool s_curDrawn = false;		/* the cursor is currently in the planar screen */
 static bool s_curDirty = true;		/* position or content changed */
-static bool s_curNeedErase = false;	/* deferred erase, see Video_Tick() */
 
 static uint16 s_curY, s_curW, s_curH;
 static uint16 s_curGroup, s_curGroups, s_curShift;
@@ -1135,14 +1131,10 @@ static uint16 s_curDrawnY, s_curDrawnH, s_curDrawnGroup, s_curDrawnGroups;
 static uint16 s_curData[CURSOR_MAX_H][CURSOR_MAX_GROUPS * 4];
 static uint16 s_curMask[CURSOR_MAX_H][CURSOR_MAX_GROUPS];
 static uint16 s_curSave[CURSOR_MAX_H][CURSOR_MAX_GROUPS * 4];
-
-/* Per line, which of the drawn rectangle's groups this tick's c2p pass is
- * about to refresh with a freshly converted background (bit set = c2p will
- * overwrite that 16px group). Captured by Video_Atari_CursorOverlap() while
- * g_dirty_blocks[] is still valid (before GFX_Screen_SetClean() wipes it),
- * and consumed by the deferred Video_Atari_CursorErase() call below. Only
- * meaningful when a partial-overlap erase is pending. */
-static uint16 s_curEraseHit[CURSOR_MAX_H];
+/* Requested icon caches can be rebuilt before the old cursor moves. Keep
+ * the actual on-screen pixels/mask independent of those cache lifetimes. */
+static uint16 s_curDrawnData[CURSOR_MAX_H][CURSOR_MAX_GROUPS * 4];
+static uint16 s_curDrawnMask[CURSOR_MAX_H][CURSOR_MAX_GROUPS];
 
 /* cache key of the currently built bitplane form (slow/edge path, see
  * Video_Atari_CursorPrepare() below) */
@@ -1150,6 +1142,8 @@ static const void *s_curKeySprite = NULL;
 static uint16 s_curKeyW = 0, s_curKeyH = 0, s_curKeyShift = 0, s_curKeyPal = 0xffff;
 static int16 s_curKeyDx = 0, s_curKeyDy = 0;
 static uint16 s_paletteGeneration = 0;
+static uint16 s_curSelectedIcon = 0xffff;
+static int16 s_curIconLeft, s_curIconTop;
 
 /* Selected bitplane source for the next Video_Atari_CursorDraw() call: a
  * flat, row-major view (s_curH rows of s_curDrawStride*4/ s_curDrawStride
@@ -1221,6 +1215,7 @@ bool Video_Atari_CursorPrepare(const void *sprite, uint16 x, uint16 y,
 {
 	uint16 shift = x & 0xf;
 	uint16 groups;
+	s_curSelectedIcon = 0xffff;
 
 	if (h > CURSOR_MAX_H) h = CURSOR_MAX_H;
 	groups = (uint16)((shift + w + 0xf) >> 4);
@@ -1258,11 +1253,11 @@ bool Video_Atari_CursorPrepare(const void *sprite, uint16 x, uint16 y,
 
 /**
  * Convert the freshly rendered cursor to bitplanes.
- * @param chunky Top left of the cursor box inside a SCREEN_WIDTH wide chunky
- *               buffer that was cleared to 0 before the sprite was drawn, so
+ * @param chunky Top left of a private chunky buffer cleared to 0 before drawing, so
  *               that colour 0 marks the transparent pixels.
+ * @param stride Bytes between source rows.
  */
-void Video_Atari_CursorBuild(const uint8 *chunky)
+void Video_Atari_CursorBuild(const uint8 *chunky, uint16 stride)
 {
 	uint16 line, g, px;
 
@@ -1293,7 +1288,7 @@ void Video_Atari_CursorBuild(const uint8 *chunky)
 				if (pen & 8) d[3] |= bit;
 			}
 		}
-		chunky += SCREEN_WIDTH;
+		chunky += stride;
 	}
 }
 
@@ -1307,7 +1302,7 @@ void Video_Atari_CursorBuild(const uint8 *chunky)
  * slow-path arrays.
  * @return false if malloc() failed (icon left invalid for this phase).
  */
-static bool Video_Atari_CursorBuildPhase(CursorIcon *icon, uint16 phase, const uint8 *chunky)
+static bool Video_Atari_CursorBuildPhase(CursorIcon *icon, uint16 phase, const uint8 *chunky, uint16 stride)
 {
 	uint16 groups = (uint16)((phase + icon->w + 0xf) >> 4);
 	uint16 line, g, px;
@@ -1347,7 +1342,7 @@ static bool Video_Atari_CursorBuildPhase(CursorIcon *icon, uint16 phase, const u
 				if (pen & 8) dd[3] |= bit;
 			}
 		}
-		chunky += SCREEN_WIDTH;
+		chunky += stride;
 	}
 	return true;
 }
@@ -1375,16 +1370,13 @@ static void Video_Atari_CursorFreeIcon(CursorIcon *icon)
  * pen value. Cheap and rare either way: this never runs on the cursor
  * movement hot path.
  *
- * Each icon is rendered exactly once, into a temporary zeroed-out SCREEN_0
- * box (colour 0 doubling as the transparency mask, exactly like the
- * existing slow-path GUI_Mouse_Show() flow), with the box's original
- * content saved/restored around it and screen dirty-tracking suppressed
- * so this is invisible to the rest of the game -- safe to call at any
- * time, including mid-game on a palette change.
+ * Each icon is rendered once into a private, tightly packed chunky buffer.
+ * Colour 0 supplies the transparency mask; no screen buffer is touched.
  */
 void Video_Atari_CursorPreloadIcons(void)
 {
 	uint16 i;
+	bool visible = s_curVisible;
 
 	if (!Video_Atari_CursorDirect()) return;
 	if (g_sprites == NULL) return;
@@ -1395,7 +1387,6 @@ void Video_Atari_CursorPreloadIcons(void)
 		uint16 minX, minY, maxX, maxY;	/* tight non-transparent bbox, inclusive */
 		bool ok, any;
 		uint8 *box;
-		uint8 *saved;
 
 		Video_Atari_CursorFreeIcon(&s_curIcon[i]);
 		if (sprite == NULL) continue;
@@ -1405,15 +1396,12 @@ void Video_Atari_CursorPreloadIcons(void)
 		/* implausible size (corrupt data?) -- be defensive, just skip it */
 		if (w == 0 || h == 0 || w > SCREEN_WIDTH || h > CURSOR_MAX_H) continue;
 
-		saved = (uint8 *)malloc((size_t)w * h);
-		if (saved == NULL) continue;
-
-		box = (uint8 *)GFX_Screen_Get_ByIndex(SCREEN_0);
-
-		GFX_Screen_SetDirtySuppress(true);
-		for (line = 0; line < h; line++) memcpy(saved + line * w, box + line * SCREEN_WIDTH, w);
-		for (line = 0; line < h; line++) memset(box + line * SCREEN_WIDTH, 0, w);
-		GUI_DrawSprite(SCREEN_0, sprite, 0, 0, 0, 0);
+		box = (uint8 *)calloc((size_t)w, h);
+		if (box == NULL) {
+			Warning("Unable to allocate cursor icon scratch buffer\n");
+			continue;
+		}
+		GUI_DrawSpriteToBuffer(box, w, h, sprite, 0, 0);
 
 		/* Crop to the tight non-transparent (colour != 0) bounding box: the
 		 * sprite's own declared w/h is a coarse outer bound that includes
@@ -1426,7 +1414,7 @@ void Video_Atari_CursorPreloadIcons(void)
 		 * the crop's offset so screen positioning still lines up. */
 		minX = w; maxX = 0; minY = h; maxY = 0; any = false;
 		for (line = 0; line < h; line++) {
-			const uint8 *row = box + line * SCREEN_WIDTH;
+			const uint8 *row = box + line * w;
 
 			for (x = 0; x < w; x++) {
 				if (row[x] == 0) continue;
@@ -1442,9 +1430,7 @@ void Video_Atari_CursorPreloadIcons(void)
 			/* fully transparent icon (shouldn't happen for a real cursor,
 			 * but be defensive) -- leave it invalid rather than divide by
 			 * a zero-sized box */
-			for (line = 0; line < h; line++) memcpy(box + line * SCREEN_WIDTH, saved + line * w, w);
-			GFX_Screen_SetDirtySuppress(false);
-			free(saved);
+			free(box);
 			continue;
 		}
 
@@ -1455,16 +1441,23 @@ void Video_Atari_CursorPreloadIcons(void)
 
 		ok = true;
 		for (phase = 0; phase < CURSOR_PHASES; phase++) {
-			if (!Video_Atari_CursorBuildPhase(&s_curIcon[i], phase, box + minY * SCREEN_WIDTH + minX)) ok = false;
+			if (!Video_Atari_CursorBuildPhase(&s_curIcon[i], phase, box + minY * w + minX, w)) ok = false;
 		}
 		s_curIcon[i].valid = ok;
 
-		for (line = 0; line < h; line++) memcpy(box + line * SCREEN_WIDTH, saved + line * w, w);
-		GFX_Screen_SetDirtySuppress(false);
-
-		free(saved);
+		free(box);
 	}
 	s_curIconPaletteGeneration = s_paletteGeneration;
+	if (s_curSelectedIcon != 0xffff) {
+		if (!Video_Atari_CursorUseIcon(s_curSelectedIcon, s_curIconLeft, s_curIconTop)) {
+			Warning("Unable to refresh selected cursor icon\n");
+			s_curDrawData = NULL;
+			s_curDrawMask = NULL;
+			Video_Atari_CursorHide();
+		} else if (!visible) {
+			Video_Atari_CursorHide();
+		}
+	}
 }
 
 /**
@@ -1508,6 +1501,9 @@ bool Video_Atari_CursorUseIcon(uint16 iconIndex, int16 left, int16 top)
 
 	icon = &s_curIcon[iconIndex];
 	if (!icon->valid) return false;
+	s_curSelectedIcon = iconIndex;
+	s_curIconLeft = left;
+	s_curIconTop = top;
 
 	/* the table only covers the tight non-transparent bbox, offset from
 	 * the sprite's nominal top-left/hotspot origin -- shift into that
@@ -1574,47 +1570,8 @@ void Video_Atari_CursorHide(void)
 	}
 }
 
-/**
- * Put the saved background back, removing the cursor from the planar
- * screen -- but only in the groups this tick's c2p pass did *not* already
- * refresh (see s_curEraseHit[] / Video_Atari_CursorOverlap()). Since the
- * erase is deferred until after c2p now (to shrink the erase-to-redraw
- * flicker window), any group c2p touched this tick already holds correct,
- * freshly converted background; blindly restoring the (now stale) saved
- * words there would overwrite that fresh data with pre-tick pixels --
- * visible as a stale/ghost strip, e.g. when the viewport scrolls under a
- * stationary, partially-covered cursor.
- */
-static void Video_Atari_CursorErase(void)
-{
-	uint16 line, g, i;
-	uint16 *p;
-
-	if (!s_curDrawn) return;
-
-	p = (uint16 *)(s_curDrawnBase + s_curDrawnY * (SCREEN_WIDTH >> 1)
-	                             + (s_curDrawnGroup << 3));
-	for (line = 0; line < s_curDrawnH; line++) {
-		const uint16 *s = s_curSave[line];
-		uint16 hit = s_curEraseHit[line];
-
-		for (g = 0; g < s_curDrawnGroups; g++) {
-			if ((hit & (1u << g)) != 0) continue;	/* c2p already refreshed it */
-			for (i = (uint16)(g << 2); i < (uint16)((g << 2) + 4); i++) p[i] = s[i];
-		}
-		p += SCREEN_WIDTH >> 2;	/* 80 words per scanline */
-	}
-	s_curDrawn = false;
-}
-
-/**
- * Unconditionally put the whole saved background back, with none of
- * Video_Atari_CursorErase()'s "skip groups c2p already refreshed this
- * tick" bookkeeping -- there is no c2p pass to defer to here, so there is
- * nothing to skip. Used by callers that manipulate planar memory directly,
- * outside the normal draw/c2p/erase tick cycle, and just need the cursor
- * gone from wherever it currently sits before they do.
- */
+/* Movement, actual hiding and screen shifts restore this backup.
+ * Ordinary drawing updates it synchronously instead. */
 static void Video_Atari_CursorEraseFull(void)
 {
 	uint16 line, i;
@@ -1656,8 +1613,10 @@ static void Video_Atari_CursorDraw(uint8 *base)
 				uint16 w = p[i];
 
 				save[i] = w;
+				s_curDrawnData[line][i] = d[i];
 				p[i] = (uint16)((w & keep) | d[i]);
 			}
+			s_curDrawnMask[line][g] = m[g];
 		}
 		p += SCREEN_WIDTH >> 2;
 	}
@@ -1669,51 +1628,41 @@ static void Video_Atari_CursorDraw(uint8 *base)
 	s_curDrawn = true;
 }
 
-/**
- * Classify how this tick's dirty blocks overlap the cursor's currently-
- * composited rectangle:
- *   0 - no overlap at all: c2p will not touch it, leave the cursor alone.
- *   1 - partial overlap: c2p will overwrite *some* but not all of the
- *       blocks under the cursor with plain background, silently biting a
- *       hole out of it unless we erase (and later redraw) it ourselves.
- *   2 - full overlap: c2p will overwrite every block under the cursor
- *       with a freshly converted background, so a manual erase is not
- *       needed -- just forget it is drawn.
- *
- * As a side effect, records in s_curEraseHit[] (relative to `group`, one
- * bit per 16px group) exactly which groups of each line c2p is about to
- * refresh this tick. The erase call is deferred until after the c2p pass
- * (see Video_Tick()), by which point those groups already hold correct,
- * freshly converted background -- a blind full-rectangle restore from the
- * (now stale, pre-tick) save buffer would clobber that fresh data with
- * old pixels, which is exactly the "ghost row" corruption seen when the
- * viewport scrolls under a stationary partially-covered cursor. The
- * deferred erase must skip any group whose hit bit is set here.
- */
-static int Video_Atari_CursorOverlap(uint16 y, uint16 h, uint16 group, uint16 groups)
+static void Video_Atari_CursorSync(uint8 *base)
 {
-	uint32 mask;
 	uint16 line;
-	bool any = false, all = true;
+	bool same;
 
-	if (h == 0 || groups == 0) return 2;
-	mask = (uint32)(((groups >= 20) ? 0xfffffu : ((1u << groups) - 1u)) << group);
-	for (line = 0; line < h; line++) {
-		/* The viewport rectangle's rows are converted from a second,
-		 * independent dirty mask now (see g_dirty_blocks_viewport in
-		 * gfx.h) -- the cursor most commonly sits right there, so its
-		 * overlap must be tested against whichever mask(s) actually
-		 * cover each of its rows. g_dirty_blocks_viewport is always 0
-		 * outside the viewport's own rows, so ORing it in here is safe
-		 * everywhere else too. */
-		uint32 hit = (g_dirty_blocks[y + line] | g_dirty_blocks_viewport[y + line]) & mask;
-
-		s_curEraseHit[line] = (uint16)(hit >> group);
-		if (hit != 0) any = true;
-		if (hit != mask) all = false;
+	/* Palette changes rebuild icon caches eagerly. Uncached sprites need
+	 * their private chunky render again; defer it if a GUI mouse lock or
+	 * an outstanding hide is active. */
+	if (s_curSelectedIcon == 0xffff && s_curKeySprite != NULL &&
+	    s_curKeyPal != s_paletteGeneration && s_curVisible &&
+	    g_mouseHiddenDepth == 0 && g_mouseLock == 0) {
+		GUI_Mouse_Hide();
+		GUI_Mouse_Show();
 	}
-	if (!any) return 0;
-	return all ? 2 : 1;
+	same = s_curDrawn && s_curVisible && s_curDrawnBase == base &&
+	       s_curDrawnY == s_curY && s_curDrawnH == s_curH &&
+	       s_curDrawnGroup == s_curGroup && s_curDrawnGroups == s_curGroups;
+
+	if (same && !s_curDirty) return;
+	if (same) {
+		for (line = 0; line < s_curH; line++) {
+			if (memcmp(s_curDrawnData[line], s_curDrawData + (uint32)line * s_curDrawStride * 4,
+			           s_curGroups * 4 * sizeof(uint16)) != 0 ||
+			    memcmp(s_curDrawnMask[line], s_curDrawMask + (uint32)line * s_curDrawStride,
+			           s_curGroups * sizeof(uint16)) != 0) {
+				same = false;
+				break;
+			}
+		}
+	}
+	if (!same) {
+		Video_Atari_CursorEraseFull();
+		Video_Atari_CursorDraw(base);
+	}
+	s_curDirty = false;
 }
 
 /* Placement footprints are at most 3x3 tiles. Save only planar groups
@@ -1724,7 +1673,6 @@ static int Video_Atari_CursorOverlap(uint16 y, uint16 h, uint16 group, uint16 gr
 typedef struct PlacementBlock {
 	uint16 y, group, mask;
 	uint16 saved[4];
-	bool refreshed;
 } PlacementBlock;
 
 static uint16 s_placeMask[PLACEMENT_MAX_H][PLACEMENT_MAX_GROUPS];
@@ -1735,6 +1683,112 @@ static int16 s_placeX, s_placeY;
 static uint16 s_placeWidth, s_placeHeight;
 static uint8 s_placePen;
 static bool s_placeInvalid, s_placeVisible, s_placeDirty;
+static int16 s_placeDrawnX, s_placeDrawnY;
+static uint16 s_placeDrawnWidth, s_placeDrawnHeight;
+
+static int Video_Atari_CursorGroup(uint8 *base, uint16 y, uint16 group)
+{
+	if (!s_curDrawn || base != s_curDrawnBase ||
+	    y < s_curDrawnY || y >= s_curDrawnY + s_curDrawnH ||
+	    group < s_curDrawnGroup || group >= s_curDrawnGroup + s_curDrawnGroups) return -1;
+	return group - s_curDrawnGroup;
+}
+
+static const uint16 *Video_Atari_CursorBackground(uint8 *base, uint16 y, uint16 group)
+{
+	int g = Video_Atari_CursorGroup(base, y, group);
+	if (g >= 0) return &s_curSave[y - s_curDrawnY][g * 4];
+	return (uint16 *)(base + (uint32)y * 160 + group * 8);
+}
+
+static void Video_Atari_CursorWriteGroup(uint8 *base, uint16 y, uint16 group, const uint16 words[4])
+{
+	uint16 *p = (uint16 *)(base + (uint32)y * 160 + group * 8);
+	int g = Video_Atari_CursorGroup(base, y, group);
+	uint16 plane;
+
+	for (plane = 0; plane < 4; plane++) {
+		uint16 w = words[plane];
+		if (g >= 0) {
+			uint16 line = y - s_curDrawnY;
+			s_curSave[line][g * 4 + plane] = w;
+			w = (uint16)((w & (uint16)~s_curDrawnMask[line][g]) |
+			             s_curDrawnData[line][g * 4 + plane]);
+		}
+		p[plane] = w;
+	}
+}
+
+static PlacementBlock *Video_Atari_PlacementBlock(uint8 *base, uint16 y, uint16 group)
+{
+	uint16 i;
+	if (s_placeBlockCount == 0 || base != s_placeDrawnBase ||
+	    (int)y < s_placeDrawnY || (int)y >= s_placeDrawnY + s_placeDrawnHeight ||
+	    (int)(group * 16) < s_placeDrawnX ||
+	    (int)(group * 16) >= s_placeDrawnX + s_placeDrawnWidth) return NULL;
+	for (i = 0; i < s_placeBlockCount; i++) {
+		if (s_placeBlocks[i].y == y && s_placeBlocks[i].group == group) return &s_placeBlocks[i];
+	}
+	return NULL;
+}
+
+/* Merge against the scene without either overlay, then rebuild placement
+ * and mouse in that order. A full-word write ignores the old scene. */
+static void Video_Atari_PlanarMergeGroup(uint8 *base, uint16 y, uint16 group,
+                                       uint16 mask, const uint16 pixels[4])
+{
+	const uint16 *old = Video_Atari_CursorBackground(base, y, group);
+	PlacementBlock *block = Video_Atari_PlacementBlock(base, y, group);
+	uint16 words[4], plane;
+
+	for (plane = 0; plane < 4; plane++) {
+		uint16 background = old[plane];
+		if (block != NULL) {
+			background = (uint16)((background & (uint16)~block->mask) |
+			                      (block->saved[plane] & block->mask));
+		}
+		words[plane] = (uint16)((background & (uint16)~mask) | (pixels[plane] & mask));
+		if (block != NULL) {
+			block->saved[plane] = words[plane];
+			words[plane] = (uint16)((words[plane] & (uint16)~block->mask) |
+			                       ((s_placePen & (1u << plane)) ? block->mask : 0));
+		}
+	}
+	Video_Atari_CursorWriteGroup(base, y, group, words);
+}
+
+/* The c2p inner loop remains unchanged. Visit only overwritten overlay
+ * groups after an opaque conversion, not every group in the blit. */
+static void Video_Atari_PlanarFinishRun(uint8 *base, uint16 x, uint16 y, uint16 w, uint16 h)
+{
+	uint16 first = x >> 4, end = (x + w) >> 4;
+	uint16 line, group, i;
+
+	if (s_curDrawn && base == s_curDrawnBase &&
+	    y < s_curDrawnY + s_curDrawnH && y + h > s_curDrawnY &&
+	    first < s_curDrawnGroup + s_curDrawnGroups && end > s_curDrawnGroup) {
+		uint16 top = max(y, s_curDrawnY), bottom = min(y + h, s_curDrawnY + s_curDrawnH);
+		uint16 left = max(first, s_curDrawnGroup), right = min(end, s_curDrawnGroup + s_curDrawnGroups);
+		for (line = top; line < bottom; line++) {
+			for (group = left; group < right; group++) {
+				uint16 words[4];
+				memcpy(words, base + (uint32)line * 160 + group * 8, sizeof(words));
+				Video_Atari_PlanarMergeGroup(base, line, group, 0xffff, words);
+			}
+		}
+	}
+	if (s_placeBlockCount == 0 || base != s_placeDrawnBase ||
+	    (int)y >= s_placeDrawnY + s_placeDrawnHeight || (int)(y + h) <= s_placeDrawnY ||
+	    (int)x >= s_placeDrawnX + s_placeDrawnWidth || (int)(x + w) <= s_placeDrawnX) return;
+	for (i = 0; i < s_placeBlockCount; i++) {
+		PlacementBlock *block = &s_placeBlocks[i];
+		uint16 words[4];
+		if (block->y < y || block->y >= y + h || block->group < first || block->group >= end ||
+		    Video_Atari_CursorGroup(base, block->y, block->group) >= 0) continue;
+		memcpy(words, base + (uint32)block->y * 160 + block->group * 8, sizeof(words));
+		Video_Atari_PlanarMergeGroup(base, block->y, block->group, 0xffff, words);
+	}
+}
 
 static void Video_Atari_PlacementCross(uint16 width, uint16 height)
 {
@@ -1795,39 +1849,24 @@ void Video_Atari_PlacementSet(int16 x, int16 y, uint16 width, uint16 height, boo
 	s_placeVisible = true;
 }
 
+static void Video_Atari_PlacementEnd(uint8 *base);
+
 void Video_Atari_PlacementHide(void)
 {
 	if (s_placeVisible) {
 		s_placeVisible = false;
 		s_placeDirty = true;
 	}
+	if (s_placeBlockCount != 0) Video_Atari_PlacementEnd(s_placeDrawnBase);
 }
 
-/* Snapshot c2p coverage before SetClean clears the dirty blocks. Like the
- * mouse, defer restoration until after conversion to avoid visible blinking. */
 static bool Video_Atari_PlacementBegin(void)
 {
-	uint16 i;
-	bool dirty, full, redraw;
-
 	if (!s_placeVisible && s_placeBlockCount == 0) {
 		s_placeDirty = false;
 		return false;
 	}
-	dirty = GFX_Screen_IsDirty(SCREEN_0) || GFX_Screen_IsDirtyViewport();
-	full = s_screen_needrepaint || (dirty && GFX_Screen_GetDirtyArea(SCREEN_0) == NULL);
-	redraw = s_placeDirty || (s_placeVisible && s_placePen != s_palette4BitMap[255]);
-
-	for (i = 0; i < s_placeBlockCount; i++) {
-		PlacementBlock *block = &s_placeBlocks[i];
-		/* Placement overlays, like the cursor, most often sit right in the
-		 * viewport, whose rows are now converted from a second, independent
-		 * dirty mask (see g_dirty_blocks_viewport in gfx.h and
-		 * Video_Atari_CursorOverlap() above) -- check both. */
-		block->refreshed = full || (dirty && ((g_dirty_blocks[block->y] | g_dirty_blocks_viewport[block->y]) & (1UL << block->group)) != 0);
-		if (block->refreshed) redraw = true;
-	}
-	return redraw;
+	return s_placeDirty || (s_placeVisible && s_placePen != s_palette4BitMap[255]);
 }
 
 static void Video_Atari_PlacementEnd(uint8 *base)
@@ -1836,17 +1875,22 @@ static void Video_Atari_PlacementEnd(uint8 *base)
 
 	for (i = 0; i < s_placeBlockCount; i++) {
 		const PlacementBlock *block = &s_placeBlocks[i];
-		uint16 *p = (uint16 *)s_placeDrawnBase + block->y * 80 + block->group * 4;
-		if (block->refreshed) continue;
+		const uint16 *p = Video_Atari_CursorBackground(s_placeDrawnBase, block->y, block->group);
+		uint16 words[4];
 		for (plane = 0; plane < 4; plane++) {
-			p[plane] = (p[plane] & (uint16)~block->mask) | (block->saved[plane] & block->mask);
+			words[plane] = (p[plane] & (uint16)~block->mask) | (block->saved[plane] & block->mask);
 		}
+		Video_Atari_CursorWriteGroup(s_placeDrawnBase, block->y, block->group, words);
 	}
 	s_placeBlockCount = 0;
 	s_placeDirty = false;
 	if (!s_placeVisible) return;
 
 	s_placeDrawnBase = base;
+	s_placeDrawnX = s_placeX;
+	s_placeDrawnY = s_placeY;
+	s_placeDrawnWidth = s_placeWidth;
+	s_placeDrawnHeight = s_placeHeight;
 	s_placePen = s_palette4BitMap[255];
 	for (line = 0; line < s_placeHeight; line++) {
 		int16 y = s_placeY + line;
@@ -1854,19 +1898,21 @@ static void Video_Atari_PlacementEnd(uint8 *base)
 		for (group = 0; group < s_placeWidth / 16; group++) {
 			int16 x = s_placeX + group * 16;
 			uint16 mask = s_placeMask[line][group];
-			uint16 *p;
+			const uint16 *p;
+			uint16 words[4];
 			PlacementBlock *block;
 
 			if (x < 0 || x >= 240 || mask == 0) continue;
-			p = (uint16 *)base + y * 80 + x / 4;
+			p = Video_Atari_CursorBackground(base, (uint16)y, (uint16)(x / 16));
 			block = &s_placeBlocks[s_placeBlockCount++];
 			block->y = y;
 			block->group = x / 16;
 			block->mask = mask;
 			for (plane = 0; plane < 4; plane++) {
 				block->saved[plane] = p[plane];
-				p[plane] = (p[plane] & (uint16)~mask) | ((s_placePen & (1u << plane)) ? mask : 0);
+				words[plane] = (p[plane] & (uint16)~mask) | ((s_placePen & (1u << plane)) ? mask : 0);
 			}
+			Video_Atari_CursorWriteGroup(base, (uint16)y, (uint16)(x / 16), words);
 		}
 	}
 }
@@ -1926,29 +1972,24 @@ static uint8 *Video_Atari_PlanarBase(void)
  * partially covered groups. */
 static void Video_Atari_PlanarFill(uint16 x, uint16 y, uint16 w, uint16 h, uint8 pen)
 {
-	uint8 *base = Video_Atari_PlanarBase() + (uint32)y * ST_PLANAR_LINE_BYTES;
+	uint8 *base = Video_Atari_PlanarBase();
 	uint16 first = (uint16)(x >> 4);
 	uint16 last = (uint16)((x + w + 15) >> 4);	/* exclusive */
 	uint16 g, line, plane;
 
 	for (line = 0; line < h; line++) {
-		uint16 *p = (uint16 *)base + (first << 2);
-
 		for (g = first; g < last; g++) {
 			uint16 gx = (uint16)(g << 4);
 			uint16 a = (x > gx) ? (uint16)(x - gx) : 0;
 			uint16 b = ((uint16)(x + w) < (uint16)(gx + 16)) ? (uint16)(x + w - gx) : 16;
 			uint16 mask = (uint16)((0xFFFFu >> a) & (0xFFFFu << (16 - b)));
+			uint16 pixels[4];
 
 			for (plane = 0; plane < 4; plane++) {
-				uint16 set = (pen & (1u << plane)) ? mask : 0;
-
-				p[plane] = (mask == 0xFFFF) ? set
-				                            : (uint16)((p[plane] & (uint16)~mask) | set);
+				pixels[plane] = (pen & (1u << plane)) ? mask : 0;
 			}
-			p += 4;
+			Video_Atari_PlanarMergeGroup(base, (uint16)(y + line), g, mask, pixels);
 		}
-		base += ST_PLANAR_LINE_BYTES;
 	}
 }
 
@@ -1956,13 +1997,15 @@ static void Video_Atari_PresentRun(const uint8 *src, uint16 srcStride,
                                    uint16 x, uint16 y, uint16 w, uint16 h)
 {
 	union { const uint8 *cp; void *p; } u;	/* c2p1x1_4_st takes a void* */
-	uint8 *dst = Video_Atari_PlanarBase() + (uint32)y * ST_PLANAR_LINE_BYTES + (x >> 1);
+	uint8 *base = Video_Atari_PlanarBase();
+	uint8 *dst = base + (uint32)y * ST_PLANAR_LINE_BYTES + (x >> 1);
 
 	if (srcStride == SCREEN_WIDTH) {
 		/* c2p1x1_4_st walks whole scanlines itself, with the chunky and
 		 * planar strides hardcoded to 320/160 -- one call for the lot. */
 		u.cp = src;
 		c2p1x1_4_st(dst, u.p, w, h, s_palette4BitPairMap);
+		Video_Atari_PlanarFinishRun(base, x, y, w, h);
 	} else {
 		/* A source whose rows are not 320 bytes apart (a WSA frame buffer,
 		 * for instance) has to be handed over one line at a time. */
@@ -1971,6 +2014,7 @@ static void Video_Atari_PresentRun(const uint8 *src, uint16 srcStride,
 		for (line = 0; line < h; line++) {
 			u.cp = src;
 			c2p1x1_4_st(dst, u.p, w, 1, s_palette4BitPairMap);
+			Video_Atari_PlanarFinishRun(base, x, (uint16)(y + line), w, 1);
 			src += srcStride;
 			dst += ST_PLANAR_LINE_BYTES;
 		}
@@ -1982,7 +2026,7 @@ static void Video_Atari_PresentRun(const uint8 *src, uint16 srcStride,
  * stays in bounds even when the source row is exactly as wide as the
  * rectangle (a WSA frame buffer, for instance). */
 static void Video_Atari_PresentGroupMasked(const uint8 *srcRow, uint16 gx,
-                                           uint16 x0, uint16 x1, uint16 *p)
+                                           uint16 x0, uint16 x1, uint8 *base, uint16 y)
 {
 	uint16 a = (x0 > gx) ? (uint16)(x0 - gx) : 0;
 	uint16 b = (x1 < (uint16)(gx + 16)) ? (uint16)(x1 - gx) : 16;
@@ -2002,11 +2046,7 @@ static void Video_Atari_PresentGroupMasked(const uint8 *srcRow, uint16 gx,
 		if (pen & 8) pl[3] |= bit;
 	}
 
-	/* Only bits inside the mask were set above, so a plain merge is enough. */
-	p[0] = (uint16)((p[0] & (uint16)~mask) | pl[0]);
-	p[1] = (uint16)((p[1] & (uint16)~mask) | pl[1]);
-	p[2] = (uint16)((p[2] & (uint16)~mask) | pl[2]);
-	p[3] = (uint16)((p[3] & (uint16)~mask) | pl[3]);
+	Video_Atari_PlanarMergeGroup(base, y, gx >> 4, mask, pl);
 }
 
 /* Present a rectangle whose left edge and/or width are not multiples of
@@ -2026,13 +2066,13 @@ static void Video_Atari_PresentRunMasked(const uint8 *src, uint16 srcStride,
 	 * is partial and the single masked call below covers both edges. */
 	bool doLeft = ((x & 0xf) != 0) || (gLeft == gRight && (x1 & 0xf) != 0);
 	bool doRight = (gRight != gLeft) && ((x1 & 0xf) != 0);
-	uint8 *lineBase = Video_Atari_PlanarBase() + (uint32)y * ST_PLANAR_LINE_BYTES;
+	uint8 *base = Video_Atari_PlanarBase();
 	uint16 line;
 
 	if (lastFull >= firstFull) {
 		const uint8 *fullSrc = src + (uint16)((firstFull << 4) - (int)x);
 
-		if (((uint32)fullSrc) & 1) {
+		if ((((uint32)fullSrc) & 1) || ((srcStride & 1) != 0 && h > 1)) {
 			/* The fast c2p path needs a word-aligned source pointer.
 			 * When the copy's source and destination x coordinates
 			 * differ in parity (e.g. a map sprite placed at an odd
@@ -2042,16 +2082,14 @@ static void Video_Atari_PresentRunMasked(const uint8 *src, uint16 srcStride,
 			 * for these groups instead (same primitive already used
 			 * for the partial edge groups below). */
 			const uint8 *mSrc = src;
-			uint8 *mLineBase = lineBase;
 			int g;
 
 			for (line = 0; line < h; line++) {
 				for (g = firstFull; g <= lastFull; g++) {
 					Video_Atari_PresentGroupMasked(mSrc, (uint16)(g << 4), x, x1,
-					                               (uint16 *)mLineBase + (g << 2));
+					                               base, (uint16)(y + line));
 				}
 				mSrc += srcStride;
-				mLineBase += ST_PLANAR_LINE_BYTES;
 			}
 		} else {
 			Video_Atari_PresentRun(fullSrc, srcStride,
@@ -2065,14 +2103,13 @@ static void Video_Atari_PresentRunMasked(const uint8 *src, uint16 srcStride,
 	for (line = 0; line < h; line++) {
 		if (doLeft) {
 			Video_Atari_PresentGroupMasked(src, (uint16)(gLeft << 4), x, x1,
-			                               (uint16 *)lineBase + (gLeft << 2));
+			                               base, (uint16)(y + line));
 		}
 		if (doRight) {
 			Video_Atari_PresentGroupMasked(src, (uint16)(gRight << 4), x, x1,
-			                               (uint16 *)lineBase + (gRight << 2));
+			                               base, (uint16)(y + line));
 		}
 		src += srcStride;
-		lineBase += ST_PLANAR_LINE_BYTES;
 	}
 }
 
@@ -2082,7 +2119,7 @@ static void Video_Atari_PresentRunMasked(const uint8 *src, uint16 srcStride,
  * above, this must inspect every covered pixel's content, not just its
  * position -- there is no "fully covered, no need to check" fast case. */
 static void Video_Atari_PresentGroupMaskedTransparent(const uint8 *srcRow, uint16 gx,
-                                           uint16 x0, uint16 x1, uint16 *p)
+                                           uint16 x0, uint16 x1, uint8 *base, uint16 y)
 {
 	uint16 a = (x0 > gx) ? (uint16)(x0 - gx) : 0;
 	uint16 b = (x1 < (uint16)(gx + 16)) ? (uint16)(x1 - gx) : 16;
@@ -2109,10 +2146,7 @@ static void Video_Atari_PresentGroupMaskedTransparent(const uint8 *srcRow, uint1
 		if (pen & 8) pl[3] |= bit;
 	}
 
-	p[0] = (uint16)((p[0] & (uint16)~mask) | pl[0]);
-	p[1] = (uint16)((p[1] & (uint16)~mask) | pl[1]);
-	p[2] = (uint16)((p[2] & (uint16)~mask) | pl[2]);
-	p[3] = (uint16)((p[3] & (uint16)~mask) | pl[3]);
+	if (mask != 0) Video_Atari_PlanarMergeGroup(base, y, gx >> 4, mask, pl);
 }
 
 /* Present a small, content-transparent rectangle (glyphs): every 16 pixel
@@ -2127,7 +2161,7 @@ static void Video_Atari_PresentTransparent(const uint8 *src, uint16 srcStride,
 	uint16 x1 = (uint16)(x + w);
 	int gLeft = (int)(x >> 4);
 	int gRight = (int)((x1 - 1) >> 4);
-	uint8 *lineBase = Video_Atari_PlanarBase() + (uint32)y * ST_PLANAR_LINE_BYTES;
+	uint8 *base = Video_Atari_PlanarBase();
 	uint16 line;
 
 	for (line = 0; line < h; line++) {
@@ -2135,16 +2169,15 @@ static void Video_Atari_PresentTransparent(const uint8 *src, uint16 srcStride,
 
 		for (g = gLeft; g <= gRight; g++) {
 			Video_Atari_PresentGroupMaskedTransparent(src, (uint16)(g << 4), x, x1,
-			                              (uint16 *)lineBase + (g << 2));
+			                              base, (uint16)(y + line));
 		}
 		src += srcStride;
-		lineBase += ST_PLANAR_LINE_BYTES;
 	}
 }
 
 /* GFX_CopyToBuffer()/GFX_CopyFromBuffer() (modal message boxes, the drag
  * preview and, in principle, the mouse cursor fallback) save a rectangle
- * before overwriting it and blit it back verbatim afterwards. On ST/STE
+ * before overwriting it and blit it back afterwards. On ST/STE
  * the planar screen is the only buffer guaranteed to hold what is
  * actually visible -- direct-to-planar draws (see GUI_DrawSprite()'s
  * toPlanar path) never touch SCREEN_0 or SCREEN_1 at all. So instead of
@@ -2155,7 +2188,8 @@ static void Video_Atari_PresentTransparent(const uint8 *src, uint16 srcStride,
  * exact -- restoring puts back exactly what was there, regardless of how
  * it got drawn -- and self-consistent, since both compute the same
  * widened rectangle from the same (x, width) the caller passes both
- * times. Video_Atari_PresentRestore() still clears the dirty blocks it
+ * times. Saves exclude mouse and placement pixels; restores reapply the
+ * current overlays and update their backgrounds. PresentRestore clears the dirty blocks it
  * covers (same reasoning as Video_Atari_PresentChunky()) so a later
  * Video_Tick() sweep never reconverts this rectangle from stale SCREEN_1
  * content. Callers are expected to size their buffer for the chunky
@@ -2167,6 +2201,7 @@ static void Video_Atari_PresentTransparent(const uint8 *src, uint16 srcStride,
 bool Video_Atari_PresentSave(int16 x, int16 y, uint16 width, uint16 height, uint8 *buffer)
 {
 	uint16 left, right, bytesPerLine;
+	uint8 *base = Video_Atari_PlanarBase();
 	const uint8 *src;
 
 	if (buffer == NULL || width == 0 || height == 0) return false;
@@ -2178,12 +2213,38 @@ bool Video_Atari_PresentSave(int16 x, int16 y, uint16 width, uint16 height, uint
 	if (right > SCREEN_WIDTH) right = SCREEN_WIDTH;
 	bytesPerLine = (uint16)(((right - left) >> 4) << 3);
 
-	src = Video_Atari_PlanarBase() + (uint32)y * ST_PLANAR_LINE_BYTES + (uint32)(left >> 4) * 8;
+	src = base + (uint32)y * ST_PLANAR_LINE_BYTES + (uint32)(left >> 4) * 8;
 
 	while (height-- != 0) {
+		uint16 group;
 		memcpy(buffer, src, bytesPerLine);
+		if (s_curDrawn && base == s_curDrawnBase && y >= s_curDrawnY && y < s_curDrawnY + s_curDrawnH) {
+			uint16 first = max(left >> 4, s_curDrawnGroup);
+			uint16 end = min(right >> 4, s_curDrawnGroup + s_curDrawnGroups);
+			for (group = first; group < end; group++) {
+				memcpy(buffer + (group - (left >> 4)) * 8,
+				       Video_Atari_CursorBackground(base, (uint16)y, group), 8);
+			}
+		}
+		if (base == s_placeDrawnBase) {
+			uint16 i;
+			for (i = 0; i < s_placeBlockCount; i++) {
+				const PlacementBlock *block = &s_placeBlocks[i];
+				uint16 words[4], plane;
+				uint8 *saved;
+				if (block->y != y || block->group < (left >> 4) || block->group >= (right >> 4)) continue;
+				saved = buffer + (block->group - (left >> 4)) * 8;
+				memcpy(words, saved, sizeof(words));
+				for (plane = 0; plane < 4; plane++) {
+					words[plane] = (uint16)((words[plane] & (uint16)~block->mask) |
+					                       (block->saved[plane] & block->mask));
+				}
+				memcpy(saved, words, sizeof(words));
+			}
+		}
 		buffer += bytesPerLine;
 		src += ST_PLANAR_LINE_BYTES;
+		y++;
 	}
 	return true;
 }
@@ -2191,6 +2252,7 @@ bool Video_Atari_PresentSave(int16 x, int16 y, uint16 width, uint16 height, uint
 bool Video_Atari_PresentRestore(int16 x, int16 y, uint16 width, uint16 height, const uint8 *buffer)
 {
 	uint16 left, right, bytesPerLine;
+	uint8 *base = Video_Atari_PlanarBase();
 	uint8 *dst;
 
 	if (buffer == NULL || width == 0 || height == 0) return false;
@@ -2202,7 +2264,7 @@ bool Video_Atari_PresentRestore(int16 x, int16 y, uint16 width, uint16 height, c
 	if (right > SCREEN_WIDTH) right = SCREEN_WIDTH;
 	bytesPerLine = (uint16)(((right - left) >> 4) << 3);
 
-	dst = Video_Atari_PlanarBase() + (uint32)y * ST_PLANAR_LINE_BYTES + (uint32)(left >> 4) * 8;
+	dst = base + (uint32)y * ST_PLANAR_LINE_BYTES + (uint32)(left >> 4) * 8;
 
 	{
 		uint16 h = height;
@@ -2215,6 +2277,7 @@ bool Video_Atari_PresentRestore(int16 x, int16 y, uint16 width, uint16 height, c
 			s += bytesPerLine;
 		}
 	}
+	Video_Atari_PlanarFinishRun(base, left, (uint16)y, (uint16)(right - left), height);
 
 	GFX_Screen_ClearDirtyRect(left, (uint16)y, right, (uint16)(y + height));
 	return true;
@@ -2292,15 +2355,7 @@ bool Video_Atari_PresentEnter(void)
 	 * composited from an earlier screen would otherwise linger.) */
 	Video_Atari_PlacementHide();
 	Video_Atari_CursorHide();
-	if (s_curDrawn) {
-		uint16 line;
-
-		/* s_curEraseHit[] marks groups a c2p pass already refreshed; no
-		 * such pass is involved here, so every group must be restored. */
-		for (line = 0; line < s_curDrawnH; line++) s_curEraseHit[line] = 0;
-		Video_Atari_CursorErase();
-	}
-	s_curNeedErase = false;
+	Video_Atari_CursorEraseFull();
 
 	s_presentMode = true;
 	return true;
@@ -2324,18 +2379,15 @@ bool Video_Atari_PresentChunky(const void *src, uint16 srcStride,
 {
 	/* EXPERIMENT: no longer gated on s_presentMode -- GFX_Screen_Copy()
 	 * calls this on every chunky write to SCREEN_0, present-mode enclave
-	 * or not. Cursor safety is not reimplemented here: every call site
-	 * that draws to SCREEN_0 is already expected to bracket itself with
-	 * GUI_Mouse_Hide_Safe()/Show_Safe() (which calls Video_Atari_CursorHide()
-	 * for CursorDirect), same as everywhere else in this codebase. If that
-	 * assumption is wrong for some call site, cursor corruption here is
-	 * the symptom to look for. */
+	 * or not. The planar writers synchronously preserve cursor and
+	 * placement backgrounds independently of GUI hide/show brackets. */
 	if (src == NULL || width == 0 || height == 0) return false;
 	if (x < 0 || y < 0) return false;
 	if ((int)x + (int)width > SCREEN_WIDTH) return false;
 	if ((int)y + (int)height > SCREEN_HEIGHT) return false;
 
-	if (((x | (int16)width) & 0xf) != 0) {
+	if (((x | (int16)width) & 0xf) != 0 || (((uint32)src) & 1) != 0 ||
+	    ((srcStride & 1) != 0 && height > 1)) {
 		/* A private, tightly packed source (not SCREEN_WIDTH strided)
 		 * cannot be over-read outside [x, x+width): the masked
 		 * read-modify-write path is the only safe option. */
@@ -2425,22 +2477,14 @@ bool Video_Atari_ShiftPlanar(int16 x, int16 y, uint16 width, uint16 height, int1
 	int16 srcX, dstX, srcY, dstY;
 	uint16 bytes;
 	uint16 rows;
+	bool placementVisible;
 
 	if (s_machine_type != MCH_ST && s_machine_type != MCH_STE
 	 && s_machine_type != MCH_MEGA_STE) return false;
 	if (width == 0 || height == 0) return false;
 	if (((x | (int16)width | dx) & 0xf) != 0) return false;
 	if (dx == 0 && dy == 0) return true;
-
-	/* A composited cursor is just baked-in pixels as far as this raw
-	 * memmove is concerned: left alone, it would get carried along to
-	 * the shifted position (a ghost/duplicate cursor where it used to
-	 * be -- or, if that spot lands in the vacated area that gets
-	 * blanked below, just as wrong the other way). We already have its
-	 * saved background sitting right there in planar format -- put it
-	 * back before touching anything; whatever still wants the cursor
-	 * visible will recomposite it at its current position next tick. */
-	Video_Atari_CursorEraseFull();
+	if (abs(dx) > width || abs(dy) > height) return false;
 
 	srcX = x;
 	dstX = (int16)(x + dx);
@@ -2455,6 +2499,11 @@ bool Video_Atari_ShiftPlanar(int16 x, int16 y, uint16 width, uint16 height, int1
 	if ((int)dstY + (int)height > SCREEN_HEIGHT) return false;
 
 	base = Video_Atari_PlanarBase();
+	/* Neither overlay may be copied as scene content by the memmove. */
+	Video_Atari_CursorEraseFull();
+	placementVisible = s_placeVisible;
+	s_placeVisible = false;
+	Video_Atari_PlacementEnd(base);
 	bytes = width >> 1;	/* 8 bytes/group * (width>>4) groups == width>>1 */
 	rows = height;
 
@@ -2500,6 +2549,9 @@ bool Video_Atari_ShiftPlanar(int16 x, int16 y, uint16 width, uint16 height, int1
 
 		if (keepW != 0) Video_Atari_PlanarFill((uint16)keepX, (uint16)freeY, keepW, freeH, 0);
 	}
+	s_placeVisible = placementVisible;
+	Video_Atari_PlacementEnd(base);
+	Video_Atari_CursorSync(base);
 	return true;
 }
 
@@ -2516,6 +2568,7 @@ bool Video_Atari_ShiftPlanar(int16 x, int16 y, uint16 width, uint16 height, int1
  */
 static void Video_Atari_C2P_ConvertBlocks(uint8 *screen, uint8 *data, const uint32 *blocks, uint16 top, uint16 bottom)
 {
+	uint8 *base = screen - (uint32)top * ST_PLANAR_LINE_BYTES;
 	uint16 y;
 	uint16 runCount = 0;
 	uint16 runLeft[10];	/* first pixel of the run */
@@ -2550,6 +2603,7 @@ static void Video_Atari_C2P_ConvertBlocks(uint8 *screen, uint8 *data, const uint
 				uint16 width = runWidth[run];
 
 				c2p1x1_4_st(screen + (left >> 1), data + left, width, bandLines, s_palette4BitPairMap);
+				Video_Atari_PlanarFinishRun(base, left, bandTop, width, bandLines);
 			}
 		}
 		screen += (SCREEN_WIDTH >> 1) * bandLines;
@@ -2574,6 +2628,7 @@ void Video_Tick(void)
 	 * write SCREEN_0) keep reading from SCREEN_0 as before. */
 	uint8 *data = GFX_Screen_Get_ByIndex(Video_Atari_CursorDirect() ? SCREEN_1 : SCREEN_0);
 	uint8 *screen = Logbase();
+	uint8 *frameBase = screen + s_center_image_offset;
 	bool placementRedraw = false;
 	screen += s_center_image_offset;
 
@@ -2597,92 +2652,6 @@ void Video_Tick(void)
 	if (s_curDirect) {
 		if (g_selectionType != SELECTIONTYPE_PLACE) Video_Atari_PlacementHide();
 		placementRedraw = Video_Atari_PlacementBegin();
-		/* The mouse backup may contain the old preview. Remove the mouse
-		 * first, then replace the preview, then save/draw the mouse again. */
-		if (placementRedraw) s_curDirty = true;
-	}
-
-	/* The cursor sits on top of the planar image: take it away before the
-	 * c2p pass refreshes what is underneath it -- but only when necessary.
-	 *
-	 * ENHANCEMENT -- the original condition erased+recomposited the cursor
-	 * whenever GFX_Screen_IsDirty(SCREEN_0) was true, which in practice is
-	 * almost every tick of active gameplay (units, animations, sidebar
-	 * clock...) regardless of whether anything under the cursor changed.
-	 * A profile showed this made the whole cursor system 44% *more*
-	 * expensive per tick than the chunky mouse-restore path it replaced.
-	 *
-	 * There are three outcomes for a currently-composited cursor:
-	 *  - nothing relevant changed and c2p will not touch its rectangle:
-	 *    leave it exactly as it is, no erase, no redraw;
-	 *  - it moved/changed, or the game redrew unrelated content, but this
-	 *    tick's c2p pass is going to reconvert every 16px block under the
-	 *    cursor's old spot anyway: c2p already restores the plain
-	 *    background there, so only forget that it is drawn (the trailing
-	 *    unconditional draw call below recomposites it, at its current
-	 *    position, if it is still visible) -- no manual erase needed;
-	 *  - the cursor did not move but a *partial* overlap exists (only some
-	 *    of the blocks under it are dirty, e.g. a unit walking under part
-	 *    of the cursor): c2p would silently overwrite just those blocks
-	 *    with plain background, biting a hole out of the cursor for a
-	 *    frame. Must erase (and let the trailing call redraw) here too;
-	 *  - it moved/changed/hid and c2p will *not* fully cover its old spot:
-	 *    only then does a manual erase (planar word restore) actually
-	 *    have to happen. */
-	/* IMPORTANT -- do NOT call Video_Atari_CursorErase() here. This point
-	 * is *before* the whole c2p pass below, which on real 68000 hardware
-	 * can take a large fraction of a frame (or more, see README.atari:
-	 * 6-15 fps on stock ST/STE). The screen is single-buffered and the
-	 * CRT scans it continuously and asynchronously from the CPU -- there
-	 * is no vsync/double-buffer wait anywhere in this codebase (the only
-	 * Vsync() call is the unrelated Falcon explosion-shake path). So any
-	 * real time that elapses between erasing the cursor and recompositing
-	 * it is a real, physically visible window: if so much as one CRT
-	 * refresh happens while the cursor is erased, the user sees it
-	 * disappear for a frame -- a constant, visible "blink" whenever any
-	 * partial-overlap/manual erase is needed, which during active
-	 * gameplay is often. Static menu screens looked fine only because
-	 * they rarely dirty anything near the cursor, not because the gap
-	 * itself was safe.
-	 *
-	 * So: only decide here (cheap, and must happen before c2p clears
-	 * g_dirty_blocks[]); defer the actual erase to immediately before the
-	 * trailing Video_Atari_CursorDraw() call, so erase and redraw become
-	 * one tight back-to-back pair with the smallest possible gap. */
-	s_curNeedErase = false;
-	if (s_curDrawn) {
-		/* GFX_Screen_IsDirty(SCREEN_0) alone used to be equivalent to "c2p
-		 * will run this tick", but the viewport's rows can now go dirty
-		 * (and get converted) entirely through their own independent mask
-		 * -- see g_dirty_blocks_viewport / GFX_Screen_IsDirtyViewport() --
-		 * with SCREEN_0 itself untouched (e.g. a unit walking through
-		 * unexplored darkness touches no sidebar/topbar pixel). Missing
-		 * that case here left a stale, un-erased cursor sitting over
-		 * planar pixels the viewport sweep below was about to overwrite. */
-		bool screenDirty = GFX_Screen_IsDirty(SCREEN_0) || GFX_Screen_IsDirtyViewport();
-		int overlap = screenDirty ? Video_Atari_CursorOverlap(
-			s_curDrawnY, s_curDrawnH, s_curDrawnGroup, s_curDrawnGroups) : 0;
-		bool fullyCovered = s_screen_needrepaint || overlap == 2;
-		bool touched = s_curDirty || s_screen_needrepaint || overlap != 0;
-
-		if (touched) {
-			if (fullyCovered) {
-				s_curDrawn = false;
-			} else {
-				/* When CursorOverlap() was skipped (screen not dirty at
-				 * all) or a full repaint is pending, s_curEraseHit[] was
-				 * not (re)computed for this rectangle/tick and may still
-				 * hold stale bits from an earlier call -- c2p is not
-				 * about to refresh any of these groups in that case, so
-				 * every bit must read as "not yet refreshed" or the
-				 * erase below would wrongly skip restoring them. */
-				if (!screenDirty) {
-					uint16 line;
-					for (line = 0; line < s_curDrawnH; line++) s_curEraseHit[line] = 0;
-				}
-				s_curNeedErase = true;
-			}
-		}
 	}
 
 	if (GFX_Screen_IsDirty(SCREEN_0) || s_screen_needrepaint) {
@@ -2835,6 +2804,9 @@ void Video_Tick(void)
 				}
 #endif
 				c2p1x1_4_st(screen, data, height*SCREEN_WIDTH, 1, s_palette4BitPairMap);
+				Video_Atari_PlanarFinishRun(frameBase, 0,
+					(s_screen_needrepaint || area == NULL) ? 0 : area->top,
+					SCREEN_WIDTH, (uint16)height);
 			} else {
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
 				uint16 y;
@@ -2966,6 +2938,8 @@ void Video_Tick(void)
 							left = runLeft[run];
 							width = runWidth[run];
 							c2p1x1_4_st(screen + (left >> 1), data + left, width, bandLines, s_palette4BitPairMap);
+							Video_Atari_PlanarFinishRun(frameBase, (uint16)left, bandTop,
+							                           (uint16)width, bandLines);
 						}
 					}
 					screen += (SCREEN_WIDTH >> 1) * bandLines;
@@ -2988,6 +2962,8 @@ void Video_Tick(void)
 				screen += (left >> 1);
 				data += left;
 				c2p1x1_4_st(screen, data, width, height, s_palette4BitPairMap);
+				Video_Atari_PlanarFinishRun(frameBase, (uint16)left,
+				                           area == NULL ? 0 : area->top, (uint16)width, (uint16)height);
 #endif
 			}
 		}
@@ -3055,31 +3031,22 @@ l_overlays:
 			}
 		} else {
 			/* ST / STE */
-			screenwords += (320-32)/4;
 			for (line = 0; line < 5; line++) {
+				uint16 high[4], low[4];
 				for (plane = 0; plane < 4; plane++)
 				{
-					screenwords[plane] = (uint16)(s_fps_chars[line] >> 16);
-					screenwords[plane+4] = (uint16)s_fps_chars[line];
+					high[plane] = (uint16)(s_fps_chars[line] >> 16);
+					low[plane] = (uint16)s_fps_chars[line];
 				}
-				screenwords += 320/4;
+				Video_Atari_PlanarMergeGroup(frameBase, (uint16)line, 18, 0xffff, high);
+				Video_Atari_PlanarMergeGroup(frameBase, (uint16)line, 19, 0xffff, low);
 			}
 		}
 	}
 
 	if (s_curDirect) {
-		/* Erase (if the decision above required it) and redraw back-to-back,
-		 * with nothing but the tiny FPS overlay poke between the c2p pass
-		 * and here -- see the long comment above for why this gap must be
-		 * kept as small as possible. */
-		if (s_curNeedErase) {
-			Video_Atari_CursorErase();
-			s_curNeedErase = false;
-		}
-		if (placementRedraw) Video_Atari_PlacementEnd((uint8 *)Logbase() + s_center_image_offset);
-		/* `screen` was advanced by the c2p loop, recompute the frame base */
-		Video_Atari_CursorDraw((uint8 *)Logbase() + s_center_image_offset);
-		s_curDirty = false;
+		if (placementRedraw) Video_Atari_PlacementEnd(frameBase);
+		Video_Atari_CursorSync(frameBase);
 	}
 
 	/* Count completed updates, including ticks with no dirty game pixels.
