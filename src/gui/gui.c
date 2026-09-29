@@ -118,6 +118,15 @@ static uint32 s_ticksPlayed;
 bool g_doQuitHOF;
 static uint8 s_strategicMapArrowColors[24];
 static bool s_strategicMapFastForward;
+static uint8 s_strategicMapTextBgColor;	/*!< Chrome parchment colour under the message
+                                             *   strip, sampled once from SCREEN_2 right after
+                                             *   MAPMACH.CPS loads. SCREEN_2 is later reused as a
+                                             *   scratch heap by Sprites_CPS_LoadRegionClick()
+                                             *   (RGNCLK.CPS pixels + REGION?.INI contents), so it
+                                             *   can no longer be sampled directly once that has
+                                             *   run; caching this single byte up front keeps
+                                             *   GUI_StrategicMap_DrawText()'s background fill
+                                             *   correct for every subsequent message. */
 
 static uint16 s_mouseSpriteLeft;
 static uint16 s_mouseSpriteTop;
@@ -3604,7 +3613,16 @@ static void GUI_StrategicMap_AnimateSelected(uint16 selected, StrategicMapData *
 	y += 24;
 
 	GUI_Mouse_Hide_Safe();
-	GFX_Screen_Copy2(x, y, 16, 16, width, height, SCREEN_0, SCREEN_1, false);
+	/* Sample the region sprite from SCREEN_1, not SCREEN_0: SCREEN_0's
+	 * chunky buffer is deliberately left unmaintained by the TOS
+	 * direct-to-planar bypass (see the "EXPERIMENT" comment in
+	 * GFX_Screen_Copy()), so it holds stale/garbage data here. SCREEN_1
+	 * still holds the exact chunky pixels GUI_StrategicMap_DrawRegion()
+	 * drew at this same (x, y) position, unmodified since -- use the
+	 * overlap-safe same-buffer copy since (x, y) can legitimately land
+	 * close to the (16, 16) destination for regions near the top-left
+	 * of the viewport. */
+	GFX_Screen_CopyOverlap(x, y, 16, 16, width, height, SCREEN_1);
 	GUI_Mouse_Show_Safe();
 
 	GFX_Screen_Copy2(16, 16, 176, 16, width, height, SCREEN_1, SCREEN_1, false);
@@ -3689,9 +3707,18 @@ static void GUI_StrategicMap_DrawText(const char *string)
 
 	oldScreenID = GFX_Screen_SetActive(SCREEN_1);
 
-	GUI_Screen_Copy(8, 165, 8, 186, 24, 14, SCREEN_0, SCREEN_1);
-
-	GUI_DrawFilledRectangle(64, 172, 255, 185, GFX_GetPixel(64, 186));
+	/* Fill the message strip with the cached chrome parchment colour (see
+	 * s_strategicMapTextBgColor): SCREEN_2, which originally held this
+	 * colour after MAPMACH.CPS loaded, gets reused as a scratch heap by
+	 * Sprites_CPS_LoadRegionClick() shortly after the first message is
+	 * shown, so it can't be re-sampled here for later calls. The fill
+	 * must cover rows 172-198 (not just the visible 172-185 message
+	 * rows): the scroll-reveal loop below reads SCREEN_1 rows up to
+	 * y+13, i.e. as far down as row 198 (when y=185), sliding that whole
+	 * window up into SCREEN_0 -- the "stash" rows beyond 185 need the
+	 * matching background colour too, or the reveal animation slides in
+	 * over stale/black leftovers instead of a gold background. */
+	GUI_DrawFilledRectangle(64, 172, 255, 198, s_strategicMapTextBgColor);
 
 	GUI_DrawText_Wrapper(string, 64, 175, 12, 0, 0x12);
 
@@ -3938,6 +3965,13 @@ uint16 GUI_StrategicMap_Show(uint16 campaignID, bool win)
 
 	GUI_Palette_RemapScreen(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, SCREEN_2, g_remap);
 
+	/* Cache the message-strip parchment colour now, while SCREEN_2 still
+	 * holds the just-loaded/remapped MAPMACH.CPS chrome: SCREEN_2 gets
+	 * reused as a scratch heap by Sprites_CPS_LoadRegionClick() (called
+	 * below), so this is the last point at which sampling it directly is
+	 * safe. GUI_StrategicMap_DrawText() reads this cached value instead. */
+	s_strategicMapTextBgColor = GFX_GetPixel(64, 165);
+
 	x = 0;
 	y = 0;
 
@@ -3980,8 +4014,8 @@ uint16 GUI_StrategicMap_Show(uint16 campaignID, bool win)
 	GUI_DrawFilledRectangle(8, 24, 311, 143, 12);
 
 	GUI_Mouse_Hide_Safe();
-	GUI_Screen_Copy(0, 0, 0, 0, SCREEN_WIDTH / 8, SCREEN_HEIGHT, SCREEN_2, SCREEN_0);
 	GUI_SetPaletteAnimated(g_palette1, 15);
+	GUI_Screen_Copy(0, 0, 0, 0, SCREEN_WIDTH / 8, SCREEN_HEIGHT, SCREEN_2, SCREEN_0);
 	GUI_Mouse_Show_Safe();
 
 	s_strategicMapFastForward = false;
@@ -4028,7 +4062,17 @@ uint16 GUI_StrategicMap_Show(uint16 campaignID, bool win)
 		GUI_Screen_FadeIn2(8, 24, 304, 120, SCREEN_1, SCREEN_0, 0, false);
 	}
 
+#ifndef TOS
+	/* On non-TOS backends SCREEN_0 is the real composited/displayed buffer,
+	 * so the preceding GUI_Screen_Copy()/GUI_Screen_FadeIn2() calls (which
+	 * only ever write INTO SCREEN_0) need to be mirrored back into SCREEN_1
+	 * before further SCREEN_1-based drawing continues. On TOS, SCREEN_0 is
+	 * deliberately left unmaintained (direct-to-planar bypass) -- SCREEN_1
+	 * was never touched by the calls above and remains the authoritative,
+	 * up-to-date map image, so pulling stale/garbage SCREEN_0 data back
+	 * into it would corrupt it instead. */
 	GUI_Screen_Copy(0, 0, 0, 0, SCREEN_WIDTH / 8, SCREEN_HEIGHT, SCREEN_0, SCREEN_1);
+#endif /* TOS */
 
 	if (campaignID != previousCampaignID) GUI_StrategicMap_ShowProgression(campaignID);
 
