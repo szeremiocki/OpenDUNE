@@ -38,12 +38,42 @@ without either overlay.
 Cross-build validation targets the existing 68000 TOS configuration; c2p
 assembly and TT/Falcon paths are unchanged. On 2026-09-30 the user reported
 that all visual glitches and cursor garbage dragging disappeared together,
-describing the improvement as tremendous. Performance has not been measured;
-before/after profiling remains pending and no speedup is claimed.
+describing the improvement as tremendous. Performance had not been measured
+at that point, so no speedup was claimed. The subsequent before/after Hatari
+captures are analysed in `ATARI_PROFILE_FINDINGS.md`: event handling is much
+cheaper, but common masked writers incur repeated overlay checks and overall
+callback throughput is lower in the after capture.
 Regression checks for future changes: opening/closing the construction-yard
 hint, moving afterward, gameplay-to-Hall-of-Fame transitions, stationary
 pointers under transparent sprites and partial-edge writes, viewport scrolling,
 screen-edge clipping, and placement outlines under the pointer.
+
+### Overlay-free writer fast path
+
+Masked opaque presentations, transparent presentations and planar fills now
+test the whole destination rectangle against the **actual drawn** mouse and
+placement footprints. The horizontal test includes complete 16-pixel groups,
+because their backups must remain correct even for writes outside the visible
+overlay pixels in the same group.
+
+Transparent rectangles with no overlap take a separate ordinary merge loop:
+no CursorBackground, PlacementBlock, PlanarMergeGroup or CursorWriteGroup calls
+per group. The destination pointer advances through groups and rows. Masked
+edges, odd-source fallback groups and fills also use ordinary merging when
+their rectangle has no overlap. Overlapping writes retain the existing
+backup-aware merge and overlay ordering unchanged.
+
+The selection is local to each synchronous write, not persistent global state;
+these loops do not yield to cooperative Video_Tick processing. c2p assembly,
+source strides and dirty-sweep band/run batching are unchanged. The stationary
+before/after captures in `ATARI_PROFILE_FINDINGS.md` show 6.0% higher video
+callback throughput and 8.9% higher game-loop throughput, with almost identical
+converted pixels per callback. Gameplay visual confirmation of this fast path
+remains pending.
+The 68000 TOS build succeeds. An isolated cross-compiled harness ran 190
+actual-driver cases under Hatari on an 8 MHz 68000, including the real c2p
+assembly, cursor/placement backup checks, same-group edge writes, transparency,
+odd source addresses/strides, screen edges and multi-row call batching.
 
 ## Update: private cursor preparation
 

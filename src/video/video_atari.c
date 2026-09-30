@@ -157,6 +157,171 @@ static uint16 Video_CountDirtyBlocks(uint32 mask)
 static bool s_showFPS = false;
 static volatile bool s_fpsReset = true;
 
+/* Temporary migration diagnostics. Disable with -DVIDEO_ATARI_SWEEP_LOG=0
+ * for profiling: synchronous Warning output can cause a reporting hiccup. */
+#ifndef VIDEO_ATARI_SWEEP_LOG
+#define VIDEO_ATARI_SWEEP_LOG 0
+#endif
+
+typedef enum DirtySweepKind {
+	DIRTY_SWEEP_LEGACY,
+	DIRTY_SWEEP_VIEWPORT,
+	DIRTY_SWEEP_REPAINT,
+	DIRTY_SWEEP_COUNT
+} DirtySweepKind;
+
+#if VIDEO_ATARI_SWEEP_LOG
+#define DIRTY_SWEEP_REPORT_MS 5000
+
+typedef struct DirtySweepStats {
+	uint32 ticks, calls, pixels, peak;
+} DirtySweepStats;
+
+static DirtySweepStats s_sweepTick[DIRTY_SWEEP_COUNT];
+static DirtySweepStats s_sweepPeriod[DIRTY_SWEEP_COUNT];
+static uint32 s_sweepStart, s_sweepTicks, s_sweepActive, s_sweepPeak;
+static bool s_sweepStarted;
+static uint32 s_sweepFieldPixels, s_sweepMinimapPixels, s_sweepOtherPixels;
+static uint32 s_sweepRowPixels[10], s_sweepRowMasks[10], s_sweepRowWidest[10];
+static uint16 s_sweepRowWidth[10];
+
+static void Video_Atari_DirtySweepBeginTick(void)
+{
+	if (!s_curDirect) return;
+	if (!s_sweepStarted) {
+		s_sweepStart = Timer_GetTime();
+		s_sweepStarted = true;
+	}
+	memset(s_sweepTick, 0, sizeof(s_sweepTick));
+}
+
+/* Fold local sweep totals once, rather than adding global counters for
+ * every c2p run. Dirty flags alone do not count as converted pixels. */
+static void Video_Atari_DirtySweepRecord(DirtySweepKind kind, uint32 pixels, uint32 calls)
+{
+	s_sweepTick[kind].pixels += pixels;
+	s_sweepTick[kind].calls += calls;
+}
+
+static uint16 Video_Atari_SweepMaskWidth(uint32 mask)
+{
+	uint16 width = 0;
+	while (mask != 0) {
+		width += 16;
+		mask &= mask - 1;
+	}
+	return width;
+}
+
+/* Classify actual converted bands, not producer rectangles that might
+ * coalesce or be cleared by an immediate present before the sweep. */
+static void Video_Atari_DirtySweepBand(uint32 mask, uint16 top, uint16 bottom, uint16 width)
+{
+	uint32 fieldMask = mask & 0x7fff;
+	uint16 fieldWidth = Video_Atari_SweepMaskWidth(fieldMask);
+	uint16 minimapWidth = Video_Atari_SweepMaskWidth(mask & 0xf0000);
+	uint16 fieldTop = max(top, 40), fieldBottom = min(bottom, SCREEN_HEIGHT);
+	uint16 minimapTop = max(top, 136), minimapBottom = min(bottom, SCREEN_HEIGHT);
+	uint32 field = 0, minimap = 0;
+
+	if (fieldTop < fieldBottom && fieldWidth != 0) {
+		uint16 firstRow = (fieldTop - 40) >> 4;
+		uint16 lastRow = (fieldBottom - 1 - 40) >> 4;
+		uint16 row;
+		field = (uint32)(fieldBottom - fieldTop) * fieldWidth;
+		for (row = firstRow; row <= lastRow; row++) {
+			uint16 rowTop = max(fieldTop, 40 + row * 16);
+			uint16 rowBottom = min(fieldBottom, 40 + (row + 1) * 16);
+			s_sweepRowPixels[row] += (uint32)(rowBottom - rowTop) * fieldWidth;
+			s_sweepRowMasks[row] |= fieldMask;
+			if (fieldWidth > s_sweepRowWidth[row]) {
+				s_sweepRowWidth[row] = fieldWidth;
+				s_sweepRowWidest[row] = fieldMask;
+			}
+		}
+	}
+	if (minimapTop < minimapBottom) minimap = (uint32)(minimapBottom - minimapTop) * minimapWidth;
+	s_sweepFieldPixels += field;
+	s_sweepMinimapPixels += minimap;
+	s_sweepOtherPixels += (uint32)(bottom - top) * width - field - minimap;
+}
+
+static void Video_Atari_DirtySweepEndTick(void)
+{
+	uint32 now, elapsed, total = 0, pixels = 0, average, coverage;
+	int kind;
+	const DirtySweepStats *legacy = &s_sweepPeriod[DIRTY_SWEEP_LEGACY];
+	const DirtySweepStats *viewport = &s_sweepPeriod[DIRTY_SWEEP_VIEWPORT];
+	const DirtySweepStats *repaint = &s_sweepPeriod[DIRTY_SWEEP_REPAINT];
+
+	if (!s_curDirect) return;
+	s_sweepTicks++;
+	for (kind = 0; kind < DIRTY_SWEEP_COUNT; kind++) {
+		DirtySweepStats *period = &s_sweepPeriod[kind];
+		uint32 tickPixels = s_sweepTick[kind].pixels;
+		if (tickPixels != 0) period->ticks++;
+		period->calls += s_sweepTick[kind].calls;
+		period->pixels += tickPixels;
+		if (tickPixels > period->peak) period->peak = tickPixels;
+		total += tickPixels;
+		pixels += period->pixels;
+	}
+	if (total != 0) s_sweepActive++;
+	if (total > s_sweepPeak) s_sweepPeak = total;
+	now = Timer_GetTime();
+	elapsed = now - s_sweepStart;
+	if (elapsed < DIRTY_SWEEP_REPORT_MS) return;
+	average = pixels / s_sweepTicks;
+	coverage = average * 1000 / (SCREEN_WIDTH * SCREEN_HEIGHT);
+	Warning("dirty-c2p %lums: ticks=%lu active=%lu idle=%lu px=%lu avg/tick=%lu frame=%lu.%lu%% peak=%lu\n"
+	        "  legacy: ticks=%lu calls=%lu px=%lu avg/active=%lu peak=%lu\n"
+	        "  viewport: ticks=%lu calls=%lu px=%lu avg/active=%lu peak=%lu\n"
+	        "  repaint: ticks=%lu calls=%lu px=%lu avg/active=%lu peak=%lu\n",
+	        (unsigned long)elapsed, (unsigned long)s_sweepTicks,
+	        (unsigned long)s_sweepActive, (unsigned long)(s_sweepTicks - s_sweepActive),
+	        (unsigned long)pixels, (unsigned long)average,
+	        (unsigned long)(coverage / 10), (unsigned long)(coverage % 10), (unsigned long)s_sweepPeak,
+	        (unsigned long)legacy->ticks, (unsigned long)legacy->calls, (unsigned long)legacy->pixels,
+	        (unsigned long)(legacy->ticks != 0 ? legacy->pixels / legacy->ticks : 0), (unsigned long)legacy->peak,
+	        (unsigned long)viewport->ticks, (unsigned long)viewport->calls, (unsigned long)viewport->pixels,
+	        (unsigned long)(viewport->ticks != 0 ? viewport->pixels / viewport->ticks : 0), (unsigned long)viewport->peak,
+	        (unsigned long)repaint->ticks, (unsigned long)repaint->calls, (unsigned long)repaint->pixels,
+	        (unsigned long)(repaint->ticks != 0 ? repaint->pixels / repaint->ticks : 0), (unsigned long)repaint->peak);
+	if (viewport->pixels != 0) {
+		Warning("  vp-area: field=%lu minimap=%lu other=%lu\n"
+		        "  vp-field row-px: %lu %lu %lu %lu %lu %lu %lu %lu %lu %lu\n"
+		        "  vp-field mask-union: %05lx %05lx %05lx %05lx %05lx %05lx %05lx %05lx %05lx %05lx\n"
+		        "  vp-field widest-mask: %05lx %05lx %05lx %05lx %05lx %05lx %05lx %05lx %05lx %05lx\n",
+		        (unsigned long)s_sweepFieldPixels, (unsigned long)s_sweepMinimapPixels, (unsigned long)s_sweepOtherPixels,
+		        (unsigned long)s_sweepRowPixels[0], (unsigned long)s_sweepRowPixels[1], (unsigned long)s_sweepRowPixels[2],
+		        (unsigned long)s_sweepRowPixels[3], (unsigned long)s_sweepRowPixels[4], (unsigned long)s_sweepRowPixels[5],
+		        (unsigned long)s_sweepRowPixels[6], (unsigned long)s_sweepRowPixels[7], (unsigned long)s_sweepRowPixels[8],
+		        (unsigned long)s_sweepRowPixels[9],
+		        (unsigned long)s_sweepRowMasks[0], (unsigned long)s_sweepRowMasks[1], (unsigned long)s_sweepRowMasks[2],
+		        (unsigned long)s_sweepRowMasks[3], (unsigned long)s_sweepRowMasks[4], (unsigned long)s_sweepRowMasks[5],
+		        (unsigned long)s_sweepRowMasks[6], (unsigned long)s_sweepRowMasks[7], (unsigned long)s_sweepRowMasks[8],
+		        (unsigned long)s_sweepRowMasks[9],
+		        (unsigned long)s_sweepRowWidest[0], (unsigned long)s_sweepRowWidest[1], (unsigned long)s_sweepRowWidest[2],
+		        (unsigned long)s_sweepRowWidest[3], (unsigned long)s_sweepRowWidest[4], (unsigned long)s_sweepRowWidest[5],
+		        (unsigned long)s_sweepRowWidest[6], (unsigned long)s_sweepRowWidest[7], (unsigned long)s_sweepRowWidest[8],
+		        (unsigned long)s_sweepRowWidest[9]);
+	}
+	memset(s_sweepPeriod, 0, sizeof(s_sweepPeriod));
+	memset(s_sweepRowPixels, 0, sizeof(s_sweepRowPixels));
+	memset(s_sweepRowMasks, 0, sizeof(s_sweepRowMasks));
+	memset(s_sweepRowWidest, 0, sizeof(s_sweepRowWidest));
+	memset(s_sweepRowWidth, 0, sizeof(s_sweepRowWidth));
+	s_sweepFieldPixels = s_sweepMinimapPixels = s_sweepOtherPixels = 0;
+	s_sweepTicks = s_sweepActive = s_sweepPeak = 0;
+	s_sweepStart = now;
+}
+#else
+#define Video_Atari_DirtySweepBeginTick() ((void)0)
+#define Video_Atari_DirtySweepRecord(kind, pixels, calls) ((void)0)
+#define Video_Atari_DirtySweepBand(mask, top, bottom, width) ((void)0)
+#define Video_Atari_DirtySweepEndTick() ((void)0)
+#endif
+
 /* Instrumentation for the ST/STE chunky-to-planar path.
  * DISABLED BY DEFAULT: the reports are written with unbuffered Warning()
  * calls from inside Video_Tick(), so enabling this measurably slows the
@@ -1686,6 +1851,41 @@ static bool s_placeInvalid, s_placeVisible, s_placeDirty;
 static int16 s_placeDrawnX, s_placeDrawnY;
 static uint16 s_placeDrawnWidth, s_placeDrawnHeight;
 
+static inline bool Video_Atari_CursorRectOverlap(uint8 *base, uint16 first, uint16 end,
+                                                uint16 y, uint16 h)
+{
+	return s_curDrawn && base == s_curDrawnBase &&
+	       y < s_curDrawnY + s_curDrawnH && y + h > s_curDrawnY &&
+	       first < s_curDrawnGroup + s_curDrawnGroups && end > s_curDrawnGroup;
+}
+
+static inline bool Video_Atari_PlacementRectOverlap(uint8 *base, uint16 left, uint16 right,
+                                                   uint16 y, uint16 h)
+{
+	return s_placeBlockCount != 0 && base == s_placeDrawnBase &&
+	       (int)y < s_placeDrawnY + s_placeDrawnHeight && (int)(y + h) > s_placeDrawnY &&
+	       (int)left < s_placeDrawnX + s_placeDrawnWidth && (int)right > s_placeDrawnX;
+}
+
+static bool Video_Atari_PlanarOverlaysOverlap(uint8 *base, uint16 x, uint16 y,
+                                             uint16 w, uint16 h)
+{
+	uint16 first = x >> 4, end = (x + w + 15) >> 4;
+
+	/* Backups cover whole groups, including pixels outside an edge mask. */
+	return Video_Atari_CursorRectOverlap(base, first, end, y, h) ||
+	       Video_Atari_PlacementRectOverlap(base, first << 4, end << 4, y, h);
+}
+
+static inline void Video_Atari_PlanarMergePlain(uint16 *dst, uint16 mask, const uint16 pixels[4])
+{
+	uint16 plane;
+
+	for (plane = 0; plane < 4; plane++) {
+		dst[plane] = (uint16)((dst[plane] & (uint16)~mask) | (pixels[plane] & mask));
+	}
+}
+
 static int Video_Atari_CursorGroup(uint8 *base, uint16 y, uint16 group)
 {
 	if (!s_curDrawn || base != s_curDrawnBase ||
@@ -1764,9 +1964,7 @@ static void Video_Atari_PlanarFinishRun(uint8 *base, uint16 x, uint16 y, uint16 
 	uint16 first = x >> 4, end = (x + w) >> 4;
 	uint16 line, group, i;
 
-	if (s_curDrawn && base == s_curDrawnBase &&
-	    y < s_curDrawnY + s_curDrawnH && y + h > s_curDrawnY &&
-	    first < s_curDrawnGroup + s_curDrawnGroups && end > s_curDrawnGroup) {
+	if (Video_Atari_CursorRectOverlap(base, first, end, y, h)) {
 		uint16 top = max(y, s_curDrawnY), bottom = min(y + h, s_curDrawnY + s_curDrawnH);
 		uint16 left = max(first, s_curDrawnGroup), right = min(end, s_curDrawnGroup + s_curDrawnGroups);
 		for (line = top; line < bottom; line++) {
@@ -1777,9 +1975,7 @@ static void Video_Atari_PlanarFinishRun(uint8 *base, uint16 x, uint16 y, uint16 
 			}
 		}
 	}
-	if (s_placeBlockCount == 0 || base != s_placeDrawnBase ||
-	    (int)y >= s_placeDrawnY + s_placeDrawnHeight || (int)(y + h) <= s_placeDrawnY ||
-	    (int)x >= s_placeDrawnX + s_placeDrawnWidth || (int)(x + w) <= s_placeDrawnX) return;
+	if (!Video_Atari_PlacementRectOverlap(base, x, x + w, y, h)) return;
 	for (i = 0; i < s_placeBlockCount; i++) {
 		PlacementBlock *block = &s_placeBlocks[i];
 		uint16 words[4];
@@ -1973,11 +2169,14 @@ static uint8 *Video_Atari_PlanarBase(void)
 static void Video_Atari_PlanarFill(uint16 x, uint16 y, uint16 w, uint16 h, uint8 pen)
 {
 	uint8 *base = Video_Atari_PlanarBase();
+	bool overlays = Video_Atari_PlanarOverlaysOverlap(base, x, y, w, h);
 	uint16 first = (uint16)(x >> 4);
 	uint16 last = (uint16)((x + w + 15) >> 4);	/* exclusive */
+	uint16 *row = (uint16 *)(base + (uint32)y * ST_PLANAR_LINE_BYTES + first * 8);
 	uint16 g, line, plane;
 
 	for (line = 0; line < h; line++) {
+		uint16 *dst = row;
 		for (g = first; g < last; g++) {
 			uint16 gx = (uint16)(g << 4);
 			uint16 a = (x > gx) ? (uint16)(x - gx) : 0;
@@ -1988,8 +2187,14 @@ static void Video_Atari_PlanarFill(uint16 x, uint16 y, uint16 w, uint16 h, uint8
 			for (plane = 0; plane < 4; plane++) {
 				pixels[plane] = (pen & (1u << plane)) ? mask : 0;
 			}
-			Video_Atari_PlanarMergeGroup(base, (uint16)(y + line), g, mask, pixels);
+			if (overlays) {
+				Video_Atari_PlanarMergeGroup(base, (uint16)(y + line), g, mask, pixels);
+			} else {
+				Video_Atari_PlanarMergePlain(dst, mask, pixels);
+			}
+			dst += 4;
 		}
+		row += ST_PLANAR_LINE_BYTES / sizeof(uint16);
 	}
 }
 
@@ -2026,7 +2231,8 @@ static void Video_Atari_PresentRun(const uint8 *src, uint16 srcStride,
  * stays in bounds even when the source row is exactly as wide as the
  * rectangle (a WSA frame buffer, for instance). */
 static void Video_Atari_PresentGroupMasked(const uint8 *srcRow, uint16 gx,
-                                           uint16 x0, uint16 x1, uint8 *base, uint16 y)
+                                           uint16 x0, uint16 x1, uint8 *base, uint16 y,
+                                           bool overlays)
 {
 	uint16 a = (x0 > gx) ? (uint16)(x0 - gx) : 0;
 	uint16 b = (x1 < (uint16)(gx + 16)) ? (uint16)(x1 - gx) : 16;
@@ -2046,7 +2252,12 @@ static void Video_Atari_PresentGroupMasked(const uint8 *srcRow, uint16 gx,
 		if (pen & 8) pl[3] |= bit;
 	}
 
-	Video_Atari_PlanarMergeGroup(base, y, gx >> 4, mask, pl);
+	if (overlays) {
+		Video_Atari_PlanarMergeGroup(base, y, gx >> 4, mask, pl);
+	} else {
+		uint16 *dst = (uint16 *)(base + (uint32)y * ST_PLANAR_LINE_BYTES + (gx >> 1));
+		Video_Atari_PlanarMergePlain(dst, mask, pl);
+	}
 }
 
 /* Present a rectangle whose left edge and/or width are not multiples of
@@ -2067,6 +2278,7 @@ static void Video_Atari_PresentRunMasked(const uint8 *src, uint16 srcStride,
 	bool doLeft = ((x & 0xf) != 0) || (gLeft == gRight && (x1 & 0xf) != 0);
 	bool doRight = (gRight != gLeft) && ((x1 & 0xf) != 0);
 	uint8 *base = Video_Atari_PlanarBase();
+	bool overlays = Video_Atari_PlanarOverlaysOverlap(base, x, y, w, h);
 	uint16 line;
 
 	if (lastFull >= firstFull) {
@@ -2087,7 +2299,7 @@ static void Video_Atari_PresentRunMasked(const uint8 *src, uint16 srcStride,
 			for (line = 0; line < h; line++) {
 				for (g = firstFull; g <= lastFull; g++) {
 					Video_Atari_PresentGroupMasked(mSrc, (uint16)(g << 4), x, x1,
-					                               base, (uint16)(y + line));
+					                               base, (uint16)(y + line), overlays);
 				}
 				mSrc += srcStride;
 			}
@@ -2103,11 +2315,11 @@ static void Video_Atari_PresentRunMasked(const uint8 *src, uint16 srcStride,
 	for (line = 0; line < h; line++) {
 		if (doLeft) {
 			Video_Atari_PresentGroupMasked(src, (uint16)(gLeft << 4), x, x1,
-			                               base, (uint16)(y + line));
+			                               base, (uint16)(y + line), overlays);
 		}
 		if (doRight) {
 			Video_Atari_PresentGroupMasked(src, (uint16)(gRight << 4), x, x1,
-			                               base, (uint16)(y + line));
+			                               base, (uint16)(y + line), overlays);
 		}
 		src += srcStride;
 	}
@@ -2118,13 +2330,12 @@ static void Video_Atari_PresentRunMasked(const uint8 *src, uint16 srcStride,
  * instead of being a real colour to draw. Unlike the alignment-only mask
  * above, this must inspect every covered pixel's content, not just its
  * position -- there is no "fully covered, no need to check" fast case. */
-static void Video_Atari_PresentGroupMaskedTransparent(const uint8 *srcRow, uint16 gx,
-                                           uint16 x0, uint16 x1, uint8 *base, uint16 y)
+static uint16 Video_Atari_ConvertGroupTransparent(const uint8 *srcRow, uint16 gx,
+                                                 uint16 x0, uint16 x1, uint16 pl[4])
 {
 	uint16 a = (x0 > gx) ? (uint16)(x0 - gx) : 0;
 	uint16 b = (x1 < (uint16)(gx + 16)) ? (uint16)(x1 - gx) : 16;
 	uint16 mask = 0;
-	uint16 pl[4];
 	uint16 i;
 
 	pl[0] = pl[1] = pl[2] = pl[3] = 0;
@@ -2146,7 +2357,7 @@ static void Video_Atari_PresentGroupMaskedTransparent(const uint8 *srcRow, uint1
 		if (pen & 8) pl[3] |= bit;
 	}
 
-	if (mask != 0) Video_Atari_PlanarMergeGroup(base, y, gx >> 4, mask, pl);
+	return mask;
 }
 
 /* Present a small, content-transparent rectangle (glyphs): every 16 pixel
@@ -2164,12 +2375,33 @@ static void Video_Atari_PresentTransparent(const uint8 *src, uint16 srcStride,
 	uint8 *base = Video_Atari_PlanarBase();
 	uint16 line;
 
+	if (!Video_Atari_PlanarOverlaysOverlap(base, x, y, w, h)) {
+		uint16 *row = (uint16 *)(base + (uint32)y * ST_PLANAR_LINE_BYTES + gLeft * 8);
+
+		for (line = 0; line < h; line++) {
+			uint16 *dst = row;
+			int g;
+
+			for (g = gLeft; g <= gRight; g++) {
+				uint16 pl[4];
+				uint16 mask = Video_Atari_ConvertGroupTransparent(src, (uint16)(g << 4), x, x1, pl);
+				if (mask != 0) Video_Atari_PlanarMergePlain(dst, mask, pl);
+				dst += 4;
+			}
+			src += srcStride;
+			row += ST_PLANAR_LINE_BYTES / sizeof(uint16);
+		}
+		return;
+	}
+
 	for (line = 0; line < h; line++) {
 		int g;
 
 		for (g = gLeft; g <= gRight; g++) {
-			Video_Atari_PresentGroupMaskedTransparent(src, (uint16)(g << 4), x, x1,
-			                              base, (uint16)(y + line));
+			uint16 pl[4];
+			uint16 mask = Video_Atari_ConvertGroupTransparent(src, (uint16)(g << 4), x, x1, pl);
+			if (mask != 0) Video_Atari_PlanarMergeGroup(base, (uint16)(y + line),
+			                                         (uint16)g, mask, pl);
 		}
 		src += srcStride;
 	}
@@ -2569,6 +2801,7 @@ bool Video_Atari_ShiftPlanar(int16 x, int16 y, uint16 width, uint16 height, int1
 static void Video_Atari_C2P_ConvertBlocks(uint8 *screen, uint8 *data, const uint32 *blocks, uint16 top, uint16 bottom)
 {
 	uint8 *base = screen - (uint32)top * ST_PLANAR_LINE_BYTES;
+	uint32 sweepPixels = 0, sweepCalls = 0;
 	uint16 y;
 	uint16 runCount = 0;
 	uint16 runLeft[10];	/* first pixel of the run */
@@ -2587,6 +2820,7 @@ static void Video_Atari_C2P_ConvertBlocks(uint8 *screen, uint8 *data, const uint
 		if (mask != 0) {
 			uint32 rest = mask;
 			uint16 run;
+			uint16 bandWidth = 0;
 
 			runCount = 0;
 			while (rest != 0) {
@@ -2595,6 +2829,7 @@ static void Video_Atari_C2P_ConvertBlocks(uint8 *screen, uint8 *data, const uint
 
 				runLeft[runCount] = runStart << 4;
 				runWidth[runCount] = (runEnd - runStart) << 4;
+				bandWidth += runWidth[runCount];
 				runCount++;
 				rest &= ~(((uint32)1 << runEnd) - 1);
 			}
@@ -2605,10 +2840,14 @@ static void Video_Atari_C2P_ConvertBlocks(uint8 *screen, uint8 *data, const uint
 				c2p1x1_4_st(screen + (left >> 1), data + left, width, bandLines, s_palette4BitPairMap);
 				Video_Atari_PlanarFinishRun(base, left, bandTop, width, bandLines);
 			}
+			sweepPixels += (uint32)bandWidth * bandLines;
+			sweepCalls += runCount;
+			Video_Atari_DirtySweepBand(mask, bandTop, y, bandWidth);
 		}
 		screen += (SCREEN_WIDTH >> 1) * bandLines;
 		data += SCREEN_WIDTH * bandLines;
 	}
+	Video_Atari_DirtySweepRecord(DIRTY_SWEEP_VIEWPORT, sweepPixels, sweepCalls);
 }
 #endif
 
@@ -2631,6 +2870,7 @@ void Video_Tick(void)
 	uint8 *frameBase = screen + s_center_image_offset;
 	bool placementRedraw = false;
 	screen += s_center_image_offset;
+	Video_Atari_DirtySweepBeginTick();
 
 	/* send mouse event */
 	if(s_mouse_state_changed) {
@@ -2804,12 +3044,15 @@ void Video_Tick(void)
 				}
 #endif
 				c2p1x1_4_st(screen, data, height*SCREEN_WIDTH, 1, s_palette4BitPairMap);
+				Video_Atari_DirtySweepRecord(s_screen_needrepaint ? DIRTY_SWEEP_REPAINT : DIRTY_SWEEP_LEGACY,
+				                            (uint32)height * SCREEN_WIDTH, 1);
 				Video_Atari_PlanarFinishRun(frameBase, 0,
 					(s_screen_needrepaint || area == NULL) ? 0 : area->top,
 					SCREEN_WIDTH, (uint16)height);
 			} else {
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
 				uint16 y;
+				uint32 sweepPixels = 0, sweepCalls = 0;
 				/* 20 blocks per line allow 10 runs at most. */
 				uint16 runCount = 0;
 				uint16 runLeft[10];	/* first pixel of the run */
@@ -2884,6 +3127,7 @@ void Video_Tick(void)
 					if (blocks != 0) {
 						uint32 rest = blocks;
 						uint16 run;
+						uint16 bandWidth = 0;
 
 						runCount = 0;
 #ifdef VIDEO_C2P_STATS
@@ -2899,6 +3143,7 @@ void Video_Tick(void)
 
 							runLeft[runCount] = runStart << 4;
 							runWidth[runCount] = (runEnd - runStart) << 4;
+							bandWidth += runWidth[runCount];
 #ifdef VIDEO_C2P_STATS
 							{
 								uint16 runRight = runEnd << 4;
@@ -2941,10 +3186,13 @@ void Video_Tick(void)
 							Video_Atari_PlanarFinishRun(frameBase, (uint16)left, bandTop,
 							                           (uint16)width, bandLines);
 						}
+						sweepPixels += (uint32)bandWidth * bandLines;
+						sweepCalls += runCount;
 					}
 					screen += (SCREEN_WIDTH >> 1) * bandLines;
 					data += SCREEN_WIDTH * bandLines;
 				}
+				Video_Atari_DirtySweepRecord(DIRTY_SWEEP_LEGACY, sweepPixels, sweepCalls);
 #ifdef VIDEO_C2P_STATS
 				s_statLineCalls += tickCalls;
 				s_statTickCalls += tickCalls;
@@ -2962,6 +3210,7 @@ void Video_Tick(void)
 				screen += (left >> 1);
 				data += left;
 				c2p1x1_4_st(screen, data, width, height, s_palette4BitPairMap);
+				Video_Atari_DirtySweepRecord(DIRTY_SWEEP_LEGACY, (uint32)width * height, 1);
 				Video_Atari_PlanarFinishRun(frameBase, (uint16)left,
 				                           area == NULL ? 0 : area->top, (uint16)width, (uint16)height);
 #endif
@@ -3052,6 +3301,7 @@ l_overlays:
 	/* Count completed updates, including ticks with no dirty game pixels.
 	 * The resulting digits are displayed on the next video tick. */
 	if (s_showFPS) Video_Atari_UpdateFPS();
+	Video_Atari_DirtySweepEndTick();
 
 #ifdef VIDEO_C2P_STATS
 	Video_C2PStats_Report();

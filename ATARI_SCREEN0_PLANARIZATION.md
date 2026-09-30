@@ -2,8 +2,155 @@
 
 Date: 2026-09-25
 
-Status: analysis and migration planning only. No planar `SCREEN_0`
-implementation has been started on this branch.
+The original analysis below is a historical planning snapshot. The current
+branch has direct planar presentation and independent SCREEN_1 viewport
+conversion; it no longer follows every screen-role assumption below.
+
+## Remaining dirty-sweep diagnostics (2026-09-30)
+
+`src/video/video_atari.c` provides optional `VIDEO_ATARI_SWEEP_LOG` diagnostics.
+One synchronous `Warning()` report is written to `error.log` approximately
+every five seconds of elapsed time, at the end of a video tick. No per-blit
+logging is performed. Totals are accumulated locally within the band/run
+loops and folded into the tick counters once per sweep.
+
+The report separates:
+
+- `legacy`: actual conversions from the old `g_dirty_blocks` sweep, including
+  its non-palette full-width fallback. On current ST/STE builds this sweep
+  reads SCREEN_1, despite being triggered by SCREEN_0 dirty state.
+- `viewport`: actual conversions from `g_dirty_blocks_viewport`, whose pixels
+  are already composed in SCREEN_1. This path is intentionally independent
+  of SCREEN_0, so its use alone is not evidence of an incomplete migration.
+- `repaint`: full conversions forced by `s_screen_needrepaint` (palette
+  re-quantization), separated from normal dirty-block activity.
+
+The header gives elapsed milliseconds, total video ticks, ticks doing any
+sweep conversion (`active`), ticks doing none (`idle`), total converted pixels,
+average pixels per video tick, that average as a percentage of a 320x200
+frame, and the peak combined pixels in one tick. Each category gives its
+active tick count, actual assembly-call count, pixel total, mean pixels per
+active tick and peak pixels in a single tick.
+
+For periods with viewport conversion, additional position diagnostics give
+`vp-area` pixel totals for battlefield (x=0..239, y=40..199), minimap
+(x=256..319, y=136..199) and everything else. These three totals sum to the
+viewport pixel total.
+
+`vp-field` entries are ordered by the ten 16-pixel tile rows, starting at
+y=40 (last row y=184..199). `row-px` gives the work in each row.
+`mask-union` ORs every converted battlefield mask in the reporting period;
+bit n means column x=16*n..16*n+15. It is not a simultaneous dirty mask.
+`widest-mask` is one actual converted band's mask with the largest number
+of set bits seen in that tile row (first occurrence wins ties), so it
+distinguishes a genuinely wide conversion from accumulated movement across
+different columns. Mask aggregation runs once per converted band, not per
+pixel or scanline.
+
+Counts measure conversion workload, not unique screen coverage: a pixel
+converted by both sweeps counts twice, and combined frame percentages can
+exceed 100%. A dirty flag with an empty block mask contributes no conversion.
+Immediate presents, masked edge merges and cursor composition are excluded;
+the report does not give the percentage of *all* rendering done by sweeps.
+
+Diagnostics are disabled by default. Enable with `-DVIDEO_ATARI_SWEEP_LOG=1`
+for coverage logging; leave disabled for timing/profiling because synchronous
+log output can introduce a brief pause and distort performance.
+The release optimizer also removes the unused sweep bookkeeping when disabled.
+The older, more verbose `VIDEO_C2P_STATS` instrumentation remains disabled.
+
+### Observed capture before position diagnostics
+
+The 2026-09-30 `error.log` capture contains 36 reporting periods spanning
+182.980 seconds. The legacy sweep converted zero pixels in every period.
+There was one 64000-pixel forced repaint during initial loading; all later
+logged conversion came from the independent viewport sweep.
+
+Using the last 20 periods to exclude the initial loading/selection phases:
+101.445 seconds, 2872 video ticks, 765 active sweep ticks (26.64%),
+1279 c2p calls and 4540416 converted pixels. Mean work was 1580.9 pixels
+per video tick (2.47% of the full screen), or 5935.2 pixels per active tick.
+The largest tick converted 33280 pixels. The busiest five-second period
+in the whole capture converted 584960 viewport pixels in 5.035 seconds,
+with activity in 64 of its 72 ticks.
+
+The two current callers of `GFX_Screen_SetDirtyViewport()` are battlefield
+row presentation in `src/gui/viewport.c` and full minimap refresh in
+`src/map.c`. Battlefield presentation marks the span from `minX[i]` through
+`maxX[i]` in a 16-pixel tile row. This can include unchanged gaps between
+separated dirty tiles; masks/positions can locate the work but do not prove
+which individual pixels could safely be skipped. Moving units, effects and
+map/structure changes feed the composed battlefield image upstream.
+The new position diagnostics distinguish that work from minimap refreshes.
+
+Changing this independent sweep to immediate presentation alone would not
+eliminate its c2p work: it already reads SCREEN_1 without copying through
+chunky SCREEN_0. Remaining optimization concerns conversion area, batching,
+redundant updates or genuinely planar rendering, not merely scheduling.
+Zero legacy activity is evidence for this capture, not proof that its
+fallback can safely be deleted for every screen and execution path.
+
+### Confirmed conservative viewport marking (2026-09-30)
+
+Investigation of stationary-cursor blinking confirms that presentation can
+cover the mouse even when no moving sprite visually touches it:
+
+- `Unit_Move()` calls `Unit_UpdateMap(0)` before changing position and
+  `Unit_UpdateMap(1)` afterward (`src/unit.c:1351,1512-1514`).
+  The ground-unit dispatch is `{2,3,0}` (`src/map.c:38`), so the old footprint
+  invokes Unit_RemoveFromTile and the new footprint Unit_AddToTile.
+- Ground-unit invalidation uses `dimension + 3`; harvester dimension is 24,
+  giving radius 27 normally (`src/table/unitinfo.c:1238`,
+  `src/unit.c:2514`). Smoking/big-projectile cases and a harvester whose
+  actionID is ACTION_HARVEST force radius 33 (`src/unit.c:2516`). A harvester
+  visually returning to a refinery does not by itself establish its actionID.
+- `Map_UpdateAround()` marks sampled **whole tiles**, not the actual sprite
+  rectangle (`src/map.c:1075-1152`). Radius 27 can select a 3x3 tile set
+  near a tile centre. Radius 33 explicitly selects a 5x5 set.
+  Harvesters repeat this work around targetLast and targetPreLast, not
+  just their current position (`src/unit.c:2520-2524`).
+- Old-footprint removal calls `Map_Update(tile,0,false)`, which adds another
+  eight-neighbour halo (`src/unit.c:2530-2544`, `src/map.c:614-647`).
+  With clean dirty state and an interior visible tile, a radius-27 3x3
+  footprint can therefore produce a 5x5 viewport-dirty union (80x80 pixels).
+  Type-2 appearance updates also dispatch to Map_Update type 0.
+  This is conservative invalidation; it does not prove every marked tile
+  contains changed pixels.
+- `GUI_Widget_Viewport_Draw()` reduces all marked columns in each tile row
+  to minX/maxX (`src/gui/viewport.c:513-538`), then presents the entire span
+  with **height 16** (`src/gui/viewport.c:1004-1045`). Separated unit patches
+  therefore include the clean horizontal gap between them. The active
+  viewport-message overlay can additionally widen row 6 to its full span
+  (`src/gui/viewport.c:980-983`).
+
+For example, dirty patches at columns 2 and 12 cause presentation of
+columns 2..12 in that row, including a cursor at column 7. Combined with
+the neighbour halo, the cursor can be one or more tile rows above the
+moving units and several columns away from either visible sprite, yet
+still be overwritten by a c2p rectangle.
+
+The per-scanline dirty backend is already capable of vertical precision:
+`GFX_Screen_SetDirtyViewport()` rounds only horizontal groups and marks
+exactly [top,bottom) (`src/gfx.c:405-419`). The assembly accepts an arbitrary
+line count. Band batching merges only consecutive equal masks and does
+not add blank rows. Full 16-line marking is imposed upstream by the tile
+producer, not by ST planar hardware or c2p.
+
+After a batched opaque conversion, PlanarFinishRun synchronously recomposes
+the mouse, but only after the whole run has finished. The shifter can scan
+the cursor-free intermediate data during that interval. Conservative
+conversion coverage is thus consistent with the reported stationary blink;
+the exact blits responsible have not been logged.
+
+Possible follow-up: relate old/new unit footprints and final row spans to
+the actual drawn cursor rectangle, and count overlap groups whose newly
+converted background is unchanged. Existing spatial sweep logs show final
+conversion masks, not the original producer or actual sprite bounds.
+Do not merely shrink Map_UpdateAround: it also maintains unit/tile
+registration, and the current compositor restores full background tiles
+and redraws overlapping objects. Precise presentation bounds must preserve
+old/new sprite extents, harvester history, selection/effects, terrain changes
+and overlap composition. No rendering code was changed in this investigation.
 
 ## Goal
 
