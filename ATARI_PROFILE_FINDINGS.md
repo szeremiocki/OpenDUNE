@@ -391,6 +391,360 @@ flat observed throughput. The captures contain different GUI phases and
 are not a clean gameplay-only replay; the 7.47% per-callback reduction is
 an observed workload difference, not an isolated exact gap-removal speedup.
 
+### Structure animation damage: `opendune_damage_limited.txt`
+
+Compared against `opendune_viewport_dirty_gaps.txt`. The new build limits
+changed ground-animation tiles to Map_Update type 4 on ST/STE, retaining
+the old neighbor halo when a nearby unit or active explosion needs
+recomposition. Both captures use 16,042,494 cycles/second, have no recorded
+Mouse_EventHandler execution, and contain only one Warning entry; periodic
+sweep logging is disabled.
+
+| Metric | Dirty gaps | Damage limited | Change |
+|---|---:|---:|---:|
+| TOS-clock duration | 47.810 s | 46.635 s | -2.46% |
+| Video_Tick entry executions | 891 | 889 | -0.22% |
+| Video callbacks/second | 18.64 | 19.06 | +2.29% |
+| GameLoop_Unit entry executions | 922 | 952 | +3.25% |
+| Game-loop iterations/second | 19.28 | 20.41 | +5.86% |
+| Assembly-converted pixels | 2,758,016 | 2,280,192 | -17.32% |
+| Assembly pixels/video callback | 3,095 | 2,565 | -17.14% |
+| Assembly pixels/game-loop iteration | 2,991 | 2,395 | -19.93% |
+| Assembly pixels/second | 57,687 | 48,894 | -15.24% |
+| Assembly c2p cycles/second | 2,325,394 | 1,972,287 | -15.18% |
+| Assembly cycles/16-pixel group | 644.97 | 645.40 | +0.07% |
+| Assembly c2p calls | 1,223 | 1,168 | -4.50% |
+| Assembly c2p calls/video callback | 1.373 | 1.314 | -4.28% |
+| Average pixels/assembly call | 2,255 | 1,952 | -13.43% |
+
+This is a substantial reduction in observed conversion coverage, not a
+faster assembly inner loop. Sweep calls fall from 963 to 919 and direct
+call records from 260 to 248 (including possible exception re-entry).
+Calls still convert roughly two thousand pixels on average: contiguous
+horizontal runs and identical-mask vertical bands remain batched. Pixel
+counts exclude scalar masked/transparent conversion and are not unique
+screen pixels.
+
+**The new guard is demonstrably active.** Executed instruction counts in
+Animation_Tick show 1,430 ground-tile comparisons and 390 changed tiles:
+32 were already dirty and skipped actor scanning; the remaining 358
+entered the guard. Of those, **277 (77.37%)** used exact-tile marking and
+**81 (22.63%)** retained the halo for a nearby unit. The 277 full passes
+checked all 32 explosion slots (8,864 checks); the active-command path was
+not executed, so no explosion fallback occurs in this capture. Overall,
+309 changed tiles took type 4, but 32 were deduplicated; these counts
+must not be treated as 309 newly presented tiles or multiplied by a
+fixed pixel saving without accounting for visibility and overlapping
+damage.
+
+The guard's 4,677 Unit_Find calls cost 1,703,820 inclusive cycles,
+**0.228% of total CPU time**. The identified inlined scan instructions add
+1,035,296 exclusive cycles, making the measured scan work approximately
+**0.37%** of the total, before small surrounding dispatch costs. This is
+not a subtraction of whole-function totals: Animation_Tick also handles
+other commands, and the captures have different workloads.
+
+As expected, terrain reconstruction changes little: GFX_DrawTile entries
+fall from 4,004 to 3,881, but its exclusive cycles/second are essentially
+unchanged (711,566 versus 714,124, +0.36%). Dirty-viewport marker entries
+fall from 1,977 to 1,608 and their cycles/second fall 16.65%. The primary
+benefit is narrower presentation damage, not skipping changed terrain
+tiles.
+
+**Cursor work increases in this pair, with evidence of different cursor
+geometry.** PlanarMergeGroup and CursorWriteGroup each rise from 3,438
+to 5,903 entries. Their combined exclusive share rises from 0.993% to
+1.829%; calls from PlanarFinishRun nearly double (2,672 to 5,136), while
+calls from PlanarFill remain unchanged (764 to 765). CursorSync plus
+memcmp rises from 0.855% to 1.266%.
+
+The memcmp byte-loop counts average **5 versus 10 compared bytes per
+call**, with nearly equal numbers of cursor-data and cursor-mask calls
+in both captures. CursorSync compares 8 data bytes and 2 mask bytes per
+aligned group. These counts strongly indicate a **one-group versus
+two-group drawn cursor footprint**, rather than an alignment fallback
+or more mouse movement. A different initial x phase or cursor shape can
+cause this; the exact position and icon are not established. Wider
+backup coverage can also increase group maintenance, but this pair
+does not isolate that effect or demonstrate reduced cursor blinking.
+
+**The previous fade-tail workload is absent.** The dirty-gaps capture
+contained 1,791 additional 8x2 GFX_Screen_Copy calls from an unlabelled
+GUI_Screen_FadeIn tail, costing 17,727,484 inclusive cycles (2.31%).
+The damage-limited capture has no such edge. Consequently the observed
+throughput increase is not an isolated measurement of this optimization.
+For context, versus the earlier no-fade `opendune_hwmouse_still.txt`,
+the new capture is also faster (+3.38% video callback rate, +5.54%
+game-loop rate), but that comparison includes both gap removal and
+animation damage limiting and still has unmatched cursor geometry.
+
+No cached-tile GFX_DrawTile-to-memmove fallback appears in either capture;
+total memmove entries are 104 versus 102. Conclusion: the intended
+exact-tile path is used for most scanned animation updates, guard cost
+is small, and assembly conversion per callback falls about 17%. Observed
+throughput improves modestly, but differing fade phases and cursor
+footprints prevent an exact causal speedup or cursor-stability claim.
+
+#### Capture context and non-battlefield costs
+
+The user reports that this was an especially heavy money-counter scroll
+session: two returning harvesters rapidly increased credits toward the
+mission's greater-than-1000-credit completion threshold. The battlefield
+was mostly static while the player waited. The minimap remained visually
+unchanged, with no viewport movement, newly revealed terrain or active
+radar mode. This is not a representative general-combat timing baseline.
+
+Identified minimap paths account for approximately **10.18%** of total CPU
+time, despite the unchanged appearance:
+
+| Minimap work | Calls | Inclusive cycles | Total CPU share |
+|---|---:|---:|---:|
+| GUI_Widget_Viewport_DrawTile | 10,309 | 69,455,244 | 9.28% |
+| Minimap strip GUI_Screen_Copy | 203 | 5,259,888 | 0.70% |
+| Forced viewport-border update | 73 | 1,219,700 | 0.16% |
+| Unchanged-position update checks | 952 | 209,744 | 0.03% |
+
+These are distinct call edges. The 6.66% minimap sprite-drawing cost is
+already inside the 9.28% tile-redraw figure, not an additional cost.
+The subtotal excludes upstream dirty-queue production and any separately
+unattributed mouse hide/show overhead.
+
+The code explains why visible stability does not suppress this work:
+Unit_RemoveFromTile and Unit_AddToTile call Map_MarkTileDirty during
+registration updates (`src/unit.c:2542-2551`), and changed ground-animation
+frames also queue tiles. GUI_Widget_Viewport_Draw consumes that queue and
+redraws minimap tiles without comparing their final displayed symbol or
+color against the previous result (`src/gui/viewport.c:965-991,1117-1198`).
+With radar inactive, ordinary unit movement does not affect the minimap
+symbol selected by the non-radar branch, but still produces queue entries.
+Map_MarkTileDirty also does not reject already-queued entries in its normal
+append path (`src/map.c:1720-1725`); repeated processing is possible, though
+the capture has no tile-ID trace to quantify duplicates. These are
+opportunities for a separate minimap invalidation/output-deduplication
+investigation, not proof that all 10.18% can safely disappear.
+
+The **whole GUI_DrawCredits subtree costs 242,813,372 inclusive cycles,
+32.46% of total CPU time**. It is called 952 times, with 699 batch
+presentations (about 15 per second). Distinct child work includes:
+
+| Money-counter work | Inclusive cycles | Total CPU share |
+|---|---:|---:|
+| Background/digit GUI_DrawSprite calls | 100,688,236 | 13.46% |
+| Final transparent batch presentation | 102,091,164 | 13.65% |
+| Remaining work in the counter subtree | 40,033,972 | 5.35% |
+
+The remainder includes bookkeeping, formatting and other descendants;
+it is not all digit drawing. The 32.46% parent already includes both
+listed rendering children. The current batch path renders into a private
+chunky buffer and then uses scalar transparent planar conversion.
+
+Together, these identified money-counter and minimap paths consume about
+**42.64%** of this capture, versus the approximately 19.2% candidate
+battlefield tile/sprite/deferred-c2p budget. Battlefield-only optimization
+estimates must retain this workload qualification: heavy HUD activity
+depresses the battlefield percentage, and its relative importance can
+change substantially in a different gameplay scene.
+
+Subsequent local optimization: the credits batch is now explicitly opaque,
+so its final presentation uses fast assembly c2p instead of the scalar
+transparent converter. The clipped 64x9 background was verified opaque in
+the local SHAPES.SHP; its transparent padding lies outside the widget.
+The generic batch API remains transparent by default. Digit-phase caching
+has not been implemented. The percentages above describe the old captured
+path, not the optimized binary; a new capture is needed to measure savings.
+
+### Opaque credits presentation: `opendune_credit_scroll.txt`
+
+Compared against `opendune_damage_limited.txt`. Both captures use
+16,042,494 cycles/second and retain the structure-animation damage limiter.
+The new capture contains the explicitly opaque credits batch; generic
+transparent batches are unchanged. Neither records Mouse_EventHandler
+execution, and each has one Warning entry (no periodic sweep logging).
+
+| Metric | Damage limited | Opaque credits | Change |
+|---|---:|---:|---:|
+| TOS-clock duration | 46.635 s | 47.630 s | +2.13% |
+| Video_Tick entry executions | 889 | 1,098 | +23.51% |
+| Video callbacks/second | 19.06 | 23.05 | +20.93% |
+| GameLoop_Unit entry executions | 952 | 1,098 | +15.34% |
+| Game-loop iterations/second | 20.41 | 23.05 | +12.93% |
+| Completed counter batches | 699 | 921 | +31.76% |
+| Counter batches/second | 14.99 | 19.34 | +29.01% |
+| Counter sprite cycles/completed batch | 144,046 | 144,323 | +0.19% |
+| Counter presentation cycles/completed batch | 146,053 | 34,070 | -76.67% |
+| Counter presentation cycles/second | 2,189,153 | 658,794 | -69.91% |
+| Whole money-counter CPU share | 32.46% | 28.01% | -4.45 pp |
+
+The user identifies the higher counter-update frequency as an expected,
+positive consequence of cheaper presentation: the game is less constrained
+by drawing the counter and can advance its animation more frequently.
+Treat this as increased useful output, not merely an unrelated heavier
+HUD workload. Per-batch cost isolates the local saving, while per-second
+cost accounts for the additional updates actually delivered.
+
+**The changed presentation is approximately 4.3 times cheaper per update.**
+The old credits-to-transparent-present call edge costs 102,091,164
+inclusive cycles for 699 batches. The new credits-to-EndBatch edge costs
+31,378,336 inclusive cycles for 921 batches, including opaque presentation,
+assembly conversion, overlay handling and the new dispatch. It therefore
+does not hide the cost that moved into assembly c2p.
+
+At the previous batch frequency, that per-update reduction corresponds to
+approximately 10.46% of the total CPU budget. This is a frequency-normalized
+operation estimate, not an exact whole-game speedup.
+
+Counter background/digit rendering is essentially unchanged per batch,
+as intended: 100,688,236 versus 132,921,720 inclusive cycles, but with
+31.76% more batches. Its share rises from 13.46% to **17.40%** because more
+counter updates are performed. This is not a regression in sprite rendering.
+Counter presentation falls from 13.65% to **4.11%**, including the new
+EndBatch dispatch. The whole counter subtree falls from 242,813,372 to
+214,018,528 cycles; normalized cost falls 13.70%, even though completed
+updates/second rise 29.01%. The counter remains a major cost, and phase
+caching would address work this change deliberately leaves intact.
+
+**Higher assembly totals are expected, not renewed battlefield damage.**
+Credits previously used scalar conversion outside the assembly counters.
+They now add 8,286 row-wise assembly calls at the private-source-stride
+call site, converting four groups per row. This is consistent with nine
+rows per batch, apart from small capture-boundary/counting differences.
+
+Assembly entry executions rise from 1,168 to 9,499 and converted groups
+from 142,512 to 181,404. Of the latter, 33,144 groups (530,304 pixels)
+belong to the credits row calls. After subtracting that new workload,
+non-counter assembly pixels/second rise only **1.86%**, and non-counter
+assembly cycles/second only **1.60%**. The deferred sweep itself costs
+81,274,840 versus 84,990,304 cycles, a **2.39%** normalized increase;
+its calls are 919 versus 958. This is broadly similar battlefield work
+per second rather than the large regression suggested by raw c2p totals.
+
+**Another captured fade tail is present in the new profile.** It adds
+1,768 8x2 GFX_Screen_Copy calls and 17,497,712 inclusive cycles
+(2.29% of the new capture), absent from damage-limited. The omitted fade
+entry again causes the parser to attribute its unlabelled loop to
+GUI_Mouse_Hide_InRegion. Matching current gst2ascii symbols and the
+profile's load base 0x10be0 resolve the real GUI_Screen_FadeIn range to
+0x274bc..0x2779a, with the copy call at 0x27666.
+
+PresentGroupMasked entries rise from 1,232 to 4,769, consistent with two
+masked row operations per extra fade copy (3,536), plus a small counting
+difference. Do not interpret that increase as credits alignment fallback:
+the new counter is demonstrably using the assembly row path.
+
+Both profiles' memcmp loops average ten compared bytes per call, retaining
+the earlier two-group cursor-footprint indication. Cursor group helper
+entries fall slightly (5,903 to 5,807), with combined exclusive cycles/second
+about 3.8% lower; this does not establish cursor-stability improvement.
+No cached-tile-to-memmove fallback appears: memmove entries are 102 in
+both, with virtually identical cycle totals.
+
+Conclusion: a clear local presentation win, with substantially improved
+observed throughput and nearly unchanged sprite-rendering cost per
+counter update. More frequent counter activity is itself a desirable
+gameplay result. The additional fade tail prevents a perfectly matched
+replay comparison; the +20.93% callback rate and +12.93% unit-loop rate are
+observed throughput gains, not measurements of unique displayed FPS.
+
+Subsequent implementation uses a 1280-byte decoded background/glyph cache
+and a 64x24 padded private counter buffer. It copies whole glyphs without
+clipping and presents only the visible 64x9 slice; it does not cache every
+phase. The standard cache-hit path no longer invokes GUI_DrawSpriteInternal.
+The old/new target counter regression passed 687 checks; an isolated
+80-update forced-draw benchmark at 8 MHz took 460 versus 166 200-Hz ticks.
+That benchmark excludes the rest of gameplay and is not a new profile.
+The 17.40% rendering share above remains the pre-cache baseline.
+
+### Decoded credits glyphs: `opendune_credit_scroll2.txt`
+
+Compared against `opendune_credit_scroll.txt`, the opaque-presentation-only
+build. The new build additionally caches the counter background and eleven
+opaque glyphs, copying whole glyphs into a taller private buffer and
+presenting the visible slice. Both use 16,042,494 cycles/second. Each
+records one Warning entry and no Mouse_EventHandler execution; periodic
+sweep logging is disabled.
+
+| Metric | Opaque only | Decoded glyph cache | Change |
+|---|---:|---:|---:|
+| TOS-clock duration | 47.630 s | 41.295 s | -13.30% |
+| Video_Tick entries | 1,098 | 1,196 | +8.93% |
+| Video callbacks/second | 23.05 | 28.96 | +25.64% |
+| GameLoop_Unit entries | 1,098 | 1,765 | +60.75% |
+| GameLoop_Unit entries/second | 23.05 | 42.74 | +85.41% |
+| Completed counter batches | 921 | 1,177 | +27.80% |
+| Counter updates/second | 19.34 | 28.50 | +47.40% |
+| Whole counter cycles/completed update | 232,376 | 91,172 | -60.77% |
+| Counter presentation cycles/completed update | 34,070 | 34,066 | -0.01% |
+| Whole counter cycles/second | 4,493,356 | 2,598,618 | -42.17% |
+| Whole money-counter CPU share | 28.01% | 16.20% | -11.81 pp |
+
+The whole-counter figures use its caller-inclusive subtree: 214,018,528
+versus 107,309,936 cycles. Presentation uses the credits-to-EndBatch edges:
+31,378,336 versus 40,095,140 cycles. Child costs are already inside the
+counter totals and must not be added to them. Dividing whole-counter cost
+by completed batches includes cheap non-rendering checks between batches,
+so it is an effective per-completed-update cost rather than a separately
+instrumented cost of only the active branch.
+
+**The cache is used throughout the captured counter rendering.** The
+previous capture has 132,921,720 inclusive cycles of counter-to-GUI_DrawSprite
+calls (17.40% of its CPU budget). The new capture has no such call edges;
+no fallback sprite rendering is recorded for the counter. The private
+asset-predecode cost is outside this gameplay capture.
+
+GUI_DrawSpriteInternal falls from 187,087,312 exclusive cycles (24.48%)
+to 61,620,520 (9.30%), now serving other sprite users rather than the
+counter. GUI_DrawCredits' own exclusive cost rises from 3,921,328 to
+10,084,216 because fixed glyph-copy work is now inlined there. That
+increase is not a regression: its inclusive subtree is much cheaper.
+
+The counter's background copy appears as **1,177 memmove calls**, costing
+4,022,520 inclusive cycles, about 3,418 cycles per update and 0.61% of
+the new capture. These account for most of the global memmove increase
+(102 to 1,275 entries); they are not the cached-tile alignment fallback.
+No GFX_DrawTile-to-memmove call edge appears. The remaining calls total 98.
+
+Opaque presentation remains essentially cycle-identical per completed
+update. Its raw cost rises because more useful updates are delivered,
+as expected when rendering becomes cheaper. The previous user clarification
+applies here too: the higher counter-update rate is a positive gameplay
+result, not merely an unrelated workload increase.
+
+The cost before final presentation, including formatting, sounds,
+animation/controller work and composition, falls from approximately
+198,306 to 57,107 cycles per completed update (-71.20%). This is not a
+pure glyph-copy measurement, but confirms the intended removal of sprite
+decoding/rendering rather than another c2p improvement.
+
+**Do not equate the 85.41% increase in unit-loop entry rate with simulation
+speed or displayed FPS.** GameLoop_Unit polls several g_timerGame-gated
+tasks (`src/unit.c:123-168`). For example, its movement timer fires 670
+versus 648 times in these captures: approximately 14.07 versus 15.69
+times/second, not an 85% increase. More loop entries provide more scheduling
+opportunities; they do not perform every unit task on each call.
+Video callbacks are likewise not a count of unique displayed images.
+
+**Capture-phase difference:** the opaque-only capture's 1,768 fade-tail
+copies (17,497,712 inclusive cycles, 2.29%) are absent from the cached
+capture. New GFX_Screen_Copy callers are the 210 GUI_Screen_Copy edges
+and 40 GUI_DisplayText edges; there is no additional fade-loop edge.
+The shorter capture and missing fade tail prevent treating the observed
+callback gain as an exact isolated causal FPS increase.
+
+Raw assembly c2p cost is 120,588,204 versus 122,176,532 cycles, with
+9,499 versus 11,720 entry executions. Credits row calls increase from
+8,286 to 10,589, costing 25,143,044 versus 32,128,936 cycles. This is the
+expected effect of more counter updates; per-update presentation did not
+regress. Deferred sweep calls fall from 958 to 877, with 84,990,304 versus
+80,105,876 cycles. Because the new capture is shorter, sweep cycles/second
+are higher even though their raw total is lower; do not describe this as
+a new battlefield optimization or infer coverage from total assembly
+counts that also include the counter.
+
+Conclusion: another clear local win. The cache removes captured counter
+sprite-renderer calls, reduces effective whole-counter cost per update
+about 61%, and delivers 47% more counter updates/second while its total
+CPU cost/second falls 42%. Final opaque presentation is unchanged.
+
 ## Earlier palette/c2p investigation
 
 Source: user-captured Hatari CPU profile (`opendune_profile.txt`, WinUAE core,

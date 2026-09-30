@@ -145,6 +145,8 @@ extern void GUI_DrawSprite(Screen screenID, const uint8 *sprite, int16 posX, int
 /* Plain sprite draw, clipped to a tightly packed private buffer. No present
  * or screen-buffer access; transparent pixels leave the buffer unchanged. */
 extern void GUI_DrawSpriteToBuffer(uint8 *buffer, uint16 width, uint16 height, const uint8 *sprite, int16 x, int16 y);
+/* Rebuild after loading SHAPES.SHP; unsupported assets retain sprite drawing. */
+extern void GUI_InitCreditsCache(void);
 #endif
 
 /* One-shot survey for the sprite pre-decode idea; reports to error.log.

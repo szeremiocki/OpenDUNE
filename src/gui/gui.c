@@ -1147,6 +1147,7 @@ static int16  s_spriteBatchOriginX = 0;
 static int16  s_spriteBatchOriginY = 0;
 static int16  s_spriteBatchW = 0;
 static int16  s_spriteBatchH = 0;
+static bool s_spriteBatchOpaque = false;
 
 void GUI_DrawSprite_BeginBatch(uint8 *buffer, int16 originX, int16 originY, int16 width, int16 height)
 {
@@ -1156,19 +1157,37 @@ void GUI_DrawSprite_BeginBatch(uint8 *buffer, int16 originX, int16 originY, int1
 	s_spriteBatchOriginY = originY;
 	s_spriteBatchW = width;
 	s_spriteBatchH = height;
+	s_spriteBatchOpaque = false;
 
 	memset(buffer, 0, (size_t)width * height);
+}
+
+/* The caller must cover the entire batch, including its background. */
+static void GUI_DrawSprite_BeginOpaqueBatch(uint8 *buffer, int16 originX, int16 originY, int16 width, int16 height)
+{
+	GUI_DrawSprite_BeginBatch(buffer, originX, originY, width, height);
+	s_spriteBatchOpaque = true;
 }
 
 void GUI_DrawSprite_EndBatch(void)
 {
 	if (s_spriteBatchBuf != NULL) {
-		Video_Atari_PresentChunkyTransparent(s_spriteBatchBuf, s_spriteBatchStride,
-		                                     s_spriteBatchOriginX, s_spriteBatchOriginY,
-		                                     s_spriteBatchStride, s_spriteBatchH);
+		bool presented;
+
+		if (s_spriteBatchOpaque) {
+			presented = Video_Atari_PresentChunky(s_spriteBatchBuf, s_spriteBatchStride,
+			                                    s_spriteBatchOriginX, s_spriteBatchOriginY,
+			                                    s_spriteBatchStride, s_spriteBatchH);
+		} else {
+			presented = Video_Atari_PresentChunkyTransparent(s_spriteBatchBuf, s_spriteBatchStride,
+			                                               s_spriteBatchOriginX, s_spriteBatchOriginY,
+			                                               s_spriteBatchStride, s_spriteBatchH);
+		}
+		if (!presented) Warning("GUI_DrawSprite_EndBatch: presentation failed\n");
 	}
 
 	s_spriteBatchBuf = NULL;
+	s_spriteBatchOpaque = false;
 }
 #endif
 
@@ -1559,15 +1578,17 @@ static void GUI_DrawSpriteInternal(Screen screenID, const uint8 *sprite, int16 p
 	                        spriteDecodedLength);
 #endif
 
-	GFX_Screen_SetDirtySource(DIRTY_SRC_SPRITE);
+	if (target == NULL) {
+		GFX_Screen_SetDirtySource(DIRTY_SRC_SPRITE);
 #ifdef TOS
-	if (!toPlanar)
+		if (!toPlanar)
 #endif
-	GFX_Screen_SetDirty(screenID,
-	                    (g_widgetProperties[windowID].xBase << 3) + posX,
-	                    posY,
-	                    (g_widgetProperties[windowID].xBase << 3) + posX + pixelCountPerRow,
-	                    posY + spriteHeight);
+		GFX_Screen_SetDirty(screenID,
+		                   (g_widgetProperties[windowID].xBase << 3) + posX,
+		                   posY,
+		                   (g_widgetProperties[windowID].xBase << 3) + posX + pixelCountPerRow,
+		                   posY + spriteHeight);
+	}
 
 	do {
 		/* drawing loop */
@@ -2653,6 +2674,84 @@ void GUI_DrawInterfaceAndRadar(Screen screenID)
 	Input_History_Clear();
 }
 
+#ifdef TOS
+enum {
+	CREDITS_CACHE_WIDTH = 64,
+	CREDITS_CACHE_HEIGHT = 9,
+	CREDITS_CACHE_GLYPH_SIZE = 8,
+	CREDITS_CACHE_PADDING = 8,
+	CREDITS_CACHE_BUFFER_HEIGHT = 24
+};
+
+static uint32 s_creditsBackground[CREDITS_CACHE_WIDTH * CREDITS_CACHE_HEIGHT / sizeof(uint32)];
+static uint32 s_creditsGlyphs[11][CREDITS_CACHE_GLYPH_SIZE * CREDITS_CACHE_GLYPH_SIZE / sizeof(uint32)];
+static bool s_creditsCacheReady = false;
+
+void GUI_InitCreditsCache(void)
+{
+	uint16 i;
+
+	s_creditsCacheReady = false;
+	if (!Video_Atari_CursorDirect()) return;
+
+	if (g_sprites == NULL || g_sprites[12] == NULL ||
+	    READ_LE_UINT16(g_sprites[12] + 3) < CREDITS_CACHE_WIDTH ||
+	    g_sprites[12][2] < CREDITS_CACHE_HEIGHT) {
+		Warning("Credits cache: missing or undersized background sprite\n");
+		return;
+	}
+	for (i = 0; i < lengthof(s_creditsGlyphs); i++) {
+		const uint8 *sprite = g_sprites[13 + i];
+
+		if (sprite == NULL || READ_LE_UINT16(sprite + 3) != CREDITS_CACHE_GLYPH_SIZE ||
+		    sprite[2] != CREDITS_CACHE_GLYPH_SIZE) {
+			Warning("Credits cache: missing or unsupported glyph %u\n", i);
+			return;
+		}
+	}
+
+	memset(s_creditsBackground, 0, sizeof(s_creditsBackground));
+	GUI_DrawSpriteToBuffer((uint8 *)s_creditsBackground, CREDITS_CACHE_WIDTH, CREDITS_CACHE_HEIGHT,
+	                       g_sprites[12], 0, 0);
+	memset(s_creditsGlyphs, 0, sizeof(s_creditsGlyphs));
+	for (i = 0; i < lengthof(s_creditsGlyphs); i++) {
+		GUI_DrawSpriteToBuffer((uint8 *)s_creditsGlyphs[i], CREDITS_CACHE_GLYPH_SIZE, CREDITS_CACHE_GLYPH_SIZE,
+		                       g_sprites[13 + i], 0, 0);
+	}
+	for (i = 0; i < sizeof(s_creditsBackground); i++) {
+		if (((const uint8 *)s_creditsBackground)[i] == 0) {
+			Warning("Credits cache: background contains transparent pixels\n");
+			return;
+		}
+	}
+	for (i = 0; i < sizeof(s_creditsGlyphs); i++) {
+		if (((const uint8 *)s_creditsGlyphs)[i] == 0) {
+			Warning("Credits cache: glyphs contain transparent pixels\n");
+			return;
+		}
+	}
+	s_creditsCacheReady = true;
+}
+
+static void GUI_DrawCreditsGlyph(uint8 *buffer, uint16 glyph, uint16 x, int16 y)
+{
+	const uint8 *src;
+	uint8 *dst;
+	uint16 line;
+
+	assert(glyph < lengthof(s_creditsGlyphs));
+	assert(x + CREDITS_CACHE_GLYPH_SIZE <= CREDITS_CACHE_WIDTH);
+	assert(y >= 0 && y + CREDITS_CACHE_GLYPH_SIZE <= CREDITS_CACHE_BUFFER_HEIGHT);
+	src = (const uint8 *)s_creditsGlyphs[glyph];
+	dst = buffer + (uint32)y * CREDITS_CACHE_WIDTH + x;
+	for (line = 0; line < CREDITS_CACHE_GLYPH_SIZE; line++) {
+		memcpy(dst, src, CREDITS_CACHE_GLYPH_SIZE);
+		src += CREDITS_CACHE_GLYPH_SIZE;
+		dst += CREDITS_CACHE_WIDTH;
+	}
+}
+#endif
+
 /**
  * Draw the credits on the screen, and animate it when the value is changing.
  * @param houseID The house to display the credits from.
@@ -2675,6 +2774,9 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 	int16 offset;
 #ifdef TOS
 	bool direct = Video_Atari_CursorDirect();
+	bool cached = direct && s_creditsCacheReady &&
+	              g_widgetProperties[5].width * 8 == CREDITS_CACHE_WIDTH &&
+	              g_widgetProperties[5].height == CREDITS_CACHE_HEIGHT;
 #else
 	bool direct = false;
 #endif
@@ -2689,25 +2791,18 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 	 * info panel had just drawn there -- SCREEN_1 is shared, unlike the
 	 * planar screen it eventually gets composited to.
 	 *
-	 * Drawing at the real position instead relies on two things
-	 * GUI_DrawSprite() already does: its window-bounds clipping (against
-	 * g_widgetProperties[windowID].yBase/height) clips the scroll
-	 * exactly like the copy-up did, just without a wider scratch area to
-	 * clip out of; and its toPlanar path -- forced by passing SCREEN_0
-	 * explicitly, regardless of what is actually active -- composites
-	 * straight to the planar screen through a private per-call buffer.
-	 * No chunky buffer is written or read back at all, so there is
-	 * nothing left for another widget to corrupt. */
+	 * The cached path composes whole glyphs into a padded private buffer
+	 * and presents only the visible nine rows. Unsupported assets or
+	 * widget geometry retain the clipped GUI_DrawSprite() batch path.
+	 * Neither direct path writes the shared SCREEN_1 workspace. */
 	uint16 windowID = direct ? 5 : 4;
 	Screen drawScreenID = direct ? SCREEN_0 : SCREEN_ACTIVE;
 #ifdef TOS
-	/* Batch buffer for the direct-planar path: sized generously above
-	 * widget 5's actual 64x9 footprint. All the sprite draws below still
-	 * get clipped to the widget's real bounds by GUI_DrawSprite() itself,
-	 * so composing them here first and presenting once at the end (see
-	 * GUI_DrawSprite_BeginBatch()/EndBatch() below) avoids the flicker of
-	 * several separate small planar writes per animation tick. */
-	uint8 creditsBatchBuf[64 * 16];
+	/* Cached glyphs extend beyond the visible slice, without clipping.
+	 * Only the nine rows starting at the top padding are presented. */
+	uint32 creditsBatchWords[CREDITS_CACHE_WIDTH * CREDITS_CACHE_BUFFER_HEIGHT / sizeof(uint32)];
+	uint8 *creditsBatchBuf = (uint8 *)creditsBatchWords;
+	uint8 *creditsBatchData = creditsBatchBuf + (cached ? CREDITS_CACHE_PADDING * CREDITS_CACHE_WIDTH : 0);
 #endif
 
 	if (s_tickCreditsAnimation > g_timerGUI && mode == 0) return;
@@ -2725,11 +2820,12 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 	if (direct) {
 		GUI_Mouse_Hide_InWidget(5);
 #ifdef TOS
-		GUI_DrawSprite_BeginBatch(creditsBatchBuf,
-		                          g_widgetProperties[windowID].xBase << 3,
-		                          g_widgetProperties[windowID].yBase,
-		                          g_widgetProperties[windowID].width << 3,
-		                          g_widgetProperties[windowID].height);
+		/* The clipped counter background covers all 64x9 batch pixels. */
+		GUI_DrawSprite_BeginOpaqueBatch(creditsBatchData,
+		                                g_widgetProperties[windowID].xBase << 3,
+		                                g_widgetProperties[windowID].yBase,
+		                                g_widgetProperties[windowID].width << 3,
+		                                g_widgetProperties[windowID].height);
 #endif
 	} else {
 		oldScreenID = GFX_Screen_SetActive(SCREEN_1);
@@ -2772,7 +2868,14 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 		creditsNew += 1;
 	}
 
-	GUI_DrawSprite(drawScreenID, g_sprites[12], 0, 0, windowID, DRAWSPRITE_FLAG_WIDGETPOS);
+#ifdef TOS
+	if (cached) {
+		memcpy(creditsBatchData, s_creditsBackground, sizeof(s_creditsBackground));
+	} else
+#endif
+	{
+		GUI_DrawSprite(drawScreenID, g_sprites[12], 0, 0, windowID, DRAWSPRITE_FLAG_WIDGETPOS);
+	}
 
 	g_playerCredits = creditsOld;
 
@@ -2785,6 +2888,22 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 
 		spriteID = (charCreditsOld[i] == ' ') ? 13 : charCreditsOld[i] - 34;
 
+#ifdef TOS
+		if (cached) {
+			if (charCreditsOld[i] != charCreditsNew[i]) {
+				GUI_DrawCreditsGlyph(creditsBatchBuf, spriteID - 13, left,
+				                     CREDITS_CACHE_PADDING + offset - creditsAnimationOffset);
+				if (creditsAnimationOffset != 0) {
+					spriteID = (charCreditsNew[i] == ' ') ? 13 : charCreditsNew[i] - 34;
+					GUI_DrawCreditsGlyph(creditsBatchBuf, spriteID - 13, left,
+					                     CREDITS_CACHE_PADDING + offset + 8 - creditsAnimationOffset);
+				}
+			} else {
+				GUI_DrawCreditsGlyph(creditsBatchBuf, spriteID - 13, left, CREDITS_CACHE_PADDING + 1);
+			}
+			continue;
+		}
+#endif
 		if (charCreditsOld[i] != charCreditsNew[i]) {
 			GUI_DrawSprite(drawScreenID, g_sprites[spriteID], left, offset - creditsAnimationOffset, windowID, DRAWSPRITE_FLAG_WIDGETPOS);
 			if (creditsAnimationOffset == 0) continue;

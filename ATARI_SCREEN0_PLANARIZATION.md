@@ -223,6 +223,86 @@ The `opendune_damage_limited.txt` comparison observed 17.14% fewer assembly
 pixels per video callback, with modest throughput improvement. Differing
 fade phases and cursor footprints prevent an isolated speedup claim.
 
+### Opaque money-counter batch presentation (2026-09-30)
+
+On ST/STE, GUI_DrawCredits now starts an explicitly opaque sprite batch.
+Generic GUI_DrawSprite_BeginBatch remains transparent by default;
+GUI_DrawSprite_EndBatch selects opaque Video_Atari_PresentChunky only for
+the marked batch and resets the mode afterward. Rejected presentation
+requests produce a Warning rather than silently losing the update.
+
+Widget 5 is x=256, y=4, width=64, height=9: four complete planar groups,
+with an even 64-byte source stride. The counter background in the local
+SHAPES.SHP is 84x9, but its transparent columns are exclusively x=64..83,
+outside the widget's clipping boundary. The visible 64x9 region and all
+8x8 digit/blank sprites are opaque. Therefore the completed private batch
+needs no content-transparent conversion.
+
+This replaces the scalar transparent presentation with existing assembly
+c2p, preserving the single completed-batch update, cursor/placement backups
+and dirty-block clearing. The packed source uses nine row-wise assembly
+calls, each converting four groups. Non-ST/STE rendering is unchanged.
+Digit-phase caching is not part of this change.
+
+A target regression compared both presentations for 96 asset-derived
+counter frames covering all scroll phases, increasing/decreasing credits,
+leading blanks, decimal carries and high values. It passed 242 pixel
+checks on 8 MHz 68000 Hatari with real c2p, including cursor/placement
+backups, subsequent generic transparent batches, opaque source color zero,
+dirty-state clearing and failed-request reporting. Performance improvement
+is now measured in `opendune_credit_scroll.txt`: inclusive counter
+presentation cost falls from about 146,053 to 34,070 cycles per completed
+batch (-76.67%). Observed video callback and unit-loop rates rise 20.93%
+and 12.93%, respectively. Counter updates/second rise 29.01%, a desirable
+consequence of reduced presentation cost. An extra fade tail prevents a
+perfectly matched replay comparison. Details are in ATARI_PROFILE_FINDINGS.md.
+
+### Decoded glyphs in a taller credits buffer (2026-09-30)
+
+The next counter optimization uses decoded glyphs rather than storing every
+scroll phase. After SHAPES.SHP loads, GUI_InitCreditsCache renders the visible
+64x9 background and all eleven 8x8 digit/blank glyphs through the existing
+private-buffer sprite renderer. The persistent cache is 1280 bytes
+(1.25 KiB), storing logical palette indices; RGB/quantization changes still
+apply normally during final c2p. Every sprite-load initialization rebuilds
+the cache instead of trusting old sprite pointer addresses.
+
+For the standard ST/STE counter, updates copy the background and whole glyphs
+into a word-aligned 64x24 private buffer. The visible 64x9 slice starts eight
+rows down. Old/new glyphs use the original animation offsets, but extend
+above or below the slice without clipping. Only the visible slice reaches
+the opaque presenter. The buffer is 1536 bytes, 512 bytes larger than the
+previous allocation; no phase-image cache or planar asset cache is needed.
+
+The six 8-pixel-wide digit cells have a uniform background pen in the local
+assets, but the full published 64x9 rectangle also contains decorative
+spacing/edge columns with other pens. Copying the decoded background
+preserves these exactly, without interpreting the whole rectangle as a
+single-color fill.
+
+Cache initialization checks dimensions and nonzero decoded pixels.
+Missing, incompatible or transparent sprites produce a Warning and retain
+generic sprite drawing; nonstandard widget dimensions also keep the old
+clipped path. Non-direct machines retain their existing renderer. Private
+GUI_DrawSpriteToBuffer rendering no longer marks or attributes screen
+damage: decoding assets does not alter any screen.
+
+Animation arithmetic, update throttling, mode reset/force behavior,
+g_playerCredits, sounds, leading spaces, carries and uint16 wrap behavior
+are unchanged. A 68000 regression compared the actual old/new counter
+functions and sprite renderer with real c2p across 687 checks, including
+signed phases, large credit changes, overlays, reloads and fallbacks.
+Cache-hit updates made no sprite-renderer calls. An isolated 80-update
+forced-draw benchmark took 460 versus 166 200-Hz ticks at 8 MHz, about 64%
+less time for the complete tested counter update. This is not a measured
+whole-game speedup. The subsequent `opendune_credit_scroll2.txt` gameplay
+capture confirms that counter sprite-renderer calls disappear, effective
+whole-counter cost per completed update falls 60.77%, and counter
+updates/second rise 47.40%. Presentation cost per update is unchanged.
+Observed callback rate rises 25.64%; the missing earlier fade tail and
+different capture duration prevent an exact isolated FPS claim. Detailed
+comparison is in ATARI_PROFILE_FINDINGS.md.
+
 ## Goal
 
 On DOS, `SCREEN_0` is the visible 320x200 8bpp VGA framebuffer, so the game

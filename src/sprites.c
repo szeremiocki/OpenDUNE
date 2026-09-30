@@ -555,6 +555,9 @@ void Sprites_Init(void)
 #endif /* TOS */
 	Sprites_Load(String_GenerateFilename("BTTN"), NULL, 5); /*   7 -  11 */
 	Sprites_Load("SHAPES.SHP", NULL, 99);            /*  12 - 110 */
+#ifdef TOS
+	GUI_InitCreditsCache();
+#endif
 	Sprites_Load("UNITS2.SHP", NULL, 40);            /* 111 - 150 */
 	Sprites_Load("UNITS1.SHP", NULL, 87);            /* 151 - 237 */
 	Sprites_Load("UNITS.SHP", NULL, 117);            /* 238 - 354 */
