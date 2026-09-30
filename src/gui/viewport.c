@@ -42,6 +42,55 @@ static uint32 s_tickCursor;                                 /*!< Stores last tim
 static uint32 s_tickMapScroll;                              /*!< Stores last time Viewport ran MapScroll function. */
 static uint32 s_tickClick;                                  /*!< Stores last time Viewport handled a click. */
 
+#ifdef TOS
+static bool s_viewportWasPlanar;
+
+bool GUI_Widget_Viewport_IsPlanar(void)
+{
+	return s_viewportWasPlanar;
+}
+
+static bool GUI_Widget_Viewport_CanDrawPlanar(void)
+{
+	PoolFindStruct find;
+	Unit *u;
+	uint16 x, y, i;
+	Explosion *explosions;
+
+	if (!Video_Atari_CursorDirect() || !GFX_PlanarTilesReady() || !GUI_ViewportSpriteCacheReady()) return false;
+	/* These effects need the original destination palette indices, not
+	 * the already-quantized pens. Reconstruct SCREEN_1 before using them. */
+	find.type = find.index = 0xffff;
+	find.houseID = HOUSE_INVALID;
+	while ((u = Unit_Find(&find)) != NULL) {
+		const UnitInfo *ui = &g_table_unitInfo[u->o.type];
+		if (!g_map[Tile_PackTile(u->o.position)].isUnveiled && !g_debugScenario) continue;
+		if (u->o.type == UNIT_SANDWORM) {
+			if (Map_IsPositionInViewport(u->o.position, &x, &y) ||
+			    Map_IsPositionInViewport(u->targetLast, &x, &y) ||
+			    Map_IsPositionInViewport(u->targetPreLast, &x, &y)) return false;
+			continue;
+		}
+		if (u->o.index > 15 && (u->o.index < 20 || u->o.index > 101)) continue;
+		if (!Map_IsPositionInViewport(u->o.position, &x, &y)) continue;
+		if (ui->o.flags.blurTile || (u->o.index <= 15 && ui->o.flags.hasShadow)) return false;
+		if (ui->groundSpriteID < 111 || ui->groundSpriteID > 350) return false;
+		if (u->spriteOffset < 0 && ui->destroyedSpriteID != 0 &&
+		    (ui->destroyedSpriteID < 111 || ui->destroyedSpriteID - u->spriteOffset - 1 > 354)) return false;
+		if (ui->turretSpriteID != 0xffff && (ui->turretSpriteID < 111 || ui->turretSpriteID > 350)) return false;
+	}
+	explosions = Explosion_Get_ByIndex(0);
+	for (i = 0; i < EXPLOSION_MAX; i++) {
+		Explosion *e = explosions + i;
+		if (e->commands == NULL || e->spriteID == 0) continue;
+		if (!g_map[Tile_PackTile(e->position)].isUnveiled && !g_debugScenario) continue;
+		if (!Map_IsPositionInViewport(e->position, &x, &y)) continue;
+		if (e->spriteID < 111 || e->spriteID > 354) return false;
+	}
+	return true;
+}
+#endif
+
 /**
  * Handles the Click events for the Viewport widget.
  *
@@ -512,6 +561,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 	};
 
 	uint8 paletteHouse[16] = {0};    /*!< Used for palette manipulation to get housed coloured units etc. */
+	const uint16 fullyFoggedTileID = g_iconMap[g_iconMap[ICM_ICONGROUP_FOG_OF_WAR] + 15];
 	uint16 x;
 	uint16 y;
 	uint16 i;
@@ -524,6 +574,11 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
 	uint16 dirtyColumns[10] = {0};
 	bool directViewport = Video_Atari_CursorDirect();
+	bool planarViewport = !drawToMainScreen && !g_viewport_fadein && GUI_Widget_Viewport_CanDrawPlanar();
+	if (planarViewport != s_viewportWasPlanar || (planarViewport && hasScrolled && !planarShifted)) {
+		forceRedraw = true;
+		g_selectionRectangleNeedRepaint = true;
+	}
 #endif
 
 	PoolFindStruct find;
@@ -533,14 +588,23 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 	memset(minX, 0xF, sizeof(minX));
 	memset(maxX, 0,   sizeof(minX));
 
+#ifdef TOS
+	oldScreenID = GFX_Screen_SetActive(planarViewport ? SCREEN_0 : SCREEN_1);
+	GUI_SetViewportPlanar(planarViewport);
+#else
 	oldScreenID = GFX_Screen_SetActive(SCREEN_1);
+#endif
 
 	oldWidgetID = Widget_SetCurrentWidget(2);
 
 	if (g_dirtyViewportCount != 0 || forceRedraw) {
 		for (y = 0; y < 10; y++) {
 			uint16 top = (y << 4) + 0x28;	/* 40 */
-			for (x = 0; x < (drawToMainScreen ? 15 : 16); x++) {
+			for (x = 0; x < (
+#ifdef TOS
+			                  planarViewport ||
+#endif
+			                  drawToMainScreen ? 15 : 16); x++) {
 				Tile *t;
 				uint16 left;
 
@@ -571,15 +635,32 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 				t = &g_map[curPos];
 				left = x << 4;
 
-				if (!g_debugScenario && g_veiledTileID == t->overlayTileID) {
-					/* draw a black rectangle */
+				if (!g_debugScenario &&
+				    (t->overlayTileID == g_veiledTileID || t->overlayTileID == fullyFoggedTileID)) {
+#ifdef TOS
+					/* Routine planar damage leaves existing black intact.
+					 * A successful planar scroll already blacks its new edge. */
+					if (planarViewport && !forceRedraw) continue;
+#endif
 					GUI_DrawFilledRectangle(left, top, left + 15, top + 15, 12);
 					continue;
 				}
 
+#ifdef TOS
+				if (planarViewport && t->overlayTileID != 0 && !g_debugScenario && !Tile_IsUnveiled(t->overlayTileID)) {
+					GFX_DrawPlanarTileFogged(t->groundTileID, t->overlayTileID, left, top, t->houseID);
+					continue;
+				}
+				if (planarViewport) GFX_DrawPlanarTile(t->groundTileID, left, top, t->houseID);
+				else
+#endif
 				GFX_DrawTile(t->groundTileID, left, top, t->houseID);
 
 				if (t->overlayTileID != 0 && !g_debugScenario) {
+#ifdef TOS
+					if (planarViewport) GFX_DrawPlanarTile(t->overlayTileID, left, top, t->houseID);
+					else
+#endif
 					GFX_DrawTile(t->overlayTileID, left, top, t->houseID);
 				}
 			}
@@ -1019,7 +1100,11 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 #endif
 	}
 
-	if (updateDisplay && !drawToMainScreen) {
+	if (updateDisplay && !drawToMainScreen
+#ifdef TOS
+	    && !planarViewport
+#endif
+	   ) {
 		if (g_viewport_fadein) {
 			GUI_Mouse_Hide_InWidget(g_curWidgetIndex);
 
@@ -1101,6 +1186,14 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 		}
 	}
 
+#ifdef TOS
+	if (planarViewport) {
+		GFX_Screen_ClearDirtyRect(0, 40, 240, 200);
+		GFX_Screen_ClearDirtyViewportRect(0, 40, 240, 200);
+	}
+	GUI_SetViewportPlanar(false);
+	s_viewportWasPlanar = planarViewport;
+#endif
 	GFX_Screen_SetActive(oldScreenID);
 
 	Widget_SetCurrentWidget(oldWidgetID);

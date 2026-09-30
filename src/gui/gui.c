@@ -1211,6 +1211,119 @@ void GUI_DrawSpriteToBuffer(uint8 *buffer, uint16 width, uint16 height,
 	assert(buffer != NULL && width > 0 && width <= SCREEN_WIDTH && height > 0 && height <= SCREEN_HEIGHT);
 	GUI_DrawSpriteInternal(SCREEN_0, sprite, x, y, 0, 0, NULL, buffer, width, height);
 }
+
+typedef struct ViewportSpriteMask {
+	const uint8 *sprite;
+	uint16 *rows;
+	uint16 width, height;
+} ViewportSpriteMask;
+
+static ViewportSpriteMask s_viewportSpriteCache[512];
+static uint16 *s_viewportSpriteMasks;
+static bool s_viewportSpriteReady, s_viewportPlanar;
+
+void GUI_FreeViewportSpriteCache(void)
+{
+	free(s_viewportSpriteMasks);
+	s_viewportSpriteMasks = NULL;
+	memset(s_viewportSpriteCache, 0, sizeof(s_viewportSpriteCache));
+	s_viewportSpriteReady = s_viewportPlanar = false;
+}
+
+bool GUI_ViewportSpriteCacheReady(void)
+{
+	return s_viewportSpriteReady;
+}
+
+void GUI_SetViewportPlanar(bool active)
+{
+	s_viewportPlanar = active;
+}
+
+static ViewportSpriteMask *GUI_ViewportSpriteMaskSlot(const uint8 *sprite)
+{
+	unsigned slot = ((size_t)sprite >> 2) & 511;
+	while (s_viewportSpriteCache[slot].sprite != NULL && s_viewportSpriteCache[slot].sprite != sprite) {
+		slot = (slot + 1) & 511;
+	}
+	return &s_viewportSpriteCache[slot];
+}
+
+static void GUI_DrawSpriteMask(uint8 *buffer, uint16 width, uint16 height,
+                               const uint8 *sprite, int flags, ...)
+{
+	va_list ap;
+	va_start(ap, flags);
+	GUI_DrawSpriteInternal(SCREEN_0, sprite, 0, 0, 0, flags, &ap, buffer, width, height);
+	va_end(ap);
+}
+
+void GUI_InitViewportSpriteCache(void)
+{
+	uint8 opaque[256], pixels[32 * 32];
+	uint32 words = 0;
+	uint16 id, mirror;
+	uint16 *next;
+
+	GUI_FreeViewportSpriteCache();
+	if (!Video_Atari_CursorDirect()) return;
+	for (id = 6; id <= 354; id = id == 6 ? 111 : id + 1) {
+		const uint8 *sprite = g_sprites[id];
+		uint16 width, height;
+		if (sprite == NULL) continue;
+		width = READ_LE_UINT16(sprite + 3);
+		height = sprite[2];
+		if (width == 0 || width > 32 || height == 0 || height > 32) {
+			Warning("Planar viewport disabled: unsupported sprite %u (%ux%u)\n", id, width, height);
+			return;
+		}
+		words += ((width + 15) >> 4) * height * 2;
+	}
+	s_viewportSpriteMasks = malloc(words * sizeof(*s_viewportSpriteMasks));
+	if (s_viewportSpriteMasks == NULL) {
+		Warning("Planar viewport disabled: out of memory for sprite masks\n");
+		return;
+	}
+	memset(opaque, 1, sizeof(opaque));
+	next = s_viewportSpriteMasks;
+	for (id = 6; id <= 354; id = id == 6 ? 111 : id + 1) {
+		const uint8 *sprite = g_sprites[id];
+		ViewportSpriteMask *entry;
+		uint16 stride, line, x;
+		if (sprite == NULL) continue;
+		entry = GUI_ViewportSpriteMaskSlot(sprite);
+		entry->sprite = sprite;
+		entry->width = READ_LE_UINT16(sprite + 3);
+		entry->height = sprite[2];
+		entry->rows = next;
+		stride = (entry->width + 15) >> 4;
+		for (mirror = 0; mirror < 2; mirror++) {
+			memset(pixels, 0, sizeof(pixels));
+			/* Remap every drawn pixel to 1: a real colour-0 pixel must not
+			 * become a transparency hole after house/highlight remapping. */
+			GUI_DrawSpriteMask(pixels, entry->width, entry->height, sprite,
+			                   DRAWSPRITE_FLAG_REMAP | (mirror ? DRAWSPRITE_FLAG_RTL : 0), opaque, 1);
+			memset(next, 0, (size_t)stride * entry->height * sizeof(*next));
+			for (line = 0; line < entry->height; line++) {
+				for (x = 0; x < entry->width; x++) {
+					if (pixels[line * entry->width + x] != 0) next[line * stride + (x >> 4)] |= 0x8000u >> (x & 15);
+				}
+			}
+			next += stride * entry->height;
+		}
+	}
+	s_viewportSpriteReady = true;
+}
+
+static uint16 GUI_ViewportMaskWord(const uint16 *row, uint16 words, int16 col)
+{
+	int16 index = col < 0 ? -1 : col >> 4;
+	uint16 shift = col & 15;
+	uint16 a = index >= 0 && index < words ? row[index] : 0;
+	uint16 b = index + 1 >= 0 && index + 1 < words ? row[index + 1] : 0;
+	if (shift == 0) return a;
+	return (uint16)((a << shift) | (b >> (16 - shift)));
+}
 #endif
 
 static void GUI_DrawSpriteInternal(Screen screenID, const uint8 *sprite, int16 posX, int16 posY,
@@ -1248,19 +1361,24 @@ static void GUI_DrawSpriteInternal(Screen screenID, const uint8 *sprite, int16 p
 	uint8 spriteBuffer[20000];	/* for sprites encoded with Format80 : maximum size for credits images is 19841, elsewere it is 3456 */
 	uint16 rowStride = SCREEN_WIDTH;	/* per-row pointer advance; overridden below when writing into a tightly packed scratch buffer */
 #ifdef TOS
-	/* EXPERIMENT: same private-scratch-buffer + present-transparent pattern
-	 * as GUI_DrawChar(). Gated on the clipped draw rect's total byte size
-	 * fitting spriteScratch below (covers UI icons/buttons, e.g. the
-	 * MENTAT/OPTIONS sidebar buttons at 78x16); anything bigger (units,
-	 * structures, the sandworm, credits images) falls back to the old
-	 * direct-SCREEN_0 path. DRAWSPRITE_FLAG_BLUR is excluded: that mode
+	/* Private scratch rendering for direct planar UI and battlefield
+	 * sprites. The battlefield uses cached opacity masks and row c2p;
+	 * other small sprites retain transparent presentation.
+	 * DRAWSPRITE_FLAG_BLUR is excluded: that mode
 	 * reads already-drawn neighbouring pixels back out of the destination
 	 * buffer (the sandworm blur effect), which only makes sense against
 	 * the real screen, not a freshly zeroed private one.
 	 * DRAWSPRITE_FLAG_NO_PLANAR_DIRECT is an explicit caller opt-out for
 	 * callers that need the legacy chunky write path. Private buffer
 	 * rendering bypasses planar presentation independently of this flag. */
-	uint8 spriteScratch[128 * 32];
+	union {
+		uint32 aligned;
+		uint8 bytes[128 * 32];
+	} spriteScratchStorage;
+	uint8 *spriteScratch = spriteScratchStorage.bytes;
+	ViewportSpriteMask *viewportMask = NULL;
+	uint16 viewportMasks[32 * 3];
+	int16 firstSpriteRow = 0;
 	bool toPlanar = false;
 	bool batched = false;
 	int16 screenX = 0, screenY = 0;
@@ -1278,6 +1396,13 @@ static void GUI_DrawSpriteInternal(Screen screenID, const uint8 *sprite, int16 p
 
 	if (sprite == NULL) return;
 
+#ifdef TOS
+	if (target == NULL && s_viewportPlanar && windowID == 2 &&
+	    GFX_Screen_Get_ByIndex(screenID) == GFX_Screen_Get_ByIndex(SCREEN_0)) {
+		viewportMask = GUI_ViewportSpriteMaskSlot(sprite);
+		assert(viewportMask->sprite == sprite);
+	}
+#endif
 #ifdef GUI_SPRITE_PREDECODE_STATS
 	spriteOrigin = sprite;
 #endif
@@ -1381,6 +1506,9 @@ static void GUI_DrawSpriteInternal(Screen screenID, const uint8 *sprite, int16 p
 		if (spriteHeight <= 0) return;
 
 		distY = -distY;
+#ifdef TOS
+		firstSpriteRow = distY;
+#endif
 
 		while (distY > 0) {
 			/* skip a row */
@@ -1476,14 +1604,19 @@ static void GUI_DrawSpriteInternal(Screen screenID, const uint8 *sprite, int16 p
 	toPlanar = target == NULL && GFX_Screen_Get_ByIndex(screenID) == GFX_Screen_Get_ByIndex(SCREEN_0) && Video_Atari_CursorDirect() &&
 	           (flags & (DRAWSPRITE_FLAG_BLUR | DRAWSPRITE_FLAG_NO_PLANAR_DIRECT)) == 0 &&
 	           pixelCountPerRow > 0 && spriteHeight > 0 &&
-	           (uint32)pixelCountPerRow * (uint32)spriteHeight <= sizeof(spriteScratch);
+	           (uint32)pixelCountPerRow * (uint32)spriteHeight <= sizeof(spriteScratchStorage.bytes);
 
 	if (toPlanar) {
 		screenX = (g_widgetProperties[windowID].xBase << 3) + posX;
 		screenY = posY;
 		spriteHeightDraw = spriteHeight;
 
-		if (s_spriteBatchBuf != NULL &&
+		if (viewportMask != NULL) {
+			uint16 pad = screenX & 15;
+			rowStride = (pad + pixelCountPerRow + 15) & ~15;
+			memset(spriteScratch, 0, (size_t)rowStride * spriteHeight);
+			buf = spriteScratch + pad;
+		} else if (s_spriteBatchBuf != NULL &&
 		    screenX >= s_spriteBatchOriginX && screenY >= s_spriteBatchOriginY &&
 		    screenX + pixelCountPerRow <= s_spriteBatchOriginX + s_spriteBatchW &&
 		    screenY + spriteHeight <= s_spriteBatchOriginY + s_spriteBatchH) {
@@ -1929,8 +2062,31 @@ static void GUI_DrawSpriteInternal(Screen screenID, const uint8 *sprite, int16 p
 	} while (--spriteHeight > 0);
 #ifdef TOS
 	if (toPlanar && !batched) {
-		Video_Atari_PresentChunkyTransparent(spriteScratch, rowStride,
-		                                     screenX, screenY, rowStride, spriteHeightDraw);
+		if (viewportMask != NULL) {
+			uint16 line, group, groups = rowStride >> 4;
+			uint16 maskStride = (viewportMask->width + 15) >> 4;
+			uint16 pad = screenX & 15;
+			int16 col = (flags & DRAWSPRITE_FLAG_RTL)
+				? viewportMask->width - pixelSkipStart - pixelCountPerRow : pixelSkipStart;
+			const uint16 *maskBase = viewportMask->rows;
+			if (flags & DRAWSPRITE_FLAG_RTL) maskBase += maskStride * viewportMask->height;
+			assert(firstSpriteRow + spriteHeightDraw <= viewportMask->height);
+			for (line = 0; line < spriteHeightDraw; line++) {
+				uint16 row = firstSpriteRow + ((flags & DRAWSPRITE_FLAG_BOTTOMUP) ? spriteHeightDraw - 1 - line : line);
+				for (group = 0; group < groups; group++) {
+					uint16 begin = group == 0 ? pad : 0;
+					uint16 end = min(16, pad + pixelCountPerRow - group * 16);
+					uint16 edge = (0xffffu >> begin) & (0xffffu << (16 - end));
+					viewportMasks[line * groups + group] =
+						GUI_ViewportMaskWord(maskBase + row * maskStride, maskStride, col + group * 16 - pad) & edge;
+				}
+			}
+			Video_Atari_PresentSprite(spriteScratch, rowStride, screenX & ~15, screenY,
+			                          rowStride, spriteHeightDraw, viewportMasks);
+		} else {
+			Video_Atari_PresentChunkyTransparent(spriteScratch, rowStride,
+			                                     screenX, screenY, rowStride, spriteHeightDraw);
+		}
 	}
 #endif
 }
@@ -5460,12 +5616,12 @@ void GUI_DrawScreen(Screen screenID)
 
 			GUI_Mouse_Hide_InWidget(2);
 
-			/* SCREEN_1 is the authoritative viewport buffer: shift its own
-			 * still-valid pixels in place instead of reading them back from
-			 * whatever happens to be currently displayed on SCREEN_0. Source
-			 * and destination overlap (most of the viewport survives a
-			 * scroll), so this needs the overlap-safe copy, not the
-			 * disjoint-rows GUI_Screen_Copy(). */
+			/* Legacy composition keeps SCREEN_1 authoritative. A direct
+			 * planar scene has no logical shadow to shift; a later switch
+			 * back to legacy reconstructs it from the map and actors. */
+#ifdef TOS
+			if (!GUI_Widget_Viewport_IsPlanar())
+#endif
 			GUI_Screen_CopyOverlap(max(-xOffset << 1, 0), 40 + max(-yOffset << 4, 0), max(0, xOffset << 1), 40 + max(0, yOffset << 4), xOverlap << 1, yOverlap << 4, SCREEN_1);
 
 #ifdef TOS

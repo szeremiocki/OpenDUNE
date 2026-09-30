@@ -291,6 +291,17 @@ static void Tiles_LoadICNFile(const char *filename)
 	 * and the palettes, so it has to come after all three are loaded. */
 	GFX_Init_DecodedTiles(tilesDataLength);
 
+#ifdef TOS
+	if (Video_Atari_CursorDirect()) {
+		uint8 palette[256 * 3];
+		if (File_ReadBlockFile("IBM.PAL", palette, sizeof(palette)) == sizeof(palette)) {
+			GFX_InitPlanarTiles(tilesDataLength, palette);
+		} else {
+			Warning("Planar tile cache disabled: failed to read IBM.PAL\n");
+		}
+	}
+#endif
+
 	ChunkFile_Close(fileIndex);
 }
 
@@ -323,6 +334,9 @@ void Sprites_LoadTiles(void)
 void Sprites_UnloadTiles(void)
 {
 	s_iconLoaded = false;
+#ifdef TOS
+	GFX_FreePlanarTiles();
+#endif
 }
 
 /**
@@ -582,11 +596,17 @@ void Sprites_Init(void)
 	Sprites_Load("CREDIT9.SHP", NULL, 1);                     /* 522 */
 	Sprites_Load("CREDIT10.SHP", NULL, 1);                    /* 523 */
 	Sprites_Load("CREDIT11.SHP", NULL, 1);                    /* 524 */
+#ifdef TOS
+	GUI_InitViewportSpriteCache();
+#endif
 }
 
 void Sprites_Uninit(void)
 {
 	uint16 i;
+#ifdef TOS
+	GUI_FreeViewportSpriteCache();
+#endif
 
 	for (i = 0; i < s_spritesCount; i++) free(g_sprites[i]);
 	free(g_sprites); g_sprites = NULL;

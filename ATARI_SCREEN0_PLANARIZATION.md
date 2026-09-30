@@ -3,8 +3,34 @@
 Date: 2026-09-25
 
 The original analysis below is a historical planning snapshot. The current
-branch has direct planar presentation and independent SCREEN_1 viewport
-conversion; it no longer follows every screen-role assumption below.
+branch has direct planar presentation and a guarded direct-planar battlefield
+compositor; it no longer follows every screen-role assumption below.
+
+## Direct planar battlefield tiles
+
+Terrain and structure tiles now have load-time, house-aware planar caches.
+Ordinary gameplay draws changed tiles directly into the visible planar
+screen and converts only private sprite canvases, using cached opacity
+masks. There is no separate planar battlefield backing buffer and no
+SCREEN_1 background publication in this path. SCREEN_1 is deliberately
+not maintained for the battlefield while direct composition is active.
+The minimap and UI remain independent SCREEN_1 users.
+
+Scenes with destination-reading blur/shadows, off-screen composition and
+viewport fades use the original compositor. A path change forces complete
+terrain/actor reconstruction, so returning to the legacy path never reads
+a stale battlefield shadow. Field dirty bits are cleared after direct
+composition without discarding queued minimap damage. The scroll mirrors
+only the planar scene while this path is active.
+
+The gameplay quantization is static: caches decode from canonical IBM.PAL
+through the existing c2p routine, not from whichever palette a loading or
+mentat screen currently displays. The temporary lookup does not change the
+active quantization or hardware registers and is freed after decoding.
+No palette generations or palette-change cache rebuilding are introduced.
+
+Implementation and memory details are in
+[`ATARI_TODO_VIEWPORT_PLANAR_ASSETS.md`](ATARI_TODO_VIEWPORT_PLANAR_ASSETS.md).
 
 ## Remaining dirty-sweep diagnostics (2026-09-30)
 
@@ -302,6 +328,20 @@ updates/second rise 47.40%. Presentation cost per update is unchanged.
 Observed callback rate rises 25.64%; the missing earlier fade tail and
 different capture duration prevent an exact isolated FPS claim. Detailed
 comparison is in ATARI_PROFILE_FINDINGS.md.
+
+A separate proposal is actual-sprite-opacity-derived, scanline-precise
+unit presentation damage. Its staged implementation plan is in
+[`ATARI_TODO_UNIT_STRIPE_INVALIDATION.md`](ATARI_TODO_UNIT_STRIPE_INVALIDATION.md).
+It preserves gameplay registration and conservative composition initially;
+no unit-invalidation changes have been implemented yet.
+
+An alternative/complementary battlefield rendering approach is evaluated in
+[`ATARI_TODO_VIEWPORT_PLANAR_ASSETS.md`](ATARI_TODO_VIEWPORT_PLANAR_ASSETS.md):
+unshifted planar assets, all 16 pre-shifted sprite phases, and aligned planar
+terrain/structure tiles with fast masked c2p for chunky sprites. It records
+the battlefield-only profile budget, estimated gains, RAM costs and
+compositor requirements. This is a proposal only; its estimated savings
+overlap with stripe invalidation and must not simply be added to them.
 
 ## Goal
 

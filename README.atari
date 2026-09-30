@@ -46,6 +46,33 @@ locations, and is clipped to the battlefield. Ordinary selected-building
 outlines retain their original rendering. Options and modal messages
 hide the preview until gameplay drawing resumes.
 
+ST/STE battlefield terrain and structure tiles are decoded to planar
+assets at tile loading, then restored directly to visible screen memory.
+House-colored tiles have six cached variants; unaffected tiles share one
+image. The gameplay IBM palette and quantization are fixed, so hardware
+fades/dimming need no tile-cache rebuild. Loading briefly displays decoded
+tiles in the top-left 16x16 area.
+
+Ordinary battlefield sprites are decoded into small private buffers and
+converted with explicit silhouette masks; no final background c2p sweep is
+needed for these scenes. Partial fog edges are combined with the cached
+ground tile before each planar write, so covered terrain is never briefly
+exposed by a separate ground-then-fog blit. Clear terrain retains its
+unmasked copy path. Visible sandworm blur, blurred units and aircraft
+shadows retain the original chunky compositor because they read underlying
+logical palette indices. Switching paths reconstructs the complete scene.
+Off-screen composition and viewport fades also retain the original path.
+The standard assets add about 104 KiB for house-aware tiles and about
+29 KiB for sprite masks/cache metadata; the loading-only c2p lookup uses
+another 128 KiB temporarily. Allocation failures log a warning and retain
+the original renderer. TT/Falcon rendering is unchanged.
+
+Click-to-center actions on ST/STE (minimap, viewport right-click, and the
+selected-object name) reuse the same incremental planar shift as edge
+scrolling while any viewport overlap remains. Diagonal shifts clear all
+exposed corners as well as the new rows and columns. Jumps with no overlap
+rebuild the viewport.
+
 
 * Precompiled versions
 

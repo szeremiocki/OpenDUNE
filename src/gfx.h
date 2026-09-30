@@ -35,6 +35,13 @@ extern void GFX_DrawTile(uint16 spriteID, uint16 x, uint16 y, uint8 houseID);
 extern void GFX_Init_TilesInfo(uint16 widthSize, uint16 heightSize);
 extern void GFX_Init_DecodedTiles(uint32 tilesDataLength);
 extern void GFX_FreeDecodedTiles(void);
+#ifdef TOS
+extern void GFX_InitPlanarTiles(uint32 tilesDataLength, const uint8 *palette);
+extern void GFX_FreePlanarTiles(void);
+extern bool GFX_PlanarTilesReady(void);
+extern void GFX_DrawPlanarTile(uint16 tileID, uint16 x, uint16 y, uint8 houseID);
+extern void GFX_DrawPlanarTileFogged(uint16 tileID, uint16 fogTileID, uint16 x, uint16 y, uint8 houseID);
+#endif
 
 /* One-shot measurement of the tile count and the RAM cost of pre-decoding
  * tiles to byte-per-pixel. The tile data lives in the game's PAK files, so
@@ -118,6 +125,7 @@ extern void GFX_Screen_SetDirtyViewport(uint16 left, uint16 top, uint16 right, u
 extern bool GFX_Screen_IsDirtyViewport(void);
 extern struct dirty_area * GFX_Screen_GetDirtyAreaViewport(void);
 extern void GFX_Screen_SetCleanViewport(void);
+extern void GFX_Screen_ClearDirtyViewportRect(uint16 left, uint16 top, uint16 right, uint16 bottom);
 #endif
 
 /* Attribute dirty pixels to their producer, to size the "render terrain

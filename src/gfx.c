@@ -63,6 +63,140 @@ static uint8 *s_tilesDecoded = NULL;	/* tileCount * (s_tileByteSize * 2) bytes, 
 static uint8 *s_tileHasTransparency = NULL;	/* one flag per tile */
 static uint16 s_tileCount = 0;
 
+static uint8 GFX_TileHouseColor(uint8 colour, uint8 houseID)
+{
+	if ((colour & 0xf0) == 0x90 && (colour <= 0x96 || !g_dune2_enhanced)) colour += houseID << 4;
+	return colour;
+}
+
+#ifdef TOS
+static uint16 *s_planarTiles;
+static uint16 *s_planarTileMasks;
+static uint16 *s_planarTileIndex;
+static uint16 s_planarTileCount;
+
+void GFX_FreePlanarTiles(void)
+{
+	free(s_planarTiles);
+	free(s_planarTileMasks);
+	free(s_planarTileIndex);
+	s_planarTiles = s_planarTileMasks = s_planarTileIndex = NULL;
+	s_planarTileCount = 0;
+}
+
+bool GFX_PlanarTilesReady(void)
+{
+	return s_planarTiles != NULL;
+}
+
+void GFX_DrawPlanarTile(uint16 tileID, uint16 x, uint16 y, uint8 houseID)
+{
+	uint16 index;
+	assert(s_planarTiles != NULL && tileID < s_planarTileCount && houseID < HOUSE_MAX);
+	index = s_planarTileIndex[(uint32)houseID * s_planarTileCount + tileID];
+	Video_Atari_DrawPlanarTile(s_planarTiles + (uint32)index * 64,
+	                           s_planarTileMasks + (uint32)tileID * 16, x, y);
+}
+
+void GFX_DrawPlanarTileFogged(uint16 tileID, uint16 fogTileID, uint16 x, uint16 y, uint8 houseID)
+{
+	uint16 index, fogIndex;
+	assert(s_planarTiles != NULL && tileID < s_planarTileCount && fogTileID < s_planarTileCount && houseID < HOUSE_MAX);
+	index = s_planarTileIndex[(uint32)houseID * s_planarTileCount + tileID];
+	fogIndex = s_planarTileIndex[(uint32)houseID * s_planarTileCount + fogTileID];
+	Video_Atari_DrawPlanarTileFogged(s_planarTiles + (uint32)index * 64,
+	                               s_planarTileMasks + (uint32)tileID * 16,
+	                               s_planarTiles + (uint32)fogIndex * 64,
+	                               s_planarTileMasks + (uint32)fogTileID * 16, x, y);
+}
+
+void GFX_InitPlanarTiles(uint32 tilesDataLength, const uint8 *palette)
+{
+	uint16 tile, house, variants, next;
+	uint16 *lookup;
+	uint8 *scratch;
+	Screen oldScreen;
+
+	GFX_FreePlanarTiles();
+	if (!Video_Atari_CursorDirect() || s_tileMode == 4 || s_tileWidth != 8 || s_tileHeight != 16) return;
+	s_planarTileCount = (uint16)(tilesDataLength / s_tileByteSize);
+	if (s_planarTileCount == 0) return;
+	if (s_planarTileCount > 0xffff / HOUSE_MAX) {
+		Warning("Planar tile cache disabled: too many house variants\n");
+		GFX_FreePlanarTiles();
+		return;
+	}
+	s_planarTileIndex = malloc((uint32)HOUSE_MAX * s_planarTileCount * sizeof(*s_planarTileIndex));
+	if (s_planarTileIndex == NULL) goto no_memory;
+	variants = s_planarTileCount;
+	for (tile = 0; tile < s_planarTileCount; tile++) {
+		const uint8 *p = g_iconRPAL + (g_iconRTBL[tile] << 4);
+		const uint8 *r = g_tilesPixels + (uint32)tile * s_tileByteSize;
+		bool recolored = false;
+		uint16 i;
+		for (i = 0; i < s_tileByteSize; i++) {
+			uint8 a = p[r[i] >> 4], b = p[r[i] & 15];
+			if (GFX_TileHouseColor(a, 1) != a || GFX_TileHouseColor(b, 1) != b) {
+				recolored = true;
+				break;
+			}
+		}
+		s_planarTileIndex[tile] = tile;
+		for (house = 1; house < HOUSE_MAX; house++) {
+			s_planarTileIndex[(uint32)house * s_planarTileCount + tile] = recolored ? variants++ : tile;
+		}
+	}
+	s_planarTiles = malloc((uint32)variants * 128);
+	s_planarTileMasks = malloc((uint32)s_planarTileCount * 32);
+	if (s_planarTiles == NULL || s_planarTileMasks == NULL) goto no_memory;
+	lookup = Video_Atari_CreateTileLookup(palette);
+	if (lookup == NULL) {
+		GFX_FreePlanarTiles();
+		return;
+	}
+	oldScreen = GFX_Screen_SetActive(SCREEN_2);
+	scratch = GFX_Screen_GetActive();
+	for (house = 0; house < HOUSE_MAX; house++) {
+		for (tile = 0; tile < s_planarTileCount; tile++) {
+			uint16 line, col;
+			const uint8 *p = g_iconRPAL + (g_iconRTBL[tile] << 4);
+			next = s_planarTileIndex[(uint32)house * s_planarTileCount + tile];
+			if (house != 0 && next == tile) continue;
+			for (line = 0; line < 16; line++) memset(scratch + (uint32)line * SCREEN_WIDTH, 0, 16);
+			GFX_DrawTile(tile, 0, 0, house);
+			if (house == 0) {
+				for (line = 0; line < 16; line++) {
+					uint16 mask = 0xffff;
+					if (p[0] == 0) {
+						mask = 0;
+						for (col = 0; col < 16; col++) {
+							if (scratch[(uint32)line * SCREEN_WIDTH + col] != 0) mask |= 0x8000u >> col;
+						}
+					}
+					s_planarTileMasks[(uint32)tile * 16 + line] = mask;
+				}
+			}
+			if (!Video_Atari_DecodePlanarTile(scratch, s_planarTiles + (uint32)next * 64, lookup)) {
+				Warning("Planar tile decoding failed for tile %u, house %u\n", tile, house);
+				GFX_Screen_SetActive(oldScreen);
+				free(lookup);
+				GFX_FreePlanarTiles();
+				return;
+			}
+		}
+	}
+	GFX_Screen_SetActive(oldScreen);
+	free(lookup);
+	Debug("Planar tiles: %u tiles, %u house variants, %lu bytes\n", s_planarTileCount, variants,
+	      (unsigned long)((uint32)variants * 128 + (uint32)s_planarTileCount * (32 + HOUSE_MAX * 2)));
+	return;
+
+no_memory:
+	Warning("Planar tile cache disabled: out of memory\n");
+	GFX_FreePlanarTiles();
+}
+#endif
+
 /* ENHANCEMENT -- Nibble-expansion lookup tables for GFX_DrawTile.
  *
  * Each source byte holds two pixels (4 MSB = left, 4 LSB = right), so the
@@ -437,6 +571,13 @@ void GFX_Screen_SetCleanViewport(void)
 	s_screen1_dirty_area.bottom = 0;
 	memset(g_dirty_blocks_viewport, 0, sizeof(g_dirty_blocks_viewport));
 }
+
+void GFX_Screen_ClearDirtyViewportRect(uint16 left, uint16 top, uint16 right, uint16 bottom)
+{
+	uint32 mask = ((1UL << (right >> 4)) - 1) & ~((1UL << ((left + 15) >> 4)) - 1);
+	uint16 y;
+	for (y = top; y < bottom; y++) g_dirty_blocks_viewport[y] &= ~mask;
+}
 #endif
 
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
@@ -635,10 +776,7 @@ void GFX_DrawTile(uint16 tileID, uint16 x, uint16 y, uint8 houseID)
 			uint8 colour = icon_palette[i];
 
 			/* ENHANCEMENT -- Dune2 recolours too many colours, causing clear graphical glitches in the IX building */
-			if ((colour & 0xF0) == 0x90) {
-				if (colour <= 0x96 || !g_dune2_enhanced) colour += houseID << 4;
-			}
-			local_palette[i] = colour;
+			local_palette[i] = GFX_TileHouseColor(colour, houseID);
 		}
 		icon_palette = local_palette;
 	}
@@ -713,6 +851,9 @@ void GFX_DrawTile(uint16 tileID, uint16 x, uint16 y, uint8 houseID)
  */
 void GFX_FreeDecodedTiles(void)
 {
+#ifdef TOS
+	GFX_FreePlanarTiles();
+#endif
 	free(s_tilesDecoded);
 	s_tilesDecoded = NULL;
 	free(s_tileHasTransparency);

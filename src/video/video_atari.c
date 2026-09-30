@@ -2,6 +2,7 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <assert.h>
 
 #include <mint/sysbind.h>
 #include <mint/osbind.h>
@@ -32,7 +33,7 @@ extern void uninstall_ikbd_handler(void);
 extern void c2p1x1_8_falcon(void * planar, void * chunky, uint32 count);
 extern void c2p1x1_8_tt(void * planar, void * chunky, uint32 count);
 extern void c2p1x1_8_tt_partial(void * planar, void * chunky, uint32 count);
-extern void c2p1x1_4_st(void * planar, void * chunky, uint32 count, uint32 lines, void * pal);
+extern void c2p1x1_4_st(void * planar, const void * chunky, uint32 count, uint32 lines, const void * pal);
 
 /* switch FPS display */
 extern void Video_SwitchFPSDisplay(uint8 key);
@@ -1886,6 +1887,14 @@ static inline void Video_Atari_PlanarMergePlain(uint16 *dst, uint16 mask, const 
 	}
 }
 
+static inline void Video_Atari_PlanarCopyGroup(uint16 *dst, const uint16 *src)
+{
+	dst[0] = src[0];
+	dst[1] = src[1];
+	dst[2] = src[2];
+	dst[3] = src[3];
+}
+
 static int Video_Atari_CursorGroup(uint8 *base, uint16 y, uint16 group)
 {
 	if (!s_curDrawn || base != s_curDrawnBase ||
@@ -2552,6 +2561,116 @@ bool Video_Atari_PresentActive(void)
 	return s_presentMode;
 }
 
+uint16 *Video_Atari_CreateTileLookup(const uint8 *palette)
+{
+	uint8 pens[256];
+	uint16 *lookup;
+	unsigned hi, lo;
+
+	if (!Video_Atari_CursorDirect()) return NULL;
+	lookup = malloc(65536UL * sizeof(*lookup));
+	if (lookup == NULL) {
+		Warning("Planar tile decoding disabled: out of memory for c2p lookup\n");
+		return NULL;
+	}
+	for (hi = 0; hi < 256; hi++) {
+		pens[hi] = Palette_FindClosestColor(palette[hi * 3] & 0x3f,
+		                                  palette[hi * 3 + 1] & 0x3f,
+		                                  palette[hi * 3 + 2] & 0x3f);
+	}
+	for (hi = 0; hi < 256; hi++) {
+		for (lo = 0; lo < 256; lo++) lookup[(hi << 8) | lo] = (pens[hi] << 8) | pens[lo];
+	}
+	return lookup;
+}
+
+bool Video_Atari_DecodePlanarTile(const uint8 *src, uint16 *pixels, const uint16 *lookup)
+{
+	uint8 *base = Video_Atari_PlanarBase();
+
+	/* Decode with the gameplay palette even if a loading/mentat palette
+	 * is currently displayed. Neither the active mapping nor registers change. */
+	c2p1x1_4_st(base, src, 16, 16, lookup);
+	Video_Atari_PlanarFinishRun(base, 0, 0, 16, 16);
+	return Video_Atari_PresentSave(0, 0, 16, 16, (uint8 *)pixels);
+}
+
+void Video_Atari_DrawPlanarTile(const uint16 *pixels, const uint16 *masks, uint16 x, uint16 y)
+{
+	uint8 *base = Video_Atari_PlanarBase();
+	bool overlays = Video_Atari_PlanarOverlaysOverlap(base, x, y, 16, 16);
+	uint16 line;
+
+	assert((x & 15) == 0 && x + 16 <= SCREEN_WIDTH && y + 16 <= SCREEN_HEIGHT);
+	for (line = 0; line < 16; line++, pixels += 4) {
+		uint16 mask = masks[line];
+		uint16 *dst = (uint16 *)(base + (uint32)(y + line) * 160 + (x >> 1));
+		if (mask == 0) continue;
+		if (overlays) Video_Atari_PlanarMergeGroup(base, y + line, x >> 4, mask, pixels);
+		else if (mask == 0xffff) Video_Atari_PlanarCopyGroup(dst, pixels);
+		else Video_Atari_PlanarMergePlain(dst, mask, pixels);
+	}
+	GFX_Screen_ClearDirtyRect(x, y, x + 16, y + 16);
+}
+
+void Video_Atari_DrawPlanarTileFogged(const uint16 *pixels, const uint16 *masks,
+                                    const uint16 *fogPixels, const uint16 *fogMasks,
+                                    uint16 x, uint16 y)
+{
+	uint8 *base = Video_Atari_PlanarBase();
+	bool overlays = Video_Atari_PlanarOverlaysOverlap(base, x, y, 16, 16);
+	uint16 line;
+
+	assert((x & 15) == 0 && x + 16 <= SCREEN_WIDTH && y + 16 <= SCREEN_HEIGHT);
+	for (line = 0; line < 16; line++, pixels += 4, fogPixels += 4) {
+		uint16 fogMask = fogMasks[line];
+		uint16 mask = masks[line] | fogMask;
+		uint16 combined[4];
+		const uint16 *src = pixels;
+		uint16 *dst = (uint16 *)(base + (uint32)(y + line) * 160 + (x >> 1));
+		if (mask == 0) continue;
+		if (fogMask == 0xffff) src = fogPixels;
+		else if (fogMask != 0) {
+			uint16 plane;
+			for (plane = 0; plane < 4; plane++) {
+				combined[plane] = (pixels[plane] & (uint16)~fogMask) | (fogPixels[plane] & fogMask);
+			}
+			src = combined;
+		}
+		if (overlays) Video_Atari_PlanarMergeGroup(base, y + line, x >> 4, mask, src);
+		else if (mask == 0xffff) Video_Atari_PlanarCopyGroup(dst, src);
+		else Video_Atari_PlanarMergePlain(dst, mask, src);
+	}
+	GFX_Screen_ClearDirtyRect(x, y, x + 16, y + 16);
+}
+
+void Video_Atari_PresentSprite(const uint8 *src, uint16 stride,
+                              uint16 x, uint16 y, uint16 width, uint16 height,
+                              const uint16 *masks)
+{
+	uint8 *base = Video_Atari_PlanarBase();
+	uint16 pixels[12];
+	uint16 groups = width >> 4;
+	bool overlays = Video_Atari_PlanarOverlaysOverlap(base, x, y, width, height);
+	uint16 line, group;
+
+	assert((x & 15) == 0 && (width & 15) == 0 && width <= 48);
+	assert(x + width <= 240 && y >= 40 && y + height <= SCREEN_HEIGHT);
+	for (line = 0; line < height; line++, src += stride) {
+		c2p1x1_4_st(pixels, src, width, 1, s_palette4BitPairMap);
+		for (group = 0; group < groups; group++) {
+			uint16 mask = *masks++;
+			uint16 *dst = (uint16 *)(base + (uint32)(y + line) * 160 + (x >> 1) + group * 8);
+			const uint16 *p = pixels + group * 4;
+			if (mask == 0) continue;
+			if (overlays) Video_Atari_PlanarMergeGroup(base, y + line, (x >> 4) + group, mask, p);
+			else if (mask == 0xffff) Video_Atari_PlanarCopyGroup(dst, p);
+			else Video_Atari_PlanarMergePlain(dst, mask, p);
+		}
+	}
+	GFX_Screen_ClearDirtyRect(x, y, x + width, y + height);
+}
+
 /* Install the quantization a following present must use, while the
  * hardware registers are still dark. See the section comment. */
 void Video_Atari_PresentPaletteRange(const uint8 *palette, int from, int length)
@@ -2680,8 +2799,8 @@ bool Video_Atari_PresentFill(int16 x, int16 y, uint16 width, uint16 height, uint
 /**
  * Shift a rectangle of the ST/STE planar screen buffer in place by
  * (dx, dy) pixels, without touching the chunky shadow or running c2p, then
- * blank whatever the shift exposed (proper move semantics: the vacated
- * edge that had nothing to shift into it goes to black, it does not keep
+ * blank whatever the shift exposed (the source/destination bounding
+ * rectangle outside the destination goes to black, it does not keep
  * showing the pre-shift picture until some later, unrelated redraw
  * happens to reach it).
  *
@@ -2716,8 +2835,6 @@ bool Video_Atari_ShiftPlanar(int16 x, int16 y, uint16 width, uint16 height, int1
 	if (width == 0 || height == 0) return false;
 	if (((x | (int16)width | dx) & 0xf) != 0) return false;
 	if (dx == 0 && dy == 0) return true;
-	if (abs(dx) > width || abs(dy) > height) return false;
-
 	srcX = x;
 	dstX = (int16)(x + dx);
 	srcY = y;
@@ -2762,24 +2879,21 @@ bool Video_Atari_ShiftPlanar(int16 x, int16 y, uint16 width, uint16 height, int1
 		}
 	}
 
-	/* Blank the vacated area: the source rectangle minus the destination
-	 * rectangle, which is an L-shape (up to two rectangles) when both dx
-	 * and dy are non-zero. The horizontal strip spans the full source
-	 * height; the vertical strip only spans the columns the horizontal
-	 * strip did not already cover, so the two never overlap. */
+	/* The source/destination bounding rectangle is the scrolled viewport.
+	 * Clear it minus the destination, including diagonal corners outside
+	 * the source rectangle. The two exposed strips do not overlap. */
 	if (dx != 0) {
 		uint16 freeW = (uint16)((dx > 0) ? dx : -dx);
 		int16 freeX = (int16)((dx > 0) ? x : (x + width + dx));
 
-		Video_Atari_PlanarFill((uint16)freeX, (uint16)y, freeW, height, 0);
+		Video_Atari_PlanarFill((uint16)freeX, (uint16)min(srcY, dstY),
+		                      freeW, (uint16)(height + abs(dy)), 0);
 	}
 	if (dy != 0) {
-		uint16 keepW = (uint16)(width - ((dx > 0) ? dx : -dx));
-		int16 keepX = (int16)(x + ((dx > 0) ? dx : 0));
 		uint16 freeH = (uint16)((dy > 0) ? dy : -dy);
 		int16 freeY = (int16)((dy > 0) ? y : (y + height + dy));
 
-		if (keepW != 0) Video_Atari_PlanarFill((uint16)keepX, (uint16)freeY, keepW, freeH, 0);
+		Video_Atari_PlanarFill((uint16)dstX, (uint16)freeY, width, freeH, 0);
 	}
 	s_placeVisible = placementVisible;
 	Video_Atari_PlacementEnd(base);

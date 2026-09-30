@@ -133,10 +133,25 @@ extern bool Video_Atari_PresentRestore(int16 x, int16 y, uint16 width, uint16 he
  * video_atari.c for the full contract (group-aligned geometry only,
  * ST/STE only, independent of present mode). Used by the gameplay
  * viewport scroll to avoid re-running c2p on pixels that only moved.
- * Proper "move" semantics: whatever the shift vacates (no source pixels
- * to shift into it) is blanked to black by this function itself, so
- * callers never need to separately clear the exposed edge. */
+ * The source/destination bounding rectangle is the viewport being moved.
+ * Its area outside the destination is cleared to black, including the
+ * extra exposed corners of diagonal shifts. */
 extern bool Video_Atari_ShiftPlanar(int16 x, int16 y, uint16 width, uint16 height, int16 dx, int16 dy);
+/* Fixed gameplay tile decoding uses a temporary lookup, without changing
+ * a currently displayed UI palette. Tiles are 16x16; source stride is 320.
+ * Sprite canvases are group-aligned, at most 48 pixels wide, with explicit
+ * opacity masks so an opaque logical colour 0 remains opaque. */
+extern uint16 *Video_Atari_CreateTileLookup(const uint8 *palette);
+extern bool Video_Atari_DecodePlanarTile(const uint8 *src, uint16 *pixels, const uint16 *lookup);
+extern void Video_Atari_DrawPlanarTile(const uint16 *pixels, const uint16 *masks, uint16 x, uint16 y);
+/* Fog-covered ground never reaches the screen: merge both cached images
+ * before the single destination write, preserving overlay backgrounds. */
+extern void Video_Atari_DrawPlanarTileFogged(const uint16 *pixels, const uint16 *masks,
+                                          const uint16 *fogPixels, const uint16 *fogMasks,
+                                          uint16 x, uint16 y);
+extern void Video_Atari_PresentSprite(const uint8 *src, uint16 stride,
+                                     uint16 x, uint16 y, uint16 width, uint16 height,
+                                     const uint16 *masks);
 #endif /* TOS */
 
 #endif /* VIDEO_VIDEO_H */

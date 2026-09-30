@@ -147,6 +147,10 @@ extern void GUI_DrawSprite(Screen screenID, const uint8 *sprite, int16 posX, int
 extern void GUI_DrawSpriteToBuffer(uint8 *buffer, uint16 width, uint16 height, const uint8 *sprite, int16 x, int16 y);
 /* Rebuild after loading SHAPES.SHP; unsupported assets retain sprite drawing. */
 extern void GUI_InitCreditsCache(void);
+extern void GUI_InitViewportSpriteCache(void);
+extern void GUI_FreeViewportSpriteCache(void);
+extern bool GUI_ViewportSpriteCacheReady(void);
+extern void GUI_SetViewportPlanar(bool active);
 #endif
 
 /* One-shot survey for the sprite pre-decode idea; reports to error.log.
