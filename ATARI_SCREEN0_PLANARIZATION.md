@@ -191,6 +191,38 @@ presentation. A sparse multi-row case generated three calls: 32x48 and
 16x48 separated horizontally, then 32x16 after a clean tile row. Planar
 pixels matched the reference, including unchanged pixels in both gaps.
 
+### Structure animation changed-tile marking (2026-09-30)
+
+On ST/STE, `Animation_Func_SetGroundTile()` now uses the existing
+non-neighbor `Map_Update(...,4,false)` for changed structure animation
+tiles. Its existing tile-ID comparison still skips unchanged tiles in the
+structure layout; minimap queuing, house assignment, overlay handling and
+selection repaint bookkeeping are preserved.
+
+There is a deliberate conservative exception: if a unit or active explosion
+is centered in the changed tile's 3x3 neighborhood, retain type 0. The
+existing compositor uses center-tile dirty flags to choose neighboring
+sprites for recomposition after terrain restoration. This guard avoids
+erasing an overlapping unit/effect without introducing the larger
+presentation/reconstruction separation described in the unit proposal.
+Already-dirty terrain skips the actor scan because both update types
+deduplicate that event. The guard is conservative, not a precise sprite
+intersection test; animation updates near actors can still have a halo.
+
+Only changed ground-frame updates use this rule. Animation stop/abort,
+structure creation/state rebuilding, overlay animations and non-ST/STE
+paths keep their existing behavior.
+
+An isolated changed tile now publishes 256 pixels rather than the
+2304-pixel 3x3 halo. Cross-target regression exercised the actual animation,
+Map_Update and viewport marking code under an 8 MHz 68000 in Hatari:
+unchanged frames, all neighboring actor positions, distant/inactive
+effects, non-direct mode, visibility, selection, overlay retention and
+turret rotation. Existing sparse-row and real-c2p batching tests also pass.
+The `opendune_damage_limited.txt` comparison observed 17.14% fewer assembly
+pixels per video callback, with modest throughput improvement. Differing
+fade phases and cursor footprints prevent an isolated speedup claim.
+
 ## Goal
 
 On DOS, `SCREEN_0` is the visible 320x200 8bpp VGA framebuffer, so the game

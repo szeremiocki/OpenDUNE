@@ -15,6 +15,15 @@
 #include "timer.h"
 #include "tools.h"
 
+#ifdef TOS
+#include "explosion.h"
+#include "house.h"
+#include "pool/pool.h"
+#include "pool/unit.h"
+#include "unit.h"
+#include "video/video.h"
+#endif
+
 enum {
 	ANIMATION_MAX = 112
 };
@@ -125,6 +134,33 @@ static void Animation_Func_Rewind(Animation *animation, int16 parameter)
 	animation->current = 0;
 }
 
+#ifdef TOS
+static bool Animation_InTileNeighborhood(uint16 packed, tile32 position)
+{
+	int16 dx = (int16)Tile_GetPosX(position) - (int16)Tile_GetPackedX(packed);
+	int16 dy = (int16)Tile_GetPosY(position) - (int16)Tile_GetPackedY(packed);
+
+	return dx >= -1 && dx <= 1 && dy >= -1 && dy <= 1;
+}
+
+static bool Animation_NeedsNeighborRedraw(uint16 packed)
+{
+	PoolFindStruct find = {HOUSE_INVALID, 0xFFFF, 0xFFFF};
+	Unit *unit;
+	Explosion *explosions = Explosion_Get_ByIndex(0);
+	uint16 i;
+
+	while ((unit = Unit_Find(&find)) != NULL) {
+		if (Animation_InTileNeighborhood(packed, unit->o.position)) return true;
+	}
+	for (i = 0; i < EXPLOSION_MAX; i++) {
+		if (explosions[i].commands != NULL &&
+		    Animation_InTileNeighborhood(packed, explosions[i].position)) return true;
+	}
+	return false;
+}
+#endif
+
 /**
  * Set the ground sprite of the tile.
  * @param animation The Animation for which we change the ground sprite.
@@ -154,6 +190,7 @@ static void Animation_Func_SetGroundTile(Animation *animation, int16 parameter)
 	for (i = 0; i < layoutTileCount; i++) {
 		uint16 position = packed + (*layout++);
 		uint16 tileID = *iconMap++;
+		uint16 updateType = 0;
 		Tile *t = &g_map[position];
 
 		if (t->groundTileID == tileID) continue;
@@ -164,7 +201,15 @@ static void Animation_Func_SetGroundTile(Animation *animation, int16 parameter)
 			t->overlayTileID = 0;
 		}
 
-		Map_Update(position, 0, false);
+#ifdef TOS
+		/* The old halo also selects cross-tile sprites for recomposition. */
+		if (Video_Atari_CursorDirect()) {
+			updateType = 4;
+			if (!BitArray_Test(g_dirtyMinimap, position) &&
+			    Animation_NeedsNeighborRedraw(position)) updateType = 0;
+		}
+#endif
+		Map_Update(position, updateType, false);
 
 		Map_MarkTileDirty(position);
 	}
