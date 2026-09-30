@@ -312,6 +312,85 @@ Thus the roughly 32,000 tile-row-copy calls / 1.85% CPU cost from
 They are conditional on a runtime alignment difference that these
 stationary captures do not reproduce. Leave that investigation separate.
 
+### Sparse viewport rows: `opendune_viewport_dirty_gaps.txt`
+
+Compared against `opendune_hwmouse_still.txt`, the previous overlay-free
+cursor build. Both captures use 16,042,494 cycles/second, have no recorded
+Mouse_EventHandler execution, and contain only one Warning entry (no
+periodic sweep logging). The new viewport disassembly includes the added
+column-mask initialization and cached CursorDirect test, confirming the
+capture contains the sparse-row implementation.
+
+| Metric | Previous still | Dirty gaps | Change |
+|---|---:|---:|---:|
+| TOS-clock duration | 46.530 s | 47.810 s | +2.75% |
+| Video_Tick entry executions | 858 | 891 | +3.85% |
+| Video callbacks/second | 18.44 | 18.64 | +1.07% |
+| GameLoop_Unit entry executions | 900 | 922 | +2.44% |
+| Game-loop iterations/second | 19.34 | 19.28 | -0.30% |
+| Assembly-converted pixels | 2,870,336 | 2,758,016 | -3.91% |
+| Assembly pixels/video callback | 3,345 | 3,095 | -7.47% |
+| Assembly pixels/second | 61,688 | 57,687 | -6.49% |
+| Assembly cycles/16-pixel group | 643.42 | 644.97 | +0.24% |
+| Assembly c2p calls | 1,123 | 1,223 | +8.90% |
+| Assembly c2p calls/video callback | 1.309 | 1.373 | +4.87% |
+| Average pixels/assembly call | 2,556 | 2,255 | -11.77% |
+
+Overall throughput is essentially unchanged in this capture, consistent
+with the user's expectation that this scene has limited gap-removal
+opportunity. Nevertheless, assembly conversion coverage is lower despite
+the longer capture. Its exclusive cycles/second fall **6.26%**, from
+2.481 million to 2.325 million. The pixel figures exclude scalar
+masked/transparent conversion and measure workload, not unique pixels.
+
+Sweep calls increase from 867 to 963; direct multi-row calls remain
+approximately unchanged (256 versus 260 recorded calls, including possible
+exception re-entry). Splitting real horizontal gaps naturally produces
+more, smaller rectangles. Average assembly calls still cover thousands of
+pixels, not individual 16-pixel stripes. Equal-mask vertical banding and
+contiguous horizontal runs are retained.
+
+Isolating GUI_Widget_Viewport_Draw from DrawTile (both truncate to the same
+GST name), its exclusive cost is 31,264,148 versus 32,271,036 cycles:
+34,738 versus 35,001 cycles/entry, a **0.76%** increase. This includes
+composition and marking, not child functions. Dirty-viewport marker entries
+increase from 1,870 to 1,977, with exclusive cost 2,479,240 versus 2,619,288
+cycles. Normalized marker cost rises about 2.82%; the added marking work
+is small relative to the observed c2p reduction.
+
+**Important workload difference:** the new capture also contains 1,791
+extra GFX_Screen_Copy calls from the inner loop of GUI_Screen_FadeIn:
+8x2-pixel pieces, absent from the previous still capture. The fade's entry
+is not recorded, so this is a captured tail of a fade already in progress.
+Its loop-to-copy call edge accounts for **17,727,484 inclusive cycles**
+(2.31% of the new capture), including descendant writer work; do not add
+that inclusive total to descendant function totals.
+
+These copies explain the large extra masked-writer activity:
+PresentGroupMasked entries rise from 1,204 to 4,816 and its exclusive cost
+from 3.05 million to 12.20 million cycles. This is not the sparse viewport
+falling back to per-tile immediate presentation. The new c2p sweep still
+reads the independently marked SCREEN_1 viewport.
+
+The profile omits the unexecuted GUI_Screen_FadeIn entry label, so the
+standalone reader attributes that unlabelled loop to the preceding
+GUI_Mouse_Hide_InRegion symbol. Resolved against the matching current
+binary's gst2ascii symbols: load base 0x10be0, fade range
+0x2730e..0x275ec, copy call at 0x274b8. The loop contributes 798,324
+exclusive cycles; it must not be mistaken for a new mouse-hide hotspot.
+The six-function common-writer aggregate rises from 14.40% to 15.86%,
+but the extra fade work prevents interpreting that as a viewport regression.
+
+No cached-tile-to-memmove fallback appears in either capture. Cursor group
+helper calls do not fall materially (3,245 versus 3,438; approximately
+2% more per video callback), so this scene does not demonstrate a reduction
+in stationary-cursor background maintenance.
+
+Conclusion: modest conversion-area savings, retained batching and nearly
+flat observed throughput. The captures contain different GUI phases and
+are not a clean gameplay-only replay; the 7.47% per-callback reduction is
+an observed workload difference, not an isolated exact gap-removal speedup.
+
 ## Earlier palette/c2p investigation
 
 Source: user-captured Hatari CPU profile (`opendune_profile.txt`, WinUAE core,

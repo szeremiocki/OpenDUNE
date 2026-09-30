@@ -449,11 +449,11 @@ static uint32 s_eagerRows;
 static uint32 s_eagerTiles;
 static uint32 s_eagerTilesCopied;
 
-static void Viewport_CountEager(int16 realMin, int16 realMax, int16 usedMin, int16 usedMax)
+static void Viewport_CountEager(uint16 wantedTiles, uint16 copiedTiles)
 {
 	s_eagerRows++;
-	if (realMax >= realMin) s_eagerTiles += realMax - realMin + 1;
-	s_eagerTilesCopied += usedMax - usedMin + 1;
+	s_eagerTiles += wantedTiles;
+	s_eagerTilesCopied += copiedTiles;
 }
 
 void Viewport_EagerReport(void)
@@ -467,7 +467,30 @@ void Viewport_EagerReport(void)
 	s_eagerTilesCopied = 0;
 }
 #else
-#define Viewport_CountEager(a,b,c,d) do { (void)(a); (void)(b); (void)(c); (void)(d); } while (0)
+#define Viewport_CountEager(a,b) do { (void)(a); (void)(b); } while (0)
+#endif
+
+#ifdef GFX_STORE_DIRTY_AREA_BLOCKS
+static void GUI_Widget_Viewport_SetDirtyColumns(uint16 columns, uint16 y)
+{
+	uint16 column = 0;
+
+	while (columns != 0) {
+		uint16 first;
+
+		while ((columns & 1) == 0) {
+			columns >>= 1;
+			column++;
+		}
+		first = column;
+		do {
+			columns >>= 1;
+			column++;
+		} while ((columns & 1) != 0);
+
+		GFX_Screen_SetDirtyViewport(first << 4, y, column << 4, y + 16);
+	}
+}
 #endif
 
 /**
@@ -498,6 +521,10 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 	uint16 oldWidgetID;
 	int16 minX[10];
 	int16 maxX[10];
+#ifdef GFX_STORE_DIRTY_AREA_BLOCKS
+	uint16 dirtyColumns[10] = {0};
+	bool directViewport = Video_Atari_CursorDirect();
+#endif
 
 	PoolFindStruct find;
 
@@ -522,6 +549,9 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 				if (x < 15 && !forceRedraw && BitArray_Test(g_dirtyViewport, curPos)) {
 					if (maxX[y] < x) maxX[y] = x;
 					if (minX[y] > x) minX[y] = x;
+#ifdef GFX_STORE_DIRTY_AREA_BLOCKS
+					dirtyColumns[y] |= 1u << x;
+#endif
 					updateDisplay = true;
 				}
 
@@ -533,6 +563,9 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 					updateDisplay = true;
 					if (maxX[y] < x) maxX[y] = x;
 					if (minX[y] > x) minX[y] = x;
+#ifdef GFX_STORE_DIRTY_AREA_BLOCKS
+					dirtyColumns[y] |= 1u << x;
+#endif
 				}
 
 				t = &g_map[curPos];
@@ -981,6 +1014,9 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 		GUI_DrawText_Wrapper(g_viewportMessageText, 112, 139, 15, 0, 0x132);
 		minX[6] = -1;
 		maxX[6] = 14;
+#ifdef GFX_STORE_DIRTY_AREA_BLOCKS
+		dirtyColumns[6] = 0x7fff;
+#endif
 	}
 
 	if (updateDisplay && !drawToMainScreen) {
@@ -1006,6 +1042,10 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 				uint16 height;
 				int16 realMin = minX[i];
 				int16 realMax = maxX[i];
+#ifdef GFX_STORE_DIRTY_AREA_BLOCKS
+				uint16 columns = dirtyColumns[i];
+				if (hasScrolled && !planarShifted) columns = 0x7fff;
+#endif
 
 				if (hasScrolled && !planarShifted) {
 					/* Without a matching planar-side shift, every pixel in
@@ -1014,15 +1054,23 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 					 * has to be re-presented. When planarShifted is true
 					 * the moved pixels are already sitting at their new
 					 * position on screen, and only the tiles Map_Update()
-					 * actually redrew (already reflected in minX[i]/maxX[i]
-					 * above) are genuinely new. */
+					 * actually redrew (already reflected in the dirty
+					 * columns above) are genuinely new. */
 					minX[i] = 0;
 					maxX[i] = 14;
 				}
 
-				if (maxX[i] < minX[i]) continue;
-
-				Viewport_CountEager(realMin, realMax, minX[i], maxX[i]);
+#ifdef GFX_STORE_DIRTY_AREA_BLOCKS
+				if (directViewport) {
+					if (columns == 0) continue;
+					Viewport_CountEager(__builtin_popcount(dirtyColumns[i]), __builtin_popcount(columns));
+				} else
+#endif
+				{
+					if (maxX[i] < minX[i]) continue;
+					Viewport_CountEager(realMax >= realMin ? realMax - realMin + 1 : 0,
+					                    maxX[i] - minX[i] + 1);
+				}
 
 				x = minX[i] * 2;
 				y = (i << 4) + 0x28;
@@ -1036,14 +1084,14 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 				}
 
 				GFX_Screen_SetDirtySource(DIRTY_SRC_VIEWPORT);
-				if (Video_Atari_CursorDirect()) {
-					/* ST/STE: the tiles just drawn already sit in SCREEN_1
-					 * and Video_Tick() now sweeps this rectangle straight
-					 * out of SCREEN_1 with its own, separate dirty-block
-					 * tracking, so there is nothing left to copy into
-					 * SCREEN_0 -- just record the rect as viewport-dirty. */
-					GFX_Screen_SetDirtyViewport(x * 8, y, (x + width) * 8, y + height);
-				} else {
+#ifdef GFX_STORE_DIRTY_AREA_BLOCKS
+				if (directViewport) {
+					/* Preserve clean gaps; Video_Tick still batches adjacent
+					 * equal row masks into multi-line c2p runs. */
+					GUI_Widget_Viewport_SetDirtyColumns(columns, y);
+				} else
+#endif
+				{
 					GUI_Screen_Copy(x, y, x, y, width, height, SCREEN_ACTIVE, SCREEN_0);
 				}
 				GFX_Screen_SetDirtySource(DIRTY_SRC_SCREENCOPY);

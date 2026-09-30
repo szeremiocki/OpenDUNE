@@ -76,8 +76,8 @@ with activity in 64 of its 72 ticks.
 
 The two current callers of `GFX_Screen_SetDirtyViewport()` are battlefield
 row presentation in `src/gui/viewport.c` and full minimap refresh in
-`src/map.c`. Battlefield presentation marks the span from `minX[i]` through
-`maxX[i]` in a 16-pixel tile row. This can include unchanged gaps between
+`src/map.c`. In that capture, battlefield presentation marked the span from
+`minX[i]` through `maxX[i]` in a 16-pixel tile row. This can include unchanged gaps between
 separated dirty tiles; masks/positions can locate the work but do not prove
 which individual pixels could safely be skipped. Moving units, effects and
 map/structure changes feed the composed battlefield image upstream.
@@ -90,7 +90,7 @@ redundant updates or genuinely planar rendering, not merely scheduling.
 Zero legacy activity is evidence for this capture, not proof that its
 fallback can safely be deleted for every screen and execution path.
 
-### Confirmed conservative viewport marking (2026-09-30)
+### Confirmed conservative viewport marking before gap removal (2026-09-30)
 
 Investigation of stationary-cursor blinking confirms that presentation can
 cover the mouse even when no moving sprite visually touches it:
@@ -151,6 +151,45 @@ registration, and the current compositor restores full background tiles
 and redraws overlapping objects. Precise presentation bounds must preserve
 old/new sprite extents, harvester history, selection/effects, terrain changes
 and overlap composition. No rendering code was changed in this investigation.
+
+### Sparse tile-row presentation (2026-09-30)
+
+The ST/STE direct viewport path now retains a 15-bit dirty-column mask for
+each of its ten tile rows, recording both already-invalidated viewport
+tiles and terrain tiles redrawn from dirty-minimap flags. Presentation
+marks only contiguous runs of those columns, rather than the enclosing
+minX/maxX span. A clean column between two patches is no longer marked
+solely because both patches share a tile row.
+
+The existing Video_Tick sweep remains unchanged: it merges consecutive
+scanlines with identical masks into bands, then converts each contiguous
+horizontal run in a band with one multi-line c2p call. It never extends a
+run across a clean column or a band across clean scanlines. Different
+adjacent masks remain separate bands; this does not introduce a new global
+rectangle-packing algorithm.
+
+Forced redraw still marks every battlefield column. Scrolling without a
+successful planar-side shift still presents full-width rows; a successful
+shift keeps only the marked edge tiles. The viewport-message row still
+marks all 15 columns. Fade-in, draw-to-main-screen behavior, minimap refresh
+and non-direct presentation retain their previous paths. Optional eager-row
+statistics count actual dirty/copied columns on the direct path, not the
+enclosing span.
+
+Vertical marking is still 16 lines per tile row, and unit invalidation,
+registration, history footprints and off-screen composition are unchanged.
+This removes horizontal gap inflation only; it does not establish that
+every remaining invalidated tile needs conversion or that cursor blinking
+is completely eliminated.
+
+Cross-target regression used the actual terrain/marking and presentation
+sections, dirty-rectangle helpers, sweep and c2p assembly under an 8 MHz
+68000 in Hatari. All 32768 possible battlefield row masks preserved exact
+coverage; producer cases covered mixed viewport/terrain flags, the right
+edge, forced redraw, both scroll paths, messages, fade, idle and non-direct
+presentation. A sparse multi-row case generated three calls: 32x48 and
+16x48 separated horizontally, then 32x16 after a clean tile row. Planar
+pixels matched the reference, including unchanged pixels in both gaps.
 
 ## Goal
 
