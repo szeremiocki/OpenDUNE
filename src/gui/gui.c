@@ -280,6 +280,10 @@ void GUI_DisplayText(const char *str, int importance, ...)
 	static uint8 fgColour1;          /* Foreground colour current line. */
 	static uint8 fgColour2;          /* Foreground colour next line. */
 	static uint8 fgColour3;          /* Foreground colour next message. */
+#ifdef TOS
+	static uint16 bannerPlanar[24 * SCREEN_WIDTH / 4];
+	static bool bannerPlanarReady;
+#endif
 
 	buffer[0] = '\0';
 
@@ -302,6 +306,9 @@ void GUI_DisplayText(const char *str, int importance, ...)
 
 		scrollInProgress = false;
 		displayTimer = 0;
+#ifdef TOS
+		bannerPlanarReady = false;
+#endif
 		return;
 	}
 
@@ -337,6 +344,9 @@ void GUI_DisplayText(const char *str, int importance, ...)
 			GUI_DrawText_Wrapper(displayLine1, g_curWidgetXBase << 3, 13, fgColour1, 0, 0x012);
 
 			g_textDisplayNeedsUpdate = false;
+#ifdef TOS
+			bannerPlanarReady = false;
+#endif
 
 			GFX_Screen_SetActive(oldScreenID);
 		}
@@ -349,6 +359,17 @@ void GUI_DisplayText(const char *str, int importance, ...)
 			height = g_curWidgetHeight;
 		}
 
+#ifdef TOS
+		if (Video_Atari_CursorDirect()) {
+			if (!bannerPlanarReady) {
+				Video_Atari_EncodePlanar(GFX_Screen_Get_ByIndex(SCREEN_1), bannerPlanar, 24);
+				bannerPlanarReady = true;
+			}
+			Video_Atari_PresentPlanarWindow(bannerPlanar + textOffset * (SCREEN_WIDTH / 4),
+			                               g_curWidgetXBase << 3, g_curWidgetYBase,
+			                               g_curWidgetWidth << 3, height);
+		} else
+#endif
 		GUI_Screen_Copy(g_curWidgetXBase, textOffset, g_curWidgetXBase, g_curWidgetYBase, g_curWidgetWidth, height, SCREEN_1, SCREEN_0);
 		GUI_Mouse_Show_InWidget();
 
@@ -409,6 +430,9 @@ void GUI_DisplayText(const char *str, int importance, ...)
 	if (line2Importance <= line1Importance && displayTimer >= g_timerGUI) return;
 
 	scrollInProgress = true;
+#ifdef TOS
+	bannerPlanarReady = false;
+#endif
 	textOffset = 10;
 	displayTimer = 0;
 }

@@ -2524,6 +2524,54 @@ bool Video_Atari_PresentRestore(int16 x, int16 y, uint16 width, uint16 height, c
 	return true;
 }
 
+void Video_Atari_EncodePlanar(const uint8 *src, uint16 *pixels, uint16 height)
+{
+	assert(Video_Atari_CursorDirect() && src != NULL && pixels != NULL);
+	assert(((uint32)src & 1) == 0 && height != 0 && height <= SCREEN_HEIGHT);
+	c2p1x1_4_st(pixels, src, SCREEN_WIDTH, height, s_palette4BitPairMap);
+}
+
+void Video_Atari_PresentPlanarWindow(const uint16 *pixels, uint16 x, uint16 y,
+                                    uint16 width, uint16 height)
+{
+	uint8 *base = Video_Atari_PlanarBase();
+	uint16 right = x + width;
+	uint16 first = x >> 4, last = (right - 1) >> 4;
+	uint16 firstFull = (x + 15) >> 4, endFull = right >> 4;
+	bool overlays;
+	uint16 line;
+
+	assert(Video_Atari_CursorDirect() && pixels != NULL && width != 0 && height != 0);
+	assert((uint32)x + width <= SCREEN_WIDTH && (uint32)y + height <= SCREEN_HEIGHT);
+	overlays = Video_Atari_PlanarOverlaysOverlap(base, x, y, width, height);
+
+	if (endFull > firstFull) {
+		for (line = 0; line < height; line++) {
+			memcpy(base + (uint32)(y + line) * ST_PLANAR_LINE_BYTES + firstFull * 8,
+			       pixels + (uint32)line * (SCREEN_WIDTH / 4) + firstFull * 4,
+			       (endFull - firstFull) * 8);
+		}
+		Video_Atari_PlanarFinishRun(base, firstFull << 4, y, (endFull - firstFull) << 4, height);
+	}
+
+	for (line = 0; line < height; line++, pixels += SCREEN_WIDTH / 4) {
+		if ((x & 15) != 0) {
+			uint16 mask = 0xffffu >> (x & 15);
+			uint16 *dst = (uint16 *)(base + (uint32)(y + line) * ST_PLANAR_LINE_BYTES + first * 8);
+			if (first == last && (right & 15) != 0) mask &= 0xffffu << (16 - (right & 15));
+			if (overlays) Video_Atari_PlanarMergeGroup(base, y + line, first, mask, pixels + first * 4);
+			else Video_Atari_PlanarMergePlain(dst, mask, pixels + first * 4);
+		}
+		if ((right & 15) != 0 && ((x & 15) == 0 || first != last)) {
+			uint16 mask = 0xffffu << (16 - (right & 15));
+			uint16 *dst = (uint16 *)(base + (uint32)(y + line) * ST_PLANAR_LINE_BYTES + last * 8);
+			if (overlays) Video_Atari_PlanarMergeGroup(base, y + line, last, mask, pixels + last * 4);
+			else Video_Atari_PlanarMergePlain(dst, mask, pixels + last * 4);
+		}
+	}
+	GFX_Screen_ClearDirtyRect(first << 4, y, (last + 1) << 4, y + height);
+}
+
 bool Video_Atari_PresentChunkyTransparent(const void *src, uint16 srcStride,
                                           int16 x, int16 y, uint16 width, uint16 height)
 {

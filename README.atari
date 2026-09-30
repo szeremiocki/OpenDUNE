@@ -73,6 +73,12 @@ scrolling while any viewport overlap remains. Diagonal shifts clear all
 exposed corners as well as the new rows and columns. Jumps with no overlap
 rebuild the viewport.
 
+The upper announcement banner converts its 24-row text composition once
+per slide on ST/STE, then copies the moving 14-row planar window without
+further c2p. Its 3.75 KiB cache uses the fixed gameplay mapping; masked
+horizontal edges preserve the adjacent HUD, and cursor backgrounds are
+updated through the normal planar helpers. Timing and text queuing are
+unchanged.
 
 * Precompiled versions
 
