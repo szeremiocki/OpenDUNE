@@ -286,7 +286,7 @@ void Map_UpdateMinimapPosition(uint16 packed, bool forceUpdate)
 			curPacked = minimapPreviousPosition + *m;
 			BitArray_Clear(g_displayedMinimap, curPacked);
 
-			GUI_Widget_Viewport_DrawTile(curPacked);
+			GUI_Widget_Viewport_DrawTileForce(curPacked);
 		}
 	}
 
@@ -1713,13 +1713,14 @@ void Map_CreateLandscape(uint32 seed)
 }
 
 /**
- * Mark a specific tile as dirty, so it gets a redrawn next time.
+ * Queue a tile for minimap redraw, at most once until it is processed.
  *
  * @param packed The tile to mark as dirty.
  */
 void Map_MarkTileDirty(uint16 packed)
 {
 	if (BitArray_Test(g_displayedMinimap, packed) && g_scenario.mapScale + 1 == 0) return;
+	if (BitArray_Test(g_changedTilesMap, packed)) return;
 
 	BitArray_Set(g_changedTilesMap, packed);
 	if (g_changedTilesCount < lengthof(g_changedTiles)) g_changedTiles[g_changedTilesCount++] = packed;

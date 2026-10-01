@@ -1521,6 +1521,9 @@ void Game_Init(void)
 
 	memset(g_displayedViewport, 0, sizeof(g_displayedViewport));
 	memset(g_displayedMinimap,  0, sizeof(g_displayedMinimap));
+#ifdef TOS
+	GUI_Widget_Viewport_InvalidateMinimap();
+#endif
 	memset(g_changedTilesMap,   0, sizeof(g_changedTilesMap));
 	memset(g_dirtyViewport,     0, sizeof(g_dirtyViewport));
 	memset(g_dirtyMinimap,      0, sizeof(g_dirtyMinimap));

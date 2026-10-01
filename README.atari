@@ -80,6 +80,33 @@ horizontal edges preserve the adjacent HUD, and cursor backgrounds are
 updated through the normal planar helpers. Timing and text queuing are
 unchanged.
 
+Minimap 2x2 and 3x3 icons are decoded once on ST/STE into a 336-byte
+logical-pixel cache. Opaque icons use four or nine direct SCREEN_1 stores;
+transparent icons retain their exact opacity. Radar classification
+and logical pixel colours are preserved.
+Unsupported icons and other machines retain the generic sprite renderer.
+
+Pending minimap tile notifications are coalesced using the existing dirty
+bitset. Repeated notifications before a tile is processed take only one
+queue entry and one preparation pass. No extra memory is needed.
+
+ST/STE also remembers each tile's last rendered minimap icon or logical
+pixel colour in a 4.5 KiB appearance cache. Unchanged appearances skip
+pixel writes and do not expand the rows published through c2p. Terrain
+and object classification still runs, so actual radar changes remain
+immediate. Full reconstruction, scenario/scale changes and icon-cache
+reloads invalidate the cache; moving the white viewport outline forces
+restoration of its previous tiles. Single changed rows are published too.
+Other machines retain their original tile rendering.
+
+Ordinary ST/STE minimap batches run at most twice per second, using a
+30-tick interval on the 60 Hz GUI clock. Notifications remain pending
+and coalesce between batches. If the 200-entry queue fills, the next
+batch drains the complete pending bitset rather than delaying overflow
+tiles over additional intervals. Viewport-outline movement and explicit
+radar/interface reconstruction remain immediate. Other machines retain
+their original update cadence.
+
 * Precompiled versions
 
 http://nanard.free.fr/opendune/

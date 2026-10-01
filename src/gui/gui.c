@@ -1236,6 +1236,99 @@ void GUI_DrawSpriteToBuffer(uint8 *buffer, uint16 width, uint16 height,
 	GUI_DrawSpriteInternal(SCREEN_0, sprite, x, y, 0, 0, NULL, buffer, width, height);
 }
 
+#define MINIMAP_ICON_FIRST 31
+#define MINIMAP_ICON_COUNT 28
+
+typedef struct MinimapIcon {
+	uint8 pixels[9];
+	uint8 size;
+	uint16 mask;
+} MinimapIcon;
+
+static MinimapIcon s_minimapIcons[MINIMAP_ICON_COUNT];
+
+void GUI_FreeMinimapIconCache(void)
+{
+	memset(s_minimapIcons, 0, sizeof(s_minimapIcons));
+	GUI_Widget_Viewport_InvalidateMinimap();
+}
+
+void GUI_InitMinimapIconCache(void)
+{
+	uint16 i;
+
+	GUI_FreeMinimapIconCache();
+	if (!Video_Atari_CursorDirect()) return;
+	for (i = 0; i < MINIMAP_ICON_COUNT; i++) {
+		const uint8 *sprite = g_sprites[MINIMAP_ICON_FIRST + i];
+		MinimapIcon *icon = &s_minimapIcons[i];
+		uint8 alternate[9];
+		uint16 pixel, size;
+
+		if (sprite == NULL) {
+			Warning("Minimap icon cache: missing sprite %u\n", MINIMAP_ICON_FIRST + i);
+			continue;
+		}
+		size = sprite[2];
+		if ((size != 2 && size != 3) || READ_LE_UINT16(sprite + 3) != size) {
+			Warning("Minimap icon cache: unsupported sprite %u\n", MINIMAP_ICON_FIRST + i);
+			continue;
+		}
+		memset(alternate, 0xff, sizeof(alternate));
+		GUI_DrawSpriteToBuffer(icon->pixels, size, size, sprite, 0, 0);
+		GUI_DrawSpriteToBuffer(alternate, size, size, sprite, 0, 0);
+		/* Two backgrounds distinguish transparency from opaque colour 0. */
+		for (pixel = 0; pixel < size * size; pixel++) {
+			if (icon->pixels[pixel] == alternate[pixel]) icon->mask |= 1u << pixel;
+		}
+		icon->size = size;
+	}
+}
+
+bool GUI_DrawMinimapIcon(uint16 spriteID, uint16 x, uint16 y)
+{
+	const MinimapIcon *icon;
+	const WidgetProperties *widget = &g_widgetProperties[3];
+	const uint8 *src;
+	uint8 *dst;
+	uint16 size;
+
+	if (spriteID < MINIMAP_ICON_FIRST || spriteID >= MINIMAP_ICON_FIRST + MINIMAP_ICON_COUNT ||
+	    !GFX_Screen_IsActive(SCREEN_1)) return false;
+	icon = &s_minimapIcons[spriteID - MINIMAP_ICON_FIRST];
+	size = icon->size;
+	if (size == 0 || (uint32)x + size > (uint32)widget->width * 8 || (uint32)y + size > widget->height ||
+	    (uint32)widget->xBase * 8 + x + size > SCREEN_WIDTH ||
+	    (uint32)widget->yBase + y + size > SCREEN_HEIGHT) return false;
+	src = icon->pixels;
+	dst = (uint8 *)GFX_Screen_Get_ByIndex(SCREEN_1) +
+	      (uint32)(widget->yBase + y) * SCREEN_WIDTH + widget->xBase * 8 + x;
+	if (size == 2 && icon->mask == 0xf) {
+		dst[0] = src[0];
+		dst[1] = src[1];
+		dst[SCREEN_WIDTH] = src[2];
+		dst[SCREEN_WIDTH + 1] = src[3];
+	} else if (size == 3 && icon->mask == 0x1ff) {
+		dst[0] = src[0];
+		dst[1] = src[1];
+		dst[2] = src[2];
+		dst[SCREEN_WIDTH] = src[3];
+		dst[SCREEN_WIDTH + 1] = src[4];
+		dst[SCREEN_WIDTH + 2] = src[5];
+		dst[SCREEN_WIDTH * 2] = src[6];
+		dst[SCREEN_WIDTH * 2 + 1] = src[7];
+		dst[SCREEN_WIDTH * 2 + 2] = src[8];
+	} else {
+		uint16 row, col, mask = icon->mask;
+		for (row = 0; row < size; row++, dst += SCREEN_WIDTH) {
+			for (col = 0; col < size; col++, src++, mask >>= 1) {
+				if ((mask & 1) != 0) dst[col] = *src;
+			}
+		}
+	}
+	return true;
+}
+
 typedef struct ViewportSpriteMask {
 	const uint8 *sprite;
 	uint16 *rows;

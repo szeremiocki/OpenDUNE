@@ -571,6 +571,7 @@ void Sprites_Init(void)
 	Sprites_Load("SHAPES.SHP", NULL, 99);            /*  12 - 110 */
 #ifdef TOS
 	GUI_InitCreditsCache();
+	GUI_InitMinimapIconCache();
 #endif
 	Sprites_Load("UNITS2.SHP", NULL, 40);            /* 111 - 150 */
 	Sprites_Load("UNITS1.SHP", NULL, 87);            /* 151 - 237 */
@@ -606,6 +607,7 @@ void Sprites_Uninit(void)
 	uint16 i;
 #ifdef TOS
 	GUI_FreeViewportSpriteCache();
+	GUI_FreeMinimapIconCache();
 #endif
 
 	for (i = 0; i < s_spritesCount; i++) free(g_sprites[i]);

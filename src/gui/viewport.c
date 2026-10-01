@@ -43,11 +43,38 @@ static uint32 s_tickMapScroll;                              /*!< Stores last tim
 static uint32 s_tickClick;                                  /*!< Stores last time Viewport handled a click. */
 
 #ifdef TOS
+#define MINIMAP_UPDATE_INTERVAL 30 /* 2 Hz on the 60 Hz GUI timer. */
+
 static bool s_viewportWasPlanar;
+static uint8 s_minimapAppearance[64 * 64];
+static uint8 s_minimapAppearanceValid[64 * 64 / 8];
+static uint16 s_minimapAppearanceScale;
+static uint32 s_minimapLastUpdate;
+static bool s_minimapUpdateStarted;
+
+void GUI_Widget_Viewport_InvalidateMinimap(void)
+{
+	memset(s_minimapAppearanceValid, 0, sizeof(s_minimapAppearanceValid));
+	s_minimapAppearanceScale = g_scenario.mapScale;
+	s_minimapLastUpdate = 0;
+	s_minimapUpdateStarted = false;
+}
 
 bool GUI_Widget_Viewport_IsPlanar(void)
 {
 	return s_viewportWasPlanar;
+}
+
+static bool GUI_Widget_Viewport_MinimapUpdateDue(void)
+{
+	uint32 now;
+
+	if (!Video_Atari_CursorDirect()) return true;
+	now = g_timerGUI;
+	if (s_minimapUpdateStarted && now - s_minimapLastUpdate < MINIMAP_UPDATE_INTERVAL) return false;
+	s_minimapLastUpdate = now;
+	s_minimapUpdateStarted = true;
+	return true;
 }
 
 static bool GUI_Widget_Viewport_CanDrawPlanar(void)
@@ -1033,14 +1060,29 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 		memset(g_dirtyViewport, 0, sizeof(g_dirtyViewport));
 	}
 
-	if (g_changedTilesCount != 0) {
+	if (g_changedTilesCount != 0
+#ifdef TOS
+	    && GUI_Widget_Viewport_MinimapUpdateDue()
+#endif
+	   ) {
 		bool init = false;
 		bool update = false;
 		uint16 minY = 0xffff;
 		uint16 maxY = 0;
+		uint16 tileCount = g_changedTilesCount;
 		Screen oldScreenID2 = SCREEN_1;
+#ifdef TOS
+		bool scanPending = Video_Atari_CursorDirect() && tileCount == lengthof(g_changedTiles);
 
-		for (i = 0; i < g_changedTilesCount; i++) {
+		if (scanPending) tileCount = 4096;
+#endif
+		for (i = 0; i < tileCount; i++) {
+#ifdef TOS
+			if (scanPending) {
+				if (!BitArray_Test(g_changedTilesMap, i)) continue;
+				curPos = i;
+			} else
+#endif
 			curPos = g_changedTiles[i];
 			BitArray_Clear(g_changedTilesMap, curPos);
 
@@ -1071,13 +1113,18 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 				maxY = 63 - g_scenario.mapScale;
 			}
 			/* MiniMap : redraw only line that changed */
-			if (minY < maxY) GUI_Screen_Copy(32, 136 + minY, 32, 136 + minY, 8, maxY + 1 + g_scenario.mapScale - minY, SCREEN_ACTIVE, SCREEN_0);
+			if (minY <= maxY) GUI_Screen_Copy(32, 136 + minY, 32, 136 + minY, 8, maxY + 1 + g_scenario.mapScale - minY, SCREEN_ACTIVE, SCREEN_0);
 
 			GFX_Screen_SetActive(oldScreenID2);
 
 			GUI_Mouse_Show_InWidget();
 		}
 
+#ifdef TOS
+		if (scanPending) {
+			g_changedTilesCount = 0;
+		} else
+#endif
 		if (g_changedTilesCount == lengthof(g_changedTiles)) {
 			g_changedTilesCount = 0;
 
@@ -1203,14 +1250,22 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
  * Draw a single tile on the screen.
  *
  * @param packed The tile to draw.
+ * @param forceDraw Repaint even when the cached appearance is unchanged.
+ * @return True when pixels were drawn, false when no publication is needed.
  */
-bool GUI_Widget_Viewport_DrawTile(uint16 packed)
+static bool GUI_Widget_Viewport_DrawTileInternal(uint16 packed, bool forceDraw)
 {
 	uint16 x;
 	uint16 y;
 	uint16 colour;
 	uint16 spriteID;
 	uint16 mapScale;
+#ifdef TOS
+	bool cacheAppearance;
+	uint16 appearance;
+#else
+	(void)forceDraw;
+#endif
 
 	colour = 12;
 	spriteID = 0xFFFF;
@@ -1276,6 +1331,21 @@ bool GUI_Widget_Viewport_DrawTile(uint16 packed)
 		}
 	}
 
+#ifdef TOS
+	cacheAppearance = Video_Atari_CursorDirect() && GFX_Screen_IsActive(SCREEN_1);
+	appearance = spriteID == 0xFFFF ? colour & 0xFF : spriteID;
+	if (cacheAppearance) {
+		if (s_minimapAppearanceScale != g_scenario.mapScale) GUI_Widget_Viewport_InvalidateMinimap();
+		if (appearance > 0xFF) {
+			BitArray_Clear(s_minimapAppearanceValid, packed);
+			cacheAppearance = false;
+		} else if (!forceDraw && BitArray_Test(s_minimapAppearanceValid, packed) &&
+		           s_minimapAppearance[packed] == appearance) {
+			return false;
+		}
+	}
+#endif
+
 	x = Tile_GetPackedX(packed);
 	y = Tile_GetPackedY(packed);
 
@@ -1285,11 +1355,31 @@ bool GUI_Widget_Viewport_DrawTile(uint16 packed)
 	if (spriteID != 0xFFFF) {
 		x *= g_scenario.mapScale + 1;
 		y *= g_scenario.mapScale + 1;
+#ifdef TOS
+		if (!GUI_DrawMinimapIcon(spriteID, x, y))
+#endif
 		GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[spriteID], x, y, 3, DRAWSPRITE_FLAG_WIDGETPOS);
 	} else {
 		GFX_PutPixel(x + 256, y + 136, colour & 0xFF);
 	}
+#ifdef TOS
+	if (cacheAppearance) {
+		s_minimapAppearance[packed] = (uint8)appearance;
+		BitArray_Set(s_minimapAppearanceValid, packed);
+	}
+#endif
 	return true;
+}
+
+bool GUI_Widget_Viewport_DrawTile(uint16 packed)
+{
+	return GUI_Widget_Viewport_DrawTileInternal(packed, false);
+}
+
+/* Outline restoration must repaint even if the underlying icon is unchanged. */
+bool GUI_Widget_Viewport_DrawTileForce(uint16 packed)
+{
+	return GUI_Widget_Viewport_DrawTileInternal(packed, true);
 }
 
 /**
@@ -1302,9 +1392,12 @@ void GUI_Widget_Viewport_RedrawMap(Screen screenID)
 	Screen oldScreenID = SCREEN_1;
 	uint16 i;
 
+#ifdef TOS
+	GUI_Widget_Viewport_InvalidateMinimap();
+#endif
 	if (screenID == SCREEN_0) oldScreenID = GFX_Screen_SetActive(SCREEN_1);
 
-	for (i = 0; i < 4096; i++) GUI_Widget_Viewport_DrawTile(i);
+	for (i = 0; i < 4096; i++) GUI_Widget_Viewport_DrawTileForce(i);
 
 	Map_UpdateMinimapPosition(g_minimapPosition, true);
 
