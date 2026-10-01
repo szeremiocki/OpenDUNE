@@ -1235,8 +1235,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 
 #ifdef TOS
 	if (planarViewport) {
-		GFX_Screen_ClearDirtyRect(0, 40, 240, 200);
-		GFX_Screen_ClearDirtyViewportRect(0, 40, 240, 200);
+		GFX_Screen_ClearDirtyBattlefield();
 	}
 	GUI_SetViewportPlanar(false);
 	s_viewportWasPlanar = planarViewport;

@@ -126,6 +126,7 @@ extern bool GFX_Screen_IsDirtyViewport(void);
 extern struct dirty_area * GFX_Screen_GetDirtyAreaViewport(void);
 extern void GFX_Screen_SetCleanViewport(void);
 extern void GFX_Screen_ClearDirtyViewportRect(uint16 left, uint16 top, uint16 right, uint16 bottom);
+extern void GFX_Screen_ClearDirtyBattlefield(void);
 #endif
 
 /* Attribute dirty pixels to their producer, to size the "render terrain

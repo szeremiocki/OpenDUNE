@@ -62,6 +62,13 @@ unmasked copy path. Visible sandworm blur, blurred units and aircraft
 shadows retain the original chunky compositor because they read underlying
 logical palette indices. Switching paths reconstructs the complete scene.
 Off-screen composition and viewport fades also retain the original path.
+After direct planar rendering, conservative summaries skip battlefield
+dirty-mask clearing for arrays with no possible pending battlefield bits.
+Each marked array gets a constant-mask pass, combined when both are
+marked; partial rectangle clears leave its summary set until a battlefield
+or full-screen clear. Top rows and sidebar bits, including the first
+sidebar column and minimap, are preserved. Chunky fallback scenes retain
+their pending conversion work.
 The standard assets add about 104 KiB for house-aware tiles and about
 29 KiB for sprite masks/cache metadata; the loading-only c2p lookup uses
 another 128 KiB temporarily. Allocation failures log a warning and retain

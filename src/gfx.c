@@ -337,7 +337,9 @@ static bool s_dirtySuppress = false;
 static struct dirty_area s_screen0_dirty_area = { 0, 0, 0, 0 };
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
 uint32 g_dirty_blocks[200];
+static bool s_screen0_battlefield_dirty = false;
 static bool s_screen1_is_dirty = false;
+static bool s_screen1_battlefield_dirty = false;
 static struct dirty_area s_screen1_dirty_area = { 0, 0, 0, 0 };
 uint32 g_dirty_blocks_viewport[200];
 #endif
@@ -470,6 +472,13 @@ void GFX_Screen_SetDirtySuppress(bool suppress)
 	s_dirtySuppress = suppress;
 }
 
+#ifdef GFX_STORE_DIRTY_AREA_BLOCKS
+static bool GFX_Screen_DirtyIntersectsBattlefield(uint32 mask, uint16 top, uint16 bottom)
+{
+	return (mask & 0x7FFFUL) != 0 && top < SCREEN_HEIGHT && bottom > 40 && top < bottom;
+}
+#endif
+
 void GFX_Screen_SetDirty_(uint16 left, uint16 top, uint16 right, uint16 bottom)
 {
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
@@ -488,6 +497,7 @@ void GFX_Screen_SetDirty_(uint16 left, uint16 top, uint16 right, uint16 bottom)
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
 	mask = (1 << ((right + 15) >> 4)) - 1;
 	mask -= (1 << (left >> 4)) - 1;
+	if (GFX_Screen_DirtyIntersectsBattlefield(mask, top, bottom)) s_screen0_battlefield_dirty = true;
 #ifdef GFX_DIRTY_SOURCE_STATS
 	{
 		int src = s_dirtySource;
@@ -519,6 +529,7 @@ void GFX_Screen_SetClean(Screen screenID)
 	s_screen0_dirty_area.bottom = 0;
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
 	memset(g_dirty_blocks, 0, sizeof(g_dirty_blocks));
+	s_screen0_battlefield_dirty = false;
 #endif
 }
 
@@ -549,6 +560,7 @@ void GFX_Screen_SetDirtyViewport(uint16 left, uint16 top, uint16 right, uint16 b
 
 	mask = (1 << ((right + 15) >> 4)) - 1;
 	mask -= (1 << (left >> 4)) - 1;
+	if (GFX_Screen_DirtyIntersectsBattlefield(mask, top, bottom)) s_screen1_battlefield_dirty = true;
 	for (y = top; y < bottom; y++) g_dirty_blocks_viewport[y] |= mask;
 }
 
@@ -570,6 +582,7 @@ void GFX_Screen_SetCleanViewport(void)
 	s_screen1_dirty_area.right = 0;
 	s_screen1_dirty_area.bottom = 0;
 	memset(g_dirty_blocks_viewport, 0, sizeof(g_dirty_blocks_viewport));
+	s_screen1_battlefield_dirty = false;
 }
 
 void GFX_Screen_ClearDirtyViewportRect(uint16 left, uint16 top, uint16 right, uint16 bottom)
@@ -577,6 +590,27 @@ void GFX_Screen_ClearDirtyViewportRect(uint16 left, uint16 top, uint16 right, ui
 	uint32 mask = ((1UL << (right >> 4)) - 1) & ~((1UL << ((left + 15) >> 4)) - 1);
 	uint16 y;
 	for (y = top; y < bottom; y++) g_dirty_blocks_viewport[y] &= ~mask;
+}
+
+void GFX_Screen_ClearDirtyBattlefield(void)
+{
+	uint16 y;
+
+	/* Partial clears leave these summaries set conservatively. Bit 15 and
+	 * the upper bits belong to the sidebar, not the battlefield. */
+	if (s_screen0_battlefield_dirty && s_screen1_battlefield_dirty) {
+		for (y = 40; y < SCREEN_HEIGHT; y++) {
+			g_dirty_blocks[y] &= 0xFFFF8000UL;
+			g_dirty_blocks_viewport[y] &= 0xFFFF8000UL;
+		}
+		s_screen0_battlefield_dirty = s_screen1_battlefield_dirty = false;
+	} else if (s_screen0_battlefield_dirty) {
+		for (y = 40; y < SCREEN_HEIGHT; y++) g_dirty_blocks[y] &= 0xFFFF8000UL;
+		s_screen0_battlefield_dirty = false;
+	} else if (s_screen1_battlefield_dirty) {
+		for (y = 40; y < SCREEN_HEIGHT; y++) g_dirty_blocks_viewport[y] &= 0xFFFF8000UL;
+		s_screen1_battlefield_dirty = false;
+	}
 }
 #endif
 
