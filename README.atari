@@ -87,6 +87,21 @@ horizontal edges preserve the adjacent HUD, and cursor backgrounds are
 updated through the normal planar helpers. Timing and text queuing are
 unchanged.
 
+Atari credits numbers use a small six-column unsigned formatter instead
+of general printf machinery, with no division or stream handling. Equal
+old/new values share one formatted result. Leading spaces, decimal
+carries, digit scrolling and credit sound effects are unchanged.
+
+The standard ST/STE credits counter composes cached planar glyph rows in
+a private 288-byte, 64x9 buffer and publishes it once. Changing digits
+select nine visible rows from the lower/higher glyph pair using the shared
+scrolling phase; unchanged digits stay fixed. No per-update c2p or
+horizontal glyph shifting is needed. The background and six-position
+glyph cache add about 8.6 KiB and rebuild when quantized pen assignments
+change or sprites reload. Cursor/placement backgrounds are preserved.
+Unaligned positions retain the chunky cache; unsupported assets, widget
+sizes and other machines retain their existing rendering paths.
+
 Minimap 2x2 and 3x3 icons are decoded once on ST/STE into a 336-byte
 logical-pixel cache. Opaque icons use four or nine direct SCREEN_1 stores;
 transparent icons retain their exact opacity. Radar classification

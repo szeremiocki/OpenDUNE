@@ -2524,11 +2524,26 @@ bool Video_Atari_PresentRestore(int16 x, int16 y, uint16 width, uint16 height, c
 	return true;
 }
 
-void Video_Atari_EncodePlanar(const uint8 *src, uint16 *pixels, uint16 height)
+uint16 Video_Atari_GetPaletteGeneration(void)
+{
+	return s_paletteGeneration;
+}
+
+void Video_Atari_EncodePlanar(const uint8 *src, uint16 *pixels, uint16 width, uint16 height)
 {
 	assert(Video_Atari_CursorDirect() && src != NULL && pixels != NULL);
 	assert(((uint32)src & 1) == 0 && height != 0 && height <= SCREEN_HEIGHT);
-	c2p1x1_4_st(pixels, src, SCREEN_WIDTH, height, s_palette4BitPairMap);
+	assert(width != 0 && width <= SCREEN_WIDTH && (width & 15) == 0);
+	if (width == SCREEN_WIDTH) {
+		c2p1x1_4_st(pixels, src, width, height, s_palette4BitPairMap);
+	} else {
+		/* The assembly line loop has fixed 320-byte/160-byte strides. */
+		while (height-- != 0) {
+			c2p1x1_4_st(pixels, src, width, 1, s_palette4BitPairMap);
+			src += width;
+			pixels += width / 4;
+		}
+	}
 }
 
 void Video_Atari_PresentPlanarWindow(const uint16 *pixels, uint16 x, uint16 y,
