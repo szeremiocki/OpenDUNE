@@ -49,7 +49,7 @@ static bool g_dune2_enhanced, direct = true;
 static uint8 s_tilePens[256];
 static uint16 s_tilePenPairMap[16 * 256], s_palette4BitPairMap[65536];
 static unsigned allocations, failAllocation, warnings, mappings, conversions, publishes;
-static unsigned restores, slots;
+static unsigned restores, slots, stridedCalls;
 static const uint16 *lastPixels;
 /* STATE */
 static void *allocate(size_t n, bool zero) {
@@ -73,22 +73,35 @@ static uint8 pen(uint8 colour) {
     const uint8 *p = rgb + colour * 3;
     return ((p[0] & 63) * 3 + (p[1] & 63) * 5 + (p[2] & 63) * 7) & 15;
 }
-static void c2p1x1_4_st(uint16 *dst, const uint8 *src, uint16 width, uint16 height,
-                       const uint16 *lookup) {
-    assert(width == 16 && height == 1 && !((uintptr_t)src & 1));
+static void encode(uint16 *dst, const uint8 *src, uint16 width, uint16 height,
+                   const uint16 *lookup, unsigned srcStride, unsigned dstStride) {
+    assert(width != 0 && !(width & 15) && !((uintptr_t)src & 1));
     if (lookup == s_tilePenPairMap)
-        assert(dst >= s_planarTiles && dst + 4 <= s_planarTiles + slots * 64);
+        assert(dst >= s_planarTiles && dst + (height - 1) * dstStride / 2 + 4 <= s_planarTiles + slots * 64);
     conversions++;
-    memset(dst, 0, 8);
-    for (unsigned x = 0; x < 16; x += 2) {
-        unsigned index = ((unsigned)src[x] << 8) | src[x + 1];
-        if (lookup == s_tilePenPairMap) assert(index < 16 * 256);
-        unsigned mapped = lookup[index];
-        for (unsigned p = 0; p < 4; p++) {
-            if ((mapped >> 8) & (1u << p)) dst[p] |= 0x8000u >> x;
-            if (mapped & (1u << p)) dst[p] |= 0x4000u >> x;
+    for (unsigned row = 0; row < height; row++, src += srcStride, dst += dstStride / 2) {
+        memset(dst, 0, width / 2);
+        for (unsigned x = 0; x < width; x += 2) {
+            unsigned index = ((unsigned)src[x] << 8) | src[x + 1];
+            if (lookup == s_tilePenPairMap) assert(index < 16 * 256);
+            unsigned mapped = lookup[index];
+            for (unsigned p = 0; p < 4; p++) {
+                if ((mapped >> 8) & (1u << p)) dst[(x >> 4) * 4 + p] |= 0x8000u >> (x & 15);
+                if (mapped & (1u << p)) dst[(x >> 4) * 4 + p] |= 0x4000u >> (x & 15);
+            }
         }
     }
+}
+static void c2p1x1_4_st(uint16 *dst, const uint8 *src, uint16 width, uint16 height,
+                       const uint16 *lookup) {
+    assert(height == 1 || width == 320);
+    encode(dst, src, width, height, lookup, 320, 160);
+}
+static void c2p1x1_4_st_strided(uint16 *dst, const uint8 *src, uint16 width, uint16 height,
+                               const uint16 *lookup, uint32 srcStride, uint32 dstStride) {
+    assert(height > 1 && srcStride == width && dstStride == width / 2);
+    stridedCalls++;
+    encode(dst, src, width, height, lookup, srcStride, dstStride);
 }
 static void Video_Atari_DrawPlanarTile(const uint16 *p, const uint16 *m, uint16 x, uint16 y) {
     assert(p && m && x < 240 && y >= 40);
@@ -129,7 +142,7 @@ static void check(unsigned tile, unsigned house) {
     bool hit = s_planarTileReady[index] != 0;
     unsigned before = conversions;
     assert(GFX_GetPlanarTile(tile, house) == index);
-    assert(conversions == before + (hit ? 0 : 16) && s_planarTileReady[index]);
+    assert(conversions == before + (hit ? 0 : 1) && s_planarTileReady[index]);
     const uint8 *p = palettes + table[tile] * 16;
     for (unsigned line = 0; line < 16; line++) {
         uint16 expected[4] = {0}, mask = p[0] != 0 ? 0xffff : 0;
@@ -222,6 +235,29 @@ int main(void) {
         assert(!s_planarTiles && !s_planarTileMasks && !s_planarTileIndex && !s_planarTileReady);
     }
     failAllocation = 0;
+    /* Exercise compact sprite/window canvases and the unchanged full-width path. */
+    union { uint32 aligned; uint8 bytes[320 * 64]; } canvas;
+    uint16 planar[320 * 64 / 4 + 4], expected[320 * 64 / 4];
+    for (unsigned i = 0; i < sizeof(canvas.bytes); i++) canvas.bytes[i] = i * 11 + i / 31;
+    for (unsigned hi = 0; hi < 256; hi++) for (unsigned lo = 0; lo < 256; lo++)
+        s_palette4BitPairMap[hi * 256 + lo] = ((hi & 15) << 8) | (lo & 15);
+    const unsigned widths[] = {16, 32, 48, 64, 80, 160, 320};
+    const unsigned heights[] = {1, 2, 16, 32, 64};
+    for (unsigned w = 0; w < sizeof(widths) / sizeof(*widths); w++)
+        for (unsigned h = 0; h < sizeof(heights) / sizeof(*heights); h++) {
+            unsigned width = widths[w], height = heights[h], words = width * height / 4;
+            memset(planar, 0xa5, sizeof(planar));
+            memset(expected, 0, words * 2);
+            for (unsigned row = 0; row < height; row++) for (unsigned x = 0; x < width; x++)
+                for (unsigned p = 0; p < 4; p++) if (canvas.bytes[row * width + x] & (1u << p))
+                    expected[row * width / 4 + (x >> 4) * 4 + p] |= 0x8000u >> (x & 15);
+            unsigned before = conversions, beforeStrided = stridedCalls;
+            Video_Atari_EncodePlanar(canvas.bytes, planar + 2, width, height);
+            assert(conversions == before + 1);
+            assert(stridedCalls == beforeStrided + (height > 1 && width != 320));
+            assert(!memcmp(planar + 2, expected, words * 2));
+            assert(planar[0] == 0xa5a5 && planar[1] == 0xa5a5 && planar[words + 2] == 0xa5a5);
+        }
     initialize();
     GFX_ViewportBeginRestore();
     GFX_DrawPlanarTile(2, 0, 40, 3);
@@ -236,6 +272,7 @@ int main(void) {
     GFX_InitPlanarTiles(sizeof(source), rgb);
     assert(!GFX_PlanarTilesReady());
     assert(restores == 300);
+    assert(stridedCalls != 0);
     return 0;
 }
 """

@@ -128,7 +128,8 @@ extern bool Video_Atari_PresentChunkyTransparent(const void *src, uint16 srcStri
  * to match what is actually visible. */
 extern bool Video_Atari_PresentSave(int16 x, int16 y, uint16 width, uint16 height, uint8 *buffer);
 extern bool Video_Atari_PresentRestore(int16 x, int16 y, uint16 width, uint16 height, const uint8 *buffer);
-/* Encode tightly packed, word-aligned chunky rows with the current mapping.
+/* Encode tightly packed, word-aligned chunky rows with the current mapping
+ * in one call, with byte strides width (source) and width/2 (output).
  * Width must be a multiple of 16. The full-width window API below retains
  * screen x coordinates, with masked edges and cursor-aware presentation. */
 extern uint16 Video_Atari_GetPaletteGeneration(void);

@@ -146,9 +146,16 @@ tiles. The separate chunky cache and its eager preparation are unchanged.
 On a miss, packed pixels and the house-adjusted tile palette pass through
 the shared c2p encoder directly into the final cache slot. Tiles have
 compact native ST rows (8 bytes, four interleaved plane words), 128 bytes
-per image, with separate 32-byte masks. Conversion uses a small aligned
-source row and one-row calls, respecting the assembly's fixed screen
-strides without padding caches or copying completed planar tiles.
+per image, with separate 32-byte masks. A cold fill prepares an aligned
+256-byte chunky tile and converts all 16 rows directly into the slot in
+one call, without padding caches or copying completed planar tiles.
+The stride-aware c2p entry accepts separate source/destination byte
+strides (16/8 for tiles). Compact sprite components and private window
+canvases use the same batched encoder. Full-width screen conversion and
+single-row work retain the original fixed-stride entry. Both assembly
+entries expand one shared pixel kernel; the existing fixed screen entry
+remains byte-for-byte unchanged. Strides are even, at least the source/
+destination row widths, and the source stride must fit 16 bits.
 The fixed IBM.PAL mapping is initialized once at tile load; cold fills
 never use a displayed loading/fade palette or alter palette state.
 

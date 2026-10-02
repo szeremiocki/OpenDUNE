@@ -34,6 +34,8 @@ extern void c2p1x1_8_falcon(void * planar, void * chunky, uint32 count);
 extern void c2p1x1_8_tt(void * planar, void * chunky, uint32 count);
 extern void c2p1x1_8_tt_partial(void * planar, void * chunky, uint32 count);
 extern void c2p1x1_4_st(void * planar, const void * chunky, uint32 count, uint32 lines, const void * pal);
+extern void c2p1x1_4_st_strided(void *planar, const void *chunky, uint32 count, uint32 lines,
+                               const void *pal, uint32 srcStride, uint32 dstStride);
 
 /* switch FPS display */
 extern void Video_SwitchFPSDisplay(uint8 key);
@@ -2540,15 +2542,10 @@ static void Video_Atari_EncodePlanarWithLookup(const uint8 *src, uint16 *pixels,
 	assert(Video_Atari_CursorDirect() && src != NULL && pixels != NULL);
 	assert(((uint32)src & 1) == 0 && height != 0 && height <= SCREEN_HEIGHT);
 	assert(width != 0 && width <= SCREEN_WIDTH && (width & 15) == 0);
-	if (width == SCREEN_WIDTH) {
+	if (width == SCREEN_WIDTH || height == 1) {
 		c2p1x1_4_st(pixels, src, width, height, lookup);
 	} else {
-		/* The assembly line loop has fixed 320-byte/160-byte strides. */
-		while (height-- != 0) {
-			c2p1x1_4_st(pixels, src, width, 1, lookup);
-			src += width;
-			pixels += width / 4;
-		}
+		c2p1x1_4_st_strided(pixels, src, width, height, lookup, width, width / 2);
 	}
 }
 
@@ -2652,19 +2649,19 @@ void Video_Atari_InitTileMapping(const uint8 *palette)
 
 void Video_Atari_DecodePlanarTile(const uint8 *src, const uint8 *palette, uint16 *pixels)
 {
-	union { uint32 aligned; uint8 bytes[16]; } row;
+	union { uint32 aligned; uint8 bytes[16 * 16]; } chunky;
 	uint8 pens[16];
 	uint16 line, col;
 
 	assert(src != NULL && palette != NULL && pixels != NULL);
 	for (col = 0; col < 16; col++) pens[col] = s_tilePens[palette[col]];
-	for (line = 0; line < 16; line++, src += 8, pixels += 4) {
+	for (line = 0; line < 16; line++, src += 8) {
 		for (col = 0; col < 8; col++) {
-			row.bytes[col * 2] = pens[src[col] >> 4];
-			row.bytes[col * 2 + 1] = pens[src[col] & 15];
+			chunky.bytes[line * 16 + col * 2] = pens[src[col] >> 4];
+			chunky.bytes[line * 16 + col * 2 + 1] = pens[src[col] & 15];
 		}
-		Video_Atari_EncodePlanarWithLookup(row.bytes, pixels, 16, 1, s_tilePenPairMap);
 	}
+	Video_Atari_EncodePlanarWithLookup(chunky.bytes, pixels, 16, 16, s_tilePenPairMap);
 }
 
 void Video_Atari_DrawPlanarTile(const uint16 *pixels, const uint16 *masks, uint16 x, uint16 y)
