@@ -98,6 +98,27 @@ in their original order. Terrain and units still write visibly in painter order:
 this may shorten sprite invisibility, but does not eliminate the exposed
 erase/redraw interval or guarantee tear-free output.
 
+The atari-st-draw-first experiment changes ordinary planar viewport updates
+while a unit is selected: engine-requested background draws retain pointers
+to the existing tile cache instead of publishing terrain immediately.
+Sprites publish in their original painter order, accumulating their opaque
+masks only in the requested cells. Background restoration then writes only
+outside that coverage, combining ground and overlay/fog before each write.
+The sprite fallback also records its explicit opacity masks, including
+opaque logical colour 0. Cursor/placement backgrounds use the existing
+overlay-safe merge helpers.
+
+There is no additional tile cache, pixel staging buffer, object history,
+recipe comparison or damage filtering. Tile loading and palette behavior
+are unchanged. The fixed 150-cell request/coverage table adds about 7.2 KiB;
+only requested cells have their coverage cleared or restored.
+Scrolling, forced reconstruction, updates without a selected unit, and
+unsupported effects retain the terrain-first renderer. This avoids changing
+structure-selection rectangle handling in the first prototype.
+The final image follows the existing engine damage/replay set; draw-first
+can show temporary old/new sprite edges and does not guarantee tear-free
+output. Gameplay flicker and timing still require measurement.
+
 Partial fog edges are combined with the cached
 ground tile before each planar write, so covered terrain is never briefly
 exposed by a separate ground-then-fog blit. Clear terrain retains its

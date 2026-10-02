@@ -69,6 +69,10 @@ static ViewportSpriteMask *GUI_ViewportSpriteMaskSlot(const uint8 *sprite) {
     assert(false); return NULL;
 }
 static void GFX_Screen_SetDirtySource(unsigned source) { assert(source == DIRTY_SRC_SPRITE); }
+static void GFX_ViewportSpriteMasks(const uint16 *masks, uint16 stride,
+                                    uint16 first, uint16 end, uint16 top, uint16 bottom) {
+    (void)masks; (void)stride; (void)first; (void)end; (void)top; (void)bottom;
+}
 static void GFX_Screen_ClearDirtyRect(uint16 l, uint16 t, uint16 r, uint16 b) {
     assert(!(l & 15) && !(r & 15) && l < r && r <= 240 && t >= 40 && t < b && b <= 200);
     dirtyClears++;

@@ -2707,6 +2707,38 @@ void Video_Atari_DrawPlanarTileFogged(const uint16 *pixels, const uint16 *masks,
 	GFX_Screen_ClearDirtyRect(x, y, x + 16, y + 16);
 }
 
+void Video_Atari_RestorePlanarTile(const uint16 *pixels, const uint16 *masks,
+                                 const uint16 *overlayPixels, const uint16 *overlayMasks,
+                                 const uint16 *coverage, uint16 x, uint16 y)
+{
+	uint8 *base = Video_Atari_PlanarBase();
+	bool overlays = Video_Atari_PlanarOverlaysOverlap(base, x, y, 16, 16);
+	uint16 line;
+
+	assert((x & 15) == 0 && x < 240 && y >= 40 && y + 16 <= SCREEN_HEIGHT);
+	for (line = 0; line < 16; line++, pixels += 4) {
+		uint16 overlayMask = overlayMasks != NULL ? overlayMasks[line] : 0;
+		uint16 mask = (masks[line] | overlayMask) & (uint16)~coverage[line];
+		uint16 combined[4];
+		const uint16 *src = pixels;
+		uint16 *dst = (uint16 *)(base + (uint32)(y + line) * 160 + (x >> 1));
+		if (overlayPixels != NULL) src = overlayPixels + line * 4;
+		if (mask == 0) continue;
+		if (overlayMask == 0) src = pixels;
+		else if (overlayMask != 0xffff) {
+			uint16 plane;
+			for (plane = 0; plane < 4; plane++) {
+				combined[plane] = (pixels[plane] & (uint16)~overlayMask) | (src[plane] & overlayMask);
+			}
+			src = combined;
+		}
+		if (overlays) Video_Atari_PlanarMergeGroup(base, y + line, x >> 4, mask, src);
+		else if (mask == 0xffff) Video_Atari_PlanarCopyGroup(dst, src);
+		else Video_Atari_PlanarMergePlain(dst, mask, src);
+	}
+	GFX_Screen_ClearDirtyRect(x, y, x + 16, y + 16);
+}
+
 void Video_Atari_PresentSprite(const uint8 *src, uint16 stride,
                               uint16 x, uint16 y, uint16 width, uint16 height,
                               const uint16 *masks)
@@ -2719,6 +2751,7 @@ void Video_Atari_PresentSprite(const uint8 *src, uint16 stride,
 
 	assert((x & 15) == 0 && (width & 15) == 0 && width <= 48);
 	assert(x + width <= 240 && y >= 40 && y + height <= SCREEN_HEIGHT);
+	GFX_ViewportSpriteMasks(masks, groups, x >> 4, (x + width) >> 4, y, y + height);
 	for (line = 0; line < height; line++, src += stride) {
 		c2p1x1_4_st(pixels, src, width, 1, s_palette4BitPairMap);
 		for (group = 0; group < groups; group++) {
@@ -2802,6 +2835,7 @@ void Video_Atari_PresentPlanarSprite(const uint16 *pixels, const uint16 *masks,
 	overlays = Video_Atari_PlanarOverlaysOverlap(base, first * 16, top, (end - first) * 16, bottom - top);
 	pixels += ((top - y) * sourceGroups + (left - x) / 16) * 4;
 	masks += (top - y) * sourceGroups + (left - x) / 16;
+	GFX_ViewportSpriteMasks(masks, sourceGroups, first, end, top, bottom);
 	dstRow = (uint16 *)(base + (uint32)top * 160 + first * 8);
 	for (line = top; line < bottom; line++, dstRow += 80) {
 		uint16 *dst = dstRow;

@@ -41,6 +41,12 @@ extern void GFX_FreePlanarTiles(void);
 extern bool GFX_PlanarTilesReady(void);
 extern void GFX_DrawPlanarTile(uint16 tileID, uint16 x, uint16 y, uint8 houseID);
 extern void GFX_DrawPlanarTileFogged(uint16 tileID, uint16 fogTileID, uint16 x, uint16 y, uint8 houseID);
+/* Defer requested terrain draws until after the current sprite replay.
+ * Coverage uses clipped planar group coordinates and a mask-word row stride. */
+extern void GFX_ViewportBeginRestore(void);
+extern void GFX_ViewportEndRestore(void);
+extern void GFX_ViewportSpriteMasks(const uint16 *masks, uint16 stride,
+                                    uint16 first, uint16 end, uint16 top, uint16 bottom);
 #endif
 
 /* One-shot measurement of the tile count and the RAM cost of pre-decoding

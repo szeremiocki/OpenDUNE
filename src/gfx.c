@@ -75,8 +75,85 @@ static uint16 *s_planarTileMasks;
 static uint16 *s_planarTileIndex;
 static uint16 s_planarTileCount;
 
+typedef struct ViewportTileRestore {
+	const uint16 *pixels, *masks;
+	const uint16 *overlayPixels, *overlayMasks;
+	uint16 coverage[16];
+} ViewportTileRestore;
+
+static ViewportTileRestore s_viewportTileRestore[15 * 10];
+static uint8 s_viewportRestoreCells[15 * 10];
+static uint16 s_viewportRestoreCount;
+static bool s_viewportRestoreActive;
+
+void GFX_ViewportBeginRestore(void)
+{
+	assert(!s_viewportRestoreActive && s_viewportRestoreCount == 0);
+	s_viewportRestoreActive = true;
+}
+
+static void GFX_QueueViewportTile(const uint16 *pixels, const uint16 *masks,
+                                  const uint16 *overlayPixels, const uint16 *overlayMasks,
+                                  uint16 x, uint16 y)
+{
+	uint16 cell;
+	ViewportTileRestore *restore;
+
+	assert(x < 240 && (x & 15) == 0 && y >= 40 && y < 200 && ((y - 40) & 15) == 0);
+	cell = ((y - 40) >> 4) * 15 + (x >> 4);
+	restore = &s_viewportTileRestore[cell];
+	if (restore->pixels == NULL) {
+		s_viewportRestoreCells[s_viewportRestoreCount++] = cell;
+		restore->pixels = pixels;
+		restore->masks = masks;
+		restore->overlayPixels = overlayPixels;
+		restore->overlayMasks = overlayMasks;
+		memset(restore->coverage, 0, sizeof(restore->coverage));
+	} else {
+		assert(restore->overlayPixels == NULL && overlayPixels == NULL);
+		restore->overlayPixels = pixels;
+		restore->overlayMasks = masks;
+	}
+}
+
+void GFX_ViewportSpriteMasks(const uint16 *masks, uint16 stride,
+                             uint16 first, uint16 end, uint16 top, uint16 bottom)
+{
+	uint16 line, group;
+
+	if (!s_viewportRestoreActive) return;
+	assert(first < end && end <= 15 && top >= 40 && top < bottom && bottom <= 200);
+	for (line = top; line < bottom; line++, masks += stride) {
+		ViewportTileRestore *row = s_viewportTileRestore + ((line - 40) >> 4) * 15;
+		uint16 tileRow = (line - 40) & 15;
+		for (group = first; group < end; group++) {
+			if (row[group].pixels != NULL) row[group].coverage[tileRow] |= masks[group - first];
+		}
+	}
+}
+
+void GFX_ViewportEndRestore(void)
+{
+	uint16 i;
+
+	assert(s_viewportRestoreActive);
+	s_viewportRestoreActive = false;
+	for (i = 0; i < s_viewportRestoreCount; i++) {
+		uint16 cell = s_viewportRestoreCells[i];
+		ViewportTileRestore *restore = &s_viewportTileRestore[cell];
+		Video_Atari_RestorePlanarTile(restore->pixels, restore->masks,
+		    restore->overlayPixels, restore->overlayMasks, restore->coverage,
+		    (cell % 15) << 4, 40 + (cell / 15) * 16);
+		restore->pixels = NULL;
+	}
+	s_viewportRestoreCount = 0;
+}
+
 void GFX_FreePlanarTiles(void)
 {
+	memset(s_viewportTileRestore, 0, sizeof(s_viewportTileRestore));
+	s_viewportRestoreActive = false;
+	s_viewportRestoreCount = 0;
 	free(s_planarTiles);
 	free(s_planarTileMasks);
 	free(s_planarTileIndex);
@@ -94,6 +171,11 @@ void GFX_DrawPlanarTile(uint16 tileID, uint16 x, uint16 y, uint8 houseID)
 	uint16 index;
 	assert(s_planarTiles != NULL && tileID < s_planarTileCount && houseID < HOUSE_MAX);
 	index = s_planarTileIndex[(uint32)houseID * s_planarTileCount + tileID];
+	if (s_viewportRestoreActive) {
+		GFX_QueueViewportTile(s_planarTiles + (uint32)index * 64,
+		    s_planarTileMasks + (uint32)tileID * 16, NULL, NULL, x, y);
+		return;
+	}
 	Video_Atari_DrawPlanarTile(s_planarTiles + (uint32)index * 64,
 	                           s_planarTileMasks + (uint32)tileID * 16, x, y);
 }
@@ -104,6 +186,13 @@ void GFX_DrawPlanarTileFogged(uint16 tileID, uint16 fogTileID, uint16 x, uint16 
 	assert(s_planarTiles != NULL && tileID < s_planarTileCount && fogTileID < s_planarTileCount && houseID < HOUSE_MAX);
 	index = s_planarTileIndex[(uint32)houseID * s_planarTileCount + tileID];
 	fogIndex = s_planarTileIndex[(uint32)houseID * s_planarTileCount + fogTileID];
+	if (s_viewportRestoreActive) {
+		GFX_QueueViewportTile(s_planarTiles + (uint32)index * 64,
+		    s_planarTileMasks + (uint32)tileID * 16,
+		    s_planarTiles + (uint32)fogIndex * 64,
+		    s_planarTileMasks + (uint32)fogTileID * 16, x, y);
+		return;
+	}
 	Video_Atari_DrawPlanarTileFogged(s_planarTiles + (uint32)index * 64,
 	                               s_planarTileMasks + (uint32)tileID * 16,
 	                               s_planarTiles + (uint32)fogIndex * 64,

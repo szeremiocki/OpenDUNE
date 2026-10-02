@@ -156,6 +156,11 @@ extern void Video_Atari_DrawPlanarTile(const uint16 *pixels, const uint16 *masks
 extern void Video_Atari_DrawPlanarTileFogged(const uint16 *pixels, const uint16 *masks,
                                           const uint16 *fogPixels, const uint16 *fogMasks,
                                           uint16 x, uint16 y);
+/* Restore an existing cached background only outside newly drawn sprites.
+ * Optional overlay/fog is combined before each visible group write. */
+extern void Video_Atari_RestorePlanarTile(const uint16 *pixels, const uint16 *masks,
+                                        const uint16 *overlayPixels, const uint16 *overlayMasks,
+                                        const uint16 *coverage, uint16 x, uint16 y);
 extern void Video_Atari_PresentSprite(const uint8 *src, uint16 stride,
                                      uint16 x, uint16 y, uint16 width, uint16 height,
                                      const uint16 *masks);

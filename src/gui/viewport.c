@@ -621,10 +621,13 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 	uint16 dirtyColumns[10] = {0};
 	bool directViewport = Video_Atari_CursorDirect();
 	bool planarViewport = !drawToMainScreen && !g_viewport_fadein && GUI_Widget_Viewport_CanDrawPlanar();
+	bool restoreBackground;
 	if (planarViewport != s_viewportWasPlanar || (planarViewport && hasScrolled && !planarShifted)) {
 		forceRedraw = true;
 		g_selectionRectangleNeedRepaint = true;
 	}
+	restoreBackground = planarViewport && !forceRedraw && !hasScrolled &&
+	                    g_unitSelected != NULL && g_dirtyViewportCount != 0;
 #endif
 
 	PoolFindStruct find;
@@ -643,6 +646,9 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 
 	oldWidgetID = Widget_SetCurrentWidget(2);
 
+#ifdef TOS
+	if (restoreBackground) GFX_ViewportBeginRestore();
+#endif
 	if (g_dirtyViewportCount != 0 || forceRedraw) {
 		for (y = 0; y < 10; y++) {
 			uint16 top = (y << 4) + 0x28;	/* 40 */
@@ -1077,6 +1083,10 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 
 		g_dirtyAirUnitCount = 0;
 	}
+
+#ifdef TOS
+	if (restoreBackground) GFX_ViewportEndRestore();
+#endif
 
 	if (updateDisplay) {
 		memset(g_dirtyMinimap,  0, sizeof(g_dirtyMinimap));
