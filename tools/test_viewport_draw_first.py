@@ -85,6 +85,9 @@ static void c2p1x1_4_st(uint16 *dst, const uint8 *src, uint16 width, uint16 heig
         if (src[x] & (1u << p)) dst[(x >> 4) * 4 + p] |= 0x8000u >> (x & 15);
 }
 /* VIDEO */
+static uint16 GFX_GetPlanarTile(uint16 tileID, uint8 houseID) {
+    return s_planarTileIndex[(uint32)houseID * s_planarTileCount + tileID];
+}
 /* GFX */
 static bool eligible(bool planarViewport, bool forceRedraw, bool hasScrolled,
                      void *g_unitSelected, uint16 g_dirtyViewportCount) {

@@ -36,6 +36,7 @@ extern void GFX_Init_TilesInfo(uint16 widthSize, uint16 heightSize);
 extern void GFX_Init_DecodedTiles(uint32 tilesDataLength);
 extern void GFX_FreeDecodedTiles(void);
 #ifdef TOS
+/* Stable tile/house slots are allocated at load and filled on first draw. */
 extern void GFX_InitPlanarTiles(uint32 tilesDataLength, const uint8 *palette);
 extern void GFX_FreePlanarTiles(void);
 extern bool GFX_PlanarTilesReady(void);

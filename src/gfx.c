@@ -73,6 +73,7 @@ static uint8 GFX_TileHouseColor(uint8 colour, uint8 houseID)
 static uint16 *s_planarTiles;
 static uint16 *s_planarTileMasks;
 static uint16 *s_planarTileIndex;
+static uint8 *s_planarTileReady;
 static uint16 s_planarTileCount;
 
 typedef struct ViewportTileRestore {
@@ -157,7 +158,9 @@ void GFX_FreePlanarTiles(void)
 	free(s_planarTiles);
 	free(s_planarTileMasks);
 	free(s_planarTileIndex);
+	free(s_planarTileReady);
 	s_planarTiles = s_planarTileMasks = s_planarTileIndex = NULL;
+	s_planarTileReady = NULL;
 	s_planarTileCount = 0;
 }
 
@@ -166,11 +169,39 @@ bool GFX_PlanarTilesReady(void)
 	return s_planarTiles != NULL;
 }
 
+static uint16 GFX_GetPlanarTile(uint16 tileID, uint8 houseID)
+{
+	uint16 index = s_planarTileIndex[(uint32)houseID * s_planarTileCount + tileID];
+	const uint8 *source, *palette;
+	uint8 colours[16];
+	uint16 line, col;
+
+	if (s_planarTileReady[index]) return index;
+	source = g_tilesPixels + (uint32)tileID * s_tileByteSize;
+	palette = g_iconRPAL + (g_iconRTBL[tileID] << 4);
+	for (col = 0; col < 16; col++) colours[col] = GFX_TileHouseColor(palette[col], houseID);
+	for (line = 0; line < 16; line++) {
+		uint16 mask = 0xffff;
+		if (palette[0] == 0) {
+			mask = 0;
+			for (col = 0; col < 8; col++) {
+				uint8 pair = source[line * 8 + col];
+				if (palette[pair >> 4] != 0) mask |= 0x8000u >> (col * 2);
+				if (palette[pair & 15] != 0) mask |= 0x4000u >> (col * 2);
+			}
+		}
+		s_planarTileMasks[(uint32)tileID * 16 + line] = mask;
+	}
+	Video_Atari_DecodePlanarTile(source, colours, s_planarTiles + (uint32)index * 64);
+	s_planarTileReady[index] = 1;
+	return index;
+}
+
 void GFX_DrawPlanarTile(uint16 tileID, uint16 x, uint16 y, uint8 houseID)
 {
 	uint16 index;
 	assert(s_planarTiles != NULL && tileID < s_planarTileCount && houseID < HOUSE_MAX);
-	index = s_planarTileIndex[(uint32)houseID * s_planarTileCount + tileID];
+	index = GFX_GetPlanarTile(tileID, houseID);
 	if (s_viewportRestoreActive) {
 		GFX_QueueViewportTile(s_planarTiles + (uint32)index * 64,
 		    s_planarTileMasks + (uint32)tileID * 16, NULL, NULL, x, y);
@@ -184,8 +215,8 @@ void GFX_DrawPlanarTileFogged(uint16 tileID, uint16 fogTileID, uint16 x, uint16 
 {
 	uint16 index, fogIndex;
 	assert(s_planarTiles != NULL && tileID < s_planarTileCount && fogTileID < s_planarTileCount && houseID < HOUSE_MAX);
-	index = s_planarTileIndex[(uint32)houseID * s_planarTileCount + tileID];
-	fogIndex = s_planarTileIndex[(uint32)houseID * s_planarTileCount + fogTileID];
+	index = GFX_GetPlanarTile(tileID, houseID);
+	fogIndex = GFX_GetPlanarTile(fogTileID, houseID);
 	if (s_viewportRestoreActive) {
 		GFX_QueueViewportTile(s_planarTiles + (uint32)index * 64,
 		    s_planarTileMasks + (uint32)tileID * 16,
@@ -201,10 +232,7 @@ void GFX_DrawPlanarTileFogged(uint16 tileID, uint16 fogTileID, uint16 x, uint16 
 
 void GFX_InitPlanarTiles(uint32 tilesDataLength, const uint8 *palette)
 {
-	uint16 tile, house, variants, next;
-	uint16 *lookup;
-	uint8 *scratch;
-	Screen oldScreen;
+	uint16 tile, house, variants;
 
 	GFX_FreePlanarTiles();
 	if (!Video_Atari_CursorDirect() || s_tileMode == 4 || s_tileWidth != 8 || s_tileHeight != 16) return;
@@ -237,47 +265,11 @@ void GFX_InitPlanarTiles(uint32 tilesDataLength, const uint8 *palette)
 	}
 	s_planarTiles = malloc((uint32)variants * 128);
 	s_planarTileMasks = malloc((uint32)s_planarTileCount * 32);
-	if (s_planarTiles == NULL || s_planarTileMasks == NULL) goto no_memory;
-	lookup = Video_Atari_CreateTileLookup(palette);
-	if (lookup == NULL) {
-		GFX_FreePlanarTiles();
-		return;
-	}
-	oldScreen = GFX_Screen_SetActive(SCREEN_2);
-	scratch = GFX_Screen_GetActive();
-	for (house = 0; house < HOUSE_MAX; house++) {
-		for (tile = 0; tile < s_planarTileCount; tile++) {
-			uint16 line, col;
-			const uint8 *p = g_iconRPAL + (g_iconRTBL[tile] << 4);
-			next = s_planarTileIndex[(uint32)house * s_planarTileCount + tile];
-			if (house != 0 && next == tile) continue;
-			for (line = 0; line < 16; line++) memset(scratch + (uint32)line * SCREEN_WIDTH, 0, 16);
-			GFX_DrawTile(tile, 0, 0, house);
-			if (house == 0) {
-				for (line = 0; line < 16; line++) {
-					uint16 mask = 0xffff;
-					if (p[0] == 0) {
-						mask = 0;
-						for (col = 0; col < 16; col++) {
-							if (scratch[(uint32)line * SCREEN_WIDTH + col] != 0) mask |= 0x8000u >> col;
-						}
-					}
-					s_planarTileMasks[(uint32)tile * 16 + line] = mask;
-				}
-			}
-			if (!Video_Atari_DecodePlanarTile(scratch, s_planarTiles + (uint32)next * 64, lookup)) {
-				Warning("Planar tile decoding failed for tile %u, house %u\n", tile, house);
-				GFX_Screen_SetActive(oldScreen);
-				free(lookup);
-				GFX_FreePlanarTiles();
-				return;
-			}
-		}
-	}
-	GFX_Screen_SetActive(oldScreen);
-	free(lookup);
-	Debug("Planar tiles: %u tiles, %u house variants, %lu bytes\n", s_planarTileCount, variants,
-	      (unsigned long)((uint32)variants * 128 + (uint32)s_planarTileCount * (32 + HOUSE_MAX * 2)));
+	s_planarTileReady = calloc(variants, sizeof(*s_planarTileReady));
+	if (s_planarTiles == NULL || s_planarTileMasks == NULL || s_planarTileReady == NULL) goto no_memory;
+	Video_Atari_InitTileMapping(palette);
+	Debug("Lazy planar tiles: %u tiles, %u stable house slots, %lu bytes\n", s_planarTileCount, variants,
+	      (unsigned long)((uint32)variants * 129 + (uint32)s_planarTileCount * (32 + HOUSE_MAX * 2)));
 	return;
 
 no_memory:

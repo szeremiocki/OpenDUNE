@@ -586,6 +586,11 @@ static uint8 s_palette4BitMap[256];
  * changes - see Rebuild_Palette4BitPairMap(). 128KB resident. */
 static uint16 s_palette4BitPairMap[65536];
 
+static uint8 s_tilePens[256];
+/* Already mapped tile pixels are 0..15; the assembly's pair index still
+ * has a 256-word row stride, so only the first 16 rows are needed. */
+static uint16 s_tilePenPairMap[16 * 256];
+
 /* Only the rows/columns touched by the changed color range [from, from+length)
  * need patching: entries where hi (pixelA) is in range are a full contiguous
  * 256-word row each; entries where lo (pixelB) is in range are one column
@@ -2529,21 +2534,27 @@ uint16 Video_Atari_GetPaletteGeneration(void)
 	return s_paletteGeneration;
 }
 
-void Video_Atari_EncodePlanar(const uint8 *src, uint16 *pixels, uint16 width, uint16 height)
+static void Video_Atari_EncodePlanarWithLookup(const uint8 *src, uint16 *pixels,
+                                              uint16 width, uint16 height, const uint16 *lookup)
 {
 	assert(Video_Atari_CursorDirect() && src != NULL && pixels != NULL);
 	assert(((uint32)src & 1) == 0 && height != 0 && height <= SCREEN_HEIGHT);
 	assert(width != 0 && width <= SCREEN_WIDTH && (width & 15) == 0);
 	if (width == SCREEN_WIDTH) {
-		c2p1x1_4_st(pixels, src, width, height, s_palette4BitPairMap);
+		c2p1x1_4_st(pixels, src, width, height, lookup);
 	} else {
 		/* The assembly line loop has fixed 320-byte/160-byte strides. */
 		while (height-- != 0) {
-			c2p1x1_4_st(pixels, src, width, 1, s_palette4BitPairMap);
+			c2p1x1_4_st(pixels, src, width, 1, lookup);
 			src += width;
 			pixels += width / 4;
 		}
 	}
+}
+
+void Video_Atari_EncodePlanar(const uint8 *src, uint16 *pixels, uint16 width, uint16 height)
+{
+	Video_Atari_EncodePlanarWithLookup(src, pixels, width, height, s_palette4BitPairMap);
 }
 
 void Video_Atari_PresentPlanarWindow(const uint16 *pixels, uint16 x, uint16 y,
@@ -2624,38 +2635,36 @@ bool Video_Atari_PresentActive(void)
 	return s_presentMode;
 }
 
-uint16 *Video_Atari_CreateTileLookup(const uint8 *palette)
+void Video_Atari_InitTileMapping(const uint8 *palette)
 {
-	uint8 pens[256];
-	uint16 *lookup;
 	unsigned hi, lo;
 
-	if (!Video_Atari_CursorDirect()) return NULL;
-	lookup = malloc(65536UL * sizeof(*lookup));
-	if (lookup == NULL) {
-		Warning("Planar tile decoding disabled: out of memory for c2p lookup\n");
-		return NULL;
-	}
+	assert(Video_Atari_CursorDirect() && palette != NULL);
 	for (hi = 0; hi < 256; hi++) {
-		pens[hi] = Palette_FindClosestColor(palette[hi * 3] & 0x3f,
-		                                  palette[hi * 3 + 1] & 0x3f,
-		                                  palette[hi * 3 + 2] & 0x3f);
+		s_tilePens[hi] = Palette_FindClosestColor(palette[hi * 3] & 0x3f,
+		                                        palette[hi * 3 + 1] & 0x3f,
+		                                        palette[hi * 3 + 2] & 0x3f);
 	}
-	for (hi = 0; hi < 256; hi++) {
-		for (lo = 0; lo < 256; lo++) lookup[(hi << 8) | lo] = (pens[hi] << 8) | pens[lo];
+	for (hi = 0; hi < 16; hi++) {
+		for (lo = 0; lo < 16; lo++) s_tilePenPairMap[(hi << 8) | lo] = (hi << 8) | lo;
 	}
-	return lookup;
 }
 
-bool Video_Atari_DecodePlanarTile(const uint8 *src, uint16 *pixels, const uint16 *lookup)
+void Video_Atari_DecodePlanarTile(const uint8 *src, const uint8 *palette, uint16 *pixels)
 {
-	uint8 *base = Video_Atari_PlanarBase();
+	union { uint32 aligned; uint8 bytes[16]; } row;
+	uint8 pens[16];
+	uint16 line, col;
 
-	/* Decode with the gameplay palette even if a loading/mentat palette
-	 * is currently displayed. Neither the active mapping nor registers change. */
-	c2p1x1_4_st(base, src, 16, 16, lookup);
-	Video_Atari_PlanarFinishRun(base, 0, 0, 16, 16);
-	return Video_Atari_PresentSave(0, 0, 16, 16, (uint8 *)pixels);
+	assert(src != NULL && palette != NULL && pixels != NULL);
+	for (col = 0; col < 16; col++) pens[col] = s_tilePens[palette[col]];
+	for (line = 0; line < 16; line++, src += 8, pixels += 4) {
+		for (col = 0; col < 8; col++) {
+			row.bytes[col * 2] = pens[src[col] >> 4];
+			row.bytes[col * 2 + 1] = pens[src[col] & 15];
+		}
+		Video_Atari_EncodePlanarWithLookup(row.bytes, pixels, 16, 1, s_tilePenPairMap);
+	}
 }
 
 void Video_Atari_DrawPlanarTile(const uint16 *pixels, const uint16 *masks, uint16 x, uint16 y)

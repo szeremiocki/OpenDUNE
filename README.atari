@@ -108,9 +108,9 @@ The sprite fallback also records its explicit opacity masks, including
 opaque logical colour 0. Cursor/placement backgrounds use the existing
 overlay-safe merge helpers.
 
-There is no additional tile cache, pixel staging buffer, object history,
-recipe comparison or damage filtering. Tile loading and palette behavior
-are unchanged. The fixed 150-cell request/coverage table adds about 7.2 KiB;
+There is no additional background cache, pixel staging buffer, object
+history, recipe comparison or damage filtering. Palette behavior is
+unchanged. The fixed 150-cell request/coverage table adds about 7.2 KiB;
 only requested cells have their coverage cleared or restored.
 Scrolling, forced reconstruction, updates without a selected unit, and
 unsupported effects retain the terrain-first renderer. This avoids changing
@@ -133,10 +133,32 @@ marked; partial rectangle clears leave its summary set until a battlefield
 or full-screen clear. Top rows and sidebar bits, including the first
 sidebar column and minimap, are preserved. Chunky fallback scenes retain
 their pending conversion work.
-The standard assets add about 104 KiB for house-aware tiles and about
-29 KiB for sprite masks/cache metadata; the loading-only c2p lookup uses
-another 128 KiB temporarily. Allocation failures log a warning and retain
-the original renderer. TT/Falcon rendering is unchanged.
+The atari-st-tile-cache branch fills planar tiles lazily at their existing
+draw entry points. Tile/house indices and permanent pixel slots retain the
+previous layout and sharing of non-recoloured tiles; a ready byte per slot
+is the only hit check after the direct index lookup. There is no eviction:
+queued draw-first background pointers remain valid through restoration.
+Load-time setup still scans for house variants, but decodes no planar
+tiles. The separate chunky cache and its eager preparation are unchanged.
+
+On a miss, packed pixels and the house-adjusted tile palette pass through
+the shared c2p encoder directly into the final cache slot. Tiles have
+compact native ST rows (8 bytes, four interleaved plane words), 128 bytes
+per image, with separate 32-byte masks. Conversion uses a small aligned
+source row and one-row calls, respecting the assembly's fixed screen
+strides without padding caches or copying completed planar tiles.
+The fixed IBM.PAL mapping is initialized once at tile load; cold fills
+never use a displayed loading/fade palette or alter palette state.
+
+The standard assets still reserve about 104 KiB for house-aware tiles,
+plus one ready byte per planar slot. A 256-byte gameplay pen map and
+8 KiB restricted pair lookup replace the former temporary 128 KiB tile
+lookup; only 256 pair entries need initialization. This is a lazy-fill,
+stable-address cache, not a bounded working-set cache. Sprite masks/cache
+metadata add about 29 KiB, separately from the sprite image caches above.
+Allocation failures log a warning and retain the original renderer.
+TT/Falcon rendering is unchanged. Startup and first-draw timings need
+measurement on the target.
 
 Click-to-center actions on ST/STE (minimap, viewport right-click, and the
 selected-object name) reuse the same incremental planar shift as edge
