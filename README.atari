@@ -169,6 +169,21 @@ Allocation failures log a warning and retain the original renderer.
 TT/Falcon rendering is unchanged. Startup and first-draw timings need
 measurement on the target.
 
+Remaining stride-aware opportunities are Video_Atari_PresentRun() for
+aligned compact sources (including eligible WSA/private-buffer regions),
+and Video_Atari_PresentSprite() for uncached viewport fallback draws.
+The former can batch a complete run with the screen's 160-byte output
+stride without adding scratch storage; retain alignment checks and
+cursor/placement finishing. The latter needs bounded multi-row planar
+scratch and unchanged opacity/overlay-safe publication. It is a cache
+bypass/fallback, not the normal sprite-cache miss path, which already
+uses batched conversion. Neither is a demonstrated hot short-stride path
+in the stabilized harvester replay; evaluate with a workload exercising
+the relevant fallback or animation before prioritizing it.
+Credits background/glyph preparation already uses the batched encoder.
+The 320-wide announcement banner already converts all 24 rows in one
+fixed-stride call; its scrolling planar copies are not c2p work.
+
 Click-to-center actions on ST/STE (minimap, viewport right-click, and the
 selected-object name) reuse the same incremental planar shift as edge
 scrolling while any viewport overlap remains. Diagonal shifts clear all
