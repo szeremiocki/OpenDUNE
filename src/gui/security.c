@@ -127,7 +127,7 @@ bool GUI_Security_Show(void)
 		WSA_DisplayFrame(wsa, 0, g_curWidgetXBase << 3, g_curWidgetYBase, SCREEN_2);
 		WSA_Unload(wsa);
 
-		GUI_DrawSprite(SCREEN_2, g_sprites[397 + g_playerHouseID * 15], g_shoulderLeft, g_shoulderTop, 0, 0);
+		GUI_DrawSprite(SCREEN_2, g_sprites[397 + g_playerHouseID * 15], 397 + g_playerHouseID * 15, GUI_SPRITE_COLOUR_EMBEDDED, g_shoulderLeft, g_shoulderTop, 0, 0);
 
 		GUI_Mouse_Hide_InWidget(g_curWidgetIndex);
 		GUI_Screen_Copy(g_curWidgetXBase, g_curWidgetYBase, g_curWidgetXBase, g_curWidgetYBase, g_curWidgetWidth, g_curWidgetHeight, SCREEN_2, SCREEN_0);

@@ -97,8 +97,9 @@ bool GUI_DrawMinimapIcon(uint16 id, uint16 x, uint16 y) {
     icon(id, x, y);
     return true;
 }
-void GUI_DrawSprite(int screen, uint8 *sprite, uint16 x, uint16 y, int w, int f) {
-    (void)screen; (void)w; (void)f;
+#define GUI_SPRITE_COLOUR_EMBEDDED 0xfe
+void GUI_DrawSprite(int screen, uint8 *sprite, uint16 id, uint8 house, uint16 x, uint16 y, int w, int f) {
+    (void)screen; (void)id; (void)house; (void)w; (void)f;
     icon(*sprite, x, y);
 }
 /* BITS */

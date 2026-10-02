@@ -159,6 +159,16 @@ extern void Video_Atari_DrawPlanarTileFogged(const uint16 *pixels, const uint16 
 extern void Video_Atari_PresentSprite(const uint8 *src, uint16 stride,
                                      uint16 x, uint16 y, uint16 width, uint16 height,
                                      const uint16 *masks);
+/* Merge a cached component into private planar pixels/masks at any X phase.
+ * Both row widths are group-aligned; transparent right padding is clipped. */
+extern void Video_Atari_ComposePlanarSprite(uint16 *dstPixels, uint16 *dstMasks,
+                                          uint16 dstWidth, uint16 dstHeight,
+                                          const uint16 *pixels, const uint16 *masks,
+                                          uint16 width, uint16 height, uint16 x, uint16 y);
+/* Prealigned/flipped frames or layered units, up to 80x64; width and X
+ * are multiples of 16. Clipping preserves cursor/placement backgrounds. */
+extern void Video_Atari_PresentPlanarSprite(const uint16 *pixels, const uint16 *masks,
+                                          uint16 width, uint16 height, int16 x, int16 y);
 #endif /* TOS */
 
 #endif /* VIDEO_VIDEO_H */

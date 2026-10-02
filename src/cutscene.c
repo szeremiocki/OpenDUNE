@@ -741,7 +741,7 @@ static void GameCredits_Play(char *data, uint16 windowID, Screen spriteScreenID,
 			case 2:	/* 2 : display new picture */
 				if (spriteID == 525) spriteID = 514;
 
-				GUI_DrawSprite(spriteScreenID, g_sprites[spriteID], positions[spritePos].x, positions[spritePos].y, windowID, DRAWSPRITE_FLAG_WIDGETPOS);
+				GUI_DrawSprite(spriteScreenID, g_sprites[spriteID], spriteID, GUI_SPRITE_COLOUR_EMBEDDED, positions[spritePos].x, positions[spritePos].y, windowID, DRAWSPRITE_FLAG_WIDGETPOS);
 
 				counter = 8;
 				stage++;

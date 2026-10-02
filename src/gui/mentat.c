@@ -263,7 +263,7 @@ static void GUI_Mentat_Draw(bool force)
 
 	Widget_SetAndPaintCurrentWidget(8);
 
-	GUI_DrawSprite(SCREEN_1, g_sprites[397 + g_playerHouseID * 15], g_shoulderLeft, g_shoulderTop, 0, 0);
+	GUI_DrawSprite(SCREEN_1, g_sprites[397 + g_playerHouseID * 15], 397 + g_playerHouseID * 15, GUI_SPRITE_COLOUR_EMBEDDED, g_shoulderLeft, g_shoulderTop, 0, 0);
 
 	GUI_DrawText_Wrapper(String_Get_ByIndex(STR_SELECT_SUBJECT), (g_curWidgetXBase << 3) + 16, g_curWidgetYBase + 2, 12, 0, 0x12);
 	GUI_DrawText_Wrapper(NULL, 0, 0, 0, 0, 0x11);
@@ -422,7 +422,7 @@ uint16 GUI_Mentat_Show(char *stringBuffer, const char *wsaFilename, Widget *w)
 		WSA_Unload(wsa);
 	}
 
-	GUI_DrawSprite(SCREEN_1, g_sprites[397 + g_playerHouseID * 15], g_shoulderLeft, g_shoulderTop, 0, 0);
+	GUI_DrawSprite(SCREEN_1, g_sprites[397 + g_playerHouseID * 15], 397 + g_playerHouseID * 15, GUI_SPRITE_COLOUR_EMBEDDED, g_shoulderLeft, g_shoulderTop, 0, 0);
 	GFX_Screen_SetActive(SCREEN_0);
 
 	GUI_Mouse_Hide_Safe();
@@ -542,7 +542,7 @@ void GUI_Mentat_Display(const char *wsaFilename, uint8 houseID)
 		WSA_Unload(wsa);
 	}
 
-	GUI_DrawSprite(SCREEN_1, g_sprites[397 + houseID * 15], g_shoulderLeft, g_shoulderTop, 0, 0);
+	GUI_DrawSprite(SCREEN_1, g_sprites[397 + houseID * 15], 397 + houseID * 15, GUI_SPRITE_COLOUR_EMBEDDED, g_shoulderLeft, g_shoulderTop, 0, 0);
 	GFX_Screen_SetActive(oldScreenID);
 }
 
@@ -578,7 +578,7 @@ void GUI_Mentat_Animation(uint16 speakingMode)
 			sprite = s_mentatSprites[2][abs(otherSprite)];
 
 			GUI_Mouse_Hide_InRegion(s_otherLeft, s_otherTop, s_otherLeft + Sprite_GetWidth(sprite), s_otherTop + Sprite_GetHeight(sprite));
-			GUI_DrawSprite(SCREEN_0, sprite, s_otherLeft, s_otherTop, 0, 0);
+			GUI_DrawSprite(SCREEN_0, sprite, GUI_SPRITE_ID_UNKNOWN, GUI_SPRITE_COLOUR_EMBEDDED, s_otherLeft, s_otherTop, 0, 0);
 			GUI_Mouse_Show_InRegion();
 		}
 
@@ -609,7 +609,7 @@ void GUI_Mentat_Animation(uint16 speakingMode)
 			sprite = s_mentatSprites[1][movingMouthSprite];
 
 			GUI_Mouse_Hide_InRegion(s_mouthLeft, s_mouthTop, s_mouthLeft + Sprite_GetWidth(sprite), s_mouthTop + Sprite_GetHeight(sprite));
-			GUI_DrawSprite(SCREEN_0, sprite, s_mouthLeft, s_mouthTop, 0, 0);
+			GUI_DrawSprite(SCREEN_0, sprite, GUI_SPRITE_ID_UNKNOWN, GUI_SPRITE_COLOUR_EMBEDDED, s_mouthLeft, s_mouthTop, 0, 0);
 			GUI_Mouse_Show_InRegion();
 
 			switch (movingMouthSprite) {
@@ -657,7 +657,7 @@ void GUI_Mentat_Animation(uint16 speakingMode)
 			sprite = s_mentatSprites[1][movingMouthSprite];
 
 			GUI_Mouse_Hide_InRegion(s_mouthLeft, s_mouthTop, s_mouthLeft + Sprite_GetWidth(sprite), s_mouthTop + Sprite_GetHeight(sprite));
-			GUI_DrawSprite(SCREEN_0, sprite, s_mouthLeft, s_mouthTop, 0, 0);
+			GUI_DrawSprite(SCREEN_0, sprite, GUI_SPRITE_ID_UNKNOWN, GUI_SPRITE_COLOUR_EMBEDDED, s_mouthLeft, s_mouthTop, 0, 0);
 			GUI_Mouse_Show_InRegion();
 		}
 	}
@@ -679,7 +679,7 @@ void GUI_Mentat_Animation(uint16 speakingMode)
 				sprite = s_mentatSprites[0][movingEyesSprite];
 
 				GUI_Mouse_Hide_InRegion(s_eyesLeft, s_eyesTop, s_eyesLeft + Sprite_GetWidth(sprite), s_eyesTop + Sprite_GetHeight(sprite));
-				GUI_DrawSprite(SCREEN_0, sprite, s_eyesLeft, s_eyesTop, 0, 0);
+				GUI_DrawSprite(SCREEN_0, sprite, GUI_SPRITE_ID_UNKNOWN, GUI_SPRITE_COLOUR_EMBEDDED, s_eyesLeft, s_eyesTop, 0, 0);
 				GUI_Mouse_Show_InRegion();
 			}
 
@@ -787,7 +787,7 @@ void GUI_Mentat_Animation(uint16 speakingMode)
 		sprite = s_mentatSprites[0][movingEyesSprite];
 
 		GUI_Mouse_Hide_InRegion(s_eyesLeft, s_eyesTop, s_eyesLeft + Sprite_GetWidth(sprite), s_eyesTop + Sprite_GetHeight(sprite));
-		GUI_DrawSprite(SCREEN_0, sprite, s_eyesLeft, s_eyesTop, 0, 0);
+		GUI_DrawSprite(SCREEN_0, sprite, GUI_SPRITE_ID_UNKNOWN, GUI_SPRITE_COLOUR_EMBEDDED, s_eyesLeft, s_eyesTop, 0, 0);
 		GUI_Mouse_Show_InRegion();
 	}
 }
@@ -1257,7 +1257,7 @@ uint16 GUI_Mentat_Loop(const char *wsaFilename, char *pictureDetails, char *text
 
 		GUI_Mentat_DrawInfo(pictureDetails, (g_curWidgetXBase << 3) + 5, g_curWidgetYBase + 3, 8, 0, lines, 0x31);
 
-		GUI_DrawSprite(SCREEN_2, g_sprites[397 + g_playerHouseID * 15], g_shoulderLeft, g_shoulderTop, 0, 0);
+		GUI_DrawSprite(SCREEN_2, g_sprites[397 + g_playerHouseID * 15], 397 + g_playerHouseID * 15, GUI_SPRITE_COLOUR_EMBEDDED, g_shoulderLeft, g_shoulderTop, 0, 0);
 		GUI_Mouse_Hide_InWidget(g_curWidgetIndex);
 		GUI_Screen_Copy(g_curWidgetXBase, g_curWidgetYBase, g_curWidgetXBase, g_curWidgetYBase, g_curWidgetWidth, g_curWidgetHeight, SCREEN_2, SCREEN_0);
 		GUI_Mouse_Show_InWidget();
@@ -1267,7 +1267,7 @@ uint16 GUI_Mentat_Loop(const char *wsaFilename, char *pictureDetails, char *text
 	if (wsa != NULL) WSA_Unload(wsa);
 
 	GFX_Screen_SetActive(SCREEN_2);
-	GUI_DrawSprite(SCREEN_2, g_sprites[397 + g_playerHouseID * 15], g_shoulderLeft, g_shoulderTop, 0, 0);
+	GUI_DrawSprite(SCREEN_2, g_sprites[397 + g_playerHouseID * 15], 397 + g_playerHouseID * 15, GUI_SPRITE_COLOUR_EMBEDDED, g_shoulderLeft, g_shoulderTop, 0, 0);
 	GUI_Mouse_Hide_InWidget(g_curWidgetIndex);
 	GUI_Screen_Copy(g_curWidgetXBase, g_curWidgetYBase, g_curWidgetXBase, g_curWidgetYBase, g_curWidgetWidth, g_curWidgetHeight, SCREEN_2, SCREEN_0);
 	GUI_Mouse_Show_InWidget();

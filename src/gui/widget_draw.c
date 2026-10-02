@@ -115,7 +115,7 @@ void GUI_Widget_SpriteButton_Draw(Widget *w)
 
 	GUI_DrawWiredRectangle(positionX - 1, positionY - 1, positionX + width, positionY + height, 12);
 
-	GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[spriteID], positionX, positionY, 0, DRAWSPRITE_FLAG_REMAP, g_paletteMapping1, buttonDown ? 1 : 0);
+	GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[spriteID], spriteID, GUI_SPRITE_COLOUR_EMBEDDED, positionX, positionY, 0, DRAWSPRITE_FLAG_REMAP, g_paletteMapping1, buttonDown ? 1 : 0);
 
 	GUI_DrawBorder(positionX, positionY, width, height, buttonDown ? 0 : 1, false);
 
@@ -197,7 +197,7 @@ void GUI_Widget_SpriteTextButton_Draw(Widget *w)
 				uint16 x, y;
 				uint8 *sprite;
 
-				GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[63], positionX + 37, positionY + 5, 0, DRAWSPRITE_FLAG_REMAP, g_paletteMapping1, buttonDown ? 2 : 0);
+				GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[63], 63, GUI_SPRITE_COLOUR_EMBEDDED, positionX + 37, positionY + 5, 0, DRAWSPRITE_FLAG_REMAP, g_paletteMapping1, buttonDown ? 2 : 0);
 
 				sprite = g_sprites[24];
 				spriteWidth = Sprite_GetWidth(sprite) + 1;
@@ -206,7 +206,7 @@ void GUI_Widget_SpriteTextButton_Draw(Widget *w)
 
 				for (y = 0; y < g_table_structure_layoutSize[si->layout].height; y++) {
 					for (x = 0; x < g_table_structure_layoutSize[si->layout].width; x++) {
-						GUI_DrawSprite(SCREEN_ACTIVE, sprite, positionX + x * spriteWidth + 38, positionY + y * spriteWidth + 6, 0, 0);
+						GUI_DrawSprite(SCREEN_ACTIVE, sprite, GUI_SPRITE_ID_UNKNOWN, GUI_SPRITE_COLOUR_EMBEDDED, positionX + x * spriteWidth + 38, positionY + y * spriteWidth + 6, 0, 0);
 					}
 				}
 
@@ -220,7 +220,7 @@ void GUI_Widget_SpriteTextButton_Draw(Widget *w)
 			break;
 	}
 
-	if (spriteID != 0) GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[spriteID], positionX + 2, positionY + 2, 0, DRAWSPRITE_FLAG_REMAP, g_paletteMapping1, buttonDown ? 1 : 0);
+	if (spriteID != 0) GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[spriteID], spriteID, GUI_SPRITE_COLOUR_EMBEDDED, positionX + 2, positionY + 2, 0, DRAWSPRITE_FLAG_REMAP, g_paletteMapping1, buttonDown ? 1 : 0);
 
 	if (g_productionStringID == STR_D_DONE) {
 		uint16 buildTime;
@@ -717,13 +717,13 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 		}
 
 		if (spriteID != 0xFFFF) {
-			GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[spriteID], 258, 51, 0, 0);
+			GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[spriteID], spriteID, GUI_SPRITE_COLOUR_EMBEDDED, 258, 51, 0, 0);
 		}
 
 		/* Unit / Structure */
 		if (actionType == 2 || actionType == 3) {
 			GUI_DrawProgressbar(o->hitpoints, oi->hitpoints);
-			GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[27], 292, 60, 0, 0);
+			GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[27], 27, GUI_SPRITE_COLOUR_EMBEDDED, 292, 60, 0, 0);
 			GUI_DrawText_Wrapper(String_Get_ByIndex(STR_DMG), 296, 65, 29, 0, 0x11);
 		}
 
@@ -821,7 +821,7 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 							u2 = Structure_GetLinkedUnit(s);
 							if (u2 == NULL) break;
 
-							GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[g_table_unitInfo[u2->o.type].o.spriteID], 260, 89, 0, 0);
+							GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[g_table_unitInfo[u2->o.type].o.spriteID], g_table_unitInfo[u2->o.type].o.spriteID, GUI_SPRITE_COLOUR_EMBEDDED, 260, 89, 0, 0);
 
 							steps = g_table_unitInfo[u2->o.type].o.buildTime / 4;
 							percent = (steps - (s->countDown >> 8)) * 100 / steps;

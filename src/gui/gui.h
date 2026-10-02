@@ -137,10 +137,32 @@ extern bool g_var_37B8;
  * without a direct-planar cursor. Cursor preparation uses private memory
  * instead, through GUI_DrawSpriteToBuffer(). */
 #define DRAWSPRITE_FLAG_NO_PLANAR_DIRECT 0x10000
+/* First vararg: const GUI_SpriteLayers *, followed by the usual varargs.
+ * Layers are centered at offsets from the body's caller-supplied position. */
+#define DRAWSPRITE_FLAG_LAYERS 0x20000
 
 #define GUI_ClearScreen(screenID) GFX_ClearScreen(screenID)
 extern void GUI_DrawScreen(Screen screenID);
-extern void GUI_DrawSprite(Screen screenID, const uint8 *sprite, int16 posX, int16 posY, uint16 windowID, int flags, ...);
+#define GUI_SPRITE_ID_UNKNOWN 0xffff
+#define GUI_SPRITE_COLOUR_EMBEDDED 0xfe
+#define GUI_SPRITE_COLOUR_UNKNOWN 0xff
+typedef struct GUI_SpriteLayer {
+	uint16 spriteID;
+	uint8 colourHouse;
+	int16 offsetX, offsetY;
+	int flags;
+	uint8 palette[16];
+} GUI_SpriteLayer;
+
+typedef struct GUI_SpriteLayers {
+	uint16 count;
+	GUI_SpriteLayer layer[4];
+} GUI_SpriteLayers;
+
+/* colourHouse identifies the canonical viewport house palette when PAL is
+ * set, otherwise EMBEDDED. Arbitrary palettes must use UNKNOWN. */
+extern void GUI_DrawSprite(Screen screenID, const uint8 *sprite, uint16 spriteID, uint8 colourHouse,
+                           int16 posX, int16 posY, uint16 windowID, int flags, ...);
 #ifdef TOS
 /* Plain sprite draw, clipped to a tightly packed private buffer. No present
  * or screen-buffer access; transparent pixels leave the buffer unchanged. */

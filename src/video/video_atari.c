@@ -2734,6 +2734,93 @@ void Video_Atari_PresentSprite(const uint8 *src, uint16 stride,
 	GFX_Screen_ClearDirtyRect(x, y, x + width, y + height);
 }
 
+void Video_Atari_ComposePlanarSprite(uint16 *dstPixels, uint16 *dstMasks,
+                                   uint16 dstWidth, uint16 dstHeight,
+                                   const uint16 *pixels, const uint16 *masks,
+                                   uint16 width, uint16 height, uint16 x, uint16 y)
+{
+	uint16 dstGroups = dstWidth >> 4, groups = width >> 4;
+	uint16 shift = x & 15, first = x >> 4, row, group;
+
+	assert(dstWidth > 0 && (dstWidth & 15) == 0 && width > 0 && (width & 15) == 0);
+	assert(x < dstWidth && height > 0 && y + height <= dstHeight);
+	VARIABLE_NOT_USED(dstHeight);
+	dstPixels += ((uint32)y * dstGroups + first) * 4;
+	dstMasks += (uint32)y * dstGroups + first;
+	for (row = 0; row < height; row++) {
+		for (group = 0; group < groups && first + group < dstGroups; group++) {
+			uint16 mask = masks[group];
+			const uint16 *src = pixels + group * 4;
+			uint16 *dst = dstPixels + group * 4;
+			if (mask == 0) continue;
+			if (shift == 0) {
+				Video_Atari_PlanarMergePlain(dst, mask, src);
+				dstMasks[group] |= mask;
+			} else {
+				uint16 words[4], plane, part = mask >> shift;
+				if (part != 0) {
+					for (plane = 0; plane < 4; plane++) words[plane] = src[plane] >> shift;
+					Video_Atari_PlanarMergePlain(dst, part, words);
+					dstMasks[group] |= part;
+				}
+				part = (uint16)(mask << (16 - shift));
+				if (part != 0 && first + group + 1 < dstGroups) {
+					for (plane = 0; plane < 4; plane++) words[plane] = src[plane] << (16 - shift);
+					Video_Atari_PlanarMergePlain(dst + 4, part, words);
+					dstMasks[group + 1] |= part;
+				}
+			}
+		}
+		pixels += groups * 4;
+		masks += groups;
+		if (row + 1 < height) {
+			dstPixels += dstGroups * 4;
+			dstMasks += dstGroups;
+		}
+	}
+}
+
+void Video_Atari_PresentPlanarSprite(const uint16 *pixels, const uint16 *masks,
+                                   uint16 width, uint16 height, int16 x, int16 y)
+{
+	uint16 left = 0, top = 40, right = 240, bottom = 200;
+	uint16 sourceGroups = width >> 4, first, end, line, group;
+	uint8 *base = Video_Atari_PlanarBase();
+	uint16 *dstRow;
+	bool overlays;
+
+	assert(width > 0 && width <= 80 && (width & 15) == 0 && (x & 15) == 0 &&
+	       height > 0 && height <= 64);
+	if (x >= right || x + width <= left || y >= bottom || y + height <= top) return;
+	left = max((int)left, x);
+	top = max((int)top, y);
+	right = min((int)right, x + width);
+	bottom = min((int)bottom, y + height);
+	if (left >= right || top >= bottom) return;
+	first = left >> 4;
+	end = (right + 15) >> 4;
+	overlays = Video_Atari_PlanarOverlaysOverlap(base, first * 16, top, (end - first) * 16, bottom - top);
+	pixels += ((top - y) * sourceGroups + (left - x) / 16) * 4;
+	masks += (top - y) * sourceGroups + (left - x) / 16;
+	dstRow = (uint16 *)(base + (uint32)top * 160 + first * 8);
+	for (line = top; line < bottom; line++, dstRow += 80) {
+		uint16 *dst = dstRow;
+		for (group = first; group < end; group++, dst += 4) {
+			uint16 index = group - first, mask = masks[index];
+			const uint16 *src = pixels + index * 4;
+			if (mask == 0) continue;
+			if (overlays) Video_Atari_PlanarMergeGroup(base, line, group, mask, src);
+			else if (mask == 0xffff) Video_Atari_PlanarCopyGroup(dst, src);
+			else Video_Atari_PlanarMergePlain(dst, mask, src);
+		}
+		if (line + 1 < bottom) {
+			pixels += sourceGroups * 4;
+			masks += sourceGroups;
+		}
+	}
+	GFX_Screen_ClearDirtyRect(first * 16, top, end * 16, bottom);
+}
+
 /* Install the quantization a following present must use, while the
  * hardware registers are still dark. See the section comment. */
 void Video_Atari_PresentPaletteRange(const uint8 *palette, int from, int length)

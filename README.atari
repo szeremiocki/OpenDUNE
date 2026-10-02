@@ -55,7 +55,50 @@ tiles in the top-left 16x16 area.
 
 Ordinary battlefield sprites are decoded into small private buffers and
 converted with explicit silhouette masks; no final background c2p sweep is
-needed for these scenes. Partial fog edges are combined with the cached
+needed for these scenes. This experimental branch adds two 64-entry planar
+sprite image caches, roughly 243 KiB together, to the planarcredits milestone.
+Eligible frames are decoded and converted through the shared c2p encoder
+on first use, then drawn directly from cached plane words and opacity masks.
+GUI_DrawSprite takes the final sprite/frame ID and colour-house identity
+alongside its existing arguments. Embedded palettes have a separate identity;
+unknown assets or arbitrary palettes retain the general renderer. Internally,
+a packed five-word prescription includes the body's frame, colour-house
+variant, both flips, canonical highlight and resolved X phase (x & 15),
+plus up to four ordered layers, each with its frame, colour-house variant,
+flips and signed offsets. An absent selection layer distinguishes unselected
+variants. Embedded-palette and direct palette-index sprites are supported.
+Ground units submit body, harvesting attachment, turret, smoke and selection
+to one GUI_DrawSprite call. Individual components are cached independently
+by frame, house, flips and highlight, without position or X phase. Only a
+component miss decodes into private chunky memory and uses the shared c2p
+encoder. Composite misses merge cached planar components and opacity masks
+in the original layer order, aligning them in private planar memory.
+Adding selection or smoke, moving a turret, or changing X phase reuses the
+other components without decoding or c2p. Composite eviction does not evict
+components; component eviction does not invalidate completed composites.
+Hits publish the complete unit in one overlay-safe blit; the selection marker
+is not drawn separately. Entries accommodate aligned composites up to 80x64.
+Each tier uses the same flat-array lookup and global least-recently-used
+replacement as atari-st-planar-present, with integer-key comparisons and
+independent 16-bit usage clocks resetting timestamps on wrap.
+Aligned/flipped planar
+pixels and opacity masks are generated on demand; cache hits do not decode,
+compose palettes, perform c2p or shift plane/mask words. Clipping stays
+at publication time; absolute position and Y phase are not part of the key.
+This is internal image caching, without command collection, patch staging
+or damage histories.
+Sprite reloads release the cache. IBM.PAL, the 16 hardware pens and
+quantization are static throughout sprite life; house ID is the only
+palette variant in the prescription. Cache lookup does not inspect palette
+contents or poll palette generations.
+Allocation failure logs a warning and retains the original sprite path.
+Cursor and placement backgrounds retain their existing preservation.
+Unsupported effects and non-planar destinations retain separate layer draws
+in their original order. Terrain and units still write visibly in painter order:
+this may shorten sprite invisibility, but does not eliminate the exposed
+erase/redraw interval or guarantee tear-free output.
+
+Partial fog edges are combined with the cached
 ground tile before each planar write, so covered terrain is never briefly
 exposed by a separate ground-then-fog blit. Clear terrain retains its
 unmasked copy path. Visible sandworm blur, blurred units and aircraft
