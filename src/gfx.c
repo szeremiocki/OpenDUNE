@@ -169,14 +169,12 @@ bool GFX_PlanarTilesReady(void)
 	return s_planarTiles != NULL;
 }
 
-static uint16 GFX_GetPlanarTile(uint16 tileID, uint8 houseID)
+static uint16 GFX_FillPlanarTile(uint16 tileID, uint8 houseID, uint16 index)
 {
-	uint16 index = s_planarTileIndex[(uint32)houseID * s_planarTileCount + tileID];
 	const uint8 *source, *palette;
 	uint8 colours[16];
 	uint16 line, col;
 
-	if (s_planarTileReady[index]) return index;
 	source = g_tilesPixels + (uint32)tileID * s_tileByteSize;
 	palette = g_iconRPAL + (g_iconRTBL[tileID] << 4);
 	for (col = 0; col < 16; col++) colours[col] = GFX_TileHouseColor(palette[col], houseID);
@@ -195,6 +193,14 @@ static uint16 GFX_GetPlanarTile(uint16 tileID, uint8 houseID)
 	Video_Atari_DecodePlanarTile(source, colours, s_planarTiles + (uint32)index * 64);
 	s_planarTileReady[index] = 1;
 	return index;
+}
+
+static inline uint16 GFX_GetPlanarTile(uint16 tileID, uint8 houseID)
+{
+	uint16 index = s_planarTileIndex[(uint32)houseID * s_planarTileCount + tileID];
+
+	if (s_planarTileReady[index]) return index;
+	return GFX_FillPlanarTile(tileID, houseID, index);
 }
 
 void GFX_DrawPlanarTile(uint16 tileID, uint16 x, uint16 y, uint8 houseID)

@@ -136,7 +136,9 @@ their pending conversion work.
 The atari-st-tile-cache branch fills planar tiles lazily at their existing
 draw entry points. Tile/house indices and permanent pixel slots retain the
 previous layout and sharing of non-recoloured tiles; a ready byte per slot
-is the only hit check after the direct index lookup. There is no eviction:
+is the only hit check after the direct index lookup. The small hot lookup
+is inline; mask construction and decoding live in a separate cold-fill
+function so hits do not enter its decoding stack frame. There is no eviction:
 queued draw-first background pointers remain valid through restoration.
 Load-time setup still scans for house variants, but decodes no planar
 tiles. The separate chunky cache and its eager preparation are unchanged.

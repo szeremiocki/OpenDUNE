@@ -245,7 +245,8 @@ int main(void) {
             "Video_Atari_InitTileMapping", "Video_Atari_DecodePlanarTile")))
         harness = harness.replace("/* GFX */", "\n".join(function(gfx, name) for name in (
             "GFX_TileHouseColor", "GFX_FreePlanarTiles", "GFX_PlanarTilesReady",
-            "GFX_GetPlanarTile", "GFX_ViewportBeginRestore", "GFX_QueueViewportTile",
+            "GFX_FillPlanarTile", "GFX_GetPlanarTile",
+            "GFX_ViewportBeginRestore", "GFX_QueueViewportTile",
             "GFX_ViewportEndRestore", "GFX_DrawPlanarTile", "GFX_DrawPlanarTileFogged",
             "GFX_InitPlanarTiles")))
         harness = harness.replace("((uint32)src & 1)", "((uintptr_t)src & 1)")
