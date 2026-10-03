@@ -3636,8 +3636,13 @@ void GUI_ChangeSelectionType(uint16 selectionType)
 
 	if (g_selectionType != selectionType) {
 		uint16 oldSelectionType = g_selectionType;
+		bool redrawAllWidgets = true;
 
 #ifdef TOS
+		/* Unit/target share the base widgets; the panel redraw handles their differences. */
+		redrawAllWidgets = !(Video_Atari_CursorDirect()
+			&& ((oldSelectionType == SELECTIONTYPE_UNIT && selectionType == SELECTIONTYPE_TARGET)
+				|| (oldSelectionType == SELECTIONTYPE_TARGET && selectionType == SELECTIONTYPE_UNIT)));
 		Video_Atari_PlacementHide();
 #endif
 		Timer_SetTimer(TIMER_GAME, false);
@@ -3685,6 +3690,8 @@ void GUI_ChangeSelectionType(uint16 selectionType)
 
 			while (w != NULL) {
 				const int8 *s = g_table_selectionType[selectionType].visibleWidgets;
+				bool wasInvisible = w->flags.invisible;
+				bool redrawWidget = redrawAllWidgets || w->state.selected;
 
 				w->state.selected = false;
 				w->flags.invisible = true;
@@ -3696,11 +3703,11 @@ void GUI_ChangeSelectionType(uint16 selectionType)
 					}
 				}
 
-				GUI_Widget_Draw(w);
+				if (redrawWidget || wasInvisible != w->flags.invisible) GUI_Widget_Draw(w);
 				w = GUI_Widget_GetNext(w);
 			}
 
-			GUI_Widget_DrawAll(g_widgetLinkedListHead);
+			if (redrawAllWidgets) GUI_Widget_DrawAll(g_widgetLinkedListHead);
 			g_textDisplayNeedsUpdate = true;
 		}
 

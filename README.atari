@@ -180,6 +180,11 @@ unmasked copy path. Aircraft shadows are omitted on the ST/STE direct-video
 path, including its chunky fallbacks, so a flyover no longer disables cached
 planar rendering for the whole viewport. Aircraft bodies retain their
 normal colours and painter order; other platforms retain their shadows.
+ST/STE unit-to-target and target-to-unit selection changes reset widget state
+without redrawing unchanged base widgets or running the second full widget
+draw pass. Changed widget visibility/selection still triggers drawing, and
+the action panel is rebuilt normally for command text, Cancel, and unit
+controls. Other selection transitions and TT/Falcon keep the original path.
 Visible sandworm blur and blurred units retain the original chunky
 compositor because they read underlying logical palette indices.
 Switching paths reconstructs the complete scene.
