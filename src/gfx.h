@@ -45,6 +45,9 @@ extern void GFX_DrawPlanarTileFogged(uint16 tileID, uint16 fogTileID, uint16 x, 
 /* Defer requested terrain draws until after the current sprite replay.
  * Coverage uses clipped planar group coordinates and a mask-word row stride. */
 extern void GFX_ViewportBeginRestore(void);
+/* Selected-building outline variants; geometry is tile-aligned, at most 3x3.
+ * A zero width/height disables the outline. Set before beginning a batch. */
+extern void GFX_ViewportSetSelection(int16 x, int16 y, uint16 width, uint16 height);
 extern void GFX_ViewportEndRestore(void);
 extern void GFX_ViewportSpriteMasks(const uint16 *masks, uint16 stride,
                                     uint16 first, uint16 end, uint16 top, uint16 bottom);

@@ -1897,7 +1897,7 @@ static inline bool Video_Atari_PlacementRectOverlap(uint8 *base, uint16 left, ui
 	       (int)left < s_placeDrawnX + s_placeDrawnWidth && (int)right > s_placeDrawnX;
 }
 
-static bool Video_Atari_PlanarOverlaysOverlap(uint8 *base, uint16 x, uint16 y,
+static inline bool Video_Atari_PlanarOverlaysOverlap(uint8 *base, uint16 x, uint16 y,
                                              uint16 w, uint16 h)
 {
 	uint16 first = x >> 4, end = (x + w + 15) >> 4;

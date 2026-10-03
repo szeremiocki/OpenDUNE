@@ -90,6 +90,24 @@ static uint8 s_viewportRestoreCells[15 * 10];
 static uint16 s_viewportRestoreCount;
 static bool s_viewportRestoreActive;
 
+enum {
+	SELECTION_LEFT = 1, SELECTION_RIGHT = 2, SELECTION_TOP = 4,
+	SELECTION_BOTTOM = 8, SELECTION_CLIP_BOTTOM = 16
+};
+
+typedef struct ViewportSelectionTile {
+	const uint16 *source, *sourceMasks, *overlay, *overlayMasks;
+	uint16 pixels[64], masks[16];
+	uint8 edges;
+	bool opaque;
+} ViewportSelectionTile;
+
+static ViewportSelectionTile s_viewportSelectionTiles[9];
+static uint8 s_viewportSelectionCells[15 * 10];
+static int16 s_viewportSelectionX, s_viewportSelectionY;
+static uint16 s_viewportSelectionWidth, s_viewportSelectionHeight;
+static uint16 s_viewportSelectionColour[4];
+
 static const uint16 *GFX_PlanarTileCopySource(const uint16 *pixels, uint8 opacity,
                                             const uint16 *overlayPixels, uint8 overlayOpacity)
 {
@@ -103,6 +121,45 @@ void GFX_ViewportBeginRestore(void)
 {
 	assert(!s_viewportRestoreActive && s_viewportRestoreCount == 0);
 	s_viewportRestoreActive = true;
+}
+
+void GFX_ViewportSetSelection(int16 x, int16 y, uint16 width, uint16 height)
+{
+	uint16 row, col;
+	union { uint32 aligned; uint8 pixels[16]; } colour;
+
+	assert(!s_viewportRestoreActive);
+	assert(width <= 48 && height <= 48 && (width & 15) == 0 && (height & 15) == 0);
+	assert(width == 0 || height == 0 || ((x & 15) == 0 && ((y - 40) & 15) == 0));
+	if (x == s_viewportSelectionX && y == s_viewportSelectionY &&
+	    width == s_viewportSelectionWidth && height == s_viewportSelectionHeight) return;
+	s_viewportSelectionX = x;
+	s_viewportSelectionY = y;
+	s_viewportSelectionWidth = width;
+	s_viewportSelectionHeight = height;
+	memset(s_viewportSelectionTiles, 0, sizeof(s_viewportSelectionTiles));
+	memset(s_viewportSelectionCells, 0, sizeof(s_viewportSelectionCells));
+	if (width == 0 || height == 0) return;
+
+	memset(colour.pixels, 0xff, sizeof(colour.pixels));
+	Video_Atari_EncodePlanar(colour.pixels, s_viewportSelectionColour, 16, 1);
+	for (row = 0; row < height / 16; row++) {
+		int top = y + row * 16;
+		if (top < 40 || top >= 200) continue;
+		for (col = 0; col < width / 16; col++) {
+			int left = x + col * 16;
+			uint16 slot = row * 3 + col;
+			uint8 edges = (col == 0 ? SELECTION_LEFT : 0) |
+			              (col + 1 == width / 16 ? SELECTION_RIGHT : 0) |
+			              (row == 0 ? SELECTION_TOP : 0) |
+			              (row + 1 == height / 16 ? SELECTION_BOTTOM : 0);
+			if (left < 0 || left >= 240 || edges == 0) continue;
+			/* GUI_DrawLine excludes the clipped vertical endpoint. */
+			if ((edges & SELECTION_BOTTOM) != 0 || top == 184) edges |= SELECTION_CLIP_BOTTOM;
+			s_viewportSelectionTiles[slot].edges = edges;
+			s_viewportSelectionCells[((top - 40) / 16) * 15 + left / 16] = slot + 1;
+		}
+	}
 }
 
 static inline void GFX_QueueViewportTile(const uint16 *pixels, const uint16 *masks,
@@ -148,6 +205,38 @@ void GFX_ViewportSpriteMasks(const uint16 *masks, uint16 stride,
 	}
 }
 
+static ViewportSelectionTile *GFX_ViewportSelectionTile(uint16 slot, const ViewportTileRestore *restore)
+{
+	ViewportSelectionTile *tile = &s_viewportSelectionTiles[slot];
+	uint16 line, plane, allMask = 0xffff;
+
+	if (tile->source == restore->pixels && tile->sourceMasks == restore->masks &&
+	    tile->overlay == restore->overlayPixels && tile->overlayMasks == restore->overlayMasks) return tile;
+	for (line = 0; line < 16; line++) {
+		uint16 overlay = restore->overlayMasks != NULL ? restore->overlayMasks[line] : 0;
+		uint16 border = ((tile->edges & SELECTION_LEFT) != 0 ? 0x8000 : 0) |
+		                ((tile->edges & SELECTION_RIGHT) != 0 ? 1 : 0);
+		if (((tile->edges & SELECTION_TOP) != 0 && line == 0) ||
+		    ((tile->edges & SELECTION_BOTTOM) != 0 && line == 15)) border = 0xffff;
+		else if (line == 15 && (tile->edges & SELECTION_CLIP_BOTTOM) != 0) border = 0;
+		tile->masks[line] = restore->masks[line] | overlay | border;
+		allMask &= tile->masks[line];
+		for (plane = 0; plane < 4; plane++) {
+			uint16 pixels = restore->pixels[line * 4 + plane];
+			if (restore->overlayPixels != NULL)
+				pixels = (pixels & (uint16)~overlay) | (restore->overlayPixels[line * 4 + plane] & overlay);
+			tile->pixels[line * 4 + plane] = (pixels & (uint16)~border) |
+			                               (s_viewportSelectionColour[plane] & border);
+		}
+	}
+	tile->opaque = allMask == 0xffff;
+	tile->source = restore->pixels;
+	tile->sourceMasks = restore->masks;
+	tile->overlay = restore->overlayPixels;
+	tile->overlayMasks = restore->overlayMasks;
+	return tile;
+}
+
 void GFX_ViewportEndRestore(void)
 {
 	uint16 i;
@@ -157,9 +246,16 @@ void GFX_ViewportEndRestore(void)
 	for (i = 0; i < s_viewportRestoreCount; i++) {
 		uint16 cell = s_viewportRestoreCells[i];
 		ViewportTileRestore *restore = &s_viewportTileRestore[cell];
-		Video_Atari_RestorePlanarTile(restore->pixels, restore->masks,
-		    restore->overlayPixels, restore->overlayMasks, restore->coverage,
-		    (cell % 15) << 4, 40 + (cell / 15) * 16, restore->copyPixels);
+		uint16 selection = s_viewportSelectionCells[cell];
+		if (selection != 0) {
+			ViewportSelectionTile *tile = GFX_ViewportSelectionTile(selection - 1, restore);
+			Video_Atari_RestorePlanarTile(tile->pixels, tile->masks, NULL, NULL, restore->coverage,
+			    (cell % 15) << 4, 40 + (cell / 15) * 16, tile->opaque ? tile->pixels : NULL);
+		} else {
+			Video_Atari_RestorePlanarTile(restore->pixels, restore->masks,
+			    restore->overlayPixels, restore->overlayMasks, restore->coverage,
+			    (cell % 15) << 4, 40 + (cell / 15) * 16, restore->copyPixels);
+		}
 		restore->pixels = NULL;
 	}
 	s_viewportRestoreCount = 0;
@@ -170,6 +266,9 @@ void GFX_FreePlanarTiles(void)
 	memset(s_viewportTileRestore, 0, sizeof(s_viewportTileRestore));
 	s_viewportRestoreActive = false;
 	s_viewportRestoreCount = 0;
+	memset(s_viewportSelectionCells, 0, sizeof(s_viewportSelectionCells));
+	memset(s_viewportSelectionTiles, 0, sizeof(s_viewportSelectionTiles));
+	s_viewportSelectionWidth = s_viewportSelectionHeight = 0;
 	free(s_planarTiles);
 	free(s_planarTileMasks);
 	free(s_planarTileIndex);

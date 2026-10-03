@@ -53,6 +53,7 @@ class PlanarTileLazyTest(unittest.TestCase):
 #include <string.h>
 typedef uint8_t uint8;
 typedef uint16_t uint16;
+typedef int16_t int16;
 typedef uint32_t uint32;
 #define HOUSE_MAX 6
 #define SCREEN_WIDTH 320
@@ -345,7 +346,8 @@ int main(void) {
         harness = harness.replace("/* GFX */", "\n".join(function(gfx, name) for name in (
             "GFX_TileHouseColor", "GFX_FreePlanarTiles", "GFX_PlanarTilesReady",
             "GFX_FillPlanarTile", "GFX_GetPlanarTile",
-            "GFX_ViewportBeginRestore", "GFX_QueueViewportTile",
+            "GFX_ViewportBeginRestore", "GFX_ViewportSetSelection", "GFX_QueueViewportTile",
+            "GFX_ViewportSelectionTile",
             "GFX_ViewportEndRestore", "GFX_DrawPlanarTile", "GFX_DrawPlanarTileFogged",
             "GFX_InitPlanarTiles")))
         harness = harness.replace("((uint32)src & 1)", "((uintptr_t)src & 1)")

@@ -622,12 +622,13 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 	bool directViewport = Video_Atari_CursorDirect();
 	bool planarViewport = !drawToMainScreen && !g_viewport_fadein && GUI_Widget_Viewport_CanDrawPlanar();
 	bool restoreBackground;
+	bool restoreSelection = false;
 	if (planarViewport != s_viewportWasPlanar || (planarViewport && hasScrolled && !planarShifted)) {
 		forceRedraw = true;
 		g_selectionRectangleNeedRepaint = true;
 	}
 	restoreBackground = planarViewport && !forceRedraw && !hasScrolled &&
-	                    g_unitSelected != NULL && g_dirtyViewportCount != 0;
+	                    g_dirtyViewportCount != 0;
 #endif
 
 	PoolFindStruct find;
@@ -647,7 +648,19 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 	oldWidgetID = Widget_SetCurrentWidget(2);
 
 #ifdef TOS
-	if (restoreBackground) GFX_ViewportBeginRestore();
+	if (restoreBackground) {
+		restoreSelection = g_unitSelected == NULL && g_selectionType != SELECTIONTYPE_PLACE &&
+		                   (Structure_Get_ByPackedTile(g_selectionRectanglePosition) != NULL || g_debugScenario);
+		if (restoreSelection) {
+			GFX_ViewportSetSelection(
+			    (Tile_GetPackedX(g_selectionRectanglePosition) - Tile_GetPackedX(g_minimapPosition)) * 16,
+			    40 + (Tile_GetPackedY(g_selectionRectanglePosition) - Tile_GetPackedY(g_minimapPosition)) * 16,
+			    g_selectionWidth * 16, g_selectionHeight * 16);
+		} else {
+			GFX_ViewportSetSelection(0, 0, 0, 0);
+		}
+		GFX_ViewportBeginRestore();
+	}
 #endif
 	if (g_dirtyViewportCount != 0 || forceRedraw) {
 		for (y = 0; y < 10; y++) {
@@ -758,6 +771,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 	if (g_unitSelected == NULL && (g_selectionRectangleNeedRepaint || hasScrolled) && (Structure_Get_ByPackedTile(g_selectionRectanglePosition) != NULL || g_selectionType == SELECTIONTYPE_PLACE || g_debugScenario)
 #ifdef TOS
 	    && !(Video_Atari_CursorDirect() && g_selectionType == SELECTIONTYPE_PLACE)
+	    && !restoreBackground
 #endif
 	   ) {
 		uint16 x1 = (Tile_GetPackedX(g_selectionRectanglePosition) - Tile_GetPackedX(g_minimapPosition)) << 4;
@@ -1085,7 +1099,10 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 	}
 
 #ifdef TOS
-	if (restoreBackground) GFX_ViewportEndRestore();
+	if (restoreBackground) {
+		GFX_ViewportEndRestore();
+		if (restoreSelection) g_selectionRectangleNeedRepaint = false;
+	}
 #endif
 
 	if (updateDisplay) {
