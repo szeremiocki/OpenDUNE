@@ -57,6 +57,17 @@ mode after one Super(0L); it does not pass the game loop to Supexec.
 
 * Performance
 
+The engine announcement banner supports this opendune.ini setting:
+
+[opendune]
+phase_announcement=2
+
+Use 0 for immediate display without scrolling, 1 for the original one-row
+animation (default), or 2 for two-row steps. Message priorities, queuing and
+display hold times are unchanged; only the transition animation changes.
+The setting is handled by the engine animator, not the Atari video driver,
+and is available on other platforms too. Invalid values warn and use 1.
+
 Based on a typical scene on level 1 :
 
 - 68000 build on ST/STE is 6-15fps (busy-quiet), Mega STE is 18fps

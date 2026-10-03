@@ -321,6 +321,38 @@ void GUI_DisplayText(const char *str, int importance, ...)
 		displayLine3[0] = '\0';
 	}
 
+	if (!scrollInProgress) {
+		if (buffer[0] != '\0') {
+			/* Insert a new, distinct message according to its importance. */
+			if (strcasecmp(buffer, displayLine1) != 0 && strcasecmp(buffer, displayLine2) != 0 && strcasecmp(buffer, displayLine3) != 0) {
+				if (importance >= line2Importance) {
+					strncpy(displayLine3, displayLine2, sizeof(displayLine3));
+					fgColour3 = fgColour2;
+					line3Importance = line2Importance;
+					strncpy(displayLine2, buffer, sizeof(displayLine2));
+					fgColour2 = 12;
+					line2Importance = importance;
+				} else if (importance >= line3Importance) {
+					strncpy(displayLine3, buffer, sizeof(displayLine3));
+					line3Importance = importance;
+					fgColour3 = 12;
+				}
+			}
+		} else {
+			if (displayLine1[0] == '\0' && displayLine2[0] == '\0') return;
+		}
+
+		if (line2Importance <= line1Importance && displayTimer >= g_timerGUI) return;
+
+		scrollInProgress = true;
+#ifdef TOS
+		bannerPlanarReady = false;
+#endif
+		textOffset = (g_announcementPhase == 0) ? 0 : 10;
+		displayTimer = 0;
+		if (g_announcementPhase != 0) return;
+	}
+
 	if (scrollInProgress) {
 		uint16 oldWidgetId;
 		uint16 height;
@@ -379,7 +411,7 @@ void GUI_DisplayText(const char *str, int importance, ...)
 			if (line3Importance <= line2Importance) {
 				displayTimer = g_timerGUI + 1;
 			}
-			textOffset--;
+			textOffset -= min(textOffset, g_announcementPhase);
 			return;
 		}
 
@@ -400,41 +432,6 @@ void GUI_DisplayText(const char *str, int importance, ...)
 		scrollInProgress = false;
 		return;
 	}
-
-	if (buffer[0] != '\0') {
-		/* If new line arrived, different from every line that is in the display buffers, and more important than existing messages,
-		 * insert it at the right place.
-		 */
-		if (strcasecmp(buffer, displayLine1) != 0 && strcasecmp(buffer, displayLine2) != 0 && strcasecmp(buffer, displayLine3) != 0) {
-			if (importance >= line2Importance) {
-				/* Move line 2 to line 2 to make room for the new line. */
-				strncpy(displayLine3, displayLine2, sizeof(displayLine3));
-				fgColour3 = fgColour2;
-				line3Importance = line2Importance;
-				/* Copy new line to line 2. */
-				strncpy(displayLine2, buffer, sizeof(displayLine2));
-				fgColour2 = 12;
-				line2Importance = importance;
-
-			} else if (importance >= line3Importance) {
-				/* Copy new line to line 3. */
-				strncpy(displayLine3, buffer, sizeof(displayLine3));
-				line3Importance = importance;
-				fgColour3 = 12;
-			}
-		}
-	} else {
-		if (displayLine1[0] == '\0' && displayLine2[0] == '\0') return;
-	}
-
-	if (line2Importance <= line1Importance && displayTimer >= g_timerGUI) return;
-
-	scrollInProgress = true;
-#ifdef TOS
-	bannerPlanarReady = false;
-#endif
-	textOffset = 10;
-	displayTimer = 0;
 }
 
 /**

@@ -1347,6 +1347,7 @@ int main(int argc, char **argv)
 
 	/* Load opendune.ini file */
 	Load_IniFile();
+	Config_LoadAnimationPhases();
 
 	/* set globals according to opendune.ini */
 	g_dune2_enhanced = (IniFile_GetInteger("dune2_enhanced", 1) != 0) ? true : false;

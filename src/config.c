@@ -2,11 +2,14 @@
 
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "types.h"
 #include "os/strings.h"
 
 #include "config.h"
+#include "inifile.h"
+#include "os/error.h"
 
 #include "audio/sound.h"
 #include "file.h"
@@ -14,8 +17,31 @@
 
 GameCfg g_gameConfig = { 1, 1, 2, 1, 0 };
 DuneCfg g_config;
+uint16 g_announcementPhase = 1;
 bool g_enableSoundMusic = true;
 bool g_enableVoices = true;
+
+static uint16 Config_ReadAnimationPhase(const char *key)
+{
+	char value[80], *end;
+	long phase;
+
+	if (IniFile_GetString(key, NULL, value, sizeof(value)) == NULL) return 1;
+	phase = strtol(value, &end, 10);
+	if (end != value) {
+		while (*end == ' ' || *end == '\t') end++;
+		if (*end == '\0' && phase >= 0 && phase <= 2) {
+			return (uint16)phase;
+		}
+	}
+	Warning("Invalid %s '%s'; using 1 (original animation)\n", key, value);
+	return 1;
+}
+
+void Config_LoadAnimationPhases(void)
+{
+	g_announcementPhase = Config_ReadAnimationPhase("phase_announcement");
+}
 
 /**
  * Reads and decode the config.
