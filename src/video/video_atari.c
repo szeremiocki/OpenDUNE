@@ -2694,24 +2694,32 @@ void Video_Atari_DrawPlanarTileFogged(const uint16 *pixels, const uint16 *masks,
 	uint16 line;
 
 	assert((x & 15) == 0 && x + 16 <= SCREEN_WIDTH && y + 16 <= SCREEN_HEIGHT);
-	for (line = 0; line < 16; line++, pixels += 4, fogPixels += 4) {
-		uint16 fogMask = copyPixels != NULL ? 0 : fogMasks[line];
-		uint16 mask = copyPixels != NULL ? 0xffff : masks[line] | fogMask;
-		uint16 combined[4];
-		const uint16 *src = copyPixels != NULL ? copyPixels + line * 4 : pixels;
-		uint16 *dst = (uint16 *)(base + (uint32)(y + line) * 160 + (x >> 1));
-		if (mask == 0) continue;
-		if (fogMask == 0xffff) src = fogPixels;
-		else if (fogMask != 0) {
-			uint16 plane;
-			for (plane = 0; plane < 4; plane++) {
-				combined[plane] = (pixels[plane] & (uint16)~fogMask) | (fogPixels[plane] & fogMask);
-			}
-			src = combined;
+	if (copyPixels != NULL) {
+		for (line = 0; line < 16; line++, copyPixels += 4) {
+			uint16 *dst = (uint16 *)(base + (uint32)(y + line) * 160 + (x >> 1));
+			if (overlays) Video_Atari_PlanarMergeGroup(base, y + line, x >> 4, 0xffff, copyPixels);
+			else Video_Atari_PlanarCopyGroup(dst, copyPixels);
 		}
-		if (overlays) Video_Atari_PlanarMergeGroup(base, y + line, x >> 4, mask, src);
-		else if (mask == 0xffff) Video_Atari_PlanarCopyGroup(dst, src);
-		else Video_Atari_PlanarMergePlain(dst, mask, src);
+	} else {
+		for (line = 0; line < 16; line++, pixels += 4, fogPixels += 4) {
+			uint16 fogMask = fogMasks[line];
+			uint16 mask = masks[line] | fogMask;
+			uint16 combined[4];
+			const uint16 *src = pixels;
+			uint16 *dst = (uint16 *)(base + (uint32)(y + line) * 160 + (x >> 1));
+			if (mask == 0) continue;
+			if (fogMask == 0xffff) src = fogPixels;
+			else if (fogMask != 0) {
+				uint16 plane;
+				for (plane = 0; plane < 4; plane++) {
+					combined[plane] = (pixels[plane] & (uint16)~fogMask) | (fogPixels[plane] & fogMask);
+				}
+				src = combined;
+			}
+			if (overlays) Video_Atari_PlanarMergeGroup(base, y + line, x >> 4, mask, src);
+			else if (mask == 0xffff) Video_Atari_PlanarCopyGroup(dst, src);
+			else Video_Atari_PlanarMergePlain(dst, mask, src);
+		}
 	}
 	GFX_Screen_ClearDirtyRect(x, y, x + 16, y + 16);
 }
