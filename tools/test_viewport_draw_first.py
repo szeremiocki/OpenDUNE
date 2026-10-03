@@ -15,6 +15,114 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ViewportDrawFirstTest(unittest.TestCase):
+    def test_aircraft_shadow_policy(self):
+        viewport = (ROOT / "src/gui/viewport.c").read_text()
+        eligibility = function(viewport, "GUI_Widget_Viewport_CanDrawPlanar")
+        shadow_gate = re.search(r"if \(ui->o.flags.hasShadow.*?\) \{", viewport, re.S).group()
+        harness = r"""
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stddef.h>
+typedef uint16_t uint16;
+typedef struct {
+    struct { struct { bool blurTile, hasShadow; } flags; } o;
+    uint16 groundSpriteID, destroyedSpriteID, turretSpriteID;
+} UnitInfo;
+static bool draws_shadow(bool shadow, bool directViewport) {
+    UnitInfo info = {0};
+    const UnitInfo *ui = &info;
+    info.o.flags.hasShadow = shadow;
+    (void)directViewport;
+    /* SHADOW GATE */
+        return true;
+    }
+    return false;
+}
+#ifdef TOS
+#define HOUSE_INVALID 0xffff
+#define UNIT_SANDWORM 10
+#define EXPLOSION_MAX 1
+typedef struct { uint16 type, index, houseID; } PoolFindStruct;
+typedef struct {
+    struct { uint16 type, index, position; } o;
+    uint16 targetLast, targetPreLast;
+    int16_t spriteOffset;
+} Unit;
+typedef struct { void *commands; uint16 spriteID, position; } Explosion;
+static Unit unit;
+static UnitInfo g_table_unitInfo[11];
+static struct { bool isUnveiled; } g_map[1] = {{true}};
+static Explosion explosion;
+static bool g_debugScenario, direct = true, ready = true, visible = true;
+static bool Video_Atari_CursorDirect(void) { return direct; }
+static bool GFX_PlanarTilesReady(void) { return ready; }
+static bool GUI_ViewportSpriteCacheReady(void) { return ready; }
+static Unit *Unit_Find(PoolFindStruct *find) {
+    if (find->index != 0xffff) return NULL;
+    find->index = 0;
+    return &unit;
+}
+static uint16 Tile_PackTile(uint16 position) { return position; }
+static bool Map_IsPositionInViewport(uint16 position, uint16 *x, uint16 *y) {
+    (void)position; (void)x; (void)y;
+    return visible;
+}
+static Explosion *Explosion_Get_ByIndex(uint16 index) {
+    assert(index == 0);
+    return &explosion;
+}
+/* ELIGIBILITY */
+#endif
+int main(void) {
+    assert(!draws_shadow(false, false));
+    assert(!draws_shadow(false, true));
+    assert(draws_shadow(true, false));
+#ifdef TOS
+    assert(!draws_shadow(true, true));
+    UnitInfo *ui = &g_table_unitInfo[0];
+    ui->groundSpriteID = 236;
+    ui->turretSpriteID = 0xffff;
+    ui->o.flags.hasShadow = true;
+    assert(GUI_Widget_Viewport_CanDrawPlanar());
+    ui->o.flags.blurTile = true;
+    assert(!GUI_Widget_Viewport_CanDrawPlanar());
+    ui->o.flags.blurTile = false;
+    ui->groundSpriteID = 355;
+    assert(!GUI_Widget_Viewport_CanDrawPlanar());
+    ui->groundSpriteID = 236;
+    explosion.commands = &unit;
+    explosion.spriteID = 355;
+    assert(!GUI_Widget_Viewport_CanDrawPlanar());
+    explosion.commands = NULL;
+    unit.o.type = UNIT_SANDWORM;
+    assert(!GUI_Widget_Viewport_CanDrawPlanar());
+    unit.o.type = 0;
+    direct = false;
+    assert(!GUI_Widget_Viewport_CanDrawPlanar());
+    direct = true;
+    ready = false;
+    assert(!GUI_Widget_Viewport_CanDrawPlanar());
+#else
+    assert(draws_shadow(true, true));
+#endif
+    return 0;
+}
+"""
+        harness = harness.replace("/* SHADOW GATE */", shadow_gate)
+        harness = harness.replace("/* ELIGIBILITY */", eligibility)
+        with tempfile.TemporaryDirectory(prefix="viewport-aircraft-") as directory:
+            source = Path(directory) / "test.c"
+            binary = Path(directory) / "test"
+            source.write_text(harness)
+            compiler = shlex.split(os.environ.get("CC", "cc"))
+            flags = shlex.split(os.environ.get("TEST_CFLAGS", ""))
+            for platform in ([], ["-DTOS"]):
+                subprocess.run([*compiler, "-std=c99", "-O2", "-Wall", "-Wextra",
+                                "-Werror", *flags, *platform, str(source), "-o", str(binary)],
+                               check=True)
+                subprocess.run([str(binary)], check=True)
+
     def test_equivalence_and_protected_pixels(self):
         gfx = (ROOT / "src/gfx.c").read_text()
         video = (ROOT / "src/video/video_atari.c").read_text()

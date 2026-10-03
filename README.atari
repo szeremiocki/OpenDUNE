@@ -176,9 +176,13 @@ output. Gameplay flicker and timing still require measurement.
 Partial fog edges are combined with the cached
 ground tile before each planar write, so covered terrain is never briefly
 exposed by a separate ground-then-fog blit. Clear terrain retains its
-unmasked copy path. Visible sandworm blur, blurred units and aircraft
-shadows retain the original chunky compositor because they read underlying
-logical palette indices. Switching paths reconstructs the complete scene.
+unmasked copy path. Aircraft shadows are omitted on the ST/STE direct-video
+path, including its chunky fallbacks, so a flyover no longer disables cached
+planar rendering for the whole viewport. Aircraft bodies retain their
+normal colours and painter order; other platforms retain their shadows.
+Visible sandworm blur and blurred units retain the original chunky
+compositor because they read underlying logical palette indices.
+Switching paths reconstructs the complete scene.
 Off-screen composition and viewport fades also retain the original path.
 After direct planar rendering, conservative summaries skip battlefield
 dirty-mask clearing for arrays with no possible pending battlefield bits.

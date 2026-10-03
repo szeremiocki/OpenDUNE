@@ -101,7 +101,7 @@ static bool GUI_Widget_Viewport_CanDrawPlanar(void)
 		}
 		if (u->o.index > 15 && (u->o.index < 20 || u->o.index > 101)) continue;
 		if (!Map_IsPositionInViewport(u->o.position, &x, &y)) continue;
-		if (ui->o.flags.blurTile || (u->o.index <= 15 && ui->o.flags.hasShadow)) return false;
+		if (ui->o.flags.blurTile) return false;
 		if (ui->groundSpriteID < 111 || ui->groundSpriteID > 350) return false;
 		if (u->spriteOffset < 0 && ui->destroyedSpriteID != 0 &&
 		    (ui->destroyedSpriteID < 111 || ui->destroyedSpriteID - u->spriteOffset - 1 > 354)) return false;
@@ -1083,7 +1083,11 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 
 			sprite = g_sprites[index];
 
-			if (ui->o.flags.hasShadow) {
+			if (ui->o.flags.hasShadow
+#ifdef TOS
+			    && !directViewport
+#endif
+			   ) {
 				GUI_DrawSprite(SCREEN_ACTIVE, sprite, index, GUI_SPRITE_COLOUR_EMBEDDED, x + 1, y + 3, 2, (spriteFlags & ~DRAWSPRITE_FLAG_PAL) | DRAWSPRITE_FLAG_REMAP | DRAWSPRITE_FLAG_BLUR, g_paletteMapping1, 1);
 			}
 			if (ui->o.flags.blurTile) spriteFlags |= DRAWSPRITE_FLAG_BLUR;
