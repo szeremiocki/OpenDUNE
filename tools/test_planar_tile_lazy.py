@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -14,6 +15,23 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PlanarTileLazyTest(unittest.TestCase):
+    def test_68000_queue_inlining(self):
+        tools = ("m68k-atari-mint-gcc", "m68k-atari-mint-nm")
+        if any(shutil.which(tool) is None for tool in tools):
+            self.skipTest("Atari compiler and nm required")
+        with tempfile.TemporaryDirectory(prefix="tile-queue-inline-") as directory:
+            obj = Path(directory) / "gfx.o"
+            subprocess.run([tools[0], "-m68000", "-msoft-float", "-Ofast",
+                            "-fno-split-paths", "-fomit-frame-pointer", "-std=gnu17",
+                            "-fno-strict-aliasing", "-DTOS", "-DNDEBUG",
+                            "-I", str(ROOT / "include"),
+                            "-I", str(ROOT / "objs/release"),
+                            "-c", str(ROOT / "src/gfx.c"), "-o", str(obj)], check=True)
+            symbols = subprocess.check_output([tools[1], str(obj)], text=True)
+            self.assertIn(" T _GFX_DrawPlanarTile\n", symbols)
+            self.assertIn(" T _GFX_DrawPlanarTileFogged\n", symbols)
+            self.assertNotIn("_GFX_QueueViewportTile", symbols)
+
     def test_lazy_fills_and_stable_backgrounds(self):
         gfx = (ROOT / "src/gfx.c").read_text()
         video = (ROOT / "src/video/video_atari.c").read_text()
@@ -103,21 +121,40 @@ static void c2p1x1_4_st_strided(uint16 *dst, const uint8 *src, uint16 width, uin
     stridedCalls++;
     encode(dst, src, width, height, lookup, srcStride, dstStride);
 }
-static void Video_Atari_DrawPlanarTile(const uint16 *p, const uint16 *m, uint16 x, uint16 y) {
+static const uint16 *copy_source(const uint16 *p, const uint16 *m,
+                                 const uint16 *f, const uint16 *fm) {
+    bool ground = true, overlay = f != NULL;
+    for (unsigned row = 0; row < 16; row++) {
+        uint16 mask = fm ? fm[row] : 0;
+        if ((m[row] | mask) != 0xffff) return NULL;
+        if (f && mask) ground = false;
+        if (mask != 0xffff) overlay = false;
+    }
+    return ground ? p : overlay ? f : NULL;
+}
+static void Video_Atari_DrawPlanarTile(const uint16 *p, const uint16 *m, uint16 x, uint16 y,
+                                      const uint16 *copyPixels) {
     assert(p && m && x < 240 && y >= 40);
+    assert(copyPixels == copy_source(p, m, NULL, NULL));
     lastPixels = p;
     publishes++;
 }
 static void Video_Atari_DrawPlanarTileFogged(const uint16 *p, const uint16 *m,
-                                           const uint16 *f, const uint16 *fm, uint16 x, uint16 y) {
+                                           const uint16 *f, const uint16 *fm, uint16 x, uint16 y,
+                                           const uint16 *copyPixels) {
     assert(f && fm);
-    Video_Atari_DrawPlanarTile(p, m, x, y);
+    assert(copyPixels == copy_source(p, m, f, fm) && x < 240 && y >= 40);
+    lastPixels = p;
+    publishes++;
 }
 static void Video_Atari_RestorePlanarTile(const uint16 *p, const uint16 *m,
                                          const uint16 *f, const uint16 *fm,
-                                         const uint16 *coverage, uint16 x, uint16 y) {
+                                         const uint16 *coverage, uint16 x, uint16 y,
+                                         const uint16 *copyPixels) {
     assert(coverage && ((f == NULL) == (fm == NULL)));
-    Video_Atari_DrawPlanarTile(p, m, x, y);
+    assert(copyPixels == copy_source(p, m, f, fm) && x < 240 && y >= 40);
+    lastPixels = p;
+    publishes++;
     restores++;
 }
 /* VIDEO */
@@ -144,6 +181,7 @@ static void check(unsigned tile, unsigned house) {
     assert(GFX_GetPlanarTile(tile, house) == index);
     assert(conversions == before + (hit ? 0 : 1) && s_planarTileReady[index]);
     const uint8 *p = palettes + table[tile] * 16;
+    uint16 allMask = 0xffff, anyMask = 0;
     for (unsigned line = 0; line < 16; line++) {
         uint16 expected[4] = {0}, mask = p[0] != 0 ? 0xffff : 0;
         for (unsigned x = 0; x < 16; x++) {
@@ -156,8 +194,11 @@ static void check(unsigned tile, unsigned house) {
                 if (pen(colour) & (1u << plane)) expected[plane] |= 0x8000u >> x;
         }
         assert(s_planarTileMasks[tile * 16 + line] == mask);
+        allMask &= mask; anyMask |= mask;
         assert(!memcmp(s_planarTiles + index * 64 + line * 4, expected, sizeof(expected)));
     }
+    assert(s_planarTileReady[index] == (allMask == 0xffff ? PLANAR_TILE_OPAQUE :
+                                        anyMask == 0 ? PLANAR_TILE_EMPTY : PLANAR_TILE_MIXED));
     assert(!memcmp(source, sourceBefore, sizeof(source)));
     assert(!memcmp(palettes, palettesBefore, sizeof(palettes)));
 }
@@ -168,6 +209,11 @@ int main(void) {
         palettes[p * 16 + i] = p < 2 ? i * 3 : 0x90 + i;
     palettes[0] = 1; palettes[3] = 0; /* Opaque logical colour 0. */
     palettes[16] = 0; palettes[19] = 0; /* Multiple transparent indices. */
+    table[3] = table[33] = table[65] = 1;
+    memset(source + 3 * 128, 0, 128); /* Entirely empty. */
+    memset(source + 33 * 128, 0x11, 128); /* Opaque despite transparency-enabled palette. */
+    memset(source + 65 * 128, 0x11, 128);
+    memset(source + 65 * 128, 0, 8); /* Mixed, with one completely empty row. */
     for (unsigned i = 0; i < sizeof(rgb); i++) rgb[i] = (i * 11 + i / 13) & 255;
     rgb[0] = rgb[1] = rgb[2] = 0;
     memcpy(sourceBefore, source, sizeof(source));
@@ -176,6 +222,22 @@ int main(void) {
         g_dune2_enhanced = enhanced != 0;
         initialize();
         unsigned fixedMappings = mappings;
+        const unsigned classes[] = {3, 65, 33};
+        for (unsigned ground = 0; ground < 3; ground++)
+            for (unsigned overlay = 0; overlay < 3; overlay++)
+                for (unsigned separate = 0; separate < 2; separate++) {
+                    GFX_ViewportBeginRestore();
+                    if (separate) {
+                        GFX_DrawPlanarTile(classes[ground], 0, 40, 0);
+                        GFX_DrawPlanarTile(classes[overlay], 0, 40, 0);
+                    } else GFX_DrawPlanarTileFogged(classes[ground], classes[overlay], 0, 40, 0);
+                    const uint16 *expectedCopy = overlay == 2 ?
+                        s_planarTiles + s_planarTileIndex[classes[overlay]] * 64 :
+                        overlay == 0 && ground == 2 ?
+                        s_planarTiles + s_planarTileIndex[classes[ground]] * 64 : NULL;
+                    assert(s_viewportTileRestore[0].copyPixels == expectedCopy);
+                    GFX_ViewportEndRestore();
+                }
         for (unsigned house = 0; house < 6; house++)
             assert(s_planarTileIndex[house * TILES] == s_planarTileIndex[0]);
         for (unsigned house = 1; house < 6; house++)
@@ -271,7 +333,7 @@ int main(void) {
     direct = true; s_tileMode = 4;
     GFX_InitPlanarTiles(sizeof(source), rgb);
     assert(!GFX_PlanarTilesReady());
-    assert(restores == 300);
+    assert(restores == 2 * (150 + 3 * 3 * 2));
     assert(stridedCalls != 0);
     return 0;
 }

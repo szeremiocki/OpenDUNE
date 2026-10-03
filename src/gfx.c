@@ -73,12 +73,15 @@ static uint8 GFX_TileHouseColor(uint8 colour, uint8 houseID)
 static uint16 *s_planarTiles;
 static uint16 *s_planarTileMasks;
 static uint16 *s_planarTileIndex;
-static uint8 *s_planarTileReady;
+static uint8 *s_planarTileReady;	/* zero = cold; otherwise cached mask classification */
 static uint16 s_planarTileCount;
+
+enum { PLANAR_TILE_MIXED = 1, PLANAR_TILE_EMPTY, PLANAR_TILE_OPAQUE };
 
 typedef struct ViewportTileRestore {
 	const uint16 *pixels, *masks;
 	const uint16 *overlayPixels, *overlayMasks;
+	const uint16 *copyPixels;
 	uint16 coverage[16];
 } ViewportTileRestore;
 
@@ -87,15 +90,24 @@ static uint8 s_viewportRestoreCells[15 * 10];
 static uint16 s_viewportRestoreCount;
 static bool s_viewportRestoreActive;
 
+static const uint16 *GFX_PlanarTileCopySource(const uint16 *pixels, uint8 opacity,
+                                            const uint16 *overlayPixels, uint8 overlayOpacity)
+{
+	if (overlayPixels != NULL && overlayOpacity == PLANAR_TILE_OPAQUE) return overlayPixels;
+	if (opacity == PLANAR_TILE_OPAQUE &&
+	    (overlayPixels == NULL || overlayOpacity == PLANAR_TILE_EMPTY)) return pixels;
+	return NULL;
+}
+
 void GFX_ViewportBeginRestore(void)
 {
 	assert(!s_viewportRestoreActive && s_viewportRestoreCount == 0);
 	s_viewportRestoreActive = true;
 }
 
-static void GFX_QueueViewportTile(const uint16 *pixels, const uint16 *masks,
+static inline void GFX_QueueViewportTile(const uint16 *pixels, const uint16 *masks,
                                   const uint16 *overlayPixels, const uint16 *overlayMasks,
-                                  uint16 x, uint16 y)
+                                  uint16 x, uint16 y, uint8 opacity, uint8 overlayOpacity)
 {
 	uint16 cell;
 	ViewportTileRestore *restore;
@@ -109,11 +121,14 @@ static void GFX_QueueViewportTile(const uint16 *pixels, const uint16 *masks,
 		restore->masks = masks;
 		restore->overlayPixels = overlayPixels;
 		restore->overlayMasks = overlayMasks;
+		restore->copyPixels = GFX_PlanarTileCopySource(pixels, opacity, overlayPixels, overlayOpacity);
 		memset(restore->coverage, 0, sizeof(restore->coverage));
 	} else {
 		assert(restore->overlayPixels == NULL && overlayPixels == NULL);
 		restore->overlayPixels = pixels;
 		restore->overlayMasks = masks;
+		if (opacity != PLANAR_TILE_EMPTY)
+			restore->copyPixels = opacity == PLANAR_TILE_OPAQUE ? pixels : NULL;
 	}
 }
 
@@ -144,7 +159,7 @@ void GFX_ViewportEndRestore(void)
 		ViewportTileRestore *restore = &s_viewportTileRestore[cell];
 		Video_Atari_RestorePlanarTile(restore->pixels, restore->masks,
 		    restore->overlayPixels, restore->overlayMasks, restore->coverage,
-		    (cell % 15) << 4, 40 + (cell / 15) * 16);
+		    (cell % 15) << 4, 40 + (cell / 15) * 16, restore->copyPixels);
 		restore->pixels = NULL;
 	}
 	s_viewportRestoreCount = 0;
@@ -174,6 +189,7 @@ static uint16 GFX_FillPlanarTile(uint16 tileID, uint8 houseID, uint16 index)
 	const uint8 *source, *palette;
 	uint8 colours[16];
 	uint16 line, col;
+	uint16 allMask = 0xffff, anyMask = 0;
 
 	source = g_tilesPixels + (uint32)tileID * s_tileByteSize;
 	palette = g_iconRPAL + (g_iconRTBL[tileID] << 4);
@@ -189,9 +205,12 @@ static uint16 GFX_FillPlanarTile(uint16 tileID, uint8 houseID, uint16 index)
 			}
 		}
 		s_planarTileMasks[(uint32)tileID * 16 + line] = mask;
+		allMask &= mask;
+		anyMask |= mask;
 	}
 	Video_Atari_DecodePlanarTile(source, colours, s_planarTiles + (uint32)index * 64);
-	s_planarTileReady[index] = 1;
+	s_planarTileReady[index] = allMask == 0xffff ? PLANAR_TILE_OPAQUE :
+	                          anyMask == 0 ? PLANAR_TILE_EMPTY : PLANAR_TILE_MIXED;
 	return index;
 }
 
@@ -210,11 +229,14 @@ void GFX_DrawPlanarTile(uint16 tileID, uint16 x, uint16 y, uint8 houseID)
 	index = GFX_GetPlanarTile(tileID, houseID);
 	if (s_viewportRestoreActive) {
 		GFX_QueueViewportTile(s_planarTiles + (uint32)index * 64,
-		    s_planarTileMasks + (uint32)tileID * 16, NULL, NULL, x, y);
+		    s_planarTileMasks + (uint32)tileID * 16, NULL, NULL, x, y,
+		    s_planarTileReady[index], PLANAR_TILE_EMPTY);
 		return;
 	}
 	Video_Atari_DrawPlanarTile(s_planarTiles + (uint32)index * 64,
-	                           s_planarTileMasks + (uint32)tileID * 16, x, y);
+	    s_planarTileMasks + (uint32)tileID * 16, x, y,
+	    GFX_PlanarTileCopySource(s_planarTiles + (uint32)index * 64,
+	        s_planarTileReady[index], NULL, PLANAR_TILE_EMPTY));
 }
 
 void GFX_DrawPlanarTileFogged(uint16 tileID, uint16 fogTileID, uint16 x, uint16 y, uint8 houseID)
@@ -227,13 +249,16 @@ void GFX_DrawPlanarTileFogged(uint16 tileID, uint16 fogTileID, uint16 x, uint16 
 		GFX_QueueViewportTile(s_planarTiles + (uint32)index * 64,
 		    s_planarTileMasks + (uint32)tileID * 16,
 		    s_planarTiles + (uint32)fogIndex * 64,
-		    s_planarTileMasks + (uint32)fogTileID * 16, x, y);
+		    s_planarTileMasks + (uint32)fogTileID * 16, x, y,
+		    s_planarTileReady[index], s_planarTileReady[fogIndex]);
 		return;
 	}
 	Video_Atari_DrawPlanarTileFogged(s_planarTiles + (uint32)index * 64,
-	                               s_planarTileMasks + (uint32)tileID * 16,
-	                               s_planarTiles + (uint32)fogIndex * 64,
-	                               s_planarTileMasks + (uint32)fogTileID * 16, x, y);
+	    s_planarTileMasks + (uint32)tileID * 16,
+	    s_planarTiles + (uint32)fogIndex * 64,
+	    s_planarTileMasks + (uint32)fogTileID * 16, x, y,
+	    GFX_PlanarTileCopySource(s_planarTiles + (uint32)index * 64, s_planarTileReady[index],
+	        s_planarTiles + (uint32)fogIndex * 64, s_planarTileReady[fogIndex]));
 }
 
 void GFX_InitPlanarTiles(uint32 tilesDataLength, const uint8 *palette)

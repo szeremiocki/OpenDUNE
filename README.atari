@@ -48,6 +48,15 @@ hide the preview until gameplay drawing resumes.
 
 ST/STE battlefield terrain and structure tiles are decoded to planar
 assets at tile loading, then restored directly to visible screen memory.
+Tile mask opacity (empty/mixed/opaque) is cached in the existing planar
+slot status byte during lazy decoding. CPU publication selects a proven
+opaque ground or overlay/fog source without rescanning static masks,
+skipping mask reads and ground/fog composition for that source.
+Draw-first restoration then masks writes only by dynamic sprite coverage.
+The tile queue helper is explicitly inline so ground-only callers can
+eliminate generic overlay argument handling and source-selection branches.
+Mixed images retain their mask-based composition, and cursor/placement
+backup maintenance remains unchanged.
 House-colored tiles have six cached variants; unaffected tiles share one
 image. The gameplay IBM palette and quantization are fixed, so hardware
 fades/dimming need no tile-cache rebuild. Loading briefly displays decoded

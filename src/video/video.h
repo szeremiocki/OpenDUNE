@@ -152,17 +152,21 @@ extern bool Video_Atari_ShiftPlanar(int16 x, int16 y, uint16 width, uint16 heigh
  * opacity masks so an opaque logical colour 0 remains opaque. */
 extern void Video_Atari_InitTileMapping(const uint8 *palette);
 extern void Video_Atari_DecodePlanarTile(const uint8 *src, const uint8 *palette, uint16 *pixels);
-extern void Video_Atari_DrawPlanarTile(const uint16 *pixels, const uint16 *masks, uint16 x, uint16 y);
+/* copyPixels is NULL or a ground/overlay source proven fully opaque by
+ * cached tile mask classifications, before dynamic sprite coverage. */
+extern void Video_Atari_DrawPlanarTile(const uint16 *pixels, const uint16 *masks, uint16 x, uint16 y,
+                                      const uint16 *copyPixels);
 /* Fog-covered ground never reaches the screen: merge both cached images
  * before the single destination write, preserving overlay backgrounds. */
 extern void Video_Atari_DrawPlanarTileFogged(const uint16 *pixels, const uint16 *masks,
                                           const uint16 *fogPixels, const uint16 *fogMasks,
-                                          uint16 x, uint16 y);
+                                          uint16 x, uint16 y, const uint16 *copyPixels);
 /* Restore an existing cached background only outside newly drawn sprites.
  * Optional overlay/fog is combined before each visible group write. */
 extern void Video_Atari_RestorePlanarTile(const uint16 *pixels, const uint16 *masks,
                                         const uint16 *overlayPixels, const uint16 *overlayMasks,
-                                        const uint16 *coverage, uint16 x, uint16 y);
+                                        const uint16 *coverage, uint16 x, uint16 y,
+                                        const uint16 *copyPixels);
 extern void Video_Atari_PresentSprite(const uint8 *src, uint16 stride,
                                      uint16 x, uint16 y, uint16 width, uint16 height,
                                      const uint16 *masks);

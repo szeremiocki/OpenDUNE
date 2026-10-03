@@ -2664,15 +2664,17 @@ void Video_Atari_DecodePlanarTile(const uint8 *src, const uint8 *palette, uint16
 	Video_Atari_EncodePlanarWithLookup(chunky.bytes, pixels, 16, 16, s_tilePenPairMap);
 }
 
-void Video_Atari_DrawPlanarTile(const uint16 *pixels, const uint16 *masks, uint16 x, uint16 y)
+void Video_Atari_DrawPlanarTile(const uint16 *pixels, const uint16 *masks, uint16 x, uint16 y,
+                              const uint16 *copyPixels)
 {
 	uint8 *base = Video_Atari_PlanarBase();
 	bool overlays = Video_Atari_PlanarOverlaysOverlap(base, x, y, 16, 16);
 	uint16 line;
 
 	assert((x & 15) == 0 && x + 16 <= SCREEN_WIDTH && y + 16 <= SCREEN_HEIGHT);
+	if (copyPixels != NULL) pixels = copyPixels;
 	for (line = 0; line < 16; line++, pixels += 4) {
-		uint16 mask = masks[line];
+		uint16 mask = copyPixels != NULL ? 0xffff : masks[line];
 		uint16 *dst = (uint16 *)(base + (uint32)(y + line) * 160 + (x >> 1));
 		if (mask == 0) continue;
 		if (overlays) Video_Atari_PlanarMergeGroup(base, y + line, x >> 4, mask, pixels);
@@ -2684,7 +2686,7 @@ void Video_Atari_DrawPlanarTile(const uint16 *pixels, const uint16 *masks, uint1
 
 void Video_Atari_DrawPlanarTileFogged(const uint16 *pixels, const uint16 *masks,
                                     const uint16 *fogPixels, const uint16 *fogMasks,
-                                    uint16 x, uint16 y)
+                                    uint16 x, uint16 y, const uint16 *copyPixels)
 {
 	uint8 *base = Video_Atari_PlanarBase();
 	bool overlays = Video_Atari_PlanarOverlaysOverlap(base, x, y, 16, 16);
@@ -2692,10 +2694,10 @@ void Video_Atari_DrawPlanarTileFogged(const uint16 *pixels, const uint16 *masks,
 
 	assert((x & 15) == 0 && x + 16 <= SCREEN_WIDTH && y + 16 <= SCREEN_HEIGHT);
 	for (line = 0; line < 16; line++, pixels += 4, fogPixels += 4) {
-		uint16 fogMask = fogMasks[line];
-		uint16 mask = masks[line] | fogMask;
+		uint16 fogMask = copyPixels != NULL ? 0 : fogMasks[line];
+		uint16 mask = copyPixels != NULL ? 0xffff : masks[line] | fogMask;
 		uint16 combined[4];
-		const uint16 *src = pixels;
+		const uint16 *src = copyPixels != NULL ? copyPixels + line * 4 : pixels;
 		uint16 *dst = (uint16 *)(base + (uint32)(y + line) * 160 + (x >> 1));
 		if (mask == 0) continue;
 		if (fogMask == 0xffff) src = fogPixels;
@@ -2715,7 +2717,8 @@ void Video_Atari_DrawPlanarTileFogged(const uint16 *pixels, const uint16 *masks,
 
 void Video_Atari_RestorePlanarTile(const uint16 *pixels, const uint16 *masks,
                                  const uint16 *overlayPixels, const uint16 *overlayMasks,
-                                 const uint16 *coverage, uint16 x, uint16 y)
+                                 const uint16 *coverage, uint16 x, uint16 y,
+                                 const uint16 *copyPixels)
 {
 	uint8 *base = Video_Atari_PlanarBase();
 	bool overlays = Video_Atari_PlanarOverlaysOverlap(base, x, y, 16, 16);
@@ -2723,18 +2726,19 @@ void Video_Atari_RestorePlanarTile(const uint16 *pixels, const uint16 *masks,
 
 	assert((x & 15) == 0 && x < 240 && y >= 40 && y + 16 <= SCREEN_HEIGHT);
 	for (line = 0; line < 16; line++, pixels += 4) {
-		uint16 overlayMask = overlayMasks != NULL ? overlayMasks[line] : 0;
-		uint16 mask = (masks[line] | overlayMask) & (uint16)~coverage[line];
+		uint16 overlayMask = copyPixels == NULL && overlayMasks != NULL ? overlayMasks[line] : 0;
+		uint16 mask = (copyPixels != NULL ? 0xffff : masks[line] | overlayMask) &
+		              (uint16)~coverage[line];
 		uint16 combined[4];
-		const uint16 *src = pixels;
+		const uint16 *src = copyPixels != NULL ? copyPixels + line * 4 : pixels;
 		uint16 *dst = (uint16 *)(base + (uint32)(y + line) * 160 + (x >> 1));
-		if (overlayPixels != NULL) src = overlayPixels + line * 4;
 		if (mask == 0) continue;
-		if (overlayMask == 0) src = pixels;
-		else if (overlayMask != 0xffff) {
+		if (overlayPixels != NULL && overlayMask == 0xffff) src = overlayPixels + line * 4;
+		else if (overlayPixels != NULL && overlayMask != 0) {
 			uint16 plane;
 			for (plane = 0; plane < 4; plane++) {
-				combined[plane] = (pixels[plane] & (uint16)~overlayMask) | (src[plane] & overlayMask);
+				combined[plane] = (pixels[plane] & (uint16)~overlayMask) |
+				                  (overlayPixels[line * 4 + plane] & overlayMask);
 			}
 			src = combined;
 		}

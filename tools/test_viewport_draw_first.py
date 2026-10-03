@@ -133,15 +133,55 @@ static void sprites(unsigned frame) {
     /* Exercise the uncached sprite publisher as well as cached composites. */
     Video_Atari_PresentSprite(fallbackPixels, 48, 96, 87, 48, 32, fallbackMasks);
 }
+static void check_cached_cpu_sources(void) {
+    uint16 ground[64], fog[64], groundMasks[16], fogMasks[16], coverage[16];
+    for (unsigned mode = 0; mode < 6; mode++)
+        for (unsigned kind = 0; kind < 3; kind++)
+            for (unsigned covered = 0; covered < 3; covered++)
+                for (unsigned overlay = 0; overlay < 2; overlay++) {
+                    overlays = overlay != 0;
+                    for (unsigned row = 0; row < 16; row++) {
+                        groundMasks[row] = mode == 3 ? 0x79e3 : mode == 4 ? 0 : 0xffff;
+                        fogMasks[row] = mode == 1 ? 0xffff : mode == 2 ? 0x5ae3 : 0;
+                        coverage[row] = covered == 2 ? 0xffff :
+                                        covered == 1 && row % 3 ? 0x8031 : 0;
+                        for (unsigned plane = 0; plane < 4; plane++) {
+                            ground[row * 4 + plane] = mode == 5 ? 0 : row * 317 + plane * 137;
+                            fog[row * 4 + plane] = plane == 0 ? 0 : row * 937 + plane * 71;
+                        }
+                    }
+                    const uint16 *copy = mode == 3 || mode == 4 ? NULL : ground;
+                    if (kind != 0) copy = mode == 1 ? fog : mode == 2 ? NULL : copy;
+                    for (unsigned cached = 0; cached < 2; cached++) {
+                        reset_screen();
+                        const uint16 *source = cached ? copy : NULL;
+                        const uint16 *m = source ? NULL : groundMasks;
+                        const uint16 *fm = source ? NULL : fogMasks;
+                        if (kind == 0) Video_Atari_DrawPlanarTile(ground, m, 64, 80, source);
+                        else if (kind == 1)
+                            Video_Atari_DrawPlanarTileFogged(ground, m, fog, fm, 64, 80, source);
+                        else Video_Atari_RestorePlanarTile(ground, m, fog, fm, coverage, 64, 80, source);
+                        if (!cached) {
+                            memcpy(expected, visible, sizeof(expected));
+                            memcpy(expectedUnderlay, underlay, sizeof(expectedUnderlay));
+                        } else {
+                            assert(!memcmp(visible, expected, sizeof(expected)));
+                            assert(!memcmp(underlay, expectedUnderlay, sizeof(expectedUnderlay)));
+                        }
+                    }
+                }
+}
 int main(void) {
     s_planarTileCount = 6;
     s_planarTiles = malloc(6 * 6 * 64 * sizeof(*s_planarTiles));
     s_planarTileMasks = malloc(6 * 16 * sizeof(*s_planarTileMasks));
     s_planarTileIndex = malloc(6 * 6 * sizeof(*s_planarTileIndex));
-    assert(s_planarTiles && s_planarTileMasks && s_planarTileIndex);
+    s_planarTileReady = malloc(6 * 6 * sizeof(*s_planarTileReady));
+    assert(s_planarTiles && s_planarTileMasks && s_planarTileIndex && s_planarTileReady);
     for (unsigned house = 0; house < 6; house++) for (unsigned tile = 0; tile < 6; tile++) {
         unsigned index = house * 6 + tile;
         s_planarTileIndex[index] = index;
+        s_planarTileReady[index] = tile < 4 ? PLANAR_TILE_OPAQUE : PLANAR_TILE_MIXED;
         for (unsigned i = 0; i < 64; i++)
             s_planarTiles[index * 64 + i] = tile == 2 ? 0 : index * 311 + i * 139;
     }
@@ -161,6 +201,7 @@ int main(void) {
     }
     for (unsigned i = 0; i < sizeof(fallbackPixels); i++) fallbackPixels[i] = i % 5 == 0 ? 0 : i & 15;
     for (unsigned i = 0; i < 96; i++) fallbackMasks[i] = i % 4 == 0 ? 0xffff : 0xb76d;
+    check_cached_cpu_sources();
     for (unsigned mode = 0; mode < 2; mode++) for (unsigned frame = 0; frame < 40; frame++) {
         overlays = mode != 0;
         reset_screen();
