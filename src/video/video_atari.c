@@ -2577,21 +2577,29 @@ uint16 Video_Atari_GetPaletteGeneration(void)
 }
 
 static void Video_Atari_EncodePlanarWithLookup(const uint8 *src, uint16 *pixels,
-                                              uint16 width, uint16 height, const uint16 *lookup)
+                                              uint16 width, uint16 height, const uint16 *lookup,
+                                              uint16 srcStride)
 {
 	assert(Video_Atari_CursorDirect() && src != NULL && pixels != NULL);
 	assert(((uint32)src & 1) == 0 && height != 0 && height <= SCREEN_HEIGHT);
 	assert(width != 0 && width <= SCREEN_WIDTH && (width & 15) == 0);
-	if (width == SCREEN_WIDTH || height == 1) {
+	assert(srcStride >= width && (srcStride & 1) == 0);
+	if ((width == SCREEN_WIDTH && srcStride == SCREEN_WIDTH) || height == 1) {
 		c2p1x1_4_st(pixels, src, width, height, lookup);
 	} else {
-		c2p1x1_4_st_strided(pixels, src, width, height, lookup, width, width / 2);
+		c2p1x1_4_st_strided(pixels, src, width, height, lookup, srcStride, width / 2);
 	}
 }
 
 void Video_Atari_EncodePlanar(const uint8 *src, uint16 *pixels, uint16 width, uint16 height)
 {
-	Video_Atari_EncodePlanarWithLookup(src, pixels, width, height, s_palette4BitPairMap);
+	Video_Atari_EncodePlanarWithLookup(src, pixels, width, height, s_palette4BitPairMap, width);
+}
+
+void Video_Atari_EncodePlanarStrided(const uint8 *src, uint16 srcStride,
+                                    uint16 *pixels, uint16 width, uint16 height)
+{
+	Video_Atari_EncodePlanarWithLookup(src, pixels, width, height, s_palette4BitPairMap, srcStride);
 }
 
 void Video_Atari_PresentPlanarWindow(const uint16 *pixels, uint16 x, uint16 y,
@@ -2701,7 +2709,7 @@ void Video_Atari_DecodePlanarTile(const uint8 *src, const uint8 *palette, uint16
 			chunky.bytes[line * 16 + col * 2 + 1] = pens[src[col] & 15];
 		}
 	}
-	Video_Atari_EncodePlanarWithLookup(chunky.bytes, pixels, 16, 16, s_tilePenPairMap);
+	Video_Atari_EncodePlanarWithLookup(chunky.bytes, pixels, 16, 16, s_tilePenPairMap, 16);
 }
 
 void Video_Atari_DrawPlanarTile(const uint16 *pixels, const uint16 *masks, uint16 x, uint16 y,

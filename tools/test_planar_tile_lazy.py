@@ -118,7 +118,7 @@ static void c2p1x1_4_st(uint16 *dst, const uint8 *src, uint16 width, uint16 heig
 }
 static void c2p1x1_4_st_strided(uint16 *dst, const uint8 *src, uint16 width, uint16 height,
                                const uint16 *lookup, uint32 srcStride, uint32 dstStride) {
-    assert(height > 1 && srcStride == width && dstStride == width / 2);
+    assert(height > 1 && srcStride >= width && !(srcStride & 1) && dstStride == width / 2);
     stridedCalls++;
     encode(dst, src, width, height, lookup, srcStride, dstStride);
 }
@@ -299,8 +299,8 @@ int main(void) {
     }
     failAllocation = 0;
     /* Exercise compact sprite/window canvases and the unchanged full-width path. */
-    union { uint32 aligned; uint8 bytes[320 * 64]; } canvas;
-    uint16 planar[320 * 64 / 4 + 4], expected[320 * 64 / 4];
+    union { uint32 aligned; uint8 bytes[320 * 200]; } canvas;
+    uint16 planar[320 * 200 / 4 + 4], expected[320 * 200 / 4];
     for (unsigned i = 0; i < sizeof(canvas.bytes); i++) canvas.bytes[i] = i * 11 + i / 31;
     for (unsigned hi = 0; hi < 256; hi++) for (unsigned lo = 0; lo < 256; lo++)
         s_palette4BitPairMap[hi * 256 + lo] = ((hi & 15) << 8) | (lo & 15);
@@ -321,6 +321,19 @@ int main(void) {
             assert(!memcmp(planar + 2, expected, words * 2));
             assert(planar[0] == 0xa5a5 && planar[1] == 0xa5a5 && planar[words + 2] == 0xa5a5);
         }
+    /* A command panel converts straight from SCREEN_1 into a compact slot. */
+    const uint8 *panel = canvas.bytes + 42 * 320 + 256;
+    const unsigned panelWords = 64 * 82 / 4;
+    memset(planar, 0xa5, sizeof(planar));
+    memset(expected, 0, panelWords * 2);
+    for (unsigned row = 0; row < 82; row++) for (unsigned x = 0; x < 64; x++)
+        for (unsigned p = 0; p < 4; p++) if (panel[row * 320 + x] & (1u << p))
+            expected[row * 16 + (x >> 4) * 4 + p] |= 0x8000u >> (x & 15);
+    unsigned before = conversions, beforeStrided = stridedCalls;
+    Video_Atari_EncodePlanarStrided(panel, 320, planar + 2, 64, 82);
+    assert(conversions == before + 1 && stridedCalls == beforeStrided + 1);
+    assert(!memcmp(planar + 2, expected, panelWords * 2));
+    assert(planar[0] == 0xa5a5 && planar[1] == 0xa5a5 && planar[panelWords + 2] == 0xa5a5);
     initialize();
     GFX_ViewportBeginRestore();
     GFX_DrawPlanarTile(2, 0, 40, 3);
@@ -341,7 +354,7 @@ int main(void) {
 """
         harness = harness.replace("/* STATE */", state)
         harness = harness.replace("/* VIDEO */", "\n".join(function(video, name) for name in (
-            "Video_Atari_EncodePlanarWithLookup", "Video_Atari_EncodePlanar",
+            "Video_Atari_EncodePlanarWithLookup", "Video_Atari_EncodePlanar", "Video_Atari_EncodePlanarStrided",
             "Video_Atari_InitTileMapping", "Video_Atari_DecodePlanarTile")))
         harness = harness.replace("/* GFX */", "\n".join(function(gfx, name) for name in (
             "GFX_TileHouseColor", "GFX_FreePlanarTiles", "GFX_PlanarTilesReady",

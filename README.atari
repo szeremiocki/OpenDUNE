@@ -185,6 +185,15 @@ without redrawing unchanged base widgets or running the second full widget
 draw pass. Changed widget visibility/selection still triggers drawing, and
 the action panel is rebuilt normally for command text, Cancel, and unit
 controls. Other selection transitions and TT/Falcon keep the original path.
+Attack, Move and Harvest panels also share six small planar cache slots
+(about 15.4 KiB). A miss renders in SCREEN_1, then the shared c2p encoder
+reads its 320-byte-stride rows straight into the packed slot. Hits restore
+the slot with cursor-safe planar publication, without rendering, c2p or
+a chunky SCREEN_0 write. Keys include command, Cancel selection/hover,
+language and palette mapping generation. Widget state and font setup
+still update on hits; SCREEN_1 is scratch, not a maintained panel mirror.
+Normal Cancel hover/press redraws retain their existing small-button path.
+Other panels and unsupported layouts keep their original renderer.
 Visible sandworm blur and blurred units retain the original chunky
 compositor because they read underlying logical palette indices.
 Switching paths reconstructs the complete scene.

@@ -134,6 +134,9 @@ extern bool Video_Atari_PresentRestore(int16 x, int16 y, uint16 width, uint16 he
  * screen x coordinates, with masked edges and cursor-aware presentation. */
 extern uint16 Video_Atari_GetPaletteGeneration(void);
 extern void Video_Atari_EncodePlanar(const uint8 *src, uint16 *pixels, uint16 width, uint16 height);
+/* Encode a rectangle from even-strided chunky rows into tightly packed planar rows. */
+extern void Video_Atari_EncodePlanarStrided(const uint8 *src, uint16 srcStride,
+                                           uint16 *pixels, uint16 width, uint16 height);
 extern void Video_Atari_PresentPlanarWindow(const uint16 *pixels, uint16 x, uint16 y,
                                            uint16 width, uint16 height);
 
