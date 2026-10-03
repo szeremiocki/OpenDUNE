@@ -38,6 +38,7 @@ typedef int Screen;
 enum { SCREEN_0, SCREEN_1, SCREEN_WIDTH = 320 };
 #define min(a,b) ((a) < (b) ? (a) : (b))
 static uint16 g_announcementPhase = 1;
+static uint16 g_creditsPhase = 1;
 static uint32 g_timerGUI;
 static bool g_textDisplayNeedsUpdate;
 static uint16 g_curWidgetXBase = 1, g_curWidgetYBase = 21;
@@ -48,11 +49,17 @@ static uint16 currentWidget = 6;
 static unsigned frames, renders, hides, shows, warnings;
 static unsigned offsets[64], heights[64];
 static char prepared[80], displayed[80];
-static const char *option;
+static const char *option, *creditsOption;
 static char *IniFile_GetString(const char *key, const char *fallback, char *out, uint16 size) {
-    assert(!strcmp(key, "phase_announcement") && fallback == NULL);
-    if (option == NULL) return NULL;
-    snprintf(out, size, "%s", option);
+    assert(fallback == NULL);
+    const char *value;
+    if (!strcmp(key, "phase_announcement")) value = option;
+    else {
+        assert(!strcmp(key, "phase_credits"));
+        value = creditsOption;
+    }
+    if (value == NULL) return NULL;
+    snprintf(out, size, "%s", value);
     return out;
 }
 #define Warning(...) (warnings++)
@@ -158,7 +165,7 @@ int main(void) {
     option = NULL;
     g_announcementPhase = 0;
     Config_LoadAnimationPhases();
-    assert(g_announcementPhase == 1 && warnings == 0);
+    assert(g_announcementPhase == 1 && g_creditsPhase == 1 && warnings == 0);
     for (unsigned i = 0; i < sizeof(valid) / sizeof(*valid); i++) {
         option = valid[i];
         Config_LoadAnimationPhases();
@@ -170,6 +177,14 @@ int main(void) {
         Config_LoadAnimationPhases();
         assert(g_announcementPhase == 1 && warnings == i + 1);
     }
+    option = "0";
+    creditsOption = "2";
+    Config_LoadAnimationPhases();
+    assert(g_announcementPhase == 0 && g_creditsPhase == 2);
+    creditsOption = "bad";
+    unsigned beforeWarnings = warnings;
+    Config_LoadAnimationPhases();
+    assert(g_announcementPhase == 0 && g_creditsPhase == 1 && warnings == beforeWarnings + 1);
     /* Run both Atari backends, or the ordinary non-TOS renderer. */
     for (unsigned backend = 0; backend < 2; backend++) {
 #ifdef TOS

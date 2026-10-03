@@ -3392,6 +3392,9 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 {
 	static uint16 creditsAnimation = 0;           /* How many credits are shown in current animation of credits. */
 	static int16  creditsAnimationOffset = 0;     /* Offset of the credits for the animation of credits. */
+	static bool creditsSkipFrame;
+	static uint16 creditsLastDrawn;
+	static bool creditsLastDrawWasPlain;
 
 	Screen oldScreenID = SCREEN_ACTIVE;
 	uint16 oldWidgetId = 0;
@@ -3404,6 +3407,7 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 	uint16 creditsNew;
 	uint16 creditsOld;
 	int16 offset;
+	int16 displayOffset;
 #ifdef TOS
 	bool direct = Video_Atari_CursorDirect();
 	bool cached = direct && s_creditsCacheReady &&
@@ -3453,23 +3457,6 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 
 	if (mode == 0 && h->credits == creditsAnimation && creditsAnimationOffset == 0) return;
 
-	if (direct) {
-		GUI_Mouse_Hide_InWidget(5);
-#ifdef TOS
-		/* The clipped counter background covers all 64x9 batch pixels. */
-		if (!planar) {
-			GUI_DrawSprite_BeginOpaqueBatch(creditsBatchData,
-			                                g_widgetProperties[windowID].xBase << 3,
-			                                g_widgetProperties[windowID].yBase,
-			                                g_widgetProperties[windowID].width << 3,
-			                                g_widgetProperties[windowID].height);
-		}
-#endif
-	} else {
-		oldScreenID = GFX_Screen_SetActive(SCREEN_1);
-		oldWidgetId = Widget_SetCurrentWidget(4);
-	}
-
 	creditsDiff = h->credits - creditsAnimation;
 	if (creditsDiff != 0) {
 		int16 diff = creditsDiff / 4;
@@ -3506,6 +3493,43 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 		creditsNew += 1;
 	}
 
+	/* Preserve counting and sound updates even when presentation is skipped. */
+	g_playerCredits = creditsOld;
+	if (mode == 0 && g_creditsPhase == 0 && creditsLastDrawWasPlain
+		&& creditsOld == creditsLastDrawn) return;
+	if (mode != 0 || g_creditsPhase != 2
+		|| (creditsAnimation == h->credits && creditsAnimationOffset == 0)) {
+		creditsSkipFrame = false;
+	} else {
+		bool skip = creditsSkipFrame;
+		creditsSkipFrame = !creditsSkipFrame;
+		if (skip) return;
+	}
+
+	displayOffset = creditsAnimationOffset;
+	if (g_creditsPhase == 0) {
+		creditsNew = creditsOld;
+		displayOffset = 0;
+		offset = 1;
+	}
+
+	if (direct) {
+		GUI_Mouse_Hide_InWidget(5);
+#ifdef TOS
+		/* The clipped counter background covers all 64x9 batch pixels. */
+		if (!planar) {
+			GUI_DrawSprite_BeginOpaqueBatch(creditsBatchData,
+			                                g_widgetProperties[windowID].xBase << 3,
+			                                g_widgetProperties[windowID].yBase,
+			                                g_widgetProperties[windowID].width << 3,
+			                                g_widgetProperties[windowID].height);
+		}
+#endif
+	} else {
+		oldScreenID = GFX_Screen_SetActive(SCREEN_1);
+		oldWidgetId = Widget_SetCurrentWidget(4);
+	}
+
 #ifdef TOS
 	if (planar) {
 		uint16 paletteGeneration = Video_Atari_GetPaletteGeneration();
@@ -3520,8 +3544,6 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 	{
 		GUI_DrawSprite(drawScreenID, g_sprites[12], 12, GUI_SPRITE_COLOUR_EMBEDDED, 0, 0, windowID, DRAWSPRITE_FLAG_WIDGETPOS);
 	}
-
-	g_playerCredits = creditsOld;
 
 #ifdef TOS
 	GUI_FormatCredits(creditsOld, charCreditsOld);
@@ -3546,7 +3568,7 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 #ifdef TOS
 		if (planar) {
 			if (charCreditsOld[i] != creditsNewText[i]) {
-				uint16 firstRow = (creditsAnimationOffset + 7) & 7;
+				uint16 firstRow = (displayOffset + 7) & 7;
 				uint16 lowerRows = CREDITS_CACHE_GLYPH_SIZE - firstRow;
 
 				GUI_DrawCreditsPlanarRows(creditsPlanar, i, spriteID - 13, firstRow, 0, lowerRows);
@@ -3561,11 +3583,11 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 		if (cached) {
 			if (charCreditsOld[i] != creditsNewText[i]) {
 				GUI_DrawCreditsGlyph(creditsBatchBuf, spriteID - 13, left,
-				                     CREDITS_CACHE_PADDING + offset - creditsAnimationOffset);
-				if (creditsAnimationOffset != 0) {
+				                     CREDITS_CACHE_PADDING + offset - displayOffset);
+				if (displayOffset != 0) {
 					spriteID = (creditsNewText[i] == ' ') ? 13 : creditsNewText[i] - 34;
 					GUI_DrawCreditsGlyph(creditsBatchBuf, spriteID - 13, left,
-					                     CREDITS_CACHE_PADDING + offset + 8 - creditsAnimationOffset);
+					                     CREDITS_CACHE_PADDING + offset + 8 - displayOffset);
 				}
 			} else {
 				GUI_DrawCreditsGlyph(creditsBatchBuf, spriteID - 13, left, CREDITS_CACHE_PADDING + 1);
@@ -3574,16 +3596,19 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 		}
 #endif
 		if (charCreditsOld[i] != creditsNewText[i]) {
-			GUI_DrawSprite(drawScreenID, g_sprites[spriteID], spriteID, GUI_SPRITE_COLOUR_EMBEDDED, left, offset - creditsAnimationOffset, windowID, DRAWSPRITE_FLAG_WIDGETPOS);
-			if (creditsAnimationOffset == 0) continue;
+			GUI_DrawSprite(drawScreenID, g_sprites[spriteID], spriteID, GUI_SPRITE_COLOUR_EMBEDDED, left, offset - displayOffset, windowID, DRAWSPRITE_FLAG_WIDGETPOS);
+			if (displayOffset == 0) continue;
 
 			spriteID = (creditsNewText[i] == ' ') ? 13 : creditsNewText[i] - 34;
 
-			GUI_DrawSprite(drawScreenID, g_sprites[spriteID], spriteID, GUI_SPRITE_COLOUR_EMBEDDED, left, offset + 8 - creditsAnimationOffset, windowID, DRAWSPRITE_FLAG_WIDGETPOS);
+			GUI_DrawSprite(drawScreenID, g_sprites[spriteID], spriteID, GUI_SPRITE_COLOUR_EMBEDDED, left, offset + 8 - displayOffset, windowID, DRAWSPRITE_FLAG_WIDGETPOS);
 		} else {
 			GUI_DrawSprite(drawScreenID, g_sprites[spriteID], spriteID, GUI_SPRITE_COLOUR_EMBEDDED, left, 1, windowID, DRAWSPRITE_FLAG_WIDGETPOS);
 		}
 	}
+
+	creditsLastDrawn = creditsOld;
+	creditsLastDrawWasPlain = g_creditsPhase == 0 || creditsAnimationOffset == 0;
 
 	if (direct) {
 #ifdef TOS

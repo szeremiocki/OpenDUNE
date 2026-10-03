@@ -18,6 +18,7 @@
 GameCfg g_gameConfig = { 1, 1, 2, 1, 0 };
 DuneCfg g_config;
 uint16 g_announcementPhase = 1;
+uint16 g_creditsPhase = 1;
 bool g_enableSoundMusic = true;
 bool g_enableVoices = true;
 
@@ -41,6 +42,7 @@ static uint16 Config_ReadAnimationPhase(const char *key)
 void Config_LoadAnimationPhases(void)
 {
 	g_announcementPhase = Config_ReadAnimationPhase("phase_announcement");
+	g_creditsPhase = Config_ReadAnimationPhase("phase_credits");
 }
 
 /**

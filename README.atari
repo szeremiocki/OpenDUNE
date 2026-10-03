@@ -61,12 +61,19 @@ The engine announcement banner supports this opendune.ini setting:
 
 [opendune]
 phase_announcement=2
+phase_credits=2
 
 Use 0 for immediate display without scrolling, 1 for the original one-row
 animation (default), or 2 for two-row steps. Message priorities, queuing and
 display hold times are unchanged; only the transition animation changes.
 The setting is handled by the engine animator, not the Atari video driver,
 and is available on other platforms too. Invalid values warn and use 1.
+For credits, 0 keeps normal gradual counting but displays non-scrolling
+digits only when the shown number changes, 1 retains the original animation,
+and 2 renders every other animation update. Counting and sound timing are
+unchanged in every mode. Forced/reset
+draws and the final settled value are always displayed, even in mode 2.
+These settings are independent and neither changes game speed.
 
 Based on a typical scene on level 1 :
 
