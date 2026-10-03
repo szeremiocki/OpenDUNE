@@ -1301,6 +1301,7 @@ static uint16 s_curGroup, s_curGroups, s_curShift;
 /* geometry of the composite that is currently on screen, needed to undo it */
 static uint8 *s_curDrawnBase = NULL;
 static uint16 s_curDrawnY, s_curDrawnH, s_curDrawnGroup, s_curDrawnGroups;
+static uint16 s_curViewportTiles[10];
 
 static uint16 s_curData[CURSOR_MAX_H][CURSOR_MAX_GROUPS * 4];
 static uint16 s_curMask[CURSOR_MAX_H][CURSOR_MAX_GROUPS];
@@ -1744,6 +1745,22 @@ void Video_Atari_CursorHide(void)
 	}
 }
 
+static void Video_Atari_MarkViewportTiles(uint16 tiles[10], int16 x, int16 y,
+                                         uint16 width, uint16 height)
+{
+	int left = max(0, x), right = min(240, (int)x + width);
+	int top = max(40, y), bottom = min(200, (int)y + height);
+	uint16 bits, row, lastRow;
+
+	memset(tiles, 0, 10 * sizeof(*tiles));
+	if (left >= right || top >= bottom) return;
+	bits = (uint16)(((1u << ((right + 15) >> 4)) - 1) &
+	                ~((1u << (left >> 4)) - 1));
+	row = (uint16)((top - 40) >> 4);
+	lastRow = (uint16)((bottom - 41) >> 4);
+	for (; row <= lastRow; row++) tiles[row] = bits;
+}
+
 /* Movement, actual hiding and screen shifts restore this backup.
  * Ordinary drawing updates it synchronously instead. */
 static void Video_Atari_CursorEraseFull(void)
@@ -1762,6 +1779,7 @@ static void Video_Atari_CursorEraseFull(void)
 		p += SCREEN_WIDTH >> 2;	/* 80 words per scanline */
 	}
 	s_curDrawn = false;
+	memset(s_curViewportTiles, 0, sizeof(s_curViewportTiles));
 }
 
 /** Save the planar background and composite the cursor over it. */
@@ -1800,6 +1818,8 @@ static void Video_Atari_CursorDraw(uint8 *base)
 	s_curDrawnGroup = s_curGroup;
 	s_curDrawnGroups = s_curGroups;
 	s_curDrawn = true;
+	Video_Atari_MarkViewportTiles(s_curViewportTiles, s_curDrawnGroup << 4, s_curDrawnY,
+	                            s_curDrawnGroups << 4, s_curDrawnH);
 }
 
 static void Video_Atari_CursorSync(uint8 *base)
@@ -1859,6 +1879,7 @@ static uint8 s_placePen;
 static bool s_placeInvalid, s_placeVisible, s_placeDirty;
 static int16 s_placeDrawnX, s_placeDrawnY;
 static uint16 s_placeDrawnWidth, s_placeDrawnHeight;
+static uint16 s_placeViewportTiles[10];
 
 static inline bool Video_Atari_CursorRectOverlap(uint8 *base, uint16 first, uint16 end,
                                                 uint16 y, uint16 h)
@@ -1884,6 +1905,20 @@ static bool Video_Atari_PlanarOverlaysOverlap(uint8 *base, uint16 x, uint16 y,
 	/* Backups cover whole groups, including pixels outside an edge mask. */
 	return Video_Atari_CursorRectOverlap(base, first, end, y, h) ||
 	       Video_Atari_PlacementRectOverlap(base, first << 4, end << 4, y, h);
+}
+
+static inline bool Video_Atari_TileOverlaysOverlap(uint8 *base, uint16 x, uint16 y)
+{
+	static const uint16 columnBits[15] = {
+		0x0001, 0x0002, 0x0004, 0x0008, 0x0010, 0x0020, 0x0040, 0x0080,
+		0x0100, 0x0200, 0x0400, 0x0800, 0x1000, 0x2000, 0x4000
+	};
+
+	if (x < 240 && y >= 40 && y < 200 && ((y - 40) & 15) == 0) {
+		uint16 row = (y - 40) >> 4;
+		return ((s_curViewportTiles[row] | s_placeViewportTiles[row]) & columnBits[x >> 4]) != 0;
+	}
+	return Video_Atari_PlanarOverlaysOverlap(base, x, y, 16, 16);
 }
 
 static inline void Video_Atari_PlanarMergePlain(uint16 *dst, uint16 mask, const uint16 pixels[4])
@@ -2096,6 +2131,7 @@ static void Video_Atari_PlacementEnd(uint8 *base)
 		Video_Atari_CursorWriteGroup(s_placeDrawnBase, block->y, block->group, words);
 	}
 	s_placeBlockCount = 0;
+	memset(s_placeViewportTiles, 0, sizeof(s_placeViewportTiles));
 	s_placeDirty = false;
 	if (!s_placeVisible) return;
 
@@ -2128,6 +2164,9 @@ static void Video_Atari_PlacementEnd(uint8 *base)
 			Video_Atari_CursorWriteGroup(base, (uint16)y, (uint16)(x / 16), words);
 		}
 	}
+	if (s_placeBlockCount != 0)
+		Video_Atari_MarkViewportTiles(s_placeViewportTiles, s_placeDrawnX, s_placeDrawnY,
+		                            s_placeDrawnWidth, s_placeDrawnHeight);
 }
 
 /* ------------------------------------------------------------------
@@ -2669,7 +2708,7 @@ void Video_Atari_DrawPlanarTile(const uint16 *pixels, const uint16 *masks, uint1
                               const uint16 *copyPixels)
 {
 	uint8 *base = Video_Atari_PlanarBase();
-	bool overlays = Video_Atari_PlanarOverlaysOverlap(base, x, y, 16, 16);
+	bool overlays = Video_Atari_TileOverlaysOverlap(base, x, y);
 	uint16 line;
 
 	assert((x & 15) == 0 && x + 16 <= SCREEN_WIDTH && y + 16 <= SCREEN_HEIGHT);
@@ -2690,7 +2729,7 @@ void Video_Atari_DrawPlanarTileFogged(const uint16 *pixels, const uint16 *masks,
                                     uint16 x, uint16 y, const uint16 *copyPixels)
 {
 	uint8 *base = Video_Atari_PlanarBase();
-	bool overlays = Video_Atari_PlanarOverlaysOverlap(base, x, y, 16, 16);
+	bool overlays = Video_Atari_TileOverlaysOverlap(base, x, y);
 	uint16 line;
 
 	assert((x & 15) == 0 && x + 16 <= SCREEN_WIDTH && y + 16 <= SCREEN_HEIGHT);
@@ -2730,7 +2769,7 @@ void Video_Atari_RestorePlanarTile(const uint16 *pixels, const uint16 *masks,
                                  const uint16 *copyPixels)
 {
 	uint8 *base = Video_Atari_PlanarBase();
-	bool overlays = Video_Atari_PlanarOverlaysOverlap(base, x, y, 16, 16);
+	bool overlays = Video_Atari_TileOverlaysOverlap(base, x, y);
 	uint16 line;
 
 	assert((x & 15) == 0 && x < 240 && y >= 40 && y + 16 <= SCREEN_HEIGHT);

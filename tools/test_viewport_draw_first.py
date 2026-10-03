@@ -60,6 +60,9 @@ static bool Video_Atari_PlanarOverlaysOverlap(uint8 *base, uint16 x, uint16 y,
     assert(x + width <= 240 && y >= 40 && y + height <= 200);
     return overlays;
 }
+static bool Video_Atari_TileOverlaysOverlap(uint8 *base, uint16 x, uint16 y) {
+    return Video_Atari_PlanarOverlaysOverlap(base, x, y, 16, 16);
+}
 static void GFX_Screen_ClearDirtyRect(uint16 l, uint16 t, uint16 r, uint16 b) {
     assert(!(l & 15) && !(r & 15) && l < r && r <= 240 && t >= 40 && t < b && b <= 200);
     clears++;

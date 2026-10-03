@@ -88,6 +88,14 @@ The tile queue helper is explicitly inline so ground-only callers can
 eliminate generic overlay argument handling and source-selection branches.
 Mixed images retain their mask-based composition, and cursor/placement
 backup maintenance remains unchanged.
+Aligned 15x10 viewport tile writes test independent cursor and placement
+overlap masks (ten words each), updated only when their actual planar
+backups are drawn or erased. Cursor marking includes all saved 16-pixel
+groups, even transparent padding; placement marking retains its drawn
+rectangle. Requested movement/hiding alone does not clear a live backup's
+mask. Tiles outside this grid and sprite/other rectangle writes retain
+the existing overlap checks. ST/STE tiles and overlays share the same
+logical screen; hardware screen shake does not change that drawing base.
 House-colored tiles have six cached variants; unaffected tiles share one
 image. The gameplay IBM palette and quantization are fixed, so hardware
 fades/dimming need no tile-cache rebuild. Loading briefly displays decoded
