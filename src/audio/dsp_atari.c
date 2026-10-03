@@ -7,11 +7,15 @@
 
 #include "types.h"
 #include "../os/endian.h"
+#include "../os/atari.h"
 #include "../os/error.h"
 
 #include "dsp.h"
 
 extern void set_dma_sound(const void *buffer, uint32 len, uint32 mode);
+#if ATARI_SUPERVISOR_RESIDENT
+extern void set_dma_sound_supervisor(const void *buffer, uint32 len, uint32 mode);
+#endif
 extern void stop_dma_sound(void);	/* needs to be called in supervisor mode */
 extern uint32 get_dma_status(void);	/* needs to be called in supervisor mode */
 
@@ -82,7 +86,7 @@ static const uint8 *s_playingSample;
 
 void DSP_Stop(void)
 {
-	Supexec(stop_dma_sound);
+	Atari_SupervisorExec(stop_dma_sound);
 	s_playingSample = NULL;
 }
 
@@ -375,6 +379,10 @@ void DSP_Play(const uint8 *data)
 
 	/* All TOS callers use retained ST RAM or the ST RAM conversion scratch.
 	 * Neither source may be freed/overwritten until DMA has stopped. */
+#if ATARI_SUPERVISOR_RESIDENT
+	if (g_atariSupervisorResident) set_dma_sound_supervisor(data + 2, len, DMASOUND_MODE);
+	else
+#endif
 	set_dma_sound(data + 2, len, DMASOUND_MODE);
 	s_playingSample = sample;
 }
@@ -384,7 +392,7 @@ void DSP_Play(const uint8 *data)
  */
 uint8 DSP_GetStatus(void)
 {
-	uint8 status = (uint8)Supexec(get_dma_status);
+	uint8 status = (uint8)Atari_SupervisorRead(get_dma_status);
 	Debug("DSP_GetStatus() status = %02x : %s\n",
 	      status, (status != 0) ? "Playing" : "Stopped");
 	return (status != 0) ? 2 : 0;

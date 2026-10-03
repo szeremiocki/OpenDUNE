@@ -23,6 +23,37 @@ to specify the CPU type (68000, 68010, 68020, 68030, 68040 or
 The 68030 build will not run on a stock ST/STE. To build a version
 that will run on any machine in the Atari ST family, use --cpu=68000.
 
+The opt-in ST/STE supervisor-resident mode enters supervisor mode once
+with Super(0L), then continues initialization/gameplay in that mode.
+Enable it with --CFLAGS="-DATARI_SUPERVISOR_RESIDENT=1" when configuring;
+the default is 0, retaining the Supexec baseline. TT/Falcon and other
+_MCH families retain Supexec even in the enabled build; no _MCH cookie
+is treated as plain ST. This mode is independent of blitter experiments.
+Video-base updates, Mega STE speed changes and IKBD installation/restoration
+call their protected routines directly while resident. STE DMA sound start
+also has a direct assembly entry, and stop/status polling avoid their
+XBIOS trampolines.
+
+Residency does not permanently mask interrupts. IKBD setup/teardown preserve
+the caller's status register instead of leaving a fixed interrupt mask.
+If startup switches from user mode, it registers an atexit handler before
+switching, restoring the saved supervisor stack with mintlib's SuperToUser
+binding after normal game cleanup and before the existing exit keypress
+prompt. Early returns and exit() paths also run that handler. An
+already-supervisor caller is left in its original mode. Other
+BIOS/XBIOS/GEMDOS calls remain unchanged.
+
+Compare identical stabilized replays against the Supexec baseline, and check
+cursor, audio, error exits and normal desktop return on target. The
+supervisor mode is experimental; host/object checks cannot establish
+OS-stack behavior or real-hardware correctness. This changes
+privilege/dispatch only, not draw-first rendering or cursor compositing.
+
+Reference: Vanilla-Conquer-Atari-ST, commit
+2ec08811ca7b24a365922c29be7a7c3e727c883c,
+tiberiandawn/atarilib/startup.cpp:212-218, keeps the executable in supervisor
+mode after one Super(0L); it does not pass the game loop to Supexec.
+
 
 * Performance
 

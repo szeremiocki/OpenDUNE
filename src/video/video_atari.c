@@ -18,6 +18,7 @@
 #include "../input/mouse.h"
 #include "../opendune.h"
 #include "../os/endian.h"
+#include "../os/atari.h"
 #include "../os/error.h"
 #include "../os/math.h"
 #include "../os/sleep.h"
@@ -1036,14 +1037,14 @@ static void Detect_Machine(void)
 	}
 }
 
-/* Run through Supexec() : switch a Mega STE to 16MHz with the cache on. */
+/* Supervisor-only: switch a Mega STE to 16MHz with the cache on. */
 static void MegaSTE_SpeedUp(void)
 {
 	s_savedCpuSpeed = *MEGASTE_CPUCTL;
 	*MEGASTE_CPUCTL = 0x03;	/* 16MHz + cache */
 }
 
-/* Run through Supexec() : put back what MegaSTE_SpeedUp() found. */
+/* Supervisor-only: put back what MegaSTE_SpeedUp() found. */
 static void MegaSTE_SpeedRestore(void)
 {
 	*MEGASTE_CPUCTL = (uint8)s_savedCpuSpeed;
@@ -1081,7 +1082,7 @@ bool Video_Init(int screen_magnification, VideoScaleFilter filter)
 	if(s_machine_type == MCH_UNKNOWN) Detect_Machine();
 
 	if(s_machine_type == MCH_MEGA_STE && s_savedCpuSpeed < 0) {
-		Supexec(MegaSTE_SpeedUp);
+		Atari_SupervisorExec(MegaSTE_SpeedUp);
 		Debug("Mega STE : 16MHz + cache enabled (was $%02x)\n", s_savedCpuSpeed);
 	}
 
@@ -1134,7 +1135,7 @@ bool Video_Init(int screen_magnification, VideoScaleFilter filter)
 	Debug("old video mode = $%04hx\n", s_savedMode);
 	Debug("Physbase() = $%08x  Logbase() = $%08x\n", Physbase(), Logbase());
 	/* install IKBD handler for mouse and keyboard IRQ */
-	Supexec(install_ikbd_handler);
+	Atari_SupervisorExec(install_ikbd_handler);
 	return true;
 }
 
@@ -1164,9 +1165,9 @@ void Video_Uninit(void)
 		}
 		Setscreen(s_savedLogBase, s_savedPhysBase, s_savedMode);
 	}
-	Supexec(uninstall_ikbd_handler);
+	Atari_SupervisorExec(uninstall_ikbd_handler);
 	if(s_savedCpuSpeed >= 0) {
-		Supexec(MegaSTE_SpeedRestore);
+		Atari_SupervisorExec(MegaSTE_SpeedRestore);
 		s_savedCpuSpeed = -1;
 	}
 	g_consoleActive = true;
@@ -3768,7 +3769,7 @@ void Video_SetOffset(uint16 offset)
 		}
 
 		s_stScreenBase = base - shift;
-		Supexec(Video_ST_SetBase);
+		Atari_SupervisorExec(Video_ST_SetBase);
 	} else {
 		s_screenOffset = offset;
 		s_screen_needrepaint = true;	/* force repaint */

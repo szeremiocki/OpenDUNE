@@ -16,7 +16,8 @@
 _install_ikbd_handler:
 	movem.l	d0-d1/a0-a1,-(sp)
 
-	move.w	#$2700,sr	; Disable all interrupts
+	move.w	sr,-(sp)
+	ori.w	#$0700,sr	; Disable all interrupts
 
 	; Save MFP registers used for ACIA interrupt
 	lea	$fffffa00.w,a0
@@ -35,7 +36,7 @@ _install_ikbd_handler:
 	; disable the mouse (entering VT52 textmode)
 	move.b #$08,$fffffc02.w
 
-	move.w	#$2300,sr ; Re-enable interrupts
+	move.w	(sp)+,sr
 
 	movem.l	(sp)+,d0-d1/a0-a1
 	rts
@@ -44,7 +45,8 @@ _install_ikbd_handler:
 _uninstall_ikbd_handler:
 	move.l	a0,-(sp)
 
-	move.w	#$2700,sr	; Disable interrupts
+	move.w	sr,-(sp)
+	ori.w	#$0700,sr	; Disable interrupts
 
 	; Restore MFP registers
 	lea	$fffffa00.w,a0
@@ -72,7 +74,7 @@ _uninstall_ikbd_handler:
 	bra.s	.ikbd_clearbuffer
 .ikbd_buffercleared:
 
-	move.w	#$2300,sr ; Re-enable interrupts
+	move.w	(sp)+,sr
 
 	move.l	(sp)+,a0
 	rts
