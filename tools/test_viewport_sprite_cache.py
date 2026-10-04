@@ -68,6 +68,9 @@ static ViewportSpriteMask *GUI_ViewportSpriteMaskSlot(const uint8 *sprite) {
     for (unsigned i = 0; i < 70; i++) if (slots[i].sprite == sprite) return slots + i;
     assert(false); return NULL;
 }
+static void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 bottom) {
+    assert(left < right && top < bottom && right - left <= 80 && bottom - top <= 64);
+}
 static void GFX_Screen_SetDirtySource(unsigned source) { assert(source == DIRTY_SRC_SPRITE); }
 static void GFX_Screen_ClearDirtyRect(uint16 l, uint16 t, uint16 r, uint16 b) {
     assert(!(l & 15) && !(r & 15) && l < r && r <= 240 && t >= 40 && t < b && b <= 200);

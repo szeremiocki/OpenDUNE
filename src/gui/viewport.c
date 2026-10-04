@@ -47,6 +47,7 @@ static uint32 s_tickClick;                                  /*!< Stores last tim
 #define MINIMAP_UPDATE_INTERVAL 30 /* 2 Hz on the 60 Hz GUI timer. */
 
 static bool s_viewportWasPlanar;
+static bool s_viewportRepairActive, s_viewportRepairForce;
 static uint8 s_minimapAppearance[64 * 64];
 static uint8 s_minimapAppearanceValid[64 * 64 / 8];
 static uint16 s_minimapAppearanceScale;
@@ -116,6 +117,60 @@ static bool GUI_Widget_Viewport_CanDrawPlanar(void)
 		if (e->spriteID < 111 || e->spriteID > 354) return false;
 	}
 	return true;
+}
+
+void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 bottom)
+{
+	uint16 x, y, first, end;
+	uint16 fullyFoggedTileID;
+
+	if (!s_viewportRepairActive) return;
+	left = max(left, 0);
+	top = max(top, 40);
+	right = min(right, 240);
+	bottom = min(bottom, 200);
+	if (left >= right || top >= bottom) return;
+	first = left >> 4;
+	end = (right + 15) >> 4;
+	fullyFoggedTileID = g_iconMap[g_iconMap[ICM_ICONGROUP_FOG_OF_WAR] + 15];
+
+	for (y = (top - 40) >> 4; y < (bottom - 40 + 15) >> 4; y++) {
+		uint16 packedRow = g_viewportPosition + (y << 6);
+		const uint8 *bits = &g_dirtyMinimap[packedRow >> 3];
+		uint16 shift = packedRow & 7;
+		uint32 word = (uint32)bits[0] | ((uint32)bits[1] << 8);
+		uint16 remaining;
+
+		if (shift > 1) word |= (uint32)bits[2] << 16;
+		remaining = (uint16)((word >> shift) & 0x7fff) >> first;
+		if (remaining == 0) continue;
+
+		for (x = first; x < end && remaining != 0; x++, remaining >>= 1) {
+			uint16 packed;
+			if ((remaining & 1) == 0) continue;
+			packed = packedRow + x;
+			uint16 tileLeft = x << 4, tileTop = (y << 4) + 40;
+			Tile *t;
+
+			/* Consume before drawing: later foreground must not restore
+			 * this tile again and erase an earlier foreground draw. */
+			BitArray_Clear(g_dirtyMinimap, packed);
+			t = &g_map[packed];
+			if (!g_debugScenario &&
+			    (t->overlayTileID == g_veiledTileID || t->overlayTileID == fullyFoggedTileID)) {
+				if (s_viewportRepairForce) {
+					GUI_DrawFilledRectangle(tileLeft, tileTop, tileLeft + 15, tileTop + 15, 12);
+				}
+			} else if (t->overlayTileID != 0 && !g_debugScenario && !Tile_IsUnveiled(t->overlayTileID)) {
+				GFX_DrawPlanarTileFogged(t->groundTileID, t->overlayTileID, tileLeft, tileTop, t->houseID);
+			} else {
+				GFX_DrawPlanarTile(t->groundTileID, tileLeft, tileTop, t->houseID);
+				if (t->overlayTileID != 0 && !g_debugScenario) {
+					GFX_DrawPlanarTile(t->overlayTileID, tileLeft, tileTop, t->houseID);
+				}
+			}
+		}
+	}
 }
 #endif
 
@@ -643,6 +698,10 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 
 	oldWidgetID = Widget_SetCurrentWidget(2);
 
+#ifdef TOS
+	s_viewportRepairActive = planarViewport;
+	s_viewportRepairForce = forceRedraw;
+#endif
 	if (g_dirtyViewportCount != 0 || forceRedraw) {
 		for (y = 0; y < 10; y++) {
 			uint16 top = (y << 4) + 0x28;	/* 40 */
@@ -678,6 +737,12 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 #endif
 				}
 
+#ifdef TOS
+				if (planarViewport) {
+					BitArray_Set(g_dirtyMinimap, curPos);
+					continue;
+				}
+#endif
 				t = &g_map[curPos];
 				left = x << 4;
 
@@ -760,6 +825,9 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 		uint16 y2 = y1 + (g_selectionHeight << 4) - 1;
 
 		GUI_SetClippingArea(0, 40, 239, SCREEN_HEIGHT - 1);
+#ifdef TOS
+		GUI_Widget_Viewport_RepairTiles((int16)x1, (int16)y1, (int16)(x2 + 1), (int16)(y2 + 1));
+#endif
 		GUI_DrawWiredRectangle(x1, y1, x2, y2, 0xFF);
 
 		if (g_selectionState == 0 && g_selectionType == SELECTIONTYPE_PLACE) {
@@ -978,6 +1046,10 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 	}
 	}
 
+#ifdef TOS
+	if (updateDisplay) GUI_Widget_Viewport_RepairTiles(0, 40, 240, 200);
+	s_viewportRepairActive = false;
+#endif
 	/* draw air units */
 	if (g_dirtyAirUnitCount != 0 || forceRedraw || updateDisplay) {
 		find.type    = 0xFFFF;

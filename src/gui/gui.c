@@ -1714,6 +1714,8 @@ static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 		entry->key = key;
 	}
 	entry->used = s_viewportPlanarClock;
+	GUI_Widget_Viewport_RepairTiles(x + entry->offsetX, y + entry->offsetY,
+	    x + entry->offsetX + entry->width, y + entry->offsetY + entry->height);
 	GFX_Screen_SetDirtySource(DIRTY_SRC_SPRITE);
 	Video_Atari_PresentPlanarSprite(entry->pixels, entry->masks,
 	    entry->width, entry->height, x + entry->offsetX, y + entry->offsetY);
@@ -2476,6 +2478,8 @@ static void GUI_DrawSpriteInternal(Screen screenID, const uint8 *sprite, int16 p
 						GUI_ViewportMaskWord(maskBase + row * maskStride, maskStride, col + group * 16 - pad) & edge;
 				}
 			}
+			GUI_Widget_Viewport_RepairTiles(screenX, screenY,
+			    screenX + pixelCountPerRow, screenY + spriteHeightDraw);
 			Video_Atari_PresentSprite(spriteScratch, rowStride, screenX & ~15, screenY,
 			                          rowStride, spriteHeightDraw, viewportMasks);
 		} else {
