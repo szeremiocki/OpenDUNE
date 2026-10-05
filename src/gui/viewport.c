@@ -47,7 +47,7 @@ static uint32 s_tickClick;                                  /*!< Stores last tim
 #define MINIMAP_UPDATE_INTERVAL 30 /* 2 Hz on the 60 Hz GUI timer. */
 
 static bool s_viewportWasPlanar;
-static bool s_viewportRepairActive, s_viewportRepairForce;
+static bool s_viewportRepairActive;
 static uint8 s_minimapAppearance[64 * 64];
 static uint8 s_minimapAppearanceValid[64 * 64 / 8];
 static uint16 s_minimapAppearanceScale;
@@ -102,7 +102,7 @@ static bool GUI_Widget_Viewport_CanDrawPlanar(void)
 		}
 		if (u->o.index > 15 && (u->o.index < 20 || u->o.index > 101)) continue;
 		if (!Map_IsPositionInViewport(u->o.position, &x, &y)) continue;
-		if (ui->o.flags.blurTile || (u->o.index <= 15 && ui->o.flags.hasShadow)) return false;
+		if (ui->o.flags.blurTile) return false;
 		if (ui->groundSpriteID < 111 || ui->groundSpriteID > 350) return false;
 		if (u->spriteOffset < 0 && ui->destroyedSpriteID != 0 &&
 		    (ui->destroyedSpriteID < 111 || ui->destroyedSpriteID - u->spriteOffset - 1 > 354)) return false;
@@ -158,9 +158,7 @@ void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 b
 			t = &g_map[packed];
 			if (!g_debugScenario &&
 			    (t->overlayTileID == g_veiledTileID || t->overlayTileID == fullyFoggedTileID)) {
-				if (s_viewportRepairForce) {
-					GUI_DrawFilledRectangle(tileLeft, tileTop, tileLeft + 15, tileTop + 15, 12);
-				}
+				GFX_DrawPlanarFogTile(tileLeft, tileTop);
 			} else if (t->overlayTileID != 0 && !g_debugScenario && !Tile_IsUnveiled(t->overlayTileID)) {
 				GFX_DrawPlanarTileFogged(t->groundTileID, t->overlayTileID, tileLeft, tileTop, t->houseID);
 			} else {
@@ -700,7 +698,6 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 
 #ifdef TOS
 	s_viewportRepairActive = planarViewport;
-	s_viewportRepairForce = forceRedraw;
 #endif
 	if (g_dirtyViewportCount != 0 || forceRedraw) {
 		for (y = 0; y < 10; y++) {
@@ -712,10 +709,12 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 			                  drawToMainScreen ? 15 : 16); x++) {
 				Tile *t;
 				uint16 left;
+				bool viewportDirty;
 
 				curPos = g_viewportPosition + Tile_PackXY(x, y);
 
-				if (x < 15 && !forceRedraw && BitArray_Test(g_dirtyViewport, curPos)) {
+				viewportDirty = x < 15 && !forceRedraw && BitArray_Test(g_dirtyViewport, curPos);
+				if (viewportDirty) {
 					if (maxX[y] < x) maxX[y] = x;
 					if (minX[y] > x) minX[y] = x;
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
@@ -724,7 +723,17 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 					updateDisplay = true;
 				}
 
-				if (!BitArray_Test(g_dirtyMinimap, curPos) && !forceRedraw) continue;
+				if (!BitArray_Test(g_dirtyMinimap, curPos) && !forceRedraw) {
+#ifdef TOS
+					/* Sprite footprints can dirty hidden neighbours without
+					 * requesting terrain reconstruction there. */
+					t = &g_map[curPos];
+					if (!planarViewport || !viewportDirty || g_debugScenario ||
+					    (t->overlayTileID != g_veiledTileID && t->overlayTileID != fullyFoggedTileID)) continue;
+#else
+					continue;
+#endif
+				}
 
 				BitArray_Set(g_dirtyViewport, curPos);
 
@@ -748,11 +757,6 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 
 				if (!g_debugScenario &&
 				    (t->overlayTileID == g_veiledTileID || t->overlayTileID == fullyFoggedTileID)) {
-#ifdef TOS
-					/* Routine planar damage leaves existing black intact.
-					 * A successful planar scroll already blacks its new edge. */
-					if (planarViewport && !forceRedraw) continue;
-#endif
 					GUI_DrawFilledRectangle(left, top, left + 15, top + 15, 12);
 					continue;
 				}
@@ -1135,7 +1139,11 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 
 			sprite = g_sprites[index];
 
-			if (ui->o.flags.hasShadow) {
+			if (ui->o.flags.hasShadow
+#ifdef TOS
+			    && !directViewport
+#endif
+			   ) {
 				GUI_DrawSprite(SCREEN_ACTIVE, sprite, index, GUI_SPRITE_COLOUR_EMBEDDED, x + 1, y + 3, 2, (spriteFlags & ~DRAWSPRITE_FLAG_PAL) | DRAWSPRITE_FLAG_REMAP | DRAWSPRITE_FLAG_BLUR, g_paletteMapping1, 1);
 			}
 			if (ui->o.flags.blurTile) spriteFlags |= DRAWSPRITE_FLAG_BLUR;

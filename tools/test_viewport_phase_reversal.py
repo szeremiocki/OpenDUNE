@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import tempfile
@@ -14,6 +15,266 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ViewportPhaseReversalTest(unittest.TestCase):
+    def test_hidden_tile_damage_gate(self):
+        viewport = (ROOT / "src/gui/viewport.c").read_text()
+        start = viewport.index("\tif (g_dirtyViewportCount != 0 || forceRedraw) {")
+        terrain = viewport[start:viewport.index("\n\t/* Draw Sandworm */", start)]
+        harness = r"""
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
+typedef uint8_t uint8;
+typedef uint16_t uint16;
+typedef uint32_t uint32;
+typedef int16_t int16;
+typedef struct { uint16 groundTileID, overlayTileID; uint8 houseID; } Tile;
+#define min(a,b) ((a) < (b) ? (a) : (b))
+#define max(a,b) ((a) > (b) ? (a) : (b))
+#define ICM_ICONGROUP_FOG_OF_WAR 1
+static Tile g_map[4096];
+static uint8 g_dirtyViewport[512], g_dirtyMinimap[512], screen[200][320];
+static uint16 g_dirtyViewportCount, g_viewportPosition, g_veiledTileID = 98;
+static uint16 g_iconMap[32] = {[1] = 16, [31] = 99};
+static bool g_debugScenario, s_viewportRepairActive;
+static unsigned fogDraws, groundDraws, partialDraws, filledDraws;
+static bool BitArray_Test(const uint8 *a, uint16 i) { return (a[i >> 3] >> (i & 7)) & 1; }
+static void BitArray_Set(uint8 *a, uint16 i) { a[i >> 3] |= 1u << (i & 7); }
+static void BitArray_Clear(uint8 *a, uint16 i) { a[i >> 3] &= ~(1u << (i & 7)); }
+static uint16 Tile_PackXY(uint16 x, uint16 y) { return y * 64 + x; }
+static bool Tile_IsUnveiled(uint16 tile) { return tile != 97; }
+static void paint(uint16 x, uint16 y, uint8 c) {
+    for (unsigned row = y; row < y + 16; row++) memset(screen[row] + x, c, 16);
+}
+static void GFX_DrawTile(uint16 tile, uint16 x, uint16 y, uint8 house) {
+    (void)house; groundDraws++; paint(x, y, tile);
+}
+static void GFX_DrawPlanarTile(uint16 tile, uint16 x, uint16 y, uint8 house) {
+    assert(!BitArray_Test(g_dirtyMinimap, g_viewportPosition + Tile_PackXY(x >> 4, (y - 40) >> 4)));
+    GFX_DrawTile(tile, x, y, house);
+}
+static void GFX_DrawPlanarTileFogged(uint16 tile, uint16 fog, uint16 x, uint16 y, uint8 house) {
+    assert(fog == 97);
+    (void)house; partialDraws++;
+    for (unsigned row = y; row < y + 16; row++)
+        for (unsigned col = x; col < x + 16; col++) screen[row][col] = col & 1 ? 12 : tile;
+}
+static void GFX_DrawPlanarFogTile(uint16 x, uint16 y) {
+    assert(!BitArray_Test(g_dirtyMinimap, g_viewportPosition + Tile_PackXY(x >> 4, (y - 40) >> 4)));
+    fogDraws++; paint(x, y, 12);
+}
+static void GUI_DrawFilledRectangle(uint16 l, uint16 t, uint16 r, uint16 b, uint8 c) {
+    assert(r == l + 15 && b == t + 15 && c == 12);
+    filledDraws++; paint(l, t, c);
+}
+/* REPAIR */
+static bool scan(bool planarViewport, bool forceRedraw) {
+    bool drawToMainScreen = true, updateDisplay = forceRedraw;
+    uint16 x, y, curPos, fullyFoggedTileID = 99;
+    int minX[10], maxX[10];
+    uint16 dirtyColumns[10] = {0};
+    for (y = 0; y < 10; y++) { minX[y] = 15; maxX[y] = 0; }
+    s_viewportRepairActive = planarViewport;
+    /* TERRAIN */
+    return updateDisplay;
+}
+static void reset(void) {
+    memset(g_dirtyViewport, 0, sizeof(g_dirtyViewport));
+    memset(g_dirtyMinimap, 0, sizeof(g_dirtyMinimap));
+    memset(g_map, 0, sizeof(g_map));
+    memset(screen, 88, sizeof(screen));
+    g_dirtyViewportCount = 1;
+    fogDraws = groundDraws = partialDraws = filledDraws = 0;
+}
+int main(void) {
+    for (unsigned planar = 0; planar < 2; planar++)
+        for (unsigned dirty = 0; dirty < 4; dirty++)
+            for (unsigned tile = 0; tile < 4; tile++)
+                for (unsigned debug = 0; debug < 2; debug++) {
+                    reset();
+                    g_map[0].groundTileID = 7;
+                    g_map[0].overlayTileID = tile == 0 ? 0 : tile == 1 ? 97 : tile == 2 ? 98 : 99;
+                    g_debugScenario = debug != 0;
+                    if (dirty & 1) BitArray_Set(g_dirtyViewport, 0);
+                    if (dirty & 2) BitArray_Set(g_dirtyMinimap, 0);
+                    bool updated = scan(planar != 0, false);
+                    bool hidden = tile >= 2 && !debug;
+                    bool restored = (dirty & 2) || (planar && hidden && (dirty & 1));
+                    assert(updated == (dirty != 0));
+                    if (planar) {
+                        assert(!fogDraws && !groundDraws && !partialDraws && !filledDraws);
+                        assert(BitArray_Test(g_dirtyMinimap, 0) == restored);
+                        GUI_Widget_Viewport_RepairTiles(0, 40, 240, 200);
+                    }
+                    assert(fogDraws == (restored && hidden && planar));
+                    assert(filledDraws == (restored && hidden && !planar));
+                    assert(partialDraws == (restored && planar && tile == 1 && !debug));
+                    assert(groundDraws == (restored && !hidden && !partialDraws ?
+                        1u + (tile != 0 && !debug) : 0u));
+                    assert(BitArray_Test(g_dirtyViewport, 0) == ((dirty & 1) != 0 || restored));
+                    assert(!g_dirtyViewportCount);
+                }
+    reset();
+    g_debugScenario = false;
+    g_map[0].overlayTileID = 98;
+    assert(scan(true, true));
+    GUI_Widget_Viewport_RepairTiles(0, 40, 240, 200);
+    assert(fogDraws == 1 && groundDraws == 149 && !filledDraws);
+    /* Old sprite pixels in both hidden tiles; only viewport footprint damage. */
+    reset();
+    g_map[0].overlayTileID = 98;
+    g_map[1].overlayTileID = 99;
+    BitArray_Set(g_dirtyViewport, 0);
+    BitArray_Set(g_dirtyViewport, 1);
+    assert(scan(true, false));
+    GUI_Widget_Viewport_RepairTiles(0, 40, 16, 56);
+    screen[45][3] = 5; /* Current foreground after its background repair. */
+    GUI_Widget_Viewport_RepairTiles(0, 40, 240, 200);
+    assert(fogDraws == 2 && screen[45][3] == 5 && screen[45][20] == 12);
+    assert(screen[45][35] == 88); /* Undamaged hidden/visible neighbours stay untouched. */
+    GUI_Widget_Viewport_RepairTiles(0, 40, 240, 200);
+    assert(fogDraws == 2 && screen[45][3] == 5);
+    /* A moving unit crosses hidden, dithered and unveiled terrain. */
+    reset();
+    g_map[0].overlayTileID = 98;
+    g_map[1].groundTileID = g_map[2].groundTileID = 7;
+    g_map[1].overlayTileID = 97;
+    BitArray_Set(g_dirtyViewport, 0);
+    BitArray_Set(g_dirtyMinimap, 1);
+    BitArray_Set(g_dirtyMinimap, 2);
+    assert(scan(true, false));
+    GUI_Widget_Viewport_RepairTiles(20, 45, 38, 46);
+    memset(screen[45] + 20, 5, 18);
+    GUI_Widget_Viewport_RepairTiles(0, 40, 240, 200);
+    assert(fogDraws == 1 && partialDraws == 1 && groundDraws == 1);
+    assert(screen[45][3] == 12 && screen[45][16] == 7 && screen[45][17] == 12);
+    assert(screen[45][20] == 5 && screen[45][37] == 5 && screen[45][38] == 7);
+    GUI_Widget_Viewport_RepairTiles(0, 40, 240, 200);
+    assert(fogDraws == 1 && partialDraws == 1 && groundDraws == 1 && screen[45][20] == 5);
+    return 0;
+}
+"""
+        harness = harness.replace("/* TERRAIN */", terrain)
+        harness = harness.replace("/* REPAIR */", function(viewport, "GUI_Widget_Viewport_RepairTiles"))
+        with tempfile.TemporaryDirectory(prefix="viewport-fog-damage-") as directory:
+            source = Path(directory) / "test.c"
+            binary = Path(directory) / "test"
+            source.write_text(harness)
+            compiler = shlex.split(os.environ.get("CC", "cc"))
+            flags = shlex.split(os.environ.get("TEST_CFLAGS", ""))
+            subprocess.run([*compiler, "-std=c99", "-O2", "-DTOS",
+                            "-DGFX_STORE_DIRTY_AREA_BLOCKS", *flags,
+                            str(source), "-o", str(binary)], check=True)
+            subprocess.run([str(binary)], check=True)
+
+    def test_aircraft_shadow_policy(self):
+        viewport = (ROOT / "src/gui/viewport.c").read_text()
+        eligibility = function(viewport, "GUI_Widget_Viewport_CanDrawPlanar")
+        shadow_gate = re.search(r"if \(ui->o.flags.hasShadow.*?\) \{", viewport, re.S).group()
+        harness = r"""
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stddef.h>
+typedef uint16_t uint16;
+typedef struct {
+    struct { struct { bool blurTile, hasShadow; } flags; } o;
+    uint16 groundSpriteID, destroyedSpriteID, turretSpriteID;
+} UnitInfo;
+static bool draws_shadow(bool shadow, bool directViewport) {
+    UnitInfo info = {0};
+    const UnitInfo *ui = &info;
+    info.o.flags.hasShadow = shadow;
+    (void)directViewport;
+    /* SHADOW GATE */
+        return true;
+    }
+    return false;
+}
+#ifdef TOS
+#define HOUSE_INVALID 0xffff
+#define UNIT_SANDWORM 10
+#define EXPLOSION_MAX 1
+typedef struct { uint16 type, index, houseID; } PoolFindStruct;
+typedef struct {
+    struct { uint16 type, index, position; } o;
+    uint16 targetLast, targetPreLast;
+    int16_t spriteOffset;
+} Unit;
+typedef struct { void *commands; uint16 spriteID, position; } Explosion;
+static Unit unit;
+static UnitInfo g_table_unitInfo[11];
+static struct { bool isUnveiled; } g_map[1] = {{true}};
+static Explosion explosion;
+static bool g_debugScenario, direct = true, ready = true, visible = true;
+static bool Video_Atari_CursorDirect(void) { return direct; }
+static bool GFX_PlanarTilesReady(void) { return ready; }
+static bool GUI_ViewportSpriteCacheReady(void) { return ready; }
+static Unit *Unit_Find(PoolFindStruct *find) {
+    if (find->index != 0xffff) return NULL;
+    find->index = 0;
+    return &unit;
+}
+static uint16 Tile_PackTile(uint16 position) { return position; }
+static bool Map_IsPositionInViewport(uint16 position, uint16 *x, uint16 *y) {
+    (void)position; (void)x; (void)y;
+    return visible;
+}
+static Explosion *Explosion_Get_ByIndex(uint16 index) {
+    assert(index == 0);
+    return &explosion;
+}
+/* ELIGIBILITY */
+#endif
+int main(void) {
+    assert(!draws_shadow(false, false));
+    assert(!draws_shadow(false, true));
+    assert(draws_shadow(true, false));
+#ifdef TOS
+    assert(!draws_shadow(true, true));
+    UnitInfo *ui = &g_table_unitInfo[0];
+    ui->groundSpriteID = 236;
+    ui->turretSpriteID = 0xffff;
+    ui->o.flags.hasShadow = true;
+    assert(GUI_Widget_Viewport_CanDrawPlanar());
+    ui->o.flags.blurTile = true;
+    assert(!GUI_Widget_Viewport_CanDrawPlanar());
+    ui->o.flags.blurTile = false;
+    ui->groundSpriteID = 355;
+    assert(!GUI_Widget_Viewport_CanDrawPlanar());
+    ui->groundSpriteID = 236;
+    explosion.commands = &unit;
+    explosion.spriteID = 355;
+    assert(!GUI_Widget_Viewport_CanDrawPlanar());
+    explosion.commands = NULL;
+    unit.o.type = UNIT_SANDWORM;
+    assert(!GUI_Widget_Viewport_CanDrawPlanar());
+    unit.o.type = 0;
+    direct = false;
+    assert(!GUI_Widget_Viewport_CanDrawPlanar());
+    direct = true;
+    ready = false;
+    assert(!GUI_Widget_Viewport_CanDrawPlanar());
+#else
+    assert(draws_shadow(true, true));
+#endif
+    return 0;
+}
+"""
+        harness = harness.replace("/* SHADOW GATE */", shadow_gate)
+        harness = harness.replace("/* ELIGIBILITY */", eligibility)
+        with tempfile.TemporaryDirectory(prefix="viewport-aircraft-") as directory:
+            source = Path(directory) / "test.c"
+            binary = Path(directory) / "test"
+            source.write_text(harness)
+            compiler = shlex.split(os.environ.get("CC", "cc"))
+            flags = shlex.split(os.environ.get("TEST_CFLAGS", ""))
+            for platform in ([], ["-DTOS"]):
+                subprocess.run([*compiler, "-std=c99", "-O2", "-Wall", "-Wextra",
+                                "-Werror", *flags, *platform, str(source), "-o", str(binary)],
+                               check=True)
+                subprocess.run([str(binary)], check=True)
+
     def test_pending_tile_repair(self):
         viewport = (ROOT / "src/gui/viewport.c").read_text()
         harness = r"""
@@ -29,7 +290,7 @@ typedef struct { uint16 groundTileID, overlayTileID; uint8 houseID; } Tile;
 #define min(a,b) ((a) < (b) ? (a) : (b))
 #define max(a,b) ((a) > (b) ? (a) : (b))
 #define ICM_ICONGROUP_FOG_OF_WAR 1
-static bool s_viewportRepairActive, s_viewportRepairForce, g_debugScenario;
+static bool s_viewportRepairActive, g_debugScenario;
 static uint16 g_viewportPosition, g_veiledTileID = 98, g_iconMap[32];
 static uint8 g_dirtyMinimap[512], g_dirtyViewport[512];
 static Tile g_map[4096];
@@ -57,10 +318,9 @@ static void GFX_DrawPlanarTileFogged(uint16 id, uint16 overlay, uint16 x, uint16
     fogged++;
     tile(x, y, overlay);
 }
-static void GUI_DrawFilledRectangle(int16 l, int16 t, int16 r, int16 b, uint8 colour) {
-    assert(r == l + 15 && b == t + 15 && colour == 12);
+static void GFX_DrawPlanarFogTile(uint16 x, uint16 y) {
     filled++;
-    tile(l, t, colour);
+    tile(x, y, 12);
 }
 /* REPAIR */
 static void reset(void) {
@@ -73,7 +333,7 @@ static void reset(void) {
     g_viewportPosition = Tile_PackXY(19, 23);
     g_iconMap[1] = 16; g_iconMap[31] = 99;
     s_viewportRepairActive = true;
-    s_viewportRepairForce = g_debugScenario = false;
+    g_debugScenario = false;
     fogged = filled = draws = 0;
     for (unsigned y = 0; y < 10; y++) for (unsigned x = 0; x < 15; x++) {
         uint16 p = g_viewportPosition + Tile_PackXY(x, y);
@@ -134,15 +394,14 @@ int main(void) {
     BitArray_Set(g_dirtyMinimap, p);
     g_map[p].overlayTileID = 98;
     GUI_Widget_Viewport_RepairTiles(0, 40, 16, 56);
-    assert(filled == 0 && screen[40][0] == 97 && !BitArray_Test(g_dirtyMinimap, p));
+    assert(filled == 1 && screen[40][0] == 12 && !BitArray_Test(g_dirtyMinimap, p));
     for (unsigned id = 98; id <= 99; id++) {
         BitArray_Set(g_dirtyMinimap, p);
         g_map[p].overlayTileID = id;
-        s_viewportRepairForce = true;
         GUI_Widget_Viewport_RepairTiles(0, 40, 16, 56);
         assert(screen[40][0] == 12);
     }
-    assert(filled == 2);
+    assert(filled == 3);
     reset();
     memset(g_dirtyMinimap, 0, sizeof(g_dirtyMinimap));
     BitArray_Set(g_dirtyMinimap, g_viewportPosition);
@@ -201,6 +460,11 @@ int main(void) {
     def test_publication_order(self):
         viewport = (ROOT / "src/gui/viewport.c").read_text()
         gui = (ROOT / "src/gui/gui.c").read_text()
+        gfx = (ROOT / "src/gfx.c").read_text()
+        video = (ROOT / "src/video/video_atari.c").read_text()
+        self.assertNotIn("GFX_QueueViewportTile", gfx)
+        self.assertNotIn("GFX_ViewportSpriteMasks", gfx)
+        self.assertNotIn("Video_Atari_RestorePlanarTile", video)
         draw = function(viewport, "GUI_Widget_Viewport_Draw")
         deferred = draw.index("BitArray_Set(g_dirtyMinimap, curPos);")
         self.assertIn("if (planarViewport)", draw[deferred - 40:deferred])

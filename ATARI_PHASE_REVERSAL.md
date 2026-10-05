@@ -34,9 +34,9 @@ every tile intersecting a foreground draw must already be repaired before
 that draw, so the final sweep cannot erase it.
 
 No draw-command FIFO, grouping, per-unit footprint history, private tile
-composition buffer or newly collected protection masks are needed for this
+composition buffer or newly collected foreground protection masks are needed for this
 starting experiment. Existing cached sprite opacity masks are unchanged.
-The pending tile bitset supplies the only per-tile state.
+The pending tile bitset supplies the only per-update terrain-repair state.
 
 Uncached planar sprites finish private pixel rendering and opacity-mask
 preparation before repairing terrain immediately ahead of publication.
@@ -50,8 +50,34 @@ without unaligned word reads or a third-byte read past the map's end.
 
 Scope is the eligible direct planar ST/STE viewport. Other machines,
 off-screen drawing, fades and background-reading effects retain the existing
-terrain-first fallback. This experiment does not change the baseline's
-shadow/effect policy.
+terrain-first fallback. Aircraft shadows are omitted on ST/STE in both planar
+and chunky viewport paths; other background-reading effects retain their fallback.
+Viewport-only damage in fully hidden cells is promoted into pending terrain
+repair. Hidden repairs publish a cached opaque colour-12 tile even without a
+forced redraw, consuming the pending bit before publication just like ordinary
+terrain. This removes old foreground traces at fog boundaries without repeating
+repairs under current sprites. Undamaged hidden cells remain untouched.
+
+## Isolated improvements ported onto this renderer
+
+The supporting caches now use lazy permanent tile/house slots with inline
+hot lookups, cached opacity and explicit opaque fog publication. Compact tile
+and sprite builds share a stride-aware c2p kernel. Tile publications use cached
+drawn cursor/placement overlap masks; other publishers use an inline rectangle
+overlap wrapper. None of these changes adds a deferred terrain queue or
+foreground-coverage accumulation.
+
+UNIT/TARGET transitions skip redundant base-widget redraws, and Attack/Move/
+Harvest panels have private planar cache slots. Engine-level
+`phase_announcement` and `phase_credits` settings control presentation while
+preserving message hold/queue behavior and credits counting/sound timing.
+Both settings default to the original animation.
+
+Opt-in supervisor residency is independent of rendering and remains disabled
+unless configured with `ATARI_SUPERVISOR_RESIDENT=1`. Aircraft shadows no longer
+force the ST/STE viewport into chunky rendering. Building-outline rendering
+and phase-reversal publication order remain unchanged. Fully hidden cells now
+participate in damage repair, including viewport-only sprite-footprint damage.
 
 ## Nominal versus actual damage: a later refinement
 

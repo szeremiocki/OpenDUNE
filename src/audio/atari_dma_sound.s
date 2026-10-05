@@ -1,4 +1,5 @@
 	xdef	_set_dma_sound	; export symbols
+	xdef	_set_dma_sound_supervisor
 	xdef	_stop_dma_sound
 	xdef	_get_dma_status
 
@@ -15,6 +16,17 @@ _set_dma_sound:
 	trap	#14			; XBIOS
 	addq.l	#6,sp
 
+	movem.l	(sp)+,d5-d7
+	rts
+
+	; Same ABI, but caller is already supervisor: no XBIOS trampoline.
+_set_dma_sound_supervisor:
+	movem.l	d5-d7,-(sp)
+	move.l	24(sp),d7
+	move.l	20(sp),d6
+	move.l	16(sp),d5
+	add.l	d5,d6
+	bsr	setdma
 	movem.l	(sp)+,d5-d7
 	rts
 
@@ -59,4 +71,3 @@ setdma:
 	move.b  #1,$FFFF8901.w     * Start playback, single pass mode - stops at end
 	;move.b  #3,$FFFF8901.w     * Start playback, loop mode  - stops not self. Stop by resetting bit 0 .
 	rts
-

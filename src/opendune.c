@@ -13,6 +13,8 @@
 #include <mint/sysbind.h>
 #include <mint/osbind.h>
 #include <mint/ostruct.h>
+#include <mint/cookie.h>
+#include "os/atari.h"
 #endif /* TOS */
 #include <stdio.h>
 #include <stdlib.h>
@@ -1243,6 +1245,35 @@ static void PrintToConsole(const char * str)
 }
 
 #ifdef TOS
+#if ATARI_SUPERVISOR_RESIDENT
+bool g_atariSupervisorResident = false;
+static long s_atariSupervisorStack;
+
+static void Atari_SupervisorRestore(void)
+{
+	g_atariSupervisorResident = false;
+	SuperToUser(s_atariSupervisorStack);
+}
+
+static bool Atari_SupervisorInit(void)
+{
+	long machine;
+
+	/* A missing _MCH cookie is the original ST; leave TT/Falcon unchanged. */
+	if (Getcookie(C__MCH, &machine) == C_FOUND && ((unsigned long)machine >> 16) > 1) return true;
+	if (Super(1L) == 0) {
+		if (atexit(Atari_SupervisorRestore) != 0) {
+			Error("Cannot register supervisor stack restoration.\n");
+			return false;
+		}
+		s_atariSupervisorStack = Super(0L);
+	}
+	g_atariSupervisorResident = true;
+	Debug("ST/STE supervisor-resident experiment enabled.\n");
+	return true;
+}
+#endif
+
 void exit_handler(void)
 {
 	PrintToConsole("Press any key to quit.");
@@ -1296,6 +1327,9 @@ int main(int argc, char **argv)
 	if(atexit(exit_handler) != 0) {
 		Error("atexit() failed\n");
 	}
+#if ATARI_SUPERVISOR_RESIDENT
+	if (!Atari_SupervisorInit()) return 1;
+#endif
 #endif /* TOS */
 #ifdef DOS
 	/* open log files and set buffering mode */
@@ -1313,6 +1347,7 @@ int main(int argc, char **argv)
 
 	/* Load opendune.ini file */
 	Load_IniFile();
+	Config_LoadAnimationPhases();
 
 	/* set globals according to opendune.ini */
 	g_dune2_enhanced = (IniFile_GetInteger("dune2_enhanced", 1) != 0) ? true : false;

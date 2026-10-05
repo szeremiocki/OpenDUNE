@@ -128,11 +128,15 @@ extern bool Video_Atari_PresentChunkyTransparent(const void *src, uint16 srcStri
  * to match what is actually visible. */
 extern bool Video_Atari_PresentSave(int16 x, int16 y, uint16 width, uint16 height, uint8 *buffer);
 extern bool Video_Atari_PresentRestore(int16 x, int16 y, uint16 width, uint16 height, const uint8 *buffer);
-/* Encode tightly packed, word-aligned chunky rows with the current mapping.
+/* Encode tightly packed, word-aligned chunky rows with the current mapping
+ * in one call, with byte strides width (source) and width/2 (output).
  * Width must be a multiple of 16. The full-width window API below retains
  * screen x coordinates, with masked edges and cursor-aware presentation. */
 extern uint16 Video_Atari_GetPaletteGeneration(void);
 extern void Video_Atari_EncodePlanar(const uint8 *src, uint16 *pixels, uint16 width, uint16 height);
+/* Encode a rectangle from even-strided chunky rows into tightly packed planar rows. */
+extern void Video_Atari_EncodePlanarStrided(const uint8 *src, uint16 srcStride,
+                                           uint16 *pixels, uint16 width, uint16 height);
 extern void Video_Atari_PresentPlanarWindow(const uint16 *pixels, uint16 x, uint16 y,
                                            uint16 width, uint16 height);
 
@@ -144,18 +148,22 @@ extern void Video_Atari_PresentPlanarWindow(const uint16 *pixels, uint16 x, uint
  * Its area outside the destination is cleared to black, including the
  * extra exposed corners of diagonal shifts. */
 extern bool Video_Atari_ShiftPlanar(int16 x, int16 y, uint16 width, uint16 height, int16 dx, int16 dy);
-/* Fixed gameplay tile decoding uses a temporary lookup, without changing
- * a currently displayed UI palette. Tiles are 16x16; source stride is 320.
+/* Freeze the IBM.PAL mapping at tile load, without changing the UI palette.
+ * Decode packed 16x16 tiles directly into private planar cache storage.
+ * The 16-entry source palette contains house-adjusted logical indices.
  * Sprite canvases are group-aligned, at most 48 pixels wide, with explicit
  * opacity masks so an opaque logical colour 0 remains opaque. */
-extern uint16 *Video_Atari_CreateTileLookup(const uint8 *palette);
-extern bool Video_Atari_DecodePlanarTile(const uint8 *src, uint16 *pixels, const uint16 *lookup);
-extern void Video_Atari_DrawPlanarTile(const uint16 *pixels, const uint16 *masks, uint16 x, uint16 y);
+extern void Video_Atari_InitTileMapping(const uint8 *palette);
+extern void Video_Atari_DecodePlanarTile(const uint8 *src, const uint8 *palette, uint16 *pixels);
+/* copyPixels is NULL or a ground/overlay source proven fully opaque by
+ * cached tile mask classifications. */
+extern void Video_Atari_DrawPlanarTile(const uint16 *pixels, const uint16 *masks, uint16 x, uint16 y,
+                                      const uint16 *copyPixels);
 /* Fog-covered ground never reaches the screen: merge both cached images
  * before the single destination write, preserving overlay backgrounds. */
 extern void Video_Atari_DrawPlanarTileFogged(const uint16 *pixels, const uint16 *masks,
                                           const uint16 *fogPixels, const uint16 *fogMasks,
-                                          uint16 x, uint16 y);
+                                          uint16 x, uint16 y, const uint16 *copyPixels);
 extern void Video_Atari_PresentSprite(const uint8 *src, uint16 stride,
                                      uint16 x, uint16 y, uint16 width, uint16 height,
                                      const uint16 *masks);

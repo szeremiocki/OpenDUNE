@@ -36,11 +36,13 @@ extern void GFX_Init_TilesInfo(uint16 widthSize, uint16 heightSize);
 extern void GFX_Init_DecodedTiles(uint32 tilesDataLength);
 extern void GFX_FreeDecodedTiles(void);
 #ifdef TOS
+/* Stable tile/house slots are allocated at load and filled on first draw. */
 extern void GFX_InitPlanarTiles(uint32 tilesDataLength, const uint8 *palette);
 extern void GFX_FreePlanarTiles(void);
 extern bool GFX_PlanarTilesReady(void);
 extern void GFX_DrawPlanarTile(uint16 tileID, uint16 x, uint16 y, uint8 houseID);
 extern void GFX_DrawPlanarTileFogged(uint16 tileID, uint16 fogTileID, uint16 x, uint16 y, uint8 houseID);
+extern void GFX_DrawPlanarFogTile(uint16 x, uint16 y);
 #endif
 
 /* One-shot measurement of the tile count and the RAM cost of pre-decoding

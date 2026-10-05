@@ -6,6 +6,7 @@
 #include "font.h"
 #include "gui.h"
 #include "widget.h"
+#include "../os/error.h"
 #include "../config.h"
 #include "../gfx.h"
 #include "../opendune.h"
@@ -19,6 +20,7 @@
 #include "../table/strings.h"
 #include "../tile.h"
 #include "../unit.h"
+#include "../video/video.h"
 
 
 /**
@@ -538,6 +540,71 @@ static uint16 GUI_Widget_ActionPanel_GetActionType(bool forceDraw)
 	return actionType;
 }
 
+#ifdef TOS
+enum {
+	COMMAND_PANEL_WIDTH = 64,
+	COMMAND_PANEL_HEIGHT = 82,
+	COMMAND_PANEL_CACHE_SLOTS = 6
+};
+
+typedef struct CommandPanelCache {
+	uint16 pixels[COMMAND_PANEL_WIDTH * COMMAND_PANEL_HEIGHT / 4];
+	uint16 actionType, paletteGeneration, language;
+	uint8 cancelState;
+	bool valid;
+} CommandPanelCache;
+
+static CommandPanelCache s_commandPanels[COMMAND_PANEL_CACHE_SLOTS];
+static uint16 s_commandPanelNext;
+
+static CommandPanelCache *GUI_Widget_CommandPanelCache(uint16 actionType, const Widget *cancel, bool *hit)
+{
+	uint16 generation, i;
+	uint8 state;
+	CommandPanelCache *slot;
+
+	*hit = false;
+	if (!Video_Atari_CursorDirect() || actionType < 4 || actionType > 6) return NULL;
+	if (g_curWidgetXBase != 32 || g_curWidgetYBase != 42
+		|| g_curWidgetWidth * 8 != COMMAND_PANEL_WIDTH || g_curWidgetHeight != COMMAND_PANEL_HEIGHT) return NULL;
+
+	generation = Video_Atari_GetPaletteGeneration();
+	state = (cancel->state.selected ? 1 : 0) | (cancel->state.hover2 ? 2 : 0);
+	for (i = 0; i < COMMAND_PANEL_CACHE_SLOTS; i++) {
+		slot = &s_commandPanels[i];
+		if (slot->valid && slot->actionType == actionType && slot->paletteGeneration == generation
+			&& slot->language == g_config.language && slot->cancelState == state) {
+			*hit = true;
+			return slot;
+		}
+	}
+
+	slot = &s_commandPanels[s_commandPanelNext];
+	s_commandPanelNext = (s_commandPanelNext + 1) % COMMAND_PANEL_CACHE_SLOTS;
+	slot->valid = false;
+	slot->actionType = actionType;
+	slot->paletteGeneration = generation;
+	slot->language = g_config.language;
+	slot->cancelState = state;
+	return slot;
+}
+
+static bool GUI_Widget_CommandPanelPresent(CommandPanelCache *slot)
+{
+	bool result;
+
+	GUI_Mouse_Hide_InWidget(6);
+	result = Video_Atari_PresentRestore(256, 42, COMMAND_PANEL_WIDTH, COMMAND_PANEL_HEIGHT,
+	                                  (const uint8 *)slot->pixels);
+	GUI_Mouse_Show_InWidget();
+	if (!result) {
+		slot->valid = false;
+		Warning("Unable to present cached command panel\n");
+	}
+	return result;
+}
+#endif
+
 /**
  * Draw the panel on the right side of the screen, with the actions of the
  *  selected item.
@@ -559,6 +626,9 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 	House *h;
 	Widget *buttons[4];
 	Widget *widget24, *widget28, *widget2C, *widget30, *widget34;
+#ifdef TOS
+	CommandPanelCache *commandPanel = NULL;
+#endif
 
 	o  = NULL;
 	u  = NULL;
@@ -662,6 +732,20 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 			GUI_Widget_MakeInvisible(buttons[i]);
 		}
 
+#ifdef TOS
+		{
+			bool hit;
+			commandPanel = GUI_Widget_CommandPanelCache(actionType, widget30, &hit);
+			if (hit && GUI_Widget_CommandPanelPresent(commandPanel)) {
+				widget30->flags.invisible = false;
+				/* Preserve the font/style left by the final command prompt, without drawing. */
+				GUI_DrawText_Wrapper(NULL, 0, 0, g_curWidgetFGColourBlink, 0, 0x11);
+				Widget_SetCurrentWidget(oldWidgetID);
+				GFX_Screen_SetActive(oldScreenID);
+				return;
+			}
+		}
+#endif
 		GUI_Widget_DrawBorder(g_curWidgetIndex, 0, 0);
 	}
 
@@ -900,9 +984,22 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 	}
 
 	if (actionType != 0) {
-		GUI_Mouse_Hide_InWidget(6);
-		GUI_Screen_Copy(g_curWidgetXBase, g_curWidgetYBase, g_curWidgetXBase, g_curWidgetYBase, g_curWidgetWidth, g_curWidgetHeight, SCREEN_ACTIVE, SCREEN_0);
-		GUI_Mouse_Show_InWidget();
+		bool presented = false;
+#ifdef TOS
+		if (commandPanel != NULL) {
+			const uint8 *src = GFX_Screen_Get_ByIndex(SCREEN_1);
+			src += g_curWidgetYBase * SCREEN_WIDTH + g_curWidgetXBase * 8;
+			Video_Atari_EncodePlanarStrided(src, SCREEN_WIDTH, commandPanel->pixels,
+			                              COMMAND_PANEL_WIDTH, COMMAND_PANEL_HEIGHT);
+			commandPanel->valid = true;
+			presented = GUI_Widget_CommandPanelPresent(commandPanel);
+		}
+#endif
+		if (!presented) {
+			GUI_Mouse_Hide_InWidget(6);
+			GUI_Screen_Copy(g_curWidgetXBase, g_curWidgetYBase, g_curWidgetXBase, g_curWidgetYBase, g_curWidgetWidth, g_curWidgetHeight, SCREEN_ACTIVE, SCREEN_0);
+			GUI_Mouse_Show_InWidget();
+		}
 	}
 
 	if (actionType > 1) {

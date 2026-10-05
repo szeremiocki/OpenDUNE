@@ -23,8 +23,57 @@ to specify the CPU type (68000, 68010, 68020, 68030, 68040 or
 The 68030 build will not run on a stock ST/STE. To build a version
 that will run on any machine in the Atari ST family, use --cpu=68000.
 
+The opt-in ST/STE supervisor-resident mode enters supervisor mode once
+with Super(0L), then continues initialization/gameplay in that mode.
+Enable it with --CFLAGS="-DATARI_SUPERVISOR_RESIDENT=1" when configuring;
+the default is 0, retaining the Supexec baseline. TT/Falcon and other
+_MCH families retain Supexec even in the enabled build; no _MCH cookie
+is treated as plain ST. This mode is independent of blitter experiments.
+Video-base updates, Mega STE speed changes and IKBD installation/restoration
+call their protected routines directly while resident. STE DMA sound start
+also has a direct assembly entry, and stop/status polling avoid their
+XBIOS trampolines.
+
+Residency does not permanently mask interrupts. IKBD setup/teardown preserve
+the caller's status register instead of leaving a fixed interrupt mask.
+If startup switches from user mode, it registers an atexit handler before
+switching, restoring the saved supervisor stack with mintlib's SuperToUser
+binding after normal game cleanup and before the existing exit keypress
+prompt. Early returns and exit() paths also run that handler. An
+already-supervisor caller is left in its original mode. Other
+BIOS/XBIOS/GEMDOS calls remain unchanged.
+
+Compare identical stabilized replays against the Supexec baseline, and check
+cursor, audio, error exits and normal desktop return on target. The
+supervisor mode is experimental; host/object checks cannot establish
+OS-stack behavior or real-hardware correctness. This changes
+privilege/dispatch only, not viewport publication order or cursor compositing.
+
+Reference: Vanilla-Conquer-Atari-ST, commit
+2ec08811ca7b24a365922c29be7a7c3e727c883c,
+tiberiandawn/atarilib/startup.cpp:212-218, keeps the executable in supervisor
+mode after one Super(0L); it does not pass the game loop to Supexec.
+
 
 * Performance
+
+The engine announcement banner supports this opendune.ini setting:
+
+[opendune]
+phase_announcement=2
+phase_credits=2
+
+Use 0 for immediate display without scrolling, 1 for the original one-row
+animation (default), or 2 for two-row steps. Message priorities, queuing and
+display hold times are unchanged; only the transition animation changes.
+The setting is handled by the engine animator, not the Atari video driver,
+and is available on other platforms too. Invalid values warn and use 1.
+For credits, 0 keeps normal gradual counting but displays non-scrolling
+digits only when the shown number changes, 1 retains the original animation,
+and 2 renders every other animation update. Counting and sound timing are
+unchanged in every mode. Forced/reset
+draws and the final settled value are always displayed, even in mode 2.
+These settings are independent and neither changes game speed.
 
 Based on a typical scene on level 1 :
 
@@ -46,12 +95,27 @@ locations, and is clipped to the battlefield. Ordinary selected-building
 outlines retain their original rendering. Options and modal messages
 hide the preview until gameplay drawing resumes.
 
-ST/STE battlefield terrain and structure tiles are decoded to planar
-assets at tile loading, then restored directly to visible screen memory.
+ST/STE battlefield terrain and structure tiles use permanent planar cache
+slots, decoded on first use and restored directly to visible screen memory.
+Tile mask opacity (empty/mixed/opaque) is cached in the existing planar
+slot status byte during lazy decoding. CPU publication selects a proven
+opaque ground or overlay/fog source without rescanning static masks,
+skipping mask reads and ground/fog composition for that source.
+Mixed images retain their mask-based composition, and cursor/placement
+backup maintenance remains unchanged.
+Aligned 15x10 viewport tile writes test independent cursor and placement
+overlap masks (ten words each), updated only when their actual planar
+backups are drawn or erased. Cursor marking includes all saved 16-pixel
+groups, even transparent padding; placement marking retains its drawn
+rectangle. Requested movement/hiding alone does not clear a live backup's
+mask. Tiles outside this grid and sprite/other rectangle writes retain
+the existing overlap checks. ST/STE tiles and overlays share the same
+logical screen; hardware screen shake does not change that drawing base.
+The generic rectangle-overlap wrapper is inline for other planar publishers.
 House-colored tiles have six cached variants; unaffected tiles share one
 image. The gameplay IBM palette and quantization are fixed, so hardware
-fades/dimming need no tile-cache rebuild. Loading briefly displays decoded
-tiles in the top-left 16x16 area.
+fades/dimming need no tile-cache rebuild. Tile decoding uses private buffers
+and never writes to the visible screen as scratch.
 
 Ordinary battlefield sprites are decoded into small private buffers and
 converted with explicit silhouette masks; no final background c2p sweep is
@@ -101,9 +165,34 @@ erase/redraw interval or guarantee tear-free output.
 Partial fog edges are combined with the cached
 ground tile before each planar write, so covered terrain is never briefly
 exposed by a separate ground-then-fog blit. Clear terrain retains its
-unmasked copy path. Visible sandworm blur, blurred units and aircraft
-shadows retain the original chunky compositor because they read underlying
-logical palette indices. Switching paths reconstructs the complete scene.
+unmasked copy path. Damaged fully hidden cells restore an opaque cached
+colour-12 tile, including viewport-only damage from neighbouring sprite
+footprints. They join the same repair-on-first-touch pass as other terrain:
+each tile is repaired once, before current foreground publication or in the
+final sweep, so old traces disappear without erasing current sprites.
+Unchanged hidden cells are not redrawn. The fog tile adds 160 bytes of
+pixels/masks and is encoded once per tile-cache load through the shared
+fixed gameplay palette mapping; subsequent repairs need no c2p conversion.
+Aircraft shadows are omitted on ST/STE, including its
+chunky fallbacks, so a flyover no longer disables cached planar rendering
+for the whole viewport. Aircraft bodies retain their normal colours and
+painter order; other platforms retain their shadows. Visible sandworm blur
+and blurred units retain the original chunky compositor because they read
+underlying logical palette indices. Switching paths reconstructs the complete scene.
+ST/STE unit-to-target and target-to-unit selection changes reset widget state
+without redrawing unchanged base widgets or running the second full widget
+draw pass. Changed widget visibility/selection still triggers drawing, and
+the action panel is rebuilt normally for command text, Cancel, and unit
+controls. Other selection transitions and TT/Falcon keep the original path.
+Attack, Move and Harvest panels also share six small planar cache slots
+(about 15.4 KiB). A miss renders in SCREEN_1, then the shared c2p encoder
+reads its 320-byte-stride rows straight into the packed slot. Hits restore
+the slot with cursor-safe planar publication, without rendering, c2p or
+a chunky SCREEN_0 write. Keys include command, Cancel selection/hover,
+language and palette mapping generation. Widget state and font setup
+still update on hits; SCREEN_1 is scratch, not a maintained panel mirror.
+Normal Cancel hover/press redraws retain their existing small-button path.
+Other panels and unsupported layouts keep their original renderer.
 Off-screen composition and viewport fades also retain the original path.
 The planar viewport defers dirty terrain publication until the first
 foreground draw touching each tile, then draws that foreground immediately.
@@ -118,10 +207,41 @@ marked; partial rectangle clears leave its summary set until a battlefield
 or full-screen clear. Top rows and sidebar bits, including the first
 sidebar column and minimap, are preserved. Chunky fallback scenes retain
 their pending conversion work.
-The standard assets add about 104 KiB for house-aware tiles and about
-29 KiB for sprite masks/cache metadata; the loading-only c2p lookup uses
-another 128 KiB temporarily. Allocation failures log a warning and retain
-the original renderer. TT/Falcon rendering is unchanged.
+The planar tile cache fills tiles lazily at their existing
+draw entry points. Tile/house indices and permanent pixel slots retain the
+previous layout and sharing of non-recoloured tiles; a ready byte per slot
+is the only hit check after the direct index lookup. The small hot lookup
+is inline; mask construction and decoding live in a separate cold-fill
+function so hits do not enter its decoding stack frame. There is no eviction:
+cached pixel addresses remain valid until the tile assets are freed.
+Load-time setup still scans for house variants, but decodes no planar
+tiles. The separate chunky cache and its eager preparation are unchanged.
+
+On a miss, packed pixels and the house-adjusted tile palette pass through
+the shared c2p encoder directly into the final cache slot. Tiles have
+compact native ST rows (8 bytes, four interleaved plane words), 128 bytes
+per image, with separate 32-byte masks. A cold fill prepares an aligned
+256-byte chunky tile and converts all 16 rows directly into the slot in
+one call, without padding caches or copying completed planar tiles.
+The stride-aware c2p entry accepts separate source/destination byte
+strides (16/8 for tiles). Compact sprite components and private window
+canvases use the same batched encoder. Full-width screen conversion and
+single-row work retain the original fixed-stride entry. Both assembly
+entries expand one shared pixel kernel; the existing fixed screen entry
+remains byte-for-byte unchanged. Strides are even, at least the source/
+destination row widths, and the source stride must fit 16 bits.
+The fixed IBM.PAL mapping is initialized once at tile load; cold fills
+never use a displayed loading/fade palette or alter palette state.
+
+The standard assets still reserve about 104 KiB for house-aware tiles,
+plus one ready byte per planar slot. A 256-byte gameplay pen map and
+8 KiB restricted pair lookup replace the former temporary 128 KiB tile
+lookup; only 256 pair entries need initialization. This is a lazy-fill,
+stable-address cache, not a bounded working-set cache. Sprite masks/cache
+metadata add about 29 KiB, separately from the sprite image caches above.
+Allocation failures log a warning and retain the original renderer.
+TT/Falcon rendering is unchanged. Startup and first-draw timings need
+measurement on the target.
 
 Click-to-center actions on ST/STE (minimap, viewport right-click, and the
 selected-object name) reuse the same incremental planar shift as edge
