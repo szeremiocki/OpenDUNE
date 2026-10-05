@@ -24,6 +24,8 @@ class ViewportOverlayTilesTest(unittest.TestCase):
             "Video_Atari_PlanarCopyGroup", "Video_Atari_CursorGroup",
             "Video_Atari_CursorBackground", "Video_Atari_CursorWriteGroup",
             "Video_Atari_PlacementBlock", "Video_Atari_PlanarMergeGroup",
+            "Video_Atari_RefreshViewportCursor",
+            "Video_Atari_PublishViewportCursorRect", "Video_Atari_DrawPlanarTileFoggedCursor",
             "Video_Atari_PlacementEnd", "Video_Atari_PlacementHide",
             "Video_Atari_DrawPlanarTile", "Video_Atari_DrawPlanarTileFogged",
         )

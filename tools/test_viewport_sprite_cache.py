@@ -81,6 +81,16 @@ static bool Video_Atari_PlanarOverlaysOverlap(uint8 *base, uint16 x, uint16 y, u
     assert(base == (uint8 *)visible && !(x & 15) && !(w & 15) && y >= 40 && y + h <= 200);
     return overlays;
 }
+static bool Video_Atari_PlacementRectOverlap(uint8 *base, uint16 l, uint16 r, uint16 y, uint16 h) {
+    assert(base == (uint8 *)visible && l < r && y >= 40 && y + h <= 200);
+    return overlays;
+}
+static void Video_Atari_RefreshViewportCursor(uint8 *base, uint16 first, uint16 end,
+                                             uint16 top, uint16 bottom,
+                                             const uint16 *masks, uint16 stride) {
+    (void)base; (void)first; (void)end; (void)top; (void)bottom; (void)masks; (void)stride;
+    assert(false); /* This harness models placement overlaps, not a drawn cursor. */
+}
 /* MERGE */
 static void Video_Atari_PlanarMergeGroup(uint8 *base, uint16 y, uint16 group,
                                        uint16 mask, const uint16 words[4]) {
@@ -414,6 +424,9 @@ int main(void) {
         composer = composer.replace("\n{\n", "\n{\n    compositions++;\n", 1)
         harness = harness.replace("/* BLITTER */", composer + "\n" +
                                   function(video, "Video_Atari_PlanarCopyGroup") + "\n" +
+                                  function(video, "Video_Atari_PublishViewportCursorRect") + "\n" +
+                                  function(video, "Video_Atari_PresentPlanarSpriteOverlays") + "\n" +
+                                  function(video, "Video_Atari_PublishPlanarSpritePlain") + "\n" +
                                   function(video, "Video_Atari_PresentPlanarSprite"))
         harness = harness.replace("/* LOOKUP */", function(gui, "GUI_ViewportDecodeLayer") + "\n" +
                                   function(gui, "GUI_ViewportPlanarComponent") + "\n" +

@@ -66,6 +66,14 @@ and sprite builds share a stride-aware c2p kernel. Tile publications use cached
 drawn cursor/placement overlap masks; other publishers use an inline rectangle
 overlap wrapper. None of these changes adds a deferred terrain queue or
 foreground-coverage accumulation.
+Cursor-only viewport publications now use normal planar writes followed
+immediately by masked backup refresh and cursor redraw over that publication's
+intersection. Each tile repairs its own overwritten cursor bits; sprites use
+their clipped opacity masks. Placement overlaps and non-viewport writes retain
+protected merges. Terrain repair order and the once-per-tile rule are unchanged.
+Cursor-only work is dispatched to separate non-inlined publishers. The ordinary
+cached-sprite copy loop is isolated from repair and widget-boundary state so
+those values do not force row-loop spills on 68000.
 
 UNIT/TARGET transitions skip redundant base-widget redraws, and Attack/Move/
 Harvest panels have private planar cache slots. Engine-level

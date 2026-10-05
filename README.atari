@@ -156,7 +156,16 @@ quantization are static throughout sprite life; house ID is the only
 palette variant in the prescription. Cache lookup does not inspect palette
 contents or poll palette generations.
 Allocation failure logs a warning and retains the original sprite path.
-Cursor and placement backgrounds retain their existing preservation.
+Viewport tile and sprite writes that overlap only the mouse cursor use normal
+copy/transparency loops, then immediately refresh the cursor backup and redraw
+only the overwritten cursor pixels. Repair is restricted to the publication's
+intersection with the drawn cursor and honours its actual write masks, including
+transparent holes and clipping. Neighbouring tiles repair their own intersections
+when published; repairs are not deferred to the end of the viewport pass.
+Cursor-overlap publication is kept out of line. The ordinary cached-sprite
+copy loop is isolated from cursor repair state to avoid 68000 register spills.
+Placement-preview overlaps and outside-viewport/UI writes retain the existing
+protected merge path. Cursor movement still restores the saved background.
 Unsupported effects and non-planar destinations retain separate layer draws
 in their original order. Terrain and units still write visibly in painter order:
 this may shorten sprite invisibility, but does not eliminate the exposed
