@@ -45,6 +45,7 @@ extern bool Config_Read(const char *filename, DuneCfg *config);
 extern bool Config_Write(const char *filename, DuneCfg *config);
 extern bool Config_Default(DuneCfg *config);
 extern void Config_LoadAnimationPhases(void);
+extern bool Config_ViewportFadeEnabled(void);
 extern bool GameOptions_Load(void);
 extern void GameOptions_Save(void);
 

@@ -90,6 +90,10 @@ Available options are :
                   animation (default), 2 = scrolling in two-row steps;
                   only changed visual states redraw; counting and sound timing
                   are unchanged, and forced/reset/final draws are retained
+- viewport_fade : 0 = immediate gameplay viewport, 1 = original dissolve;
+                  defaults to 0 on Atari ST/STE, 1 on other platforms
+                  (including Atari TT/Falcon); also applies after Mentat
+                  and Factory screens, not to other screen transitions
 - fullscreen : 0(default)/1 starts the game in full screen mode if possible
 - mt32midi : 0(default)/1 send MT32 init, use .XMI files
 - mt32rompath : directory containing CM32L_CONTROL.ROM/CM32L_PCM.ROM files

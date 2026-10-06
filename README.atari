@@ -77,6 +77,19 @@ timing are unchanged in every mode. Forced/reset draws and the final settled
 value are always displayed, even in mode 2.
 These settings are independent and neither changes game speed.
 
+Gameplay viewport entry/return defaults to immediate display on ST/STE.
+The original randomized 8x2-pixel dissolve can be restored with:
+
+[opendune]
+viewport_fade=1
+
+Use 0 to disable the dissolve explicitly. This engine-level policy covers
+scenario entry and returns from Mentat and Factory screens. The viewport is
+still redrawn normally; it only skips the dissolve, not asset loading or
+cold-cache work. Other screen transitions are unchanged. The default remains
+enabled on TT/Falcon and non-Atari platforms. Invalid values warn and use the
+platform default.
+
 Based on a typical scene on level 1 :
 
 - 68000 build on ST/STE is 6-15fps (busy-quiet), Mega STE is 18fps

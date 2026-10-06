@@ -3789,7 +3789,7 @@ void GUI_ChangeSelectionType(uint16 selectionType)
 
 		if (g_table_selectionType[oldSelectionType].variable_04 && g_table_selectionType[selectionType].variable_06) {
 			g_viewport_forceRedraw = true;
-			g_viewport_fadein = true;
+			g_viewport_fadein = Config_ViewportFadeEnabled();
 
 			GUI_DrawInterfaceAndRadar(SCREEN_0);
 		}

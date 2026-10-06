@@ -39,6 +39,7 @@ enum { SCREEN_0, SCREEN_1, SCREEN_WIDTH = 320 };
 #define min(a,b) ((a) < (b) ? (a) : (b))
 static uint16 g_announcementPhase = 1;
 static uint16 g_creditsPhase = 1;
+static int16 s_viewportFade = -1;
 static uint32 g_timerGUI;
 static bool g_textDisplayNeedsUpdate;
 static uint16 g_curWidgetXBase = 1, g_curWidgetYBase = 21;
@@ -54,9 +55,11 @@ static char *IniFile_GetString(const char *key, const char *fallback, char *out,
     assert(fallback == NULL);
     const char *value;
     if (!strcmp(key, "phase_announcement")) value = option;
-    else {
-        assert(!strcmp(key, "phase_credits"));
+    else if (!strcmp(key, "phase_credits")) {
         value = creditsOption;
+    } else {
+        assert(!strcmp(key, "viewport_fade"));
+        value = NULL;
     }
     if (value == NULL) return NULL;
     snprintf(out, size, "%s", value);
@@ -243,7 +246,8 @@ int main(void) {
     return 0;
 }
 """
-        harness = harness.replace("/* OPTION */", function(config, "Config_ReadAnimationPhase")
+        harness = harness.replace("/* OPTION */", function(config, "Config_ReadAnimationOption")
+                                  + function(config, "Config_ReadAnimationPhase")
                                   + function(config, "Config_LoadAnimationPhases"))
         harness = harness.replace("/* ANIMATOR */", function(gui, "GUI_DisplayText"))
         with tempfile.TemporaryDirectory(prefix="announcement-phase-") as directory:

@@ -14,6 +14,9 @@
 #include "audio/sound.h"
 #include "file.h"
 #include "string.h"
+#ifdef TOS
+#include "video/video.h"
+#endif
 
 GameCfg g_gameConfig = { 1, 1, 2, 1, 0 };
 DuneCfg g_config;
@@ -21,28 +24,47 @@ uint16 g_announcementPhase = 1;
 uint16 g_creditsPhase = 1;
 bool g_enableSoundMusic = true;
 bool g_enableVoices = true;
+/* Options load before Video_Init; resolve the default after machine detection. */
+static int16 s_viewportFade = -1;
 
-static uint16 Config_ReadAnimationPhase(const char *key)
+static int16 Config_ReadAnimationOption(const char *key, int16 defaultValue, uint16 maximum)
 {
 	char value[80], *end;
 	long phase;
 
-	if (IniFile_GetString(key, NULL, value, sizeof(value)) == NULL) return 1;
+	if (IniFile_GetString(key, NULL, value, sizeof(value)) == NULL) return defaultValue;
 	phase = strtol(value, &end, 10);
 	if (end != value) {
 		while (*end == ' ' || *end == '\t') end++;
-		if (*end == '\0' && phase >= 0 && phase <= 2) {
-			return (uint16)phase;
+		if (*end == '\0' && phase >= 0 && phase <= maximum) {
+			return (int16)phase;
 		}
 	}
-	Warning("Invalid %s '%s'; using 1 (original animation)\n", key, value);
-	return 1;
+	Warning("Invalid %s '%s'; using %s\n", key, value,
+	        defaultValue < 0 ? "platform default" : "1 (original animation)");
+	return defaultValue;
+}
+
+static uint16 Config_ReadAnimationPhase(const char *key)
+{
+	return Config_ReadAnimationOption(key, 1, 2);
 }
 
 void Config_LoadAnimationPhases(void)
 {
 	g_announcementPhase = Config_ReadAnimationPhase("phase_announcement");
 	g_creditsPhase = Config_ReadAnimationPhase("phase_credits");
+	s_viewportFade = Config_ReadAnimationOption("viewport_fade", -1, 1);
+}
+
+bool Config_ViewportFadeEnabled(void)
+{
+	if (s_viewportFade >= 0) return s_viewportFade != 0;
+#ifdef TOS
+	return !Video_Atari_CursorDirect();
+#else
+	return true;
+#endif
 }
 
 /**
