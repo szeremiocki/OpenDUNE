@@ -88,8 +88,10 @@ Available options are :
                        (default), 2 = scrolling in two-row steps
 - phase_credits : 0 = gradual counting without digit scrolling, 1 = original
                   animation (default), 2 = scrolling in two-row steps;
-                  only changed visual states redraw; counting and sound timing
-                  are unchanged, and forced/reset/final draws are retained
+                  only changed visual states redraw; counting is unchanged,
+                  and forced/reset/final draws are retained; Atari ST/STE
+                  credit ticks use YM sound on published whole-credit changes,
+                  while other machines retain the original MIDI sound timing
 - viewport_fade : 0 = immediate gameplay viewport, 1 = original dissolve;
                   defaults to 0 on Atari ST/STE, 1 on other platforms
                   (including Atari TT/Falcon); also applies after Mentat

@@ -16,6 +16,10 @@
 #include "../file.h"
 #include "../timer.h"
 #include "../inifile.h"
+#ifdef TOS
+#include "../os/atari.h"
+#include "../video/video.h"
+#endif
 
 static bool s_driverInstalled[16];
 static bool s_driverLoaded[16];
@@ -35,6 +39,65 @@ MSBuffer *g_bufferMusic = &s_bufferMusic;
 MSBuffer *g_bufferSound[4] = { &s_bufferSound[0], &s_bufferSound[1], &s_bufferSound[2], &s_bufferSound[3] };
 
 static uint8 s_bufferSoundIndex;
+
+#ifdef TOS
+static uint8 s_creditsPSG[] = {
+	4, 0, 5, 0, 7, 0, 10, 8,
+	0x82, 1,
+	10, 0, 4, 0, 5, 0, 7, 0,
+	0x82, 0
+};
+static uint8 s_creditsPSGPeriod;
+static bool s_creditsPSGStarted;
+
+static void Driver_CreditsPSG_Update(void)
+{
+	const uint8 *current = (const uint8 *)Dosound((const uint8 *)-1L);
+	uint16 i;
+
+	if (s_creditsPSGPeriod == 0) {
+		s_creditsPSGStarted = false;
+		for (i = 0; i < sizeof(s_creditsPSG); i++) {
+			if (current != s_creditsPSG + i) continue;
+			Dosound(NULL);
+			Giaccess(0, 0x80 | 10);
+			Giaccess(s_creditsPSG[13], 0x80 | 4);
+			Giaccess(s_creditsPSG[15], 0x80 | 5);
+			Giaccess((Giaccess(0, 7) & ~0x24) | (s_creditsPSG[17] & 0x24), 0x80 | 7);
+			break;
+		}
+		return;
+	}
+
+	/* Dosound has one global list. Never replace it or an already audible C tone. */
+	if (current != NULL || (Giaccess(0, 10) & 0x1f) != 0) return;
+	s_creditsPSG[13] = Giaccess(0, 4);
+	s_creditsPSG[15] = Giaccess(0, 5);
+	s_creditsPSG[17] = Giaccess(0, 7);
+	s_creditsPSG[1] = s_creditsPSGPeriod;
+	s_creditsPSG[5] = (s_creditsPSG[17] & ~0x04) | 0x20;
+	Dosound(s_creditsPSG);
+	s_creditsPSGStarted = true;
+}
+
+static long Driver_CreditsPSG_Exec(void)
+{
+	uint16 status;
+
+	/* Keep the idle check, list edits and PSG accesses atomic against Timer C. */
+	__asm__ volatile ("move.w %%sr,%0\n\tori.w #0x0700,%%sr" : "=d"(status) : : "cc", "memory");
+	Driver_CreditsPSG_Update();
+	__asm__ volatile ("move.w %0,%%sr" : : "d"(status) : "cc", "memory");
+	return 0;
+}
+
+static void Driver_CreditsPSG_Stop(void)
+{
+	if (!s_creditsPSGStarted) return;
+	s_creditsPSGPeriod = 0;
+	Atari_SupervisorExec(Driver_CreditsPSG_Exec);
+}
+#endif
 
 static void Driver_Init(uint16 driver)
 {
@@ -212,6 +275,19 @@ void Driver_Sound_Play(int16 index, int16 volume)
 	s_bufferSoundIndex = (s_bufferSoundIndex + 1) % 4;
 }
 
+void Driver_Sound_PlayCredits(bool increasing)
+{
+#ifdef TOS
+	if (Video_Atari_CursorDirect()) {
+		if (!g_enableSoundMusic || g_gameConfig.sounds == 0) return;
+		s_creditsPSGPeriod = increasing ? 64 : 80;
+		Atari_SupervisorExec(Driver_CreditsPSG_Exec);
+		return;
+	}
+#endif
+	Driver_Sound_Play(increasing ? 52 : 53, 0xFF);
+}
+
 void Driver_Music_Stop(void)
 {
 	Driver *music = g_driverMusic;
@@ -230,6 +306,9 @@ void Driver_Sound_Stop(void)
 	Driver *sound = g_driverSound;
 	uint8 i;
 
+#ifdef TOS
+	Driver_CreditsPSG_Stop();
+#endif
 	if (sound->index == 0xFFFF) return;
 
 	for (i = 0; i < 4; i++) {
@@ -507,6 +586,9 @@ static void Drivers_Voice_Uninit(void)
 
 void Drivers_All_Uninit(void)
 {
+#ifdef TOS
+	Driver_CreditsPSG_Stop();
+#endif
 	Drivers_SoundMusic_Uninit();
 	Drivers_Voice_Uninit();
 }

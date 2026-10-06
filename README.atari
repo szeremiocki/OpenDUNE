@@ -72,8 +72,9 @@ For credits, 0 keeps normal gradual counting but displays non-scrolling
 digits only when the shown number changes, 1 retains the original animation,
 and 2 scrolls in two-row steps instead of skipping alternate animation calls.
 The engine resolves the visual number pair and scroll offset before renderer
-setup; unchanged visual states do not compose or publish. Counting and sound
-timing are unchanged in every mode. Forced/reset draws and the final settled
+setup; unchanged visual states do not compose or publish. Counting is unchanged
+in every mode. ST/STE clicks follow published whole-credit changes; other
+machines retain the original sound timing. Forced/reset draws and the final settled
 value are always displayed, even in mode 2.
 These settings are independent and neither changes game speed.
 
@@ -283,7 +284,23 @@ unchanged.
 Atari credits numbers use a small six-column unsigned formatter instead
 of general printf machinery, with no division or stream handling. Equal
 old/new values share one formatted result. Leading spaces, decimal
-carries, digit scrolling and credit sound effects are unchanged.
+carries and digit scrolling are unchanged.
+
+ST/STE credits use a short YM2149 channel-C tone instead of loading an
+XMIDI effect for each tick: about 1.95 kHz when increasing, 1.56 kHz when
+decreasing. Ticks accompany published whole-credit changes, not intermediate
+scroll rows or unseen counting updates. Force/reset draws establish the
+displayed value silently. Sound settings are respected; other machines and
+other effects retain MIDI.
+Dosound runs the tone asynchronously with one 50 Hz wait command, followed
+by explicit volume-zero and register restoration. This is an OS-timed short
+pulse of about 40 ms on stock TOS and EmuTOS, not an exact 20 ms duration:
+one interpreter interrupt decrements the delay and the following one mutes.
+Busy requests are dropped, without a backlog, until the OS sound list
+finishes; an existing list or audible channel-C tone is not interrupted.
+Other channels and PSG I/O mixer bits are preserved. Sound stop/shutdown
+also cancels an owned list and explicitly mutes the tone. No busy wait or
+framerate limit is introduced.
 
 The standard ST/STE credits counter retains its composed image in a private
 288-byte, 64x9 planar buffer. Only affected digits are recomposed; stable

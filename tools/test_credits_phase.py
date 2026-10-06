@@ -1,4 +1,4 @@
-"""Verify visual-state resolution without changing credits counting or sound."""
+"""Verify counting, legacy MIDI cadence and publication-gated ST/STE clicks."""
 
 import os
 from pathlib import Path
@@ -44,6 +44,8 @@ static uint16 g_curWidgetXBase = 32, g_curWidgetYBase = 44;
 static uint16 g_curWidgetWidth = 8, g_curWidgetHeight = 9;
 static uint8 sprites[24], *g_sprites[24];
 static unsigned renders, publishes, hides, shows, sounds, queries;
+static unsigned ymSounds;
+static bool ymIncreasing;
 static uint16 lastShown, lastSound;
 static unsigned digits, rollingDigits;
 static int drawnRows[6][9], expectedRows[6][9];
@@ -70,6 +72,8 @@ static unsigned planarBytes;
 static uint16 s_creditsPlanarBackground[64 * 9 / 4];
 static uint16 s_creditsPlanarDisplay[64 * 9 / 4], s_creditsPlanarMasks[6][2];
 static bool s_creditsPlanarDisplayReady, planarPublished;
+static bool presentFailure;
+static unsigned warnings;
 static uint16 s_creditsPlanarDisplayX, s_creditsPlanarDisplayY;
 static uint32 s_creditsBackground[64 * 9 / 4];
 static struct { uint16 xBase, yBase, width, height; } g_widgetProperties[6];
@@ -168,6 +172,12 @@ static void GUI_Screen_Copy(int xs, int ys, int xd, int yd, int width, int heigh
 #ifdef TOS
 #define lengthof(a) (sizeof(a) / sizeof((a)[0]))
 /* FORMAT */
+static void Driver_Sound_PlayCredits(bool increasing) {
+    assert(direct);
+    if (s_creditsCacheReady && !(g_widgetProperties[5].xBase & 1)) assert(planarPublished);
+    ymSounds++;
+    ymIncreasing = increasing;
+}
 static void GUI_DrawCreditsPlanarRows(uint16 *pixels, unsigned pos, unsigned glyph,
                                      unsigned sourceRow, unsigned top, unsigned height) {
     (void)pixels;
@@ -205,13 +215,14 @@ static bool Video_Atari_PresentRestoreStrided(unsigned x, unsigned y, unsigned w
     assert(direct && x >= left && x < left + 64 && !(x & 15) && y == g_widgetProperties[5].yBase);
     assert(width && !(width & 15) && x + width <= left + 64 && height == 9 && stride == 32);
     assert(buffer == (const uint8 *)(s_creditsPlanarDisplay + (x - left) / 4));
+    if (presentFailure) return false;
     planarBytes += width * height / 2;
     planarPublished = true;
     if (g_creditsPhase == 0) assert(rollingDigits == 0);
     check_rows();
     return true;
 }
-#define Warning(...) assert(false)
+#define Warning(...) (warnings++)
 /* PLANAR */
 #endif
 /* CREDITS */
@@ -242,8 +253,11 @@ static uint16 previousOld, previousNew;
 static int previousScroll;
 static bool previousValid;
 static unsigned suppressed, negativeSteps, positiveSteps;
+static uint16 expectedPublishedCredits;
+static bool expectedPublishedValid;
 static void step(uint16 mode) {
     unsigned beforeSounds = sounds, beforePublishes = publishes, beforeQueries = queries;
+    unsigned beforeYM = ymSounds;
 #ifdef TOS
     unsigned beforeDirect = directQueries;
 #endif
@@ -297,19 +311,36 @@ static void step(uint16 mode) {
                 expectedRows[pos][row] = (glyph == ' ' ? 0 : glyph - '0' + 1) * 8 + sourceRow;
         }
     bool screenPublish = publish;
+    bool midiSound = sound, ymSound = false;
+    uint16 anchor = scroll < 0 ? higher : lower;
 #ifdef TOS
+    midiSound = sound && !direct;
     if (direct && s_creditsCacheReady && !(g_widgetProperties[5].xBase & 1) && mode == 0)
         screenPublish = publish && memcmp(drawnRows, expectedRows, sizeof(drawnRows)) != 0;
+    if (direct && s_creditsCacheReady && !(g_widgetProperties[5].xBase & 1) && presentFailure)
+        screenPublish = false;
+    ymSound = direct && screenPublish && mode == 0 && expectedPublishedValid &&
+              anchor != expectedPublishedCredits;
 #endif
     GUI_DrawCredits(1, mode);
-    assert(g_playerCredits == expected && sounds == beforeSounds + sound);
-    if (sound) assert(lastSound == (diff > 0 ? 52 : 53));
+    assert(g_playerCredits == expected && sounds == beforeSounds + midiSound);
+    if (midiSound) assert(lastSound == (diff > 0 ? 52 : 53));
+    assert(ymSounds == beforeYM + ymSound);
+    if (ymSound) assert(ymIncreasing == (anchor > expectedPublishedCredits));
     assert(publishes == beforePublishes + screenPublish);
     assert(queries == beforeQueries + !blocked);
     assert(active == SCREEN_0 && currentWidget == 2 && hides == shows);
 #ifdef TOS
-    /* No renderer setup, including Atari backend selection, on suppressed states. */
-    assert(directQueries == beforeDirect + publish);
+    /* Original sound boundaries select MIDI/PSG; rendering selects only on publications. */
+    assert(directQueries == beforeDirect + publish + sound);
+    if (direct && screenPublish) {
+        expectedPublishedCredits = anchor;
+        expectedPublishedValid = true;
+    }
+#else
+    (void)anchor;
+    (void)expectedPublishedCredits;
+    (void)expectedPublishedValid;
 #endif
     if (publish) {
         previousOld = lower; previousNew = higher; previousScroll = scroll;
@@ -421,6 +452,14 @@ int main(void) {
     g_timerGUI++;
     step(0);
     assert(planarBytes == 288 && digits >= 6);
+    presentFailure = true;
+    g_timerGUI++;
+    step(0);
+    assert(warnings == 1 && !s_creditsPlanarDisplayReady);
+    presentFailure = false;
+    g_timerGUI++;
+    step(0);
+    assert(planarBytes == 288 && digits >= 6);
 #endif
     assert(suppressed > 0 && positiveSteps > 0 && negativeSteps > 0);
     return 0;
@@ -429,7 +468,8 @@ int main(void) {
         harness = harness.replace("/* CREDITS */", credits)
         harness = harness.replace("/* FORMAT */", function(source, "GUI_FormatCredits"))
         harness = harness.replace("/* PLANAR */", "\n".join(
-            function(source, name) for name in ("GUI_ComposeCreditsPlanar", "GUI_PresentCreditsPlanar")))
+            function(source, name) for name in ("GUI_ComposeCreditsPlanar", "GUI_PresentCreditsPlanar",
+                                               "GUI_CreditsSoundPublished")))
         with tempfile.TemporaryDirectory(prefix="credits-phase-") as directory:
             source = Path(directory) / "test.c"
             binary = Path(directory) / "test"

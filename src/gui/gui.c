@@ -3426,10 +3426,11 @@ static uint16 GUI_ComposeCreditsPlanar(const char *oldText, const char *newText,
 	return groups;
 }
 
-static void GUI_PresentCreditsPlanar(uint16 groups, uint16 x, uint16 y)
+static bool GUI_PresentCreditsPlanar(uint16 groups, uint16 x, uint16 y)
 {
 	uint16 first = 0;
 
+	if (groups == 0) return false;
 	while (groups != 0) {
 		uint16 end;
 		while ((groups & (1u << first)) == 0) first++;
@@ -3444,10 +3445,23 @@ static void GUI_PresentCreditsPlanar(uint16 groups, uint16 x, uint16 y)
 		                                     CREDITS_CACHE_WIDTH / 2)) {
 			s_creditsPlanarDisplayReady = false;
 			Warning("Credits planar presentation failed\n");
-			return;
+			return false;
 		}
 		first = end;
 	}
+	return true;
+}
+
+static void GUI_CreditsSoundPublished(uint16 credits, uint16 mode)
+{
+	static uint16 lastCredits;
+	static bool valid;
+
+	if (valid && mode == 0 && credits != lastCredits) {
+		Driver_Sound_PlayCredits(credits > lastCredits);
+	}
+	lastCredits = credits;
+	valid = true;
 }
 
 static void GUI_FormatCredits(uint16 value, char buffer[7])
@@ -3510,6 +3524,9 @@ static bool GUI_UpdateCreditsAnimation(uint8 houseID, uint16 mode, GUI_CreditsDi
 	}
 
 	if (creditsDiff != 0 && (creditsAnimationOffset < -7 || creditsAnimationOffset > 7)) {
+#ifdef TOS
+		if (!Video_Atari_CursorDirect())
+#endif
 		Driver_Sound_Play(creditsDiff > 0 ? 52 : 53, 0xFF);
 	}
 
@@ -3672,7 +3689,9 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 
 		s_creditsPlanarDisplayX = x;
 		s_creditsPlanarDisplayY = y;
-		GUI_PresentCreditsPlanar(groups, x, y);
+		if (GUI_PresentCreditsPlanar(groups, x, y)) {
+			GUI_CreditsSoundPublished(display.offset < 0 ? creditsNew : creditsOld, mode);
+		}
 		GUI_Mouse_Show_InWidget();
 		return;
 	}
@@ -3715,6 +3734,7 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 	if (direct) {
 #ifdef TOS
 		GUI_DrawSprite_EndBatch();
+		GUI_CreditsSoundPublished(display.offset < 0 ? creditsNew : creditsOld, mode);
 #endif
 		GUI_Mouse_Show_InWidget();
 		return;

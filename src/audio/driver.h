@@ -27,6 +27,7 @@ extern void Drivers_All_Init(void);
 extern bool Driver_Music_IsPlaying(void);
 extern bool Driver_Voice_IsPlaying(void);
 extern void Driver_Sound_Play(int16 index, int16 volume);
+extern void Driver_Sound_PlayCredits(bool increasing);
 extern void Driver_Music_Stop(void);
 extern void Driver_Sound_Stop(void);
 extern const void *Driver_Voice_LoadFile(const char *filename, uint32 *outLength);
