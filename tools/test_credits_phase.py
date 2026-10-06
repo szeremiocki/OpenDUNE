@@ -65,16 +65,26 @@ enum {
     CREDITS_CACHE_BUFFER_HEIGHT = 24
 };
 static bool direct, s_creditsCacheReady = true, s_creditsPlanarReady;
-static uint16 s_creditsPlanarPaletteGeneration;
+static uint16 s_creditsPlanarPaletteGeneration, paletteGeneration;
+static unsigned planarBytes;
 static uint16 s_creditsPlanarBackground[64 * 9 / 4];
+static uint16 s_creditsPlanarDisplay[64 * 9 / 4], s_creditsPlanarMasks[6][2];
+static bool s_creditsPlanarDisplayReady, planarPublished;
+static uint16 s_creditsPlanarDisplayX, s_creditsPlanarDisplayY;
 static uint32 s_creditsBackground[64 * 9 / 4];
 static struct { uint16 xBase, yBase, width, height; } g_widgetProperties[6];
 static unsigned directQueries;
 static bool Video_Atari_CursorDirect(void) { directQueries++; return direct; }
-static uint16 Video_Atari_GetPaletteGeneration(void) { return 0; }
+static uint16 Video_Atari_GetPaletteGeneration(void) { return paletteGeneration; }
 static void GUI_BuildCreditsPlanarCache(uint16 generation) {
     s_creditsPlanarReady = true;
     s_creditsPlanarPaletteGeneration = generation;
+    s_creditsPlanarDisplayReady = false;
+    for (unsigned pos = 0; pos < 6; pos++) {
+        unsigned shift = (pos * 10 + 4) & 15;
+        s_creditsPlanarMasks[pos][0] = 0xff00u >> shift;
+        s_creditsPlanarMasks[pos][1] = shift > 8 ? (uint16)(0xff00u << (16 - shift)) : 0;
+    }
 }
 #endif
 static House *House_Get_ByIndex(uint8 id) {
@@ -98,12 +108,24 @@ static void GUI_Mouse_Hide_InWidget(unsigned index) {
 #ifdef TOS
     if (direct) {
         digits = rollingDigits = 0;
-        clear_rows();
+        if (!s_creditsCacheReady || (g_widgetProperties[5].xBase & 1)) clear_rows();
+        planarPublished = false;
+        planarBytes = 0;
     }
 #endif
     hides++;
 }
-static void GUI_Mouse_Show_InWidget(void) { shows++; }
+static void GUI_Mouse_Show_InWidget(void) {
+#ifdef TOS
+    if (planarPublished) {
+        renders++;
+        publishes++;
+        lastShown = g_playerCredits;
+        planarPublished = false;
+    }
+#endif
+    shows++;
+}
 static void Driver_Sound_Play(uint16 sample, uint16 volume) {
     assert((sample == 52 || sample == 53) && volume == 255);
     sounds++;
@@ -153,6 +175,7 @@ static void GUI_DrawCreditsPlanarRows(uint16 *pixels, unsigned pos, unsigned gly
     digits++;
     if (sourceRow != 0 || top != 1 || height != 8) rollingDigits++;
     if (g_creditsPhase == 0) assert(sourceRow == 0 && top == 1 && height == 8);
+    if (top == 1 && sourceRow == 0 && height == 8) drawnRows[pos][0] = -1;
     draw_rows(pos, glyph, top, sourceRow, height);
 }
 static void GUI_DrawCreditsGlyph(uint8 *buffer, unsigned glyph, unsigned left, int top) {
@@ -166,7 +189,7 @@ static void GUI_DrawCreditsGlyph(uint8 *buffer, unsigned glyph, unsigned left, i
 static void GUI_DrawSprite_BeginOpaqueBatch(uint8 *buffer, unsigned x, unsigned y,
                                            unsigned width, unsigned height) {
     (void)buffer;
-    assert(direct && x == g_widgetProperties[5].xBase * 8 && y == 4);
+    assert(direct && x == g_widgetProperties[5].xBase * 8 && y == g_widgetProperties[5].yBase);
     assert(width == 64 && height == 9);
 }
 static void GUI_DrawSprite_EndBatch(void) {
@@ -176,18 +199,20 @@ static void GUI_DrawSprite_EndBatch(void) {
     if (g_creditsPhase == 0) assert(digits == 6 && rollingDigits == 0);
     check_rows();
 }
-static bool Video_Atari_PresentRestore(unsigned x, unsigned y, unsigned width, unsigned height,
-                                      const uint8 *buffer) {
-    (void)buffer;
-    assert(direct && x == 256 && y == 4 && width == 64 && height == 9);
-    renders++;
-    publishes++;
-    lastShown = g_playerCredits;
-    if (g_creditsPhase == 0) assert(digits == 6 && rollingDigits == 0);
+static bool Video_Atari_PresentRestoreStrided(unsigned x, unsigned y, unsigned width, unsigned height,
+                                             const uint8 *buffer, unsigned stride) {
+    unsigned left = g_widgetProperties[5].xBase * 8;
+    assert(direct && x >= left && x < left + 64 && !(x & 15) && y == g_widgetProperties[5].yBase);
+    assert(width && !(width & 15) && x + width <= left + 64 && height == 9 && stride == 32);
+    assert(buffer == (const uint8 *)(s_creditsPlanarDisplay + (x - left) / 4));
+    planarBytes += width * height / 2;
+    planarPublished = true;
+    if (g_creditsPhase == 0) assert(rollingDigits == 0);
     check_rows();
     return true;
 }
 #define Warning(...) assert(false)
+/* PLANAR */
 #endif
 /* CREDITS */
 /* Independent reference for the original numeric accumulator and sound gate. */
@@ -271,10 +296,15 @@ static void step(uint16 mode) {
             if (sourceRow >= 0)
                 expectedRows[pos][row] = (glyph == ' ' ? 0 : glyph - '0' + 1) * 8 + sourceRow;
         }
+    bool screenPublish = publish;
+#ifdef TOS
+    if (direct && s_creditsCacheReady && !(g_widgetProperties[5].xBase & 1) && mode == 0)
+        screenPublish = publish && memcmp(drawnRows, expectedRows, sizeof(drawnRows)) != 0;
+#endif
     GUI_DrawCredits(1, mode);
     assert(g_playerCredits == expected && sounds == beforeSounds + sound);
     if (sound) assert(lastSound == (diff > 0 ? 52 : 53));
-    assert(publishes == beforePublishes + publish);
+    assert(publishes == beforePublishes + screenPublish);
     assert(queries == beforeQueries + !blocked);
     assert(active == SCREEN_0 && currentWidget == 2 && hides == shows);
 #ifdef TOS
@@ -365,12 +395,41 @@ int main(void) {
         }
     }
     }
+#ifdef TOS
+    /* Geometry, palette and fallback changes force complete retained-image rebuilds. */
+    direct = s_creditsCacheReady = true;
+    g_widgetProperties[5].xBase = 32;
+    g_creditsPhase = 1;
+    house.credits = 12345;
+    step(2);
+    assert(planarBytes == 288);
+    house.credits += 1000;
+    g_widgetProperties[5].xBase = 30;
+    g_widgetProperties[5].yBase = 6;
+    g_timerGUI++;
+    step(0);
+    assert(planarBytes == 288 && digits >= 6);
+    paletteGeneration++;
+    g_timerGUI++;
+    step(0);
+    assert(planarBytes == 288 && digits >= 6 && s_creditsPlanarPaletteGeneration == paletteGeneration);
+    s_creditsCacheReady = false;
+    g_timerGUI++;
+    step(0);
+    assert(!s_creditsPlanarDisplayReady);
+    s_creditsCacheReady = true;
+    g_timerGUI++;
+    step(0);
+    assert(planarBytes == 288 && digits >= 6);
+#endif
     assert(suppressed > 0 && positiveSteps > 0 && negativeSteps > 0);
     return 0;
 }
 """
         harness = harness.replace("/* CREDITS */", credits)
         harness = harness.replace("/* FORMAT */", function(source, "GUI_FormatCredits"))
+        harness = harness.replace("/* PLANAR */", "\n".join(
+            function(source, name) for name in ("GUI_ComposeCreditsPlanar", "GUI_PresentCreditsPlanar")))
         with tempfile.TemporaryDirectory(prefix="credits-phase-") as directory:
             source = Path(directory) / "test.c"
             binary = Path(directory) / "test"

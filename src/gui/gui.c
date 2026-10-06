@@ -3243,6 +3243,9 @@ static uint16 s_creditsPlanarGlyphs[6][11][CREDITS_CACHE_GLYPH_SIZE][8];
 static uint16 s_creditsPlanarMasks[6][2];
 static uint16 s_creditsPlanarPaletteGeneration;
 static bool s_creditsPlanarReady = false;
+static uint16 s_creditsPlanarDisplay[CREDITS_CACHE_WIDTH * CREDITS_CACHE_HEIGHT / 4];
+static bool s_creditsPlanarDisplayReady;
+static uint16 s_creditsPlanarDisplayX, s_creditsPlanarDisplayY;
 
 void GUI_InitCreditsCache(void)
 {
@@ -3250,6 +3253,7 @@ void GUI_InitCreditsCache(void)
 
 	s_creditsCacheReady = false;
 	s_creditsPlanarReady = false;
+	s_creditsPlanarDisplayReady = false;
 	if (!Video_Atari_CursorDirect()) return;
 
 	if (g_sprites == NULL || g_sprites[12] == NULL ||
@@ -3340,6 +3344,7 @@ static void GUI_BuildCreditsPlanarCache(uint16 paletteGeneration)
 	}
 	s_creditsPlanarPaletteGeneration = paletteGeneration;
 	s_creditsPlanarReady = true;
+	s_creditsPlanarDisplayReady = false;
 }
 
 static void GUI_DrawCreditsPlanarRows(uint16 *buffer, uint16 position, uint16 glyph,
@@ -3363,6 +3368,85 @@ static void GUI_DrawCreditsPlanarRows(uint16 *buffer, uint16 position, uint16 gl
 			for (plane = 0; plane < 4; plane++) dst[plane + 4] = (dst[plane + 4] & keepSecond) | src[plane + 4];
 		}
 		dst += CREDITS_CACHE_WIDTH / 4;
+	}
+}
+
+static uint16 GUI_ComposeCreditsPlanar(const char *oldText, const char *newText,
+                                      int16 offset, bool force)
+{
+	static char lastOld[6], lastNew[6];
+	static int16 lastOffset;
+	uint16 position, groups = 0;
+
+	force = force || !s_creditsPlanarDisplayReady;
+	if (force) {
+		memcpy(s_creditsPlanarDisplay, s_creditsPlanarBackground, sizeof(s_creditsPlanarDisplay));
+		groups = 0xf;
+	}
+	for (position = 0; position < 6; position++) {
+		uint16 group = (position * 10 + 4) >> 4;
+		uint16 glyph;
+
+		if (!force && oldText[position] == lastOld[position] &&
+		    newText[position] == lastNew[position] &&
+		    (oldText[position] == newText[position] || offset == lastOffset)) continue;
+		glyph = oldText[position] == ' ' ? 0 : oldText[position] - '0' + 1;
+		groups |= 1u << group;
+		if (s_creditsPlanarMasks[position][1] != 0) groups |= 1u << (group + 1);
+		if (oldText[position] != newText[position]) {
+			uint16 firstRow = (offset + 7) & 7;
+			uint16 lowerRows = CREDITS_CACHE_GLYPH_SIZE - firstRow;
+
+			GUI_DrawCreditsPlanarRows(s_creditsPlanarDisplay, position, glyph, firstRow, 0, lowerRows);
+			glyph = newText[position] == ' ' ? 0 : newText[position] - '0' + 1;
+			GUI_DrawCreditsPlanarRows(s_creditsPlanarDisplay, position, glyph, 0, lowerRows,
+			                         CREDITS_CACHE_HEIGHT - lowerRows);
+		} else {
+			/* Opaque glyphs replace rows 1..8; remove any old scrolling pixels in row 0. */
+			if (!force && lastOld[position] != lastNew[position]) {
+				uint16 plane, part;
+				for (part = 0; part < 2; part++) {
+					uint16 mask = s_creditsPlanarMasks[position][part];
+					if (mask == 0) continue;
+					for (plane = 0; plane < 4; plane++) {
+						uint16 index = (group + part) * 4 + plane;
+						s_creditsPlanarDisplay[index] =
+						    (s_creditsPlanarDisplay[index] & (uint16)~mask) |
+						    (s_creditsPlanarBackground[index] & mask);
+					}
+				}
+			}
+			GUI_DrawCreditsPlanarRows(s_creditsPlanarDisplay, position, glyph, 0, 1, CREDITS_CACHE_GLYPH_SIZE);
+		}
+		lastOld[position] = oldText[position];
+		lastNew[position] = newText[position];
+	}
+	lastOffset = offset;
+	s_creditsPlanarDisplayReady = true;
+	return groups;
+}
+
+static void GUI_PresentCreditsPlanar(uint16 groups, uint16 x, uint16 y)
+{
+	uint16 first = 0;
+
+	while (groups != 0) {
+		uint16 end;
+		while ((groups & (1u << first)) == 0) first++;
+		end = first;
+		do {
+			groups &= ~(1u << end);
+			end++;
+		} while ((groups & (1u << end)) != 0);
+		if (!Video_Atari_PresentRestoreStrided(x + first * 16, y, (end - first) * 16,
+		                                     CREDITS_CACHE_HEIGHT,
+		                                     (const uint8 *)(s_creditsPlanarDisplay + first * 4),
+		                                     CREDITS_CACHE_WIDTH / 2)) {
+			s_creditsPlanarDisplayReady = false;
+			Warning("Credits planar presentation failed\n");
+			return;
+		}
+		first = end;
 	}
 }
 
@@ -3509,7 +3593,6 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 	uint32 creditsBatchWords[CREDITS_CACHE_WIDTH * CREDITS_CACHE_BUFFER_HEIGHT / sizeof(uint32)];
 	uint8 *creditsBatchBuf = (uint8 *)creditsBatchWords;
 	uint8 *creditsBatchData;
-	uint16 creditsPlanar[CREDITS_CACHE_WIDTH * CREDITS_CACHE_HEIGHT / 4];
 #endif
 
 	if (!GUI_UpdateCreditsAnimation(houseID, mode, &display)) return;
@@ -3554,12 +3637,15 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 		if (!s_creditsPlanarReady || paletteGeneration != s_creditsPlanarPaletteGeneration) {
 			GUI_BuildCreditsPlanarCache(paletteGeneration);
 		}
-		memcpy(creditsPlanar, s_creditsPlanarBackground, sizeof(creditsPlanar));
 	} else if (cached) {
+		s_creditsPlanarDisplayReady = false;
 		memcpy(creditsBatchData, s_creditsBackground, sizeof(s_creditsBackground));
 	} else
 #endif
 	{
+#ifdef TOS
+		s_creditsPlanarDisplayReady = false;
+#endif
 		GUI_DrawSprite(drawScreenID, g_sprites[12], 12, GUI_SPRITE_COLOUR_EMBEDDED, 0, 0, windowID, DRAWSPRITE_FLAG_WIDGETPOS);
 	}
 
@@ -3577,6 +3663,21 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 	creditsNewText = charCreditsNew;
 #endif
 
+#ifdef TOS
+	if (planar) {
+		uint16 x = g_widgetProperties[windowID].xBase << 3;
+		uint16 y = g_widgetProperties[windowID].yBase;
+		uint16 groups = GUI_ComposeCreditsPlanar(charCreditsOld, creditsNewText, displayOffset,
+		    mode != 0 || x != s_creditsPlanarDisplayX || y != s_creditsPlanarDisplayY);
+
+		s_creditsPlanarDisplayX = x;
+		s_creditsPlanarDisplayY = y;
+		GUI_PresentCreditsPlanar(groups, x, y);
+		GUI_Mouse_Show_InWidget();
+		return;
+	}
+#endif
+
 	for (i = 0; i < 6; i++) {
 		uint16 left = i * 10 + 4;
 		uint16 spriteID;
@@ -3584,20 +3685,6 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 		spriteID = (charCreditsOld[i] == ' ') ? 13 : charCreditsOld[i] - 34;
 
 #ifdef TOS
-		if (planar) {
-			if (charCreditsOld[i] != creditsNewText[i]) {
-				uint16 firstRow = (displayOffset + 7) & 7;
-				uint16 lowerRows = CREDITS_CACHE_GLYPH_SIZE - firstRow;
-
-				GUI_DrawCreditsPlanarRows(creditsPlanar, i, spriteID - 13, firstRow, 0, lowerRows);
-				spriteID = (creditsNewText[i] == ' ') ? 13 : creditsNewText[i] - 34;
-				GUI_DrawCreditsPlanarRows(creditsPlanar, i, spriteID - 13, 0, lowerRows,
-				                         CREDITS_CACHE_HEIGHT - lowerRows);
-			} else {
-				GUI_DrawCreditsPlanarRows(creditsPlanar, i, spriteID - 13, 0, 1, CREDITS_CACHE_GLYPH_SIZE);
-			}
-			continue;
-		}
 		if (cached) {
 			if (charCreditsOld[i] != creditsNewText[i]) {
 				GUI_DrawCreditsGlyph(creditsBatchBuf, spriteID - 13, left,
@@ -3627,16 +3714,7 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 
 	if (direct) {
 #ifdef TOS
-		if (planar) {
-			if (!Video_Atari_PresentRestore(g_widgetProperties[windowID].xBase << 3,
-			                              g_widgetProperties[windowID].yBase,
-			                              CREDITS_CACHE_WIDTH, CREDITS_CACHE_HEIGHT,
-			                              (const uint8 *)creditsPlanar)) {
-				Warning("Credits planar presentation failed\n");
-			}
-		} else {
-			GUI_DrawSprite_EndBatch();
-		}
+		GUI_DrawSprite_EndBatch();
 #endif
 		GUI_Mouse_Show_InWidget();
 		return;

@@ -2575,18 +2575,25 @@ bool Video_Atari_PresentSave(int16 x, int16 y, uint16 width, uint16 height, uint
 
 bool Video_Atari_PresentRestore(int16 x, int16 y, uint16 width, uint16 height, const uint8 *buffer)
 {
+	return Video_Atari_PresentRestoreStrided(x, y, width, height, buffer, 0);
+}
+
+bool Video_Atari_PresentRestoreStrided(int16 x, int16 y, uint16 width, uint16 height,
+                                     const uint8 *buffer, uint16 srcStride)
+{
 	uint16 left, right, bytesPerLine;
 	uint8 *base = Video_Atari_PlanarBase();
 	uint8 *dst;
 
 	if (buffer == NULL || width == 0 || height == 0) return false;
-	if (x < 0 || y < 0) return false;
+	if (x < 0 || x >= SCREEN_WIDTH || y < 0) return false;
 	if ((int)y + (int)height > SCREEN_HEIGHT) return false;
 
 	left = (uint16)(x & ~0xf);
-	right = (uint16)((x + width + 0xf) & ~0xf);
-	if (right > SCREEN_WIDTH) right = SCREEN_WIDTH;
+	right = width > SCREEN_WIDTH - x ? SCREEN_WIDTH : (uint16)((x + width + 0xf) & ~0xf);
 	bytesPerLine = (uint16)(((right - left) >> 4) << 3);
+	if (srcStride == 0) srcStride = bytesPerLine;
+	if (srcStride < bytesPerLine) return false;
 
 	dst = base + (uint32)y * ST_PLANAR_LINE_BYTES + (uint32)(left >> 4) * 8;
 
@@ -2598,7 +2605,7 @@ bool Video_Atari_PresentRestore(int16 x, int16 y, uint16 width, uint16 height, c
 		while (h-- != 0) {
 			memcpy(d, s, bytesPerLine);
 			d += ST_PLANAR_LINE_BYTES;
-			s += bytesPerLine;
+			s += srcStride;
 		}
 	}
 	Video_Atari_PlanarFinishRun(base, left, (uint16)y, (uint16)(right - left), height);

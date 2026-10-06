@@ -272,8 +272,14 @@ of general printf machinery, with no division or stream handling. Equal
 old/new values share one formatted result. Leading spaces, decimal
 carries, digit scrolling and credit sound effects are unchanged.
 
-The standard ST/STE credits counter composes cached planar glyph rows in
-a private 288-byte, 64x9 buffer and publishes it once. Changing digits
+The standard ST/STE credits counter retains its composed image in a private
+288-byte, 64x9 planar buffer. Only affected digits are recomposed; stable
+digits are not redrawn when another digit scrolls. Only affected aligned
+16-pixel groups are published, using the retained image's 32-byte row stride.
+A units-only change publishes 72 bytes instead of the full 288 bytes and
+preserves the neighboring tens digit even though it shares the copied group.
+Force/reset draws, cache refreshes, destination changes and returns from a
+fallback rebuild and publish the full counter. Changing digits
 select nine visible rows from the lower/higher glyph pair using the shared
 scrolling phase; unchanged digits stay fixed. No per-update c2p or
 horizontal glyph shifting is needed. The background and six-position

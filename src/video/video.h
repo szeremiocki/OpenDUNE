@@ -128,6 +128,11 @@ extern bool Video_Atari_PresentChunkyTransparent(const void *src, uint16 srcStri
  * to match what is actually visible. */
 extern bool Video_Atari_PresentSave(int16 x, int16 y, uint16 width, uint16 height, uint8 *buffer);
 extern bool Video_Atari_PresentRestore(int16 x, int16 y, uint16 width, uint16 height, const uint8 *buffer);
+/* Restore group-aligned source rows with an explicit byte stride, at least
+ * the rounded/clipped row width. Zero retains the packed restore layout.
+ * The buffer points to the first published group, not the start of its row. */
+extern bool Video_Atari_PresentRestoreStrided(int16 x, int16 y, uint16 width, uint16 height,
+                                            const uint8 *buffer, uint16 srcStride);
 /* Encode tightly packed, word-aligned chunky rows with the current mapping
  * in one call, with byte strides width (source) and width/2 (output).
  * Width must be a multiple of 16. The full-width window API below retains
