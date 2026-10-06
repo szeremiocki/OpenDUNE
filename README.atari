@@ -70,9 +70,11 @@ The setting is handled by the engine animator, not the Atari video driver,
 and is available on other platforms too. Invalid values warn and use 1.
 For credits, 0 keeps normal gradual counting but displays non-scrolling
 digits only when the shown number changes, 1 retains the original animation,
-and 2 renders every other animation update. Counting and sound timing are
-unchanged in every mode. Forced/reset
-draws and the final settled value are always displayed, even in mode 2.
+and 2 scrolls in two-row steps instead of skipping alternate animation calls.
+The engine resolves the visual number pair and scroll offset before renderer
+setup; unchanged visual states do not compose or publish. Counting and sound
+timing are unchanged in every mode. Forced/reset draws and the final settled
+value are always displayed, even in mode 2.
 These settings are independent and neither changes game speed.
 
 Based on a typical scene on level 1 :

@@ -87,8 +87,9 @@ Available options are :
 - phase_announcement : 0 = immediate announcements, 1 = original scrolling
                        (default), 2 = scrolling in two-row steps
 - phase_credits : 0 = gradual counting without digit scrolling, 1 = original
-                  animation (default), 2 = render every other animation update;
-                  counting pace is unchanged, and 0 redraws only changed numbers
+                  animation (default), 2 = scrolling in two-row steps;
+                  only changed visual states redraw; counting and sound timing
+                  are unchanged, and forced/reset/final draws are retained
 - fullscreen : 0(default)/1 starts the game in full screen mode if possible
 - mt32midi : 0(default)/1 send MT32 init, use .XMI files
 - mt32rompath : directory containing CM32L_CONTROL.ROM/CM32L_PCM.ROM files

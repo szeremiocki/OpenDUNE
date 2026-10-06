@@ -1,4 +1,4 @@
-"""Verify redraw policies without changing the original credits counting pace."""
+"""Verify visual-state resolution without changing credits counting or sound."""
 
 import os
 from pathlib import Path
@@ -16,7 +16,11 @@ ROOT = Path(__file__).resolve().parents[1]
 class CreditsPhaseTest(unittest.TestCase):
     def test_counting_sound_and_redraws(self):
         source = (ROOT / "src/gui/gui.c").read_text()
-        credits = function(source, "GUI_DrawCredits")
+        start = source.index("typedef struct GUI_CreditsDisplay")
+        display = source[start:source.index("} GUI_CreditsDisplay;", start) + len("} GUI_CreditsDisplay;")]
+        renderer = function(source, "GUI_DrawCredits")
+        self.assertNotIn("g_creditsPhase", renderer)
+        credits = "\n".join((display, function(source, "GUI_UpdateCreditsAnimation"), renderer))
         harness = r"""
 #include <assert.h>
 #include <stdbool.h>
@@ -42,6 +46,18 @@ static uint8 sprites[24], *g_sprites[24];
 static unsigned renders, publishes, hides, shows, sounds, queries;
 static uint16 lastShown, lastSound;
 static unsigned digits, rollingDigits;
+static int drawnRows[6][9], expectedRows[6][9];
+static void clear_rows(void) {
+    for (unsigned pos = 0; pos < 6; pos++)
+        for (unsigned row = 0; row < 9; row++) drawnRows[pos][row] = -1;
+}
+static void draw_rows(unsigned pos, unsigned glyph, int top, unsigned source, unsigned height) {
+    assert(pos < 6 && glyph < 11 && source + height <= 8);
+    for (unsigned row = 0; row < height; row++)
+        if (top + (int)row >= 0 && top + (int)row < 9)
+            drawnRows[pos][top + row] = glyph * 8 + source + row;
+}
+static void check_rows(void) { assert(!memcmp(drawnRows, expectedRows, sizeof(drawnRows))); }
 #ifdef TOS
 enum {
     CREDITS_CACHE_WIDTH = 64, CREDITS_CACHE_HEIGHT = 9,
@@ -53,7 +69,8 @@ static uint16 s_creditsPlanarPaletteGeneration;
 static uint16 s_creditsPlanarBackground[64 * 9 / 4];
 static uint32 s_creditsBackground[64 * 9 / 4];
 static struct { uint16 xBase, yBase, width, height; } g_widgetProperties[6];
-static bool Video_Atari_CursorDirect(void) { return direct; }
+static unsigned directQueries;
+static bool Video_Atari_CursorDirect(void) { directQueries++; return direct; }
 static uint16 Video_Atari_GetPaletteGeneration(void) { return 0; }
 static void GUI_BuildCreditsPlanarCache(uint16 generation) {
     s_creditsPlanarReady = true;
@@ -79,7 +96,10 @@ static uint16 Widget_SetCurrentWidget(uint16 index) {
 static void GUI_Mouse_Hide_InWidget(unsigned index) {
     assert(index == 5);
 #ifdef TOS
-    if (direct) digits = rollingDigits = 0;
+    if (direct) {
+        digits = rollingDigits = 0;
+        clear_rows();
+    }
 #endif
     hides++;
 }
@@ -104,11 +124,13 @@ static void GUI_DrawSprite(Screen screen, const uint8 *sprite, uint16 id, unsign
         assert(x == 0 && y == 0);
         renders++;
         digits = rollingDigits = 0;
+        clear_rows();
     } else {
         assert(id >= 13 && id <= 23 && x >= 4 && x <= 54 && (x - 4) % 10 == 0);
         digits++;
         if (y != 1) rollingDigits++;
         if (g_creditsPhase == 0) assert(y == 1);
+        draw_rows((x - 4) / 10, id - 13, y, 0, 8);
     }
 }
 static void GUI_Screen_Copy(int xs, int ys, int xd, int yd, int width, int height,
@@ -117,6 +139,7 @@ static void GUI_Screen_Copy(int xs, int ys, int xd, int yd, int width, int heigh
     assert(xs == 32 && xd == 32 && ys == 44 && yd == 4 && width == 8 && height == 9);
     assert(src == SCREEN_1 && dst == SCREEN_0 && digits >= 6);
     if (g_creditsPhase == 0) assert(digits == 6 && rollingDigits == 0);
+    check_rows();
     publishes++;
     lastShown = g_playerCredits;
 }
@@ -130,6 +153,7 @@ static void GUI_DrawCreditsPlanarRows(uint16 *pixels, unsigned pos, unsigned gly
     digits++;
     if (sourceRow != 0 || top != 1 || height != 8) rollingDigits++;
     if (g_creditsPhase == 0) assert(sourceRow == 0 && top == 1 && height == 8);
+    draw_rows(pos, glyph, top, sourceRow, height);
 }
 static void GUI_DrawCreditsGlyph(uint8 *buffer, unsigned glyph, unsigned left, int top) {
     (void)buffer;
@@ -137,6 +161,7 @@ static void GUI_DrawCreditsGlyph(uint8 *buffer, unsigned glyph, unsigned left, i
     digits++;
     if (top != CREDITS_CACHE_PADDING + 1) rollingDigits++;
     if (g_creditsPhase == 0) assert(top == CREDITS_CACHE_PADDING + 1);
+    draw_rows((left - 4) / 10, glyph, top - CREDITS_CACHE_PADDING, 0, 8);
 }
 static void GUI_DrawSprite_BeginOpaqueBatch(uint8 *buffer, unsigned x, unsigned y,
                                            unsigned width, unsigned height) {
@@ -149,6 +174,7 @@ static void GUI_DrawSprite_EndBatch(void) {
     publishes++;
     lastShown = g_playerCredits;
     if (g_creditsPhase == 0) assert(digits == 6 && rollingDigits == 0);
+    check_rows();
 }
 static bool Video_Atari_PresentRestore(unsigned x, unsigned y, unsigned width, unsigned height,
                                       const uint8 *buffer) {
@@ -158,6 +184,7 @@ static bool Video_Atari_PresentRestore(unsigned x, unsigned y, unsigned width, u
     publishes++;
     lastShown = g_playerCredits;
     if (g_creditsPhase == 0) assert(digits == 6 && rollingDigits == 0);
+    check_rows();
     return true;
 }
 #define Warning(...) assert(false)
@@ -183,6 +210,89 @@ static uint16 reference(uint16 *animation, int16 *offset, uint16 target, bool *s
     if (*offset < 0) *offset = -((-*offset) & 7);
     return *animation - (*offset < 0 && *animation > 0 ? 1 : 0);
 }
+static uint16 expectedAnimation;
+static int16 expectedOffset;
+static uint32 expectedTick;
+static uint16 previousOld, previousNew;
+static int previousScroll;
+static bool previousValid;
+static unsigned suppressed, negativeSteps, positiveSteps;
+static void step(uint16 mode) {
+    unsigned beforeSounds = sounds, beforePublishes = publishes, beforeQueries = queries;
+#ifdef TOS
+    unsigned beforeDirect = directQueries;
+#endif
+    bool blocked = mode == 0 && expectedTick > g_timerGUI;
+    bool eligible = false, sound = false;
+    uint16 expected = expectedAnimation - (expectedOffset < 0 && expectedAnimation > 0);
+    int16 diff = house.credits - expectedAnimation;
+    if (!blocked) {
+        expectedTick = g_timerGUI + 1;
+        if (mode == 2) expectedAnimation = house.credits;
+        eligible = mode != 0 || expectedAnimation != house.credits || expectedOffset != 0;
+        if (eligible) expected = reference(&expectedAnimation, &expectedOffset, house.credits, &sound);
+    }
+    uint16 lower = expectedAnimation, higher = lower;
+    int scroll = 0;
+    if (g_creditsPhase == 0) {
+        lower = higher = expected;
+    } else {
+        unsigned magnitude = expectedOffset < 0 ? -expectedOffset : expectedOffset;
+        if (g_creditsPhase == 2) magnitude &= ~1u;
+        if (magnitude != 0) {
+            if (expectedOffset < 0) {
+                if (lower > 0) lower--;
+                scroll = -(int)magnitude;
+            } else {
+                higher++;
+                scroll = magnitude;
+            }
+        }
+    }
+    bool settled = expectedAnimation == house.credits && expectedOffset == 0;
+    bool publish = eligible && (mode != 0 || settled || !previousValid ||
+        lower != previousOld || higher != previousNew || scroll != previousScroll);
+    char oldText[7], newText[7];
+    snprintf(oldText, sizeof(oldText), "%6hu", lower);
+    snprintf(newText, sizeof(newText), "%6hu", higher);
+    for (unsigned pos = 0; pos < 6; pos++)
+        for (unsigned row = 0; row < 9; row++) {
+            int sourceRow = (int)row - 1;
+            char glyph = oldText[pos];
+            expectedRows[pos][row] = -1;
+            if (oldText[pos] != newText[pos]) {
+                sourceRow = (int)row - (scroll < 0 ? -7 : 1) + scroll;
+                assert(sourceRow >= 0 && sourceRow < 16);
+                if (sourceRow >= 8) {
+                    sourceRow -= 8;
+                    glyph = newText[pos];
+                }
+            }
+            if (sourceRow >= 0)
+                expectedRows[pos][row] = (glyph == ' ' ? 0 : glyph - '0' + 1) * 8 + sourceRow;
+        }
+    GUI_DrawCredits(1, mode);
+    assert(g_playerCredits == expected && sounds == beforeSounds + sound);
+    if (sound) assert(lastSound == (diff > 0 ? 52 : 53));
+    assert(publishes == beforePublishes + publish);
+    assert(queries == beforeQueries + !blocked);
+    assert(active == SCREEN_0 && currentWidget == 2 && hides == shows);
+#ifdef TOS
+    /* No renderer setup, including Atari backend selection, on suppressed states. */
+    assert(directQueries == beforeDirect + publish);
+#endif
+    if (publish) {
+        previousOld = lower; previousNew = higher; previousScroll = scroll;
+        previousValid = true;
+        if (g_creditsPhase == 2) {
+            assert(scroll % 2 == 0);
+            negativeSteps += scroll < 0;
+            positiveSteps += scroll > 0;
+        }
+    } else if (eligible) {
+        suppressed++;
+    }
+}
 int main(void) {
     for (unsigned i = 0; i < 24; i++) g_sprites[i] = &sprites[i];
     const uint16 pairs[][2] = {
@@ -203,69 +313,59 @@ int main(void) {
 #endif
     for (unsigned phase = 0; phase <= 2; phase++) {
         g_creditsPhase = phase;
+        for (unsigned scenario = 0; scenario < 2; scenario++)
         for (unsigned pair = 0; pair < sizeof(pairs) / sizeof(*pairs); pair++) {
             house.credits = pairs[pair][0];
             g_timerGUI = s_tickCreditsAnimation = 0;
+            expectedTick = 0; previousValid = false;
             active = SCREEN_0; currentWidget = 2;
-            GUI_DrawCredits(1, 2);
+            step(2);
             assert(g_playerCredits == house.credits && lastShown == house.credits);
-            uint16 expectedAnimation = house.credits, previousShown = house.credits;
-            int16 expectedOffset = 0;
-            unsigned startRenders = renders, eligible = 0, requiredPlain = 0;
-            unsigned skipped = 0, pendingSkips = 0;
+            unsigned startPublishes = publishes;
             house.credits = pairs[pair][1];
             unsigned tick;
             for (tick = 0; tick < 4096; tick++) {
-                bool sound;
-                bool settledBefore = expectedAnimation == house.credits && expectedOffset == 0;
-                uint16 expected = reference(&expectedAnimation, &expectedOffset, house.credits, &sound);
-                unsigned beforeSounds = sounds, beforePublishes = publishes, beforeQueries = queries;
-                g_timerGUI++;
-                GUI_DrawCredits(1, 0);
-                assert(g_playerCredits == expected);
-                assert(sounds == beforeSounds + sound);
-                if (sound) assert(lastSound == (pairs[pair][1] > pairs[pair][0] ? 52 : 53));
-                assert(queries == beforeQueries + 1);
-                assert(active == SCREEN_0 && currentWidget == 2 && hides == shows);
-                if (!settledBefore) eligible++;
-                if (expected != previousShown) requiredPlain++;
-                if (phase == 0) {
-                    assert(publishes == beforePublishes + (expected != previousShown));
-                } else if (phase == 1) {
-                    assert(publishes == beforePublishes + !settledBefore);
-                } else if (!settledBefore) {
-                    bool settled = expectedAnimation == house.credits && expectedOffset == 0;
-                    if (settled) assert(publishes == beforePublishes + 1);
-                    else if (pendingSkips == 0) {
-                        assert(publishes == beforePublishes + 1);
-                        pendingSkips = 1;
-                    } else {
-                        assert(publishes == beforePublishes);
-                        pendingSkips = 0;
-                        skipped++;
-                    }
+                if (scenario == 1) {
+                    if (tick == 3) house.credits = pairs[pair][0];
+                    if (tick == 10) house.credits = pairs[pair][1];
+                    if (tick == 15) house.credits = pairs[pair][0];
+                    if (tick == 20) house.credits = pairs[pair][1];
                 }
-                previousShown = expected;
+                g_timerGUI++;
+                step(0);
                 /* Calls in the same GUI tick neither count nor draw again. */
-                beforeSounds = sounds; beforePublishes = publishes; beforeQueries = queries;
-                GUI_DrawCredits(1, 0);
-                assert(g_playerCredits == expected && sounds == beforeSounds);
-                assert(publishes == beforePublishes && queries == beforeQueries);
-                if (expectedAnimation == house.credits && expectedOffset == 0) break;
+                step(0);
+                if (scenario == 1 && tick == 7) step(1);
+                if ((scenario == 0 || tick >= 20) &&
+                    expectedAnimation == house.credits && expectedOffset == 0) break;
             }
             assert(tick < 4096 && g_playerCredits == house.credits && lastShown == house.credits);
-            if (phase == 0) assert(renders - startRenders == requiredPlain);
-            if (phase == 1) assert(renders - startRenders == eligible);
-            if (phase == 2) assert(renders - startRenders == eligible - skipped);
-            /* Forced redraws are never lost to the alternate-frame policy. */
+            if (scenario == 0 && (pair == 2 || pair == 3)) {
+                /* A one-credit transition takes eight ticks, in either direction. */
+                assert(tick == 7);
+                if (phase == 1) assert(publishes - startPublishes == 8);
+                if (phase == 2) assert(publishes - startPublishes == 4);
+            }
+            /* Forced redraws and resets bypass visual-state deduplication. */
             unsigned before = renders;
-            GUI_DrawCredits(1, 1);
+            step(1);
             assert(renders == before + 1 && lastShown == house.credits);
-            GUI_DrawCredits(1, 2);
+            step(2);
             assert(renders == before + 2 && lastShown == house.credits);
+            /* Change policy mid-transition without changing numeric progress. */
+            house.credits = pairs[pair][0];
+            for (unsigned update = 0; update < 24; update++) {
+                g_creditsPhase = update % 3;
+                g_timerGUI++;
+                step(0);
+                if (update == 12) step(2);
+            }
+            g_creditsPhase = phase;
+            step(2);
         }
     }
     }
+    assert(suppressed > 0 && positiveSteps > 0 && negativeSteps > 0);
     return 0;
 }
 """

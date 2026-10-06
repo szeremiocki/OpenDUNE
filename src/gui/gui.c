@@ -3387,69 +3387,22 @@ static void GUI_FormatCredits(uint16 value, char buffer[7])
 }
 #endif
 
-/**
- * Draw the credits on the screen, and animate it when the value is changing.
- * @param houseID The house to display the credits from.
- * @param mode The mode of displaying. 0 = animate, 1 = force draw, 2 = reset.
- */
-void GUI_DrawCredits(uint8 houseID, uint16 mode)
+typedef struct GUI_CreditsDisplay {
+	uint16 creditsOld;
+	uint16 creditsNew;
+	int16 offset;
+} GUI_CreditsDisplay;
+
+static bool GUI_UpdateCreditsAnimation(uint8 houseID, uint16 mode, GUI_CreditsDisplay *display)
 {
 	static uint16 creditsAnimation = 0;           /* How many credits are shown in current animation of credits. */
 	static int16  creditsAnimationOffset = 0;     /* Offset of the credits for the animation of credits. */
-	static bool creditsSkipFrame;
-	static uint16 creditsLastDrawn;
-	static bool creditsLastDrawWasPlain;
-
-	Screen oldScreenID = SCREEN_ACTIVE;
-	uint16 oldWidgetId = 0;
+	static GUI_CreditsDisplay lastDisplay;
+	static bool displayValid;
 	House *h;
-	char charCreditsOld[7];
-	char charCreditsNew[7];
-	const char *creditsNewText;
-	int i;
 	int16 creditsDiff;
-	uint16 creditsNew;
-	uint16 creditsOld;
-	int16 offset;
-	int16 displayOffset;
-#ifdef TOS
-	bool direct = Video_Atari_CursorDirect();
-	bool cached = direct && s_creditsCacheReady &&
-	              g_widgetProperties[5].width * 8 == CREDITS_CACHE_WIDTH &&
-	              g_widgetProperties[5].height == CREDITS_CACHE_HEIGHT;
-	bool planar = cached && (g_widgetProperties[5].xBase & 1) == 0 &&
-	              g_widgetProperties[5].xBase * 8 + CREDITS_CACHE_WIDTH <= SCREEN_WIDTH &&
-	              g_widgetProperties[5].yBase + CREDITS_CACHE_HEIGHT <= SCREEN_HEIGHT;
-#else
-	bool direct = false;
-#endif
-	/* ENHANCEMENT: on ST/STE, draw straight into widget 5 -- the real
-	 * on-screen credits position -- instead of widget 4, an off-screen
-	 * SCREEN_1 scratch slot 40 pixels below it that gets copied up
-	 * afterwards. That scratch slot sits inside the sidebar's
-	 * structure-info panel (widget 6, y=42-124): during the digit
-	 * scroll animation, sprites are drawn well outside their nominal
-	 * 9px row (see the offset math below, which ranges roughly -14..+16
-	 * relative to the row), so the scratch write corrupts whatever the
-	 * info panel had just drawn there -- SCREEN_1 is shared, unlike the
-	 * planar screen it eventually gets composited to.
-	 *
-	 * The planar cache composes only visible glyph rows in a private buffer.
-	 * Unaligned widgets retain the padded chunky cache; unsupported assets
-	 * or widget geometry retain the clipped GUI_DrawSprite() batch path.
-	 * Neither direct path writes the shared SCREEN_1 workspace. */
-	uint16 windowID = direct ? 5 : 4;
-	Screen drawScreenID = direct ? SCREEN_0 : SCREEN_ACTIVE;
-#ifdef TOS
-	/* Cached glyphs extend beyond the visible slice, without clipping.
-	 * Only the nine rows starting at the top padding are presented. */
-	uint32 creditsBatchWords[CREDITS_CACHE_WIDTH * CREDITS_CACHE_BUFFER_HEIGHT / sizeof(uint32)];
-	uint8 *creditsBatchBuf = (uint8 *)creditsBatchWords;
-	uint8 *creditsBatchData = creditsBatchBuf + (cached ? CREDITS_CACHE_PADDING * CREDITS_CACHE_WIDTH : 0);
-	uint16 creditsPlanar[CREDITS_CACHE_WIDTH * CREDITS_CACHE_HEIGHT / 4];
-#endif
 
-	if (s_tickCreditsAnimation > g_timerGUI && mode == 0) return;
+	if (s_tickCreditsAnimation > g_timerGUI && mode == 0) return false;
 	s_tickCreditsAnimation = g_timerGUI + 1;
 
 	h = House_Get_ByIndex(houseID);
@@ -3459,7 +3412,7 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 		creditsAnimation = h->credits;
 	}
 
-	if (mode == 0 && h->credits == creditsAnimation && creditsAnimationOffset == 0) return;
+	if (mode == 0 && h->credits == creditsAnimation && creditsAnimationOffset == 0) return false;
 
 	creditsDiff = h->credits - creditsAnimation;
 	if (creditsDiff != 0) {
@@ -3483,39 +3436,100 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 	if (creditsAnimationOffset > 0) creditsAnimationOffset &= 7;
 	if (creditsAnimationOffset < 0) creditsAnimationOffset = -((-creditsAnimationOffset) & 7);
 
-	creditsOld = creditsAnimation;
-	creditsNew = creditsAnimation;
-	offset = 1;
+	g_playerCredits = creditsAnimation;
+	if (creditsAnimationOffset < 0 && g_playerCredits > 0) g_playerCredits--;
 
-	if (creditsAnimationOffset < 0) {
-		if (creditsOld > 0) creditsOld--;
-
-		offset -= 8;
-	}
-
-	if (creditsAnimationOffset > 0) {
-		creditsNew += 1;
-	}
-
-	/* Preserve counting and sound updates even when presentation is skipped. */
-	g_playerCredits = creditsOld;
-	if (mode == 0 && g_creditsPhase == 0 && creditsLastDrawWasPlain
-		&& creditsOld == creditsLastDrawn) return;
-	if (mode != 0 || g_creditsPhase != 2
-		|| (creditsAnimation == h->credits && creditsAnimationOffset == 0)) {
-		creditsSkipFrame = false;
-	} else {
-		bool skip = creditsSkipFrame;
-		creditsSkipFrame = !creditsSkipFrame;
-		if (skip) return;
-	}
-
-	displayOffset = creditsAnimationOffset;
+	display->creditsOld = creditsAnimation;
+	display->creditsNew = creditsAnimation;
+	display->offset = creditsAnimationOffset;
 	if (g_creditsPhase == 0) {
-		creditsNew = creditsOld;
-		displayOffset = 0;
-		offset = 1;
+		display->creditsOld = g_playerCredits;
+		display->creditsNew = g_playerCredits;
+		display->offset = 0;
+	} else {
+		/* Truncate towards zero so decreasing counts use the same two-row steps. */
+		if (g_creditsPhase == 2) display->offset = (display->offset / 2) * 2;
+		if (display->offset < 0 && display->creditsOld > 0) display->creditsOld--;
+		if (display->offset > 0) display->creditsNew++;
 	}
+
+	if (mode == 0 && !(creditsAnimation == h->credits && creditsAnimationOffset == 0) &&
+	    displayValid && display->creditsOld == lastDisplay.creditsOld &&
+	    display->creditsNew == lastDisplay.creditsNew && display->offset == lastDisplay.offset) {
+		return false;
+	}
+	lastDisplay = *display;
+	displayValid = true;
+	return true;
+}
+
+/**
+ * Draw the credits on the screen, and animate it when the value is changing.
+ * @param houseID The house to display the credits from.
+ * @param mode The mode of displaying. 0 = animate, 1 = force draw, 2 = reset.
+ */
+void GUI_DrawCredits(uint8 houseID, uint16 mode)
+{
+	GUI_CreditsDisplay display;
+	Screen oldScreenID = SCREEN_ACTIVE;
+	uint16 oldWidgetId = 0;
+	char charCreditsOld[7];
+	char charCreditsNew[7];
+	const char *creditsNewText;
+	int i;
+	uint16 creditsNew;
+	uint16 creditsOld;
+	int16 offset;
+	int16 displayOffset;
+#ifdef TOS
+	bool direct, cached, planar;
+#else
+	bool direct = false;
+#endif
+	/* ENHANCEMENT: on ST/STE, draw straight into widget 5 -- the real
+	 * on-screen credits position -- instead of widget 4, an off-screen
+	 * SCREEN_1 scratch slot 40 pixels below it that gets copied up
+	 * afterwards. That scratch slot sits inside the sidebar's
+	 * structure-info panel (widget 6, y=42-124): during the digit
+	 * scroll animation, sprites are drawn well outside their nominal
+	 * 9px row (see the offset math below, which ranges roughly -14..+16
+	 * relative to the row), so the scratch write corrupts whatever the
+	 * info panel had just drawn there -- SCREEN_1 is shared, unlike the
+	 * planar screen it eventually gets composited to.
+	 *
+	 * The planar cache composes only visible glyph rows in a private buffer.
+	 * Unaligned widgets retain the padded chunky cache; unsupported assets
+	 * or widget geometry retain the clipped GUI_DrawSprite() batch path.
+	 * Neither direct path writes the shared SCREEN_1 workspace. */
+	uint16 windowID;
+	Screen drawScreenID;
+#ifdef TOS
+	/* Cached glyphs extend beyond the visible slice, without clipping.
+	 * Only the nine rows starting at the top padding are presented. */
+	uint32 creditsBatchWords[CREDITS_CACHE_WIDTH * CREDITS_CACHE_BUFFER_HEIGHT / sizeof(uint32)];
+	uint8 *creditsBatchBuf = (uint8 *)creditsBatchWords;
+	uint8 *creditsBatchData;
+	uint16 creditsPlanar[CREDITS_CACHE_WIDTH * CREDITS_CACHE_HEIGHT / 4];
+#endif
+
+	if (!GUI_UpdateCreditsAnimation(houseID, mode, &display)) return;
+	creditsOld = display.creditsOld;
+	creditsNew = display.creditsNew;
+	displayOffset = display.offset;
+	offset = displayOffset < 0 ? -7 : 1;
+
+#ifdef TOS
+	direct = Video_Atari_CursorDirect();
+	cached = direct && s_creditsCacheReady &&
+	         g_widgetProperties[5].width * 8 == CREDITS_CACHE_WIDTH &&
+	         g_widgetProperties[5].height == CREDITS_CACHE_HEIGHT;
+	planar = cached && (g_widgetProperties[5].xBase & 1) == 0 &&
+	         g_widgetProperties[5].xBase * 8 + CREDITS_CACHE_WIDTH <= SCREEN_WIDTH &&
+	         g_widgetProperties[5].yBase + CREDITS_CACHE_HEIGHT <= SCREEN_HEIGHT;
+	creditsBatchData = creditsBatchBuf + (cached ? CREDITS_CACHE_PADDING * CREDITS_CACHE_WIDTH : 0);
+#endif
+	windowID = direct ? 5 : 4;
+	drawScreenID = direct ? SCREEN_0 : SCREEN_ACTIVE;
 
 	if (direct) {
 		GUI_Mouse_Hide_InWidget(5);
@@ -3610,9 +3624,6 @@ void GUI_DrawCredits(uint8 houseID, uint16 mode)
 			GUI_DrawSprite(drawScreenID, g_sprites[spriteID], spriteID, GUI_SPRITE_COLOUR_EMBEDDED, left, 1, windowID, DRAWSPRITE_FLAG_WIDGETPOS);
 		}
 	}
-
-	creditsLastDrawn = creditsOld;
-	creditsLastDrawWasPlain = g_creditsPhase == 0 || creditsAnimationOffset == 0;
 
 	if (direct) {
 #ifdef TOS
