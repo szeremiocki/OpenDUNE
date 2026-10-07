@@ -144,6 +144,11 @@ extern void Video_Atari_EncodePlanarStrided(const uint8 *src, uint16 srcStride,
                                            uint16 *pixels, uint16 width, uint16 height);
 extern void Video_Atari_PresentPlanarWindow(const uint16 *pixels, uint16 x, uint16 y,
                                            uint16 width, uint16 height);
+/* Compact planar rows; X is group aligned, a partial right group is masked. */
+extern bool Video_Atari_PresentPlanarRect(const uint16 *pixels, uint16 srcStride,
+                                         uint16 x, uint16 y, uint16 width, uint16 height);
+extern bool Video_Atari_PresentPlanarSubRect(const uint16 *pixels, uint16 srcStride, uint16 srcX,
+                                            uint16 x, uint16 y, uint16 width, uint16 height);
 
 /* Shift a rectangle of the planar screen in place; see the definition in
  * video_atari.c for the full contract (group-aligned geometry only,

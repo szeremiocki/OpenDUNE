@@ -302,6 +302,84 @@ Other channels and PSG I/O mixer bits are preserved. Sound stop/shutdown
 also cancels an owned list and explicitly mutes the tone. No busy wait or
 framerate limit is introduced.
 
+The ST/STE Mentat picture loop prototypes predecoded planar WSA playback.
+WSA_LoadFile() has an allowPlanar argument: false preserves original
+chunky loading; true opts compatible ST/STE callers into prepared assets.
+The picture loop checks for a standalone NAME.PWS recording first. On a
+miss, all frames are reconstructed with the original decoder, converted
+through the shared palette-map/c2p encoder, and saved immediately. These
+files live in the personal/save directory (SAVES on TOS by default, or
+savedir from opendune.ini), never inside or in place of the original PAK.
+A cache hit loads the recording without loading or decoding the source WSA.
+The initial chunky Mentat composition remains opted out.
+
+The recording stores its initial planar image and aligned native skip/XOR
+transitions, without Format80 compression. During first-time preparation
+it is allocated beside the original WSA payload; cache hits need no source
+payload or decoder workspace. The WSA object's frame format selects the
+backend; existing forward/backward/loop frame-selection algorithms are
+shared unchanged. Playback uses native planar XOR and changed-group
+publication: no WSA decompression, file reads, quantization or c2p.
+Leaving a subject frees its runtime recording and overlay, but keeps the
+PWS file for subsequent visits and game sessions.
+
+PWS files contain a PWS4 marker, little-endian 16-bit frame count, width,
+height and flags (bit 0: non-looping route; bit 1: continuation source),
+followed by frameCount+1 blocks. Each
+block has a little-endian 32-bit byte length and big-endian words. Block 0
+is the initial image; blocks 1..frameCount-1 are transitions and the last
+block returns to frame 0. Commands and planes use the same native player
+as live preparation. File bounds, dimensions and command runs are checked;
+invalid/truncated recordings warn and are rebuilt from the original.
+Write failures warn and retain working in-memory playback.
+There are no build, source-content or palette/mapping revision checks:
+delete the corresponding PWS files when testing changed assets or mapping.
+
+A private clean animation image prevents descriptions and shoulders from
+corrupting XOR history. Their planar overlay is built once and refreshed
+when the description's visible line count changes. Opaque black shoulder
+pixels retain their opacity. Contiguous changed groups and matching row
+bands are published with masked right edges and normal cursor protection;
+unchanged frames do not republish the picture. A non-looping animation
+retains its final image until the subject closes.
+Pending legacy dirty groups inside the picture are repaired from its
+retained planar image, never from SCREEN_1's WSA storage.
+The direct-sprite scratch buffer holds 4,608 bytes, enough for the 96x48
+Atreides book to retain transparent planar drawing instead of the legacy
+chunky fallback. There is no Mentat-specific overlap repair masking
+foreground rendering deficiencies.
+
+For a 184x112 picture, the initial/current/composition buffers occupy
+31.5 KiB; overlay pixels and masks add 15.75 KiB, plus variable transition
+streams and small metadata. Preparation uses additional temporary buffers
+and adds entry-time work on the first visit; subsequent visits only load
+the recording. Loading latency and playback gains need target measurement.
+The mapping is assumed static throughout the scene, with no
+palette-generation checks. Unsupported Mentat windows or allocation
+failures log a warning and retain original playback.
+
+The ST/STE introduction sequence also opts into PWS playback. Cold
+continuations (INTRO7B, INTRO8B and INTRO8C) reconstruct their predecessors'
+final original images in private temporary memory before quantizing complete
+frames. Their saved PWS initial images are self-contained: subsequent
+playback needs neither the preceding recording nor any chunky screen shadow.
+If only a continuation PWS is removed, its original source chain must remain
+available to rebuild it; planar quantization cannot be inverted into that
+original XOR seed. Preparation does not consume the scene's playback budget.
+The intro stops with a warning if native preparation fails, rather than
+resuming the broken SCREEN_0 accumulator path.
+
+Native publication supports the intro's X=8 placement with masked left and
+right edges. The existing GUI dissolve loop is shared by chunky and native
+sources: the native variant publishes 8x2 patches from the retained WSA
+image, preserving the original shuffle and delays without SCREEN_1 or c2p.
+For the ST/STE intro visibility experiment, subtitle entries 215..220 retain
+their original INTRO.PAL red ramp. They are neither initially blackened nor
+remapped to each subtitle's colour/fade ramp. Subtitle-only palette fades are
+disabled for this path; animation sequencing, speech pumping and hardware
+black/white fades are retained. Logos, endgame callers and TT/Falcon rendering
+remain on their existing paths.
+
 The standard ST/STE credits counter retains its composed image in a private
 288-byte, 64x9 planar buffer. Only affected digits are recomposed; stable
 digits are not redrawn when another digit scrolls. Only affected aligned

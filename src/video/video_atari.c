@@ -2242,10 +2242,9 @@ static void Video_Atari_PlacementEnd(uint8 *base)
  * Video_Atari_PresentPalette() with the picture's real palette *before*
  * drawing it. The pens are then correct from the first converted pixel,
  * and the picture stays invisible anyway because the registers are still
- * black - exactly the state the following fade-in ramps up from. Under
- * write-through, getting this wrong is only a transient blemish rather
- * than a corruption: s_screen_needrepaint still re-converts everything
- * from the chunky shadow on a wide palette change.
+ * black - exactly the state the following fade-in ramps up from. Native
+ * assets have no chunky shadow: palette changes inside the enclave must
+ * not trigger a reconstruction from SCREEN_0.
  */
 
 static bool s_presentMode = false;
@@ -2686,6 +2685,76 @@ void Video_Atari_PresentPlanarWindow(const uint16 *pixels, uint16 x, uint16 y,
 	GFX_Screen_ClearDirtyRect(first << 4, y, (last + 1) << 4, y + height);
 }
 
+bool Video_Atari_PresentPlanarSubRect(const uint16 *pixels, uint16 srcStride, uint16 srcX,
+                                     uint16 x, uint16 y, uint16 width, uint16 height)
+{
+	uint16 first = x >> 4, end = (x + width + 15) >> 4, line, group;
+	uint8 *base;
+	bool overlays;
+
+	if (pixels == NULL || width == 0 || height == 0 || (srcStride & 1) != 0 ||
+	    (uint32)x + width > SCREEN_WIDTH || (uint32)y + height > SCREEN_HEIGHT ||
+	    ((uint32)srcX + width + 15) / 16 * 8 > srcStride) return false;
+	base = Video_Atari_PlanarBase();
+	overlays = Video_Atari_PlanarOverlaysOverlap(base, first * 16, y, (end - first) * 16, height);
+	for (line = 0; line < height; line++) {
+		const uint16 *src = (const uint16 *)((const uint8 *)pixels + (uint32)line * srcStride);
+		for (group = first; group < end; group++) {
+			int32 bit = (int32)group * 16 - x + srcX;
+			uint16 words[4], plane, mask = 0xffff;
+			if (group == first) mask &= 0xffffu >> (x & 15);
+			if (group + 1 == end && ((x + width) & 15) != 0)
+				mask &= 0xffffu << (16 - ((x + width) & 15));
+			for (plane = 0; plane < 4; plane++) {
+				if (bit < 0) {
+					words[plane] = src[plane] >> -bit;
+				} else {
+					uint16 index = (bit >> 4) * 4, shift = bit & 15;
+					words[plane] = src[index + plane] << shift;
+					if (shift != 0 && (uint32)bit + 16 - shift < (uint32)srcX + width)
+						words[plane] |= src[index + 4 + plane] >> (16 - shift);
+				}
+			}
+			if (overlays) Video_Atari_PlanarMergeGroup(base, y + line, group, mask, words);
+			else Video_Atari_PlanarMergePlain(
+			    (uint16 *)(base + (uint32)(y + line) * ST_PLANAR_LINE_BYTES + group * 8), mask, words);
+		}
+	}
+	GFX_Screen_ClearDirtyRect(first * 16, y, end * 16, y + height);
+	return true;
+}
+
+bool Video_Atari_PresentPlanarRect(const uint16 *pixels, uint16 srcStride,
+                                  uint16 x, uint16 y, uint16 width, uint16 height)
+{
+	uint16 full = width & ~15, tail = width & 15, line;
+	uint8 *base;
+	bool overlays;
+
+	if ((x & 15) != 0)
+		return Video_Atari_PresentPlanarSubRect(pixels, srcStride, 0, x, y, width, height);
+	if (pixels == NULL || width == 0 || height == 0 ||
+	    (uint32)x + width > SCREEN_WIDTH || (uint32)y + height > SCREEN_HEIGHT ||
+	    (srcStride & 1) != 0 || srcStride < ((width + 15) >> 4) * 8) return false;
+	if (full != 0 && !Video_Atari_PresentRestoreStrided(x, y, full, height,
+	        (const uint8 *)pixels, srcStride)) return false;
+	if (tail == 0) return true;
+	base = Video_Atari_PlanarBase();
+	overlays = Video_Atari_PlanarOverlaysOverlap(base, x + full, y, 16, height);
+	for (line = 0; line < height; line++) {
+		const uint16 *src = (const uint16 *)((const uint8 *)pixels + (uint32)line * srcStride) + full / 4;
+		uint16 mask = 0xffffu << (16 - tail);
+		if (overlays) {
+			Video_Atari_PlanarMergeGroup(base, y + line, (x + full) >> 4, mask, src);
+		} else {
+			uint16 *dst = (uint16 *)(base + (uint32)(y + line) * ST_PLANAR_LINE_BYTES + (x + full) / 2);
+			Video_Atari_PlanarMergePlain(dst, mask, src);
+		}
+	}
+	GFX_Screen_ClearDirtyRect(x + full, y, x + full + 16, y + height);
+	return true;
+}
+
 bool Video_Atari_PresentChunkyTransparent(const void *src, uint16 srcStride,
                                           int16 x, int16 y, uint16 width, uint16 height)
 {
@@ -3094,11 +3163,8 @@ void Video_Atari_PresentLeave(void)
 
 	s_presentMode = false;
 
-	/* Presentation is write-through: the chunky SCREEN_0 shadow was kept
-	 * up to date throughout the enclave, so it still describes the visible
-	 * picture exactly. Nothing needs to be reset -- the normal c2p path
-	 * can simply take over, and any leftover dirty state will re-convert
-	 * from a buffer that agrees with the screen. */
+	/* Native animations have no chunky shadow. The caller clears/composes
+	 * the next screen explicitly before returning to ordinary rendering. */
 }
 
 bool Video_Atari_PresentChunky(const void *src, uint16 srcStride,
@@ -3370,11 +3436,8 @@ void Video_Tick(void)
 	}
 
 	if (s_presentMode) {
-		/* Presentation already converted every rectangle it was handed and
-		 * dropped the matching dirty blocks, so the pass below only has
-		 * whatever was written to chunky SCREEN_0 behind its back left to
-		 * do. Nothing is skipped: the shadow is maintained, so direct
-		 * renderers that were never hooked still reach the screen. */
+		/* Direct publication consumes its dirty groups. Only remaining
+		 * legacy writes reach the sweep; native WSA pixels have no shadow. */
 		Video_Atari_PlacementHide();
 		Video_Atari_CursorHide();
 	}
@@ -3876,8 +3939,8 @@ void Video_SetPalette(void *palette, int from, int length)
 		 * wide palette update whose colours all re-quantize to the pens they
 		 * already had (changedFrom < 0) leaves every on-screen pixel looking
 		 * exactly the same - forcing a full 64000px convert for it is pure
-		 * waste. Only force the repaint when a pen assignment really changed. */
-		if (length >= 128 && changedFrom >= 0)
+		 * waste. Enclaves own native pixels rather than a chunky shadow. */
+		if (length >= 128 && changedFrom >= 0 && !s_presentMode)
 			s_screen_needrepaint = true;
 	} else {
 		Error("don't know how to set palette on this machine.\n");

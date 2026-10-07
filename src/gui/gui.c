@@ -1439,6 +1439,15 @@ static void GUI_DrawSpriteMask(uint8 *buffer, uint16 width, uint16 height,
 	va_end(ap);
 }
 
+void GUI_DrawSpriteOpacity(uint8 *buffer, uint16 width, uint16 height,
+                           const uint8 *sprite, int16 x, int16 y)
+{
+	uint8 opaque[256];
+
+	memset(opaque, 1, sizeof(opaque));
+	GUI_DrawSpriteMask(buffer, width, height, sprite, x, y, DRAWSPRITE_FLAG_REMAP, opaque, 1);
+}
+
 void GUI_InitViewportSpriteCache(void)
 {
 	uint8 opaque[256], pixels[32 * 32];
@@ -1767,7 +1776,7 @@ static void GUI_DrawSpriteInternal(Screen screenID, const uint8 *sprite, int16 p
 	 * rendering bypasses planar presentation independently of this flag. */
 	union {
 		uint32 aligned;
-		uint8 bytes[128 * 32];
+		uint8 bytes[96 * 48];
 	} spriteScratchStorage;
 	uint8 *spriteScratch = spriteScratchStorage.bytes;
 	ViewportSpriteMask *viewportMask = NULL;
@@ -4410,7 +4419,7 @@ static void GUI_FactoryWindow_Init(void)
 
 	oi = g_factoryWindowItems[0].objectInfo;
 
-	wsa = WSA_LoadFile(oi->wsa, s_factoryWindowWsaBuffer, sizeof(s_factoryWindowWsaBuffer), false);
+	wsa = WSA_LoadFile(oi->wsa, s_factoryWindowWsaBuffer, sizeof(s_factoryWindowWsaBuffer), false, false);
 	WSA_DisplayFrame(wsa, 0, 128, 48, SCREEN_1);
 	WSA_Unload(wsa);
 
@@ -5127,7 +5136,7 @@ void GUI_FactoryWindow_DrawDetails(void)
 
 	oldScreenID = GFX_Screen_SetActive(SCREEN_1);
 
-	wsa = WSA_LoadFile(oi->wsa, s_factoryWindowWsaBuffer, sizeof(s_factoryWindowWsaBuffer), false);
+	wsa = WSA_LoadFile(oi->wsa, s_factoryWindowWsaBuffer, sizeof(s_factoryWindowWsaBuffer), false, false);
 	WSA_DisplayFrame(wsa, 0, 128, 48, SCREEN_1);
 	WSA_Unload(wsa);
 
@@ -5328,11 +5337,16 @@ void GUI_FactoryWindow_UpdateSelection(bool selectionChanged)
  * @param screenSrc The ID of the source screen.
  * @param screenDst The ID of the destination screen.
  */
-void GUI_Screen_FadeIn(uint16 xSrc, uint16 ySrc, uint16 xDst, uint16 yDst, uint16 width, uint16 height, Screen screenSrc, Screen screenDst)
+static bool GUI_Screen_FadeInInternal(uint16 xSrc, uint16 ySrc, uint16 xDst, uint16 yDst,
+                                      uint16 width, uint16 height, Screen screenSrc, Screen screenDst,
+                                      void *planarWSA)
 {
 	uint16 offsetsY[100];
 	uint16 offsetsX[40];
 	int x, y;
+#ifndef TOS
+	VARIABLE_NOT_USED(planarWSA);
+#endif
 
 	if (screenDst == SCREEN_0) {
 		GUI_Mouse_Hide_InRegion(xDst << 3, yDst, (xDst + width) << 3, yDst + height);
@@ -5373,6 +5387,16 @@ void GUI_Screen_FadeIn(uint16 xSrc, uint16 ySrc, uint16 xDst, uint16 yDst, uint1
 			offsetX = offsetsX[x];
 			offsetY = offsetsY[y2];
 
+#ifdef TOS
+			if (planarWSA != NULL) {
+				if (!WSA_PresentPlanarRegion(planarWSA, xDst << 3, yDst,
+				        offsetX * 8, offsetY * 2, 8, 2)) {
+					Warning("Planar WSA: dissolve publication failed\n");
+					if (screenDst == SCREEN_0) GUI_Mouse_Show_InRegion();
+					return false;
+				}
+			} else
+#endif
 			GUI_Screen_Copy(xSrc + offsetX, ySrc + offsetY * 2, xDst + offsetX, yDst + offsetY * 2, 1, 2, screenSrc, screenDst);
 
 			y2++;
@@ -5386,7 +5410,26 @@ void GUI_Screen_FadeIn(uint16 xSrc, uint16 ySrc, uint16 xDst, uint16 yDst, uint1
 	if (screenDst == SCREEN_0) {
 		GUI_Mouse_Show_InRegion();
 	}
+	return true;
 }
+
+void GUI_Screen_FadeIn(uint16 xSrc, uint16 ySrc, uint16 xDst, uint16 yDst, uint16 width, uint16 height, Screen screenSrc, Screen screenDst)
+{
+	GUI_Screen_FadeInInternal(xSrc, ySrc, xDst, yDst, width, height, screenSrc, screenDst, NULL);
+}
+
+#ifdef TOS
+bool GUI_Screen_FadeInPlanar(void *wsa, uint16 xDst, uint16 yDst, uint16 width, uint16 height)
+{
+	if (wsa == NULL || WSA_GetFrameFormat(wsa) != WSA_FRAME_PLANAR ||
+	    width == 0 || width > 40 || height == 0 || height > 200 ||
+	    (uint32)xDst + width > 40 || (uint32)yDst + height > 200) {
+		Warning("Planar WSA: invalid dissolve window\n");
+		return false;
+	}
+	return GUI_Screen_FadeInInternal(0, 0, xDst, yDst, width, height, SCREEN_2, SCREEN_0, wsa);
+}
+#endif
 
 void GUI_FactoryWindow_PrepareScrollList(void)
 {

@@ -167,6 +167,8 @@ extern void GUI_DrawSprite(Screen screenID, const uint8 *sprite, uint16 spriteID
 /* Plain sprite draw, clipped to a tightly packed private buffer. No present
  * or screen-buffer access; transparent pixels leave the buffer unchanged. */
 extern void GUI_DrawSpriteToBuffer(uint8 *buffer, uint16 width, uint16 height, const uint8 *sprite, int16 x, int16 y);
+/* Write 1 for drawn pixels, including opaque logical colour 0; leave holes unchanged. */
+extern void GUI_DrawSpriteOpacity(uint8 *buffer, uint16 width, uint16 height, const uint8 *sprite, int16 x, int16 y);
 /* Rebuild after loading SHAPES.SHP; unsupported assets retain sprite drawing. */
 extern void GUI_InitCreditsCache(void);
 extern void GUI_InitMinimapIconCache(void);
@@ -190,6 +192,10 @@ extern void GUI_Screen_Copy(int16 xSrc, int16 ySrc, int16 xDst, int16 yDst, int1
 extern void GUI_Screen_CopyOverlap(int16 xSrc, int16 ySrc, int16 xDst, int16 yDst, int16 width, int16 height, Screen screen);
 extern void GUI_Screen_FadeIn(uint16 xSrc, uint16 ySrc, uint16 xDst, uint16 yDst, uint16 width, uint16 height, Screen screenSrc, Screen screenDst);
 extern void GUI_Screen_FadeIn2(int16 x, int16 y, int16 width, int16 height, Screen screenSrc, Screen screenDst, uint16 delay, bool skipNull);
+#ifdef TOS
+/* Same 8x2 dissolve and timing, reading the retained native WSA image. */
+extern bool GUI_Screen_FadeInPlanar(void *wsa, uint16 xDst, uint16 yDst, uint16 width, uint16 height);
+#endif
 
 extern void GUI_DrawBlockedRectangle(int16 left, int16 top, int16 width, int16 height, uint8 colour);
 extern void GUI_DrawBorder(uint16 left, uint16 top, uint16 width, uint16 height, uint16 colourSchemaIndex, bool fill);

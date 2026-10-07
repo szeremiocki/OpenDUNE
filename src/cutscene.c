@@ -55,14 +55,30 @@ static uint16               s_palettePartCount;        /*!< Number of steps left
 static uint8                s_palettePartTarget[18];   /*!< Target palette part (6 colours). */
 static uint8                s_palettePartCurrent[18];  /*!< Current value of the palette part (6 colours, updated each call to #GameLoop_PalettePart_Update). */
 static uint8                s_palettePartChange[18];   /*!< Amount of change of each RGB colour of the palette part with each step. */
+static bool                 s_staticSubtitlePalette = false;
 
 bool g_canSkipIntro = false; /*!< When true, you can skip the intro by pressing a key or clicking. */
 
-static void GameLoop_PrepareAnimation(const HouseAnimation_Subtitle *subtitle, uint16 feedback_base_index, const HouseAnimation_SoundEffect *soundEffect)
+static void GameLoop_CopySubtitlePalette(uint8 *palette)
+{
+	if (!s_staticSubtitlePalette) {
+		memcpy(&palette[215 * 3], s_palettePartCurrent, 18);
+	} else if (palette != g_palette1) {
+		memcpy(&palette[215 * 3], &g_palette1[215 * 3], 18);
+	}
+}
+
+static void GameLoop_PrepareAnimation(const HouseAnimation_Subtitle *subtitle, uint16 feedback_base_index, const HouseAnimation_SoundEffect *soundEffect, bool staticSubtitlePalette)
 {
 	uint8 i;
 	uint8 colors[16];
 
+	s_staticSubtitlePalette = false;
+#ifdef TOS
+	s_staticSubtitlePalette = staticSubtitlePalette && Video_Atari_CursorDirect();
+#else
+	VARIABLE_NOT_USED(staticSubtitlePalette);
+#endif
 	s_houseAnimation_subtitle    = subtitle;
 	s_houseAnimation_soundEffect = soundEffect;
 
@@ -92,7 +108,7 @@ static void GameLoop_PrepareAnimation(const HouseAnimation_Subtitle *subtitle, u
 
 	memcpy(s_palettePartTarget, &g_palette1[(144 + s_houseAnimation_subtitle->colour * 16) * 3], 6 * 3);
 
-	memset(&g_palette1[215 * 3], 0, 6 * 3);
+	if (!s_staticSubtitlePalette) memset(&g_palette1[215 * 3], 0, 6 * 3);
 
 	memcpy(s_palettePartCurrent, s_palettePartTarget, 6 * 3);
 
@@ -208,6 +224,10 @@ static void GameLoop_PlaySubtitle(uint8 animation)
 	if (s_subtitleWait-- != 0) return;
 
 	memcpy(s_palettePartTarget, &g_palette1[(144 + (subtitle->colour * 16)) * 3], 18);
+#ifdef TOS
+	if (Video_Atari_PresentActive() && !s_staticSubtitlePalette)
+		Video_Atari_PresentPaletteRange(s_palettePartTarget, 215, 6);
+#endif
 
 	s_subtitleActive = true;
 
@@ -299,7 +319,7 @@ static uint16 GameLoop_PalettePart_Update(bool finishNow)
 
 	if (finishNow) return s_palettePartDirection;
 
-	memcpy(&g_palette_998A[215 * 3], s_palettePartCurrent, 18);
+	GameLoop_CopySubtitlePalette(g_palette_998A);
 
 #if !defined(TOS)
 	GFX_SetPalette(g_palette_998A);
@@ -308,9 +328,17 @@ static uint16 GameLoop_PalettePart_Update(bool finishNow)
 	return s_palettePartDirection;
 }
 
-static void GameLoop_PlayAnimation(const HouseAnimation_Animation *animation)
+static void GameLoop_PlayAnimation(const HouseAnimation_Animation *animation, bool allowPlanar)
 {
 	uint8 animationStep = 0;
+#ifdef TOS
+	char sourceChain[3][16];
+	const char *predecessors[3];
+	uint16 sourceCount = 0;
+	bool native = allowPlanar && Video_Atari_CursorDirect();
+#else
+	VARIABLE_NOT_USED(allowPlanar);
+#endif
 
 	while (animation->duration != 0) {
 		uint16 frameCount;
@@ -352,6 +380,12 @@ static void GameLoop_PlayAnimation(const HouseAnimation_Animation *animation)
 				wsaReservedDisplayFrame = ((animation->flags & HOUSEANIM_FLAGS_DISPLAYFRAME) != 0) ? true : false;
 			}
 
+#ifdef TOS
+			if (native) {
+				wsa = NULL;
+				wsaSize = 1;
+			} else
+#endif
 			if ((animation->flags & (HOUSEANIM_FLAGS_FADEIN2 | HOUSEANIM_FLAGS_FADEIN)) != 0) {
 				GUI_ClearScreen(SCREEN_1);
 
@@ -366,7 +400,35 @@ static void GameLoop_PlayAnimation(const HouseAnimation_Animation *animation)
 			}
 
 			snprintf(filenameBuffer, sizeof(filenameBuffer), "%.8s.WSA", animation->string);
-			wsa = WSA_LoadFile(filenameBuffer, wsa, wsaSize, wsaReservedDisplayFrame);
+			wsa = WSA_LoadFile(filenameBuffer, wsa, wsaSize, wsaReservedDisplayFrame, allowPlanar);
+#ifdef TOS
+			if (native) {
+				if (!WSA_IsContinuation(wsa)) sourceCount = 0;
+				if (wsa != NULL && WSA_IsContinuation(wsa) &&
+				    WSA_GetFrameFormat(wsa) != WSA_FRAME_PLANAR)
+					WSA_PreparePlanarContinuation(wsa, predecessors, sourceCount);
+				if (wsa == NULL || WSA_GetFrameFormat(wsa) != WSA_FRAME_PLANAR) {
+					Warning("Intro %s: native preparation failed; stopping animation\n", filenameBuffer);
+					WSA_Unload(wsa);
+					return;
+				}
+				if (mode == 2) {
+					if (sourceCount == sizeof(sourceChain) / sizeof(sourceChain[0])) {
+						Warning("Intro %s: continuation chain too long\n", filenameBuffer);
+						WSA_Unload(wsa);
+						return;
+					}
+					strcpy(sourceChain[sourceCount], filenameBuffer);
+					predecessors[sourceCount] = sourceChain[sourceCount];
+					sourceCount++;
+				} else {
+					sourceCount = 0;
+				}
+				/* Cold recoding must not consume narration/playback time. */
+				timeout = g_timerGUI + animation->duration * 6;
+				timeout2 = timeout + 30;
+			}
+#endif
 		}
 
 		addFrameCount = 0;
@@ -383,7 +445,7 @@ static void GameLoop_PlayAnimation(const HouseAnimation_Animation *animation)
 			WSA_DisplayFrame(wsa, frame++, posX, posY, SCREEN_0);
 			GameLoop_PalettePart_Update(true);
 
-			memcpy(&g_palette1[215 * 3], s_palettePartCurrent, 18);
+			GameLoop_CopySubtitlePalette(g_palette1);
 
 			GUI_SetPaletteAnimated(g_palette1, 45);
 
@@ -393,6 +455,14 @@ static void GameLoop_PlayAnimation(const HouseAnimation_Animation *animation)
 			WSA_DisplayFrame(wsa, frame++, posX, posY, SCREEN_1);
 			addFrameCount++;
 
+#ifdef TOS
+			if (native) {
+				if (!GUI_Screen_FadeInPlanar(wsa, posX >> 3, posY, 38, 120)) {
+					WSA_Unload(wsa);
+					return;
+				}
+			} else
+#endif
 			if ((animation->flags & (HOUSEANIM_FLAGS_FADEIN2 | HOUSEANIM_FLAGS_FADEIN)) == HOUSEANIM_FLAGS_FADEIN2) {
 				GUI_Screen_FadeIn2(8, 24, 304, 120, SCREEN_1, SCREEN_0, 1, false);
 			} else if ((animation->flags & (HOUSEANIM_FLAGS_FADEIN2 | HOUSEANIM_FLAGS_FADEIN)) == HOUSEANIM_FLAGS_FADEIN) {
@@ -485,7 +555,7 @@ static void GameLoop_PlayAnimation(const HouseAnimation_Animation *animation)
 		if ((animation->flags & HOUSEANIM_FLAGS_FADETOWHITE) != 0) {
 			memset(&g_palette_998A[3 * 1], 63, 255 * 3);
 
-			memcpy(&g_palette_998A[215 * 3], s_palettePartCurrent, 18);
+			GameLoop_CopySubtitlePalette(g_palette_998A);
 
 
 			GUI_SetPaletteAnimated(g_palette_998A, 15);
@@ -496,7 +566,7 @@ static void GameLoop_PlayAnimation(const HouseAnimation_Animation *animation)
 		if ((animation->flags & HOUSEANIM_FLAGS_FADEOUTTEXT) != 0) {
 			GameLoop_PalettePart_Update(true);
 
-			memcpy(&g_palette_998A[215 * 3], s_palettePartCurrent, 18);
+			GameLoop_CopySubtitlePalette(g_palette_998A);
 
 			GUI_SetPaletteAnimated(g_palette_998A, 45);
 		}
@@ -569,11 +639,11 @@ void GameLoop_LevelEndAnimation(void)
 		default: return;
 	}
 
-	GameLoop_PrepareAnimation(subtitle, 0xFFFF, soundEffect);
+	GameLoop_PrepareAnimation(subtitle, 0xFFFF, soundEffect, false);
 
 	Music_Play(0x22);
 
-	GameLoop_PlayAnimation(animation);
+	GameLoop_PlayAnimation(animation, false);
 
 	Driver_Music_FadeOut();
 
@@ -955,11 +1025,11 @@ void GameLoop_GameEndAnimation(void)
 			break;
 	}
 
-	GameLoop_PrepareAnimation(subtitle, 0xFFFF, soundEffect);
+	GameLoop_PrepareAnimation(subtitle, 0xFFFF, soundEffect, false);
 
 	Music_Play(sound);
 
-	GameLoop_PlayAnimation(animation);
+	GameLoop_PlayAnimation(animation, false);
 
 	Driver_Music_FadeOut();
 
@@ -995,7 +1065,7 @@ static void Gameloop_Logos(void)
 	File_ReadBlockFile("WESTWOOD.PAL", g_palette_998A, 256 * 3);
 
 	frame = 0;
-	wsa = WSA_LoadFile("WESTWOOD.WSA", GFX_Screen_Get_ByIndex(SCREEN_1), GFX_Screen_GetSize_ByIndex(SCREEN_1) + GFX_Screen_GetSize_ByIndex(SCREEN_2) + GFX_Screen_GetSize_ByIndex(SCREEN_3), true);
+	wsa = WSA_LoadFile("WESTWOOD.WSA", GFX_Screen_Get_ByIndex(SCREEN_1), GFX_Screen_GetSize_ByIndex(SCREEN_1) + GFX_Screen_GetSize_ByIndex(SCREEN_2) + GFX_Screen_GetSize_ByIndex(SCREEN_3), true, false);
 #ifdef TOS
 	/* Quantize against the animation's real palette before its first
 	 * frame is converted; the screen stays black until the fade below. */
@@ -1088,7 +1158,7 @@ void GameLoop_GameIntroAnimation(void)
 		Music_Play(0x1B);
 
 		/* 0x4A = 74 = Intro feedback base index */
-		GameLoop_PrepareAnimation(subtitle, 0x4A, soundEffect);
+		GameLoop_PrepareAnimation(subtitle, 0x4A, soundEffect, true);
 
 #ifdef TOS
 		/* ST/STE: present the whole intro straight to the planar screen.
@@ -1100,7 +1170,7 @@ void GameLoop_GameIntroAnimation(void)
 		if (Video_Atari_PresentEnter()) Video_Atari_PresentPalette(g_palette1);
 #endif
 
-		GameLoop_PlayAnimation(animation);
+		GameLoop_PlayAnimation(animation, true);
 
 		Driver_Music_FadeOut();
 

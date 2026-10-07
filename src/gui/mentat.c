@@ -31,6 +31,9 @@
 #include "../timer.h"
 #include "../tools.h"
 #include "../wsa.h"
+#ifdef TOS
+#include "../video/video.h"
+#endif
 
 /**
  * Information about the mentat.
@@ -417,7 +420,7 @@ uint16 GUI_Mentat_Show(char *stringBuffer, const char *wsaFilename, Widget *w)
 	if (wsaFilename != NULL) {
 		void *wsa;
 
-		wsa = WSA_LoadFile(wsaFilename, GFX_Screen_Get_ByIndex(SCREEN_2), GFX_Screen_GetSize_ByIndex(SCREEN_2), false);
+		wsa = WSA_LoadFile(wsaFilename, GFX_Screen_Get_ByIndex(SCREEN_2), GFX_Screen_GetSize_ByIndex(SCREEN_2), false, false);
 		WSA_DisplayFrame(wsa, 0, g_curWidgetXBase * 8, g_curWidgetYBase, SCREEN_1);
 		WSA_Unload(wsa);
 	}
@@ -537,7 +540,7 @@ void GUI_Mentat_Display(const char *wsaFilename, uint8 houseID)
 	if (wsaFilename != NULL) {
 		void *wsa;
 
-		wsa = WSA_LoadFile(wsaFilename, GFX_Screen_Get_ByIndex(SCREEN_2), GFX_Screen_GetSize_ByIndex(SCREEN_2), false);
+		wsa = WSA_LoadFile(wsaFilename, GFX_Screen_Get_ByIndex(SCREEN_2), GFX_Screen_GetSize_ByIndex(SCREEN_2), false, false);
 		WSA_DisplayFrame(wsa, 0, g_curWidgetXBase * 8, g_curWidgetYBase, SCREEN_1);
 		WSA_Unload(wsa);
 	}
@@ -1061,6 +1064,87 @@ static bool GUI_Mentat_DrawInfo(char *text, uint16 left, uint16 top, uint16 heig
 	return true;
 }
 
+#ifdef TOS
+typedef struct MentatPlanarOverlay {
+	uint16 *pixels;
+	uint16 *masks;
+	uint16 *shoulderMasks;
+	uint16 width, height, lines;
+	bool ready;
+} MentatPlanarOverlay;
+
+static void GUI_Mentat_FreePlanarOverlay(MentatPlanarOverlay *overlay)
+{
+	if (overlay == NULL) return;
+	free(overlay->pixels);
+	free(overlay->masks);
+	free(overlay->shoulderMasks);
+	free(overlay);
+}
+
+static MentatPlanarOverlay *GUI_Mentat_CreatePlanarOverlay(void)
+{
+	MentatPlanarOverlay *overlay = calloc(1, sizeof(*overlay));
+	uint8 *opacity = NULL;
+	uint32 size;
+
+	if (overlay != NULL) {
+		overlay->width = ((g_curWidgetWidth << 3) + 15) & ~15;
+		overlay->height = g_curWidgetHeight;
+		size = (uint32)overlay->width * overlay->height;
+		overlay->pixels = malloc(size / 2);
+		overlay->masks = malloc(size / 8);
+		overlay->shoulderMasks = calloc(size / 8, 1);
+		opacity = calloc(size, 1);
+		if (overlay->pixels != NULL && overlay->masks != NULL &&
+		    overlay->shoulderMasks != NULL && opacity != NULL) {
+			uint16 row, x, groups = overlay->width >> 4;
+			GUI_DrawSpriteOpacity(opacity, overlay->width, overlay->height,
+			                     g_sprites[397 + g_playerHouseID * 15],
+			                     g_shoulderLeft - (g_curWidgetXBase << 3), g_shoulderTop - g_curWidgetYBase);
+			for (row = 0; row < overlay->height; row++) {
+				for (x = 0; x < (g_curWidgetWidth << 3); x++) {
+					if (opacity[row * overlay->width + x] != 0)
+						overlay->shoulderMasks[row * groups + (x >> 4)] |= 0x8000u >> (x & 15);
+				}
+			}
+			free(opacity);
+			return overlay;
+		}
+	}
+	free(opacity);
+	GUI_Mentat_FreePlanarOverlay(overlay);
+	Warning("Mentat planar overlay: out of memory; retaining original WSA playback\n");
+	return NULL;
+}
+
+static bool GUI_Mentat_BuildPlanarOverlay(MentatPlanarOverlay *overlay, char *text, uint16 lines)
+{
+	uint16 row, x, groups = overlay->width >> 4;
+	uint8 *source = (uint8 *)GFX_Screen_Get_ByIndex(SCREEN_2) +
+	    g_curWidgetYBase * SCREEN_WIDTH + (g_curWidgetXBase << 3);
+
+	if (overlay->ready && overlay->lines == lines) return false;
+	for (row = 0; row < overlay->height; row++)
+		memset(source + row * SCREEN_WIDTH, 0, overlay->width);
+	GUI_Mentat_DrawInfo(text, (g_curWidgetXBase << 3) + 5, g_curWidgetYBase + 3, 8, 0, lines, 0x31);
+	GUI_DrawSprite(SCREEN_2, g_sprites[397 + g_playerHouseID * 15], 397 + g_playerHouseID * 15,
+	               GUI_SPRITE_COLOUR_EMBEDDED, g_shoulderLeft, g_shoulderTop, 0, 0);
+	memcpy(overlay->masks, overlay->shoulderMasks, (uint32)groups * overlay->height * sizeof(*overlay->masks));
+	for (row = 0; row < overlay->height; row++) {
+		for (x = 0; x < (g_curWidgetWidth << 3); x++) {
+			if (source[row * SCREEN_WIDTH + x] != 0)
+				overlay->masks[row * groups + (x >> 4)] |= 0x8000u >> (x & 15);
+		}
+	}
+	Video_Atari_EncodePlanarStrided(source, SCREEN_WIDTH, overlay->pixels, overlay->width, overlay->height);
+	overlay->lines = lines;
+	overlay->ready = true;
+	return true;
+}
+
+#endif
+
 uint16 GUI_Mentat_Loop(const char *wsaFilename, char *pictureDetails, char *text, bool loopAnimation, Widget *w)
 {
 	Screen oldScreenID;
@@ -1079,6 +1163,11 @@ uint16 GUI_Mentat_Loop(const char *wsaFilename, char *pictureDetails, char *text
 	uint16 lines;
 	uint16 textLines;
 	uint16 step;
+	bool animationPlaying;
+	bool allowPlanar = false;
+#ifdef TOS
+	MentatPlanarOverlay *overlay = NULL;
+#endif
 
 	dirty = false;
 	textTick = 0;
@@ -1090,8 +1179,27 @@ uint16 GUI_Mentat_Loop(const char *wsaFilename, char *pictureDetails, char *text
 	wsa = NULL;
 
 	if (wsaFilename != NULL) {
-		wsa = WSA_LoadFile(wsaFilename, GFX_Screen_Get_ByIndex(SCREEN_1), GFX_Screen_GetSize_ByIndex(SCREEN_1), false);
+#ifdef TOS
+		if (Video_Atari_CursorDirect() && (g_curWidgetXBase & 1) == 0) {
+			overlay = GUI_Mentat_CreatePlanarOverlay();
+			allowPlanar = overlay != NULL;
+		}
+#endif
+		wsa = WSA_LoadFile(wsaFilename, GFX_Screen_Get_ByIndex(SCREEN_1), GFX_Screen_GetSize_ByIndex(SCREEN_1), false, allowPlanar);
 	}
+#ifdef TOS
+	if (overlay != NULL && (wsa == NULL || WSA_GetFrameFormat(wsa) != WSA_FRAME_PLANAR ||
+	    !WSA_PreparePlanar(wsa, g_curWidgetWidth << 3, g_curWidgetHeight))) {
+		GUI_Mentat_FreePlanarOverlay(overlay);
+		overlay = NULL;
+		if (WSA_GetFrameFormat(wsa) == WSA_FRAME_PLANAR) {
+			WSA_Unload(wsa);
+			wsa = WSA_LoadFile(wsaFilename, GFX_Screen_Get_ByIndex(SCREEN_1),
+			                  GFX_Screen_GetSize_ByIndex(SCREEN_1), false, false);
+		}
+	}
+#endif
+	animationPlaying = wsa != NULL;
 
 	step = 0;
 	if (wsa == NULL) {
@@ -1233,7 +1341,7 @@ uint16 GUI_Mentat_Loop(const char *wsaFilename, char *pictureDetails, char *text
 
 		GUI_Mentat_Animation(mentatSpeakingMode);
 
-		if (wsa != NULL && g_timerTimeout == 0) {
+		if (animationPlaying && g_timerTimeout == 0) {
 			g_timerTimeout = 7;
 
 			do {
@@ -1245,8 +1353,15 @@ uint16 GUI_Mentat_Loop(const char *wsaFilename, char *pictureDetails, char *text
 					if (loopAnimation) {
 						frame = 0;
 					} else {
-						WSA_Unload(wsa);
-						wsa = NULL;
+						animationPlaying = false;
+#ifdef TOS
+						/* Keep the final planar image for subsequent description updates. */
+						if (overlay == NULL)
+#endif
+						{
+							WSA_Unload(wsa);
+							wsa = NULL;
+						}
 					}
 				}
 			} while (frame == 0);
@@ -1255,6 +1370,18 @@ uint16 GUI_Mentat_Loop(const char *wsaFilename, char *pictureDetails, char *text
 
 		if (!dirty) continue;
 
+#ifdef TOS
+		if (overlay != NULL) {
+			bool force = GUI_Mentat_BuildPlanarOverlay(overlay, pictureDetails, lines);
+			GUI_Mouse_Hide_InWidget(g_curWidgetIndex);
+			if (!WSA_PresentPlanar(wsa, g_curWidgetXBase << 3, g_curWidgetYBase,
+			                      overlay->pixels, overlay->masks, force))
+				Warning("Mentat planar WSA presentation failed\n");
+			GUI_Mouse_Show_InWidget();
+			dirty = false;
+			continue;
+		}
+#endif
 		GUI_Mentat_DrawInfo(pictureDetails, (g_curWidgetXBase << 3) + 5, g_curWidgetYBase + 3, 8, 0, lines, 0x31);
 
 		GUI_DrawSprite(SCREEN_2, g_sprites[397 + g_playerHouseID * 15], 397 + g_playerHouseID * 15, GUI_SPRITE_COLOUR_EMBEDDED, g_shoulderLeft, g_shoulderTop, 0, 0);
@@ -1264,13 +1391,24 @@ uint16 GUI_Mentat_Loop(const char *wsaFilename, char *pictureDetails, char *text
 		dirty = false;
 	}
 
-	if (wsa != NULL) WSA_Unload(wsa);
-
 	GFX_Screen_SetActive(SCREEN_2);
-	GUI_DrawSprite(SCREEN_2, g_sprites[397 + g_playerHouseID * 15], 397 + g_playerHouseID * 15, GUI_SPRITE_COLOUR_EMBEDDED, g_shoulderLeft, g_shoulderTop, 0, 0);
-	GUI_Mouse_Hide_InWidget(g_curWidgetIndex);
-	GUI_Screen_Copy(g_curWidgetXBase, g_curWidgetYBase, g_curWidgetXBase, g_curWidgetYBase, g_curWidgetWidth, g_curWidgetHeight, SCREEN_2, SCREEN_0);
-	GUI_Mouse_Show_InWidget();
+#ifdef TOS
+	if (overlay != NULL) {
+		GUI_Mouse_Hide_InWidget(g_curWidgetIndex);
+		if (!WSA_PresentPlanar(wsa, g_curWidgetXBase << 3, g_curWidgetYBase,
+		                      overlay->pixels, overlay->masks, true))
+			Warning("Mentat final planar WSA presentation failed\n");
+		GUI_Mouse_Show_InWidget();
+		GUI_Mentat_FreePlanarOverlay(overlay);
+	} else
+#endif
+	{
+		GUI_DrawSprite(SCREEN_2, g_sprites[397 + g_playerHouseID * 15], 397 + g_playerHouseID * 15, GUI_SPRITE_COLOUR_EMBEDDED, g_shoulderLeft, g_shoulderTop, 0, 0);
+		GUI_Mouse_Hide_InWidget(g_curWidgetIndex);
+		GUI_Screen_Copy(g_curWidgetXBase, g_curWidgetYBase, g_curWidgetXBase, g_curWidgetYBase, g_curWidgetWidth, g_curWidgetHeight, SCREEN_2, SCREEN_0);
+		GUI_Mouse_Show_InWidget();
+	}
+	if (wsa != NULL) WSA_Unload(wsa);
 	Widget_SetCurrentWidget(oldWidgetID);
 	GFX_Screen_SetActive(oldScreenID);
 
