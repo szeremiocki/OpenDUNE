@@ -77,6 +77,10 @@ static uint8 *s_placeDrawnBase;
 static uint8 s_placePen, s_palette4BitMap[256];
 static unsigned clears, rectangleChecks;
 static uint8 *Video_Atari_PlanarBase(void) { return (uint8 *)screen; }
+static bool s_viewportBlitter;
+static void Video_Atari_BlitTile(const uint16 *pixels, uint8 *base, uint16 x, uint16 y) {
+    (void)pixels; (void)base; (void)x; (void)y; assert(false);
+}
 static void GFX_Screen_ClearDirtyRect(uint16 x, uint16 y, uint16 r, uint16 b) {
     assert(x < r && y < b && r <= 320 && b <= 200); clears++;
 }

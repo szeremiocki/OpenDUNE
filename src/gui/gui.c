@@ -1390,11 +1390,13 @@ typedef struct ViewportPlanarSprite {
 	uint16 used;
 	uint16 width, height;
 	int16 offsetX, offsetY;
+	uint16 extentWidth;
 	uint16 pixels[80 * 64 / 4];
-	uint16 masks[5 * 64];
+	uint16 *masks;
 } ViewportPlanarSprite;
 
 static ViewportPlanarSprite *s_viewportPlanarSprites;
+static uint16 *s_viewportPlanarMasks;
 static ViewportPlanarComponent *s_viewportPlanarComponents;
 static uint16 s_viewportPlanarClock, s_viewportComponentClock;
 
@@ -1402,6 +1404,8 @@ void GUI_FreeViewportSpriteCache(void)
 {
 	free(s_viewportPlanarSprites);
 	s_viewportPlanarSprites = NULL;
+	free(s_viewportPlanarMasks);
+	s_viewportPlanarMasks = NULL;
 	s_viewportPlanarClock = 0;
 	free(s_viewportPlanarComponents);
 	s_viewportPlanarComponents = NULL;
@@ -1505,13 +1509,21 @@ void GUI_InitViewportSpriteCache(void)
 	}
 	s_viewportSpriteReady = true;
 	s_viewportPlanarSprites = calloc(VIEWPORT_PLANAR_SPRITES, sizeof(*s_viewportPlanarSprites));
+	s_viewportPlanarMasks = calloc(VIEWPORT_PLANAR_SPRITES * 5 * 64 *
+	    (Video_Atari_ViewportBlitter() ? 4 : 1), sizeof(*s_viewportPlanarMasks));
 	s_viewportPlanarComponents = calloc(VIEWPORT_PLANAR_COMPONENTS, sizeof(*s_viewportPlanarComponents));
-	if (s_viewportPlanarSprites == NULL || s_viewportPlanarComponents == NULL) {
+	if (s_viewportPlanarSprites == NULL || s_viewportPlanarMasks == NULL || s_viewportPlanarComponents == NULL) {
 		Warning("Planar sprite image caches disabled: out of memory\n");
 		free(s_viewportPlanarSprites);
 		s_viewportPlanarSprites = NULL;
+		free(s_viewportPlanarMasks);
+		s_viewportPlanarMasks = NULL;
 		free(s_viewportPlanarComponents);
 		s_viewportPlanarComponents = NULL;
+	} else {
+		uint16 maskWords = 5 * 64 * (Video_Atari_ViewportBlitter() ? 4 : 1);
+		for (id = 0; id < VIEWPORT_PLANAR_SPRITES; id++)
+			s_viewportPlanarSprites[id].masks = s_viewportPlanarMasks + id * maskWords;
 	}
 }
 
@@ -1604,6 +1616,7 @@ static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 	uint32 key, layerKeys[4] = {0, 0, 0, 0};
 	int16 centreX = 0, centreY = 0;
 	int16 remapCount = 0;
+	bool blitter = Video_Atari_ViewportBlitter();
 
 	if (!s_viewportPlanar || s_viewportPlanarSprites == NULL || s_viewportPlanarComponents == NULL || sprite == NULL ||
 	    spriteID > 354 || g_sprites[spriteID] != sprite ||
@@ -1647,9 +1660,10 @@ static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 		    ((uint32)(layer->flags & 3) << 12) |
 		    ((uint32)(layer->offsetX & 63) << 14) | ((uint32)(layer->offsetY & 63) << 20);
 	}
-	phase = (uint16)x & 15;
+	phase = blitter ? 0 : (uint16)x & 15;
 	/* 9-bit frame, 3-bit colour variant (6 = embedded), two flips,
-	 * highlight and four-bit X phase. Bit 31 distinguishes empty slots. */
+	 * highlight and four-bit X phase (zero for hardware shifting).
+	 * Bit 31 distinguishes empty slots. */
 	key = 0x80000000UL | spriteID |
 	      ((uint32)(colourHouse == GUI_SPRITE_COLOUR_EMBEDDED ? 6 : colourHouse) << 9) |
 	      ((uint32)(flags & 3) << 12) | ((uint32)(remapCount != 0) << 14) |
@@ -1688,7 +1702,7 @@ static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 			maxX = max(maxX, left[i + 1] + m->width);
 			maxY = max(maxY, top[i + 1] + m->height);
 		}
-		minX -= (uint16)(x + minX) & 15;
+		if (!blitter) minX -= (uint16)(x + minX) & 15;
 		stride = (maxX - minX + 15) & ~15;
 		height = maxY - minY;
 		if (stride > 80 || height > 64) {
@@ -1713,10 +1727,19 @@ static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 			    component->pixels, component->masks, component->width, component->height,
 			    left[i] - minX, top[i] - minY);
 		}
+		if (blitter) {
+			uint16 word = groups * height;
+			while (word != 0) {
+				uint16 plane, opacity = entry->masks[--word];
+				for (plane = 0; plane < 4; plane++)
+					entry->masks[word * 4 + plane] = opacity;
+			}
+		}
 		entry->width = stride;
 		entry->height = height;
 		entry->offsetX = minX;
 		entry->offsetY = minY;
+		entry->extentWidth = maxX - minX;
 		memcpy(entry->layerKeys, layerKeys, sizeof(layerKeys));
 		entry->key = key;
 	}
@@ -1725,6 +1748,18 @@ static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 		int16 left = x + entry->offsetX, top = y + entry->offsetY;
 		int16 firstRow = max(40, top), bottom = min(200, top + entry->height);
 		uint16 groups = entry->width >> 4;
+		if (blitter) {
+			int16 start = max(0, left), right = min(240, left + entry->extentWidth);
+			if (start < right && firstRow < bottom) {
+				uint16 offset = (firstRow - top) * groups * 4;
+				GUI_Widget_Viewport_RepairTiles(start & ~15, firstRow, (right + 15) & ~15, bottom);
+				GFX_Screen_SetDirtySource(DIRTY_SRC_SPRITE);
+				Video_Atari_PresentPlanarSpriteUnshifted(entry->pixels + offset,
+				    entry->masks + offset, entry->width, start - left,
+				    right - start, bottom - firstRow, start, firstRow);
+			}
+			return true;
+		}
 		for (i = 0; i < entry->width; i += 16) {
 			int16 column = left + i, row;
 			if (column < 0 || column >= 240) continue;

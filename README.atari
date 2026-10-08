@@ -236,6 +236,39 @@ before aircraft are drawn. Original uncached sprite paths retain whole-sprite
 repair/publication. Existing damage estimates and redraw eligibility are
 unchanged, with no command queue or new protection masks. See
 ATARI_PHASE_REVERSAL.md for the experiment and possible later damage tightening.
+
+An optional `viewport_blitter=1` setting in `[opendune]` selects the
+unshifted-sprite BLiTTER experiment on ST/STE machines with a detected
+BLiTTER. The default is 0, retaining CPU publication and phase-keyed
+composites. Without a BLiTTER, a warning is logged and the CPU path remains
+active. The experiment keeps the tile cache, component cache, composition
+order and repair-on-first-touch bookkeeping. All needed terrain tiles under
+each sprite are repaired before publishing its whole visible rectangle.
+Composite keys omit screen X phase; layer offsets and flips still compose
+once into a canonical, unshifted image. Opacity is duplicated into four
+interleaved mask planes. The 64-entry composite cache is not resized:
+removing alignment variants improves its effective capacity, while the
+four-plane masks add about 120 KiB relative to single-plane masks.
+For each visible sprite rectangle, hardware skew aligns four AND-NOT mask
+passes followed by four OR image passes, sharing one register setup.
+Two small global end-mask tables protect rectangular edges; FXSR/NFSR
+and one-word left shifts keep source fetching within the cached rows.
+Eligible opaque terrain repairs use one BLiTTER copy from the existing
+tile cache, reusing setup until sprite publication changes it;
+mixed/fog-composed writes retain CPU publication.
+Cursor-only overlaps stay on the BLiTTER route: after all eight passes,
+only opacity words intersecting the cursor backup are aligned and passed
+to the existing masked background-refresh/cursor-redraw helper.
+Placement overlaps retain the protected CPU merge with on-the-fly word
+alignment, preserving both overlay backups and painter order.
+BLiTTER access uses supervisor execution, HOG and completion checks.
+Interrupt lock/unlock barriers are commented out experimentally, assuming
+exclusive BLiTTER ownership; another BLiTTER user would require revisiting
+that assumption and the reused tile setup. Startup logs the ST/STE
+Logbase screen address to error.log; address writes remain full-width.
+This is a publication experiment, not a new back buffer or damage system;
+its eight launches per sprite need gameplay profiling.
+
 After direct planar rendering, conservative summaries skip battlefield
 dirty-mask clearing for arrays with no possible pending battlefield bits.
 Each marked array gets a constant-mask pass, combined when both are

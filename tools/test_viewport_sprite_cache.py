@@ -19,6 +19,110 @@ def function(source, name):
     return source[match.start():source.index("\n}\n", match.end()) + 3]
 
 
+def blitter_model(video, tiles=False):
+    """Execute production register setup against a persistent 32-bit latch."""
+    model = r"""
+#define ST_PLANAR_LINE_BYTES 160
+#define Atari_SupervisorExec(callback) callback()
+static bool s_viewportBlitter;
+static bool s_blitterTileSetup;
+static int16 reg_src_x, reg_src_y, reg_dst_x, reg_dst_y;
+static uintptr_t reg_src, reg_dst;
+static uint16 reg_mask1, reg_mask2, reg_mask3, reg_x, reg_y;
+static uint8 reg_hop, reg_op, reg_ctrl, reg_skew;
+#define BLITTER_SRC_XINC (&reg_src_x)
+#define BLITTER_SRC_YINC (&reg_src_y)
+#define BLITTER_SRC_ADDR (&reg_src)
+#define BLITTER_ENDMASK1 (&reg_mask1)
+#define BLITTER_ENDMASK2 (&reg_mask2)
+#define BLITTER_ENDMASK3 (&reg_mask3)
+#define BLITTER_DST_XINC (&reg_dst_x)
+#define BLITTER_DST_YINC (&reg_dst_y)
+#define BLITTER_DST_ADDR (&reg_dst)
+#define BLITTER_XCOUNT (&reg_x)
+#define BLITTER_YCOUNT (&reg_y)
+#define BLITTER_HOP (&reg_hop)
+#define BLITTER_OP (&reg_op)
+#define BLITTER_CTRL (&reg_ctrl)
+#define BLITTER_SKEW (&reg_skew)
+static unsigned blitterLaunches, blitterLocks, blitterSetups;
+static uintptr_t blitterPixels, blitterMasks;
+static uint16 blitterReadStride;
+static void Video_Atari_BlitterStart(void) {
+    static uint32 latch = 0xa39fbc71;
+    unsigned words = reg_x, rows = reg_y;
+    uintptr_t src = reg_src, dst = reg_dst;
+    assert(!blitterLocks && reg_hop == 2 && words && rows);
+    assert(reg_op == 3 || reg_op == 4 || reg_op == 7);
+    assert(words != 1 || !(reg_skew & 0x40));
+    blitterLaunches++;
+    for (unsigned row = 0; row < rows; row++) {
+        uintptr_t rowBase = (reg_op == 4 ? blitterMasks : blitterPixels) + row * blitterReadStride;
+        if (reg_skew & 0x80) {
+            assert(reg_op == 3 || (src >= rowBase && src + 2 <= rowBase + blitterReadStride));
+            uint16 value = *(const uint16 *)src;
+            latch = reg_src_x < 0 ? (latch >> 16) | ((uint32)value << 16) :
+                                   (latch << 16) | value;
+            src += reg_src_x;
+        }
+        for (unsigned word = 0; word < words; word++) {
+            bool suppress = (reg_skew & 0x40) && word + 1 == words;
+            uint16 old = *(uint16 *)dst;
+            assert(suppress || reg_op == 3 ||
+                   (src >= rowBase && src + 2 <= rowBase + blitterReadStride));
+            uint16 value = suppress ? old : *(const uint16 *)src;
+            latch = reg_src_x < 0 ? (latch >> 16) | ((uint32)value << 16) :
+                                   (latch << 16) | value;
+            uint16 shifted = latch >> (reg_skew & 15);
+            uint16 result = reg_op == 3 ? shifted :
+                            reg_op == 4 ? old & (uint16)~shifted : old | shifted;
+            uint16 mask = word == 0 ? reg_mask1 :
+                          word + 1 == words ? reg_mask3 : reg_mask2;
+            *(uint16 *)dst = (old & (uint16)~mask) | (result & mask);
+            if (suppress) {
+                value = *(uint16 *)dst;
+                latch = reg_src_x < 0 ? (latch >> 16) | ((uint32)value << 16) :
+                                       (latch << 16) | value;
+            } else {
+                src += word + 1 == words || ((reg_skew & 0x40) && word + 2 == words) ?
+                       reg_src_y : reg_src_x;
+            }
+            dst += word + 1 == words ? reg_dst_y : reg_dst_x;
+        }
+    }
+    reg_src = src; reg_dst = dst; reg_y = 0; reg_ctrl = 0;
+}
+"""
+    block = video[video.index("typedef struct PlanarBlit {"):
+                  video.index("static PlanarBlit s_planarBlit;") + len("static PlanarBlit s_planarBlit;")]
+    setup = function(video, "Video_Atari_BlitterSetup")
+    setup = setup.replace("\n{\n", "\n{\n    blitterSetups++;\n", 1)
+    production = function(video, "Video_Atari_ViewportBlitter") + "\n" + setup + "\n" + block
+    if tiles:
+        production += "\n" + function(video, "Video_Atari_BlitOpaque")
+        production += "\n" + function(video, "Video_Atari_BlitTile")
+    else:
+        production += r"""
+static bool Video_Atari_CursorRectOverlap(uint8 *base, uint16 first, uint16 end,
+                                          uint16 y, uint16 height) {
+    (void)base; (void)first; (void)end; (void)y; (void)height; return false;
+}
+#define Video_Atari_RefreshViewportCursorUnshifted(...) assert(false)
+"""
+    for name in ("Video_Atari_BlitMasked", "Video_Atari_ShiftSpriteWord",
+                 "Video_Atari_RefreshViewportCursorUnshifted",
+                 "Video_Atari_PresentPlanarSpriteUnshifted"):
+        if name == "Video_Atari_RefreshViewportCursorUnshifted" and not tiles:
+            continue
+        body = function(video, name)
+        if name == "Video_Atari_PresentPlanarSpriteUnshifted":
+            body = body.replace("\n{\n", "\n{\n"
+                "    blitterPixels = (uintptr_t)pixels; blitterMasks = (uintptr_t)masks;\n"
+                "    blitterReadStride = sourceWidth / 2;\n", 1)
+        production += "\n" + body
+    return model + production.replace("(uint32)(size_t)", "(uintptr_t)")
+
+
 class ViewportSpriteCacheTest(unittest.TestCase):
     def test_cache_and_direct_blits(self):
         gui = (ROOT / "src/gui/gui.c").read_text()
@@ -56,7 +160,7 @@ static uint8 *g_sprites[355], *g_paletteMapping2 = remap;
 static ViewportSpriteMask slots[70];
 static uint16 maskStorage[70][2 * 2 * 27];
 static uint16 visible[16000], expected[16000];
-static bool s_viewportPlanar = true, s_viewportSpriteReady = true, overlays;
+static bool s_viewportPlanar = true, s_viewportSpriteReady = true, overlays, batchRepairs;
 static ViewportSpriteMask s_viewportSpriteCache[512];
 static uint16 *s_viewportSpriteMasks;
 static unsigned decodes, encodes, overlayWrites, dirtyClears;
@@ -71,9 +175,12 @@ static ViewportSpriteMask *GUI_ViewportSpriteMaskSlot(const uint8 *sprite) {
     assert(false); return NULL;
 }
 static void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 bottom) {
-    assert(!pendingRepair && !(left & 15) && right - left == 16);
+    assert(!pendingRepair && !(left & 15) && !(right & 15) && right > left);
     assert(left >= 0 && right <= 240 && top >= 40 && top < bottom && bottom <= 200);
-    assert((top - 40) / 16 == (bottom - 1 - 40) / 16);
+    if (!batchRepairs) {
+        assert(right - left == 16);
+        assert((top - 40) / 16 == (bottom - 1 - 40) / 16);
+    }
     pendingRepair = true;
     repairLeft = left; repairTop = top; repairRight = right; repairBottom = bottom;
 }
@@ -167,6 +274,7 @@ static unsigned tile_count(int left, int top, int right, int bottom) {
 static void check(unsigned id, int x, int y, int flags, bool recolour) {
     int ox = x, oy = y;
     unsigned before = dirtyClears;
+    unsigned launches = blitterLaunches, setups = blitterSetups;
     if (flags & DRAWSPRITE_FLAG_WIDGETPOS) oy += 40;
     if (flags & DRAWSPRITE_FLAG_CENTER) { ox -= 11; oy -= 13; }
     for (unsigned i = 0; i < 16000; i++) visible[i] = expected[i] = i * 137 + 41;
@@ -188,7 +296,10 @@ static void check(unsigned id, int x, int y, int flags, bool recolour) {
     if (recolour) assert(draw(sprites[id], x, y, flags, palette, remap, 1));
     else if (flags & DRAWSPRITE_FLAG_PAL) assert(draw(sprites[id], x, y, flags, palette));
     else assert(draw(sprites[id], x, y, flags));
-    assert(!pendingRepair && dirtyClears == before + tile_count(ox, oy, ox + 23, oy + 27));
+    unsigned portions = tile_count(ox, oy, ox + 23, oy + 27);
+    assert(!pendingRepair && dirtyClears == before + (s_viewportBlitter ? !!portions : portions));
+    assert(blitterLaunches == launches + (s_viewportBlitter && portions && !overlays ? 8 : 0));
+    assert(blitterSetups == setups + (s_viewportBlitter && portions && !overlays ? 1 : 0));
     assert(!memcmp(visible, expected, sizeof(visible)));
 }
 static bool draw_layers(const GUI_SpriteLayers *layers, int16 x, int16 y, int flags, ...) {
@@ -225,6 +336,7 @@ static void check_layers(const GUI_SpriteLayers *layers, int x, int y, int flags
                         layer->flags, layer->flags & DRAWSPRITE_FLAG_PAL ? layer->palette : NULL, NULL);
     }
     unsigned before = dirtyClears;
+    unsigned launches = blitterLaunches, setups = blitterSetups;
     int left = 0, top = 0, right = 23, bottom = 27;
     for (unsigned i = 0; i < layers->count; i++) {
         left = min(left, layers->layer[i].offsetX);
@@ -234,14 +346,19 @@ static void check_layers(const GUI_SpriteLayers *layers, int x, int y, int flags
     }
     assert(draw_layers(layers, x, y, flags | DRAWSPRITE_FLAG_CENTER | DRAWSPRITE_FLAG_WIDGETPOS |
                        DRAWSPRITE_FLAG_PAL | DRAWSPRITE_FLAG_REMAP, palette, remap, 1));
-    assert(!pendingRepair && dirtyClears == before +
-           tile_count(x - 11 + left, y + 40 - 13 + top,
-                      x - 11 + right, y + 40 - 13 + bottom));
+    unsigned portions = tile_count(x - 11 + left, y + 40 - 13 + top,
+                                  x - 11 + right, y + 40 - 13 + bottom);
+    assert(!pendingRepair && dirtyClears == before + (s_viewportBlitter ? !!portions : portions));
+    assert(blitterLaunches == launches + (s_viewportBlitter && portions && !overlays ? 8 : 0));
+    assert(blitterSetups == setups + (s_viewportBlitter && portions && !overlays ? 1 : 0));
     assert(!memcmp(visible, expected, sizeof(visible)));
 }
-int main(void) {
+int main(int argc, char **argv) {
     unsigned before;
     ViewportPlanarSprite *saved;
+    (void)argv;
+    s_viewportBlitter = argc > 1;
+    batchRepairs = s_viewportBlitter;
     for (unsigned id = 0; id < 70; id++) {
         uint8 *sprite = sprites[id];
         g_sprites[id] = sprite;
@@ -261,8 +378,12 @@ int main(void) {
     for (unsigned x = 0; x < 256; x++) remap[x] = x;
     remap[17] = 0; remap[0] = 2;
     s_viewportPlanarSprites = calloc(VIEWPORT_PLANAR_SPRITES, sizeof(*s_viewportPlanarSprites));
+    s_viewportPlanarMasks = calloc(VIEWPORT_PLANAR_SPRITES * 320 * (s_viewportBlitter ? 4 : 1),
+                                  sizeof(*s_viewportPlanarMasks));
     s_viewportPlanarComponents = calloc(VIEWPORT_PLANAR_COMPONENTS, sizeof(*s_viewportPlanarComponents));
-    assert(s_viewportPlanarSprites && s_viewportPlanarComponents);
+    assert(s_viewportPlanarSprites && s_viewportPlanarMasks && s_viewportPlanarComponents);
+    for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++)
+        s_viewportPlanarSprites[i].masks = s_viewportPlanarMasks + i * 320 * (s_viewportBlitter ? 4 : 1);
     for (unsigned flags = 0; flags < 4; flags++) for (unsigned phase = 0; phase < 16; phase++) {
         check(0, 64 + phase, 60, flags, false);
         before = decodes;
@@ -270,6 +391,8 @@ int main(void) {
         assert(decodes == before);
     }
     assert(decodes == 4 && encodes == 4);
+    assert(compositions == (s_viewportBlitter ? 4 : 64));
+    if (s_viewportBlitter) assert(blitterLaunches && !(blitterLaunches % 8));
     for (unsigned flags = 0; flags < 4; flags++) {
         check(0, -13, 33, flags, false);
         check(0, 231, 191, flags, false);
@@ -316,7 +439,7 @@ int main(void) {
     s_viewportPlanarComponents = NULL;
     assert(!draw(sprites[0], 64, 60, 0));
     s_viewportPlanarComponents = savedComponents;
-    memset(s_viewportPlanarSprites, 0, VIEWPORT_PLANAR_SPRITES * sizeof(*s_viewportPlanarSprites));
+    for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) s_viewportPlanarSprites[i].key = 0;
     memset(s_viewportPlanarComponents, 0, VIEWPORT_PLANAR_COMPONENTS * sizeof(*s_viewportPlanarComponents));
     /* Complete unit: attachment, independent turret, smoke, direct-index selection.
      * Overlap, opaque colour 0, wide negative offsets and taller bounds matter. */
@@ -361,7 +484,7 @@ int main(void) {
     check_layers(&layers, 65, 50, DRAWSPRITE_FLAG_RTL);
     assert(decodes == before);
     /* A composite eviction must not discard its independently cached parts. */
-    memset(s_viewportPlanarSprites, 0, VIEWPORT_PLANAR_SPRITES * sizeof(*s_viewportPlanarSprites));
+    for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) s_viewportPlanarSprites[i].key = 0;
     encoded = encodes;
     composed = compositions;
     check_layers(&layers, 65, 50, DRAWSPRITE_FLAG_RTL);
@@ -382,8 +505,10 @@ int main(void) {
     /* Phase changes/rebuilt composites do not generate more component variants. */
     before = decodes;
     encoded = encodes;
+    composed = compositions;
     for (unsigned phase = 0; phase < 16; phase++) check_layers(&layers, 64 + phase, 50, 0);
     assert(decodes == before && encodes == encoded);
+    if (s_viewportBlitter) assert(compositions == composed);
     /* A new smoke frame decodes only itself, not the body/turret/selection. */
     layers.layer[2].spriteID = 4;
     check_layers(&layers, 79, 50, 0);
@@ -434,10 +559,57 @@ int main(void) {
             }
         }
     }
+    if (s_viewportBlitter) {
+        uint16 image[1280], masks[1280];
+        overlays = false;
+        for (unsigned stride = 16; stride <= 80; stride += 16) {
+            unsigned groups = stride / 16;
+            for (unsigned row = 0; row < 64; row++) for (unsigned group = 0; group < groups; group++) {
+                uint16 mask = 0xa39f ^ (row * 131 + group * 911);
+                for (unsigned p = 0; p < 4; p++) {
+                    unsigned i = row * groups * 4 + group * 4 + p;
+                    masks[i] = mask;
+                    image[i] = (i * 137 + 41) & mask;
+                }
+            }
+            for (unsigned edge = 0; edge < (groups == 1 ? 1u : 2u); edge++)
+                for (unsigned phase = 0; phase < 16; phase++)
+                    for (unsigned sourcePhase = 0; sourcePhase < 16; sourcePhase++) {
+                        unsigned sourceX = (edge ? stride - 16 : 0) + sourcePhase;
+                        unsigned remaining = stride - sourceX;
+                        unsigned widths[] = {1, min(remaining, 16 - sourcePhase),
+                                             min(remaining, 17 - sourcePhase), remaining};
+                        unsigned heights[] = {1, 16, 64};
+                        for (unsigned wi = 0; wi < 4; wi++) for (unsigned hi = 0; hi < 3; hi++) {
+                            unsigned width = widths[wi], height = heights[hi], x = 64 + phase, y = 136;
+                            for (unsigned i = 0; i < 16000; i++) visible[i] = expected[i] = i * 113 + 17;
+                            for (unsigned row = 0; row < height; row++) for (unsigned col = 0; col < width; col++) {
+                                unsigned source = row * groups * 4 + ((sourceX + col) / 16) * 4;
+                                uint16 sb = 0x8000u >> ((sourceX + col) & 15);
+                                uint16 db = 0x8000u >> ((x + col) & 15);
+                                if (!(masks[source] & sb)) continue;
+                                for (unsigned p = 0; p < 4; p++) {
+                                    unsigned dest = (y + row) * 80 + ((x + col) / 16) * 4 + p;
+                                    expected[dest] = (expected[dest] & (uint16)~db) |
+                                        (image[source + p] & sb ? db : 0);
+                                }
+                            }
+                            unsigned launches = blitterLaunches, setups = blitterSetups;
+                            GUI_Widget_Viewport_RepairTiles(x & ~15, y, (x + width + 15) & ~15, y + height);
+                            Video_Atari_PresentPlanarSpriteUnshifted(image, masks, stride, sourceX,
+                                                                    width, height, x, y);
+                            assert(!pendingRepair && blitterLaunches == launches + 8);
+                            assert(blitterSetups == setups + 1);
+                            assert(!memcmp(visible, expected, sizeof(visible)));
+                        }
+                    }
+        }
+    }
     assert(dirtyClears);
     GUI_FreeViewportSpriteCache();
     assert(!s_viewportPlanarSprites && !s_viewportPlanar && !s_viewportSpriteReady && !s_viewportPlanarClock);
     assert(!s_viewportPlanarComponents && !s_viewportComponentClock);
+    assert(!s_viewportPlanarMasks && !blitterLocks);
     assert(!draw(sprites[0], 64, 60, 0));
     return 0;
 }
@@ -454,7 +626,8 @@ int main(void) {
                                   function(video, "Video_Atari_PresentPlanarSpriteOverlays") + "\n" +
                                   function(video, "Video_Atari_PublishPlanarSpritePlain") + "\n" +
                                   function(video, "Video_Atari_PresentPlanarSpriteStrided") + "\n" +
-                                  function(video, "Video_Atari_PresentPlanarSprite"))
+                                  function(video, "Video_Atari_PresentPlanarSprite") + "\n" +
+                                  blitter_model(video))
         harness = harness.replace("/* LOOKUP */", function(gui, "GUI_ViewportDecodeLayer") + "\n" +
                                   function(gui, "GUI_ViewportPlanarComponent") + "\n" +
                                   function(gui, "GUI_ViewportPlanarSprite"))
@@ -466,6 +639,7 @@ int main(void) {
             subprocess.run([*compiler, "-std=c99", "-O2", "-Wall", "-Wextra", "-Werror",
                             str(source), "-o", str(binary)], check=True)
             subprocess.run([str(binary)], check=True)
+            subprocess.run([str(binary), "blitter"], check=True)
 
     def test_layered_dispatch_and_fallback(self):
         gui = (ROOT / "src/gui/gui.c").read_text()

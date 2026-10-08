@@ -192,6 +192,13 @@ extern void Video_Atari_PresentPlanarSprite(const uint16 *pixels, const uint16 *
 extern void Video_Atari_PresentPlanarSpriteStrided(const uint16 *pixels, const uint16 *masks,
                                                  uint16 width, uint16 height, int16 x, int16 y,
                                                  uint16 sourceWidth);
+extern bool Video_Atari_ViewportBlitter(void);
+/* Visible rectangle of an unshifted composite, up to 80x64. Masks duplicate
+ * opacity across four interleaved planes; colour bits outside opacity are zero.
+ * sourceX and x are pixel offsets. */
+extern void Video_Atari_PresentPlanarSpriteUnshifted(const uint16 *pixels, const uint16 *masks,
+                                                   uint16 sourceWidth, uint16 sourceX,
+                                                   uint16 width, uint16 height, uint16 x, uint16 y);
 #endif /* TOS */
 
 #endif /* VIDEO_VIDEO_H */

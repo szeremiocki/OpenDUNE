@@ -479,7 +479,8 @@ int main(void) {
         self.assertLess(draw.index("/* draw air units */"),
                         draw.index("memset(g_dirtyViewport"))
         cached = function(gui, "GUI_ViewportPlanarSprite")
-        repair = cached.index("GUI_Widget_Viewport_RepairTiles")
+        repair = cached.index("GUI_Widget_Viewport_RepairTiles",
+                              cached.index("for (i = 0; i < entry->width; i += 16)"))
         self.assertIn("column, row, column + 16, end", cached[repair:repair + 100])
         self.assertLess(cached.index("for (i = 0; i < entry->width; i += 16)"), repair)
         self.assertLess(cached.index("for (row = firstRow; row < bottom; )"), repair)

@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import unittest
 
-from tools.test_viewport_sprite_cache import function
+from tools.test_viewport_sprite_cache import blitter_model, function
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +55,9 @@ typedef uint32_t uint32;
 typedef int16_t int16;
 #define SCREEN_WIDTH 320
 #define SCREEN_HEIGHT 200
+/* CURSOR LIMITS */
+#define CURSOR_MAX_H VIDEO_ATARI_CURSOR_MAX_HEIGHT
+#define CURSOR_MAX_GROUPS (VIDEO_ATARI_CURSOR_MAX_WIDTH / 16)
 #define min(a,b) ((a) < (b) ? (a) : (b))
 #define max(a,b) ((a) > (b) ? (a) : (b))
 /* BLOCK */
@@ -62,7 +65,9 @@ static uint16 visible[16000], scene[16000], expected[16000], withoutCursor[16000
 static bool s_curDrawn;
 static uint8 *s_curDrawnBase, *s_placeDrawnBase;
 static uint16 s_curDrawnY, s_curDrawnH, s_curDrawnGroup, s_curDrawnGroups;
-static uint16 s_curSave[32][16], s_curDrawnData[32][16], s_curDrawnMask[32][4];
+static uint16 s_curSave[CURSOR_MAX_H][CURSOR_MAX_GROUPS * 4];
+static uint16 s_curDrawnData[CURSOR_MAX_H][CURSOR_MAX_GROUPS * 4];
+static uint16 s_curDrawnMask[CURSOR_MAX_H][CURSOR_MAX_GROUPS];
 static uint16 s_curViewportTiles[10], s_placeViewportTiles[10];
 static PlacementBlock s_placeBlocks[144];
 static uint16 s_placeBlockCount, s_placeDrawnWidth, s_placeDrawnHeight;
@@ -182,8 +187,12 @@ int main(void) {
     }
     for (unsigned i = 0; i < 160; i++) {
         spriteMasks[i] = i % 5 == 0 ? 0 : i % 5 == 1 ? 0xffff : 0x39e7;
-        for (unsigned p = 0; p < 4; p++) sprite[i * 4 + p] = i * 311 + p * 971;
+        for (unsigned p = 0; p < 4; p++)
+            sprite[i * 4 + p] = (i * 311 + p * 971) & spriteMasks[i];
     }
+    /* An opaque hardware pen-0 pixel must clear both screen and backup. */
+    spriteMasks[51] |= 0x0400;
+    for (unsigned p = 0; p < 4; p++) sprite[51 * 4 + p] &= (uint16)~0x0400;
     for (unsigned i = 0; i < sizeof(chunky); i++) chunky[i] = (i * 7 + i / 31) & 15;
     const unsigned positions[][3] = {{4, 74, 2}, {3, 64, 3}, {14, 32, 2}, {4, 8, 2}, {15, 74, 2}};
     for (unsigned place = 0; place < 2; place++) for (unsigned pos = 0; pos < 5; pos++)
@@ -268,6 +277,107 @@ int main(void) {
     Video_Atari_DrawPlanarTile(tile, tileMasks, 64, 72, tile);
     check();
     assert(repairCalls == 3 && !mergeCalls);
+    /* Unshifted publication retains cursor and placement backups for every
+     * phase, including edge-clipped single-word shifts and repeated draws. */
+    uint16 expandedMasks[640];
+    for (unsigned i = 0; i < 160; i++) for (unsigned p = 0; p < 4; p++)
+        expandedMasks[i * 4 + p] = spriteMasks[i];
+    for (unsigned place = 0; place < 2; place++) for (unsigned phase = 0; phase < 16; phase++) {
+        reset(4, 74, 2, place);
+        s_viewportBlitter = true;
+        unsigned launches = blitterLaunches;
+        unsigned sourceX = 16 + ((16 - phase) & 15), width = 16 - phase;
+        for (unsigned repeat = 0; repeat < 2; repeat++) {
+            for (unsigned row = 0; row < 12; row++) for (unsigned col = 0; col < width; col++) {
+                unsigned source = row * 5 + (sourceX + col) / 16;
+                uint16 sb = 0x8000u >> ((sourceX + col) & 15), db = 0x8000u >> (phase + col);
+                if (!(spriteMasks[source] & sb)) continue;
+                for (unsigned p = 0; p < 4; p++) {
+                    unsigned dest = (74 + row) * 80 + 4 * 4 + p;
+                    scene[dest] = (scene[dest] & (uint16)~db) |
+                                  (sprite[source * 4 + p] & sb ? db : 0);
+                }
+            }
+            Video_Atari_PresentPlanarSpriteUnshifted(sprite, expandedMasks, 80, sourceX,
+                                                    width, 12, 64 + phase, 74);
+            check();
+        }
+        assert(!blitterLocks && (place ? mergeCalls != 0 : mergeCalls == 0));
+        assert(blitterLaunches == launches + (place ? 0 : 16));
+        if (!place) assert(repairCalls == 2);
+        Video_Atari_CursorEraseFull();
+        assert(!memcmp(visible, withoutCursor, sizeof(visible)));
+    }
+    /* Full-word backup footprints matter at every viewport clipping edge,
+     * including publications confined to one row or one destination word. */
+    const unsigned clips[][6] = {
+        {13, 0, 40, 67, 25, 0},
+        {0, 224, 40, 16, 25, 14},
+        {0, 65, 40, 31, 1, 4},
+        {0, 65, 191, 31, 9, 4},
+        {13, 79, 74, 1, 12, 4}
+    };
+    for (unsigned c = 0; c < sizeof(clips) / sizeof(clips[0]); c++) {
+        unsigned sourceX = clips[c][0], x = clips[c][1], y = clips[c][2];
+        unsigned width = clips[c][3], height = clips[c][4];
+        reset(clips[c][5], y < 176 ? y : 176, 2, false);
+        unsigned launches = blitterLaunches;
+        for (unsigned repeat = 0; repeat < 2; repeat++) {
+            for (unsigned row = 0; row < height; row++) for (unsigned col = 0; col < width; col++) {
+                unsigned source = row * 5 + (sourceX + col) / 16;
+                uint16 sb = 0x8000u >> ((sourceX + col) & 15);
+                uint16 db = 0x8000u >> ((x + col) & 15);
+                if (!(spriteMasks[source] & sb)) continue;
+                for (unsigned p = 0; p < 4; p++) {
+                    unsigned dest = (y + row) * 80 + ((x + col) / 16) * 4 + p;
+                    scene[dest] = (scene[dest] & (uint16)~db) | (sprite[source * 4 + p] & sb ? db : 0);
+                }
+            }
+            Video_Atari_PresentPlanarSpriteUnshifted(sprite, expandedMasks, 80, sourceX,
+                                                    width, height, x, y);
+            check();
+        }
+        assert(blitterLaunches == launches + 16 && !mergeCalls && repairCalls == 2);
+        Video_Atari_CursorEraseFull();
+        assert(!memcmp(visible, withoutCursor, sizeof(visible)));
+    }
+    /* Opaque terrain keeps the existing cache but uses one hardware copy. */
+    reset(10, 74, 2, false);
+    unsigned launches = blitterLaunches;
+    reference_tile(0, 64, 72);
+    Video_Atari_DrawPlanarTile(tile, tileMasks, 64, 72, tile);
+    check();
+    assert(blitterLaunches == launches + 1);
+    unsigned setups = blitterSetups;
+    reference_tile(0, 80, 72);
+    Video_Atari_DrawPlanarTile(tile, tileMasks, 80, 72, tile);
+    check();
+    assert(blitterLaunches == launches + 2 && blitterSetups == setups);
+    /* A whole sprite changes mode; the following tile must restore its setup. */
+    reference_sprite(false, 49, 106, 80);
+    Video_Atari_PresentPlanarSpriteUnshifted(sprite, expandedMasks, 80, 0, 80, 32, 49, 106);
+    check();
+    assert(blitterLaunches == launches + 10 && blitterSetups == setups + 1);
+    reference_tile(0, 96, 72);
+    Video_Atari_DrawPlanarTile(tile, tileMasks, 96, 72, tile);
+    check();
+    assert(blitterLaunches == launches + 11 && blitterSetups == setups + 2);
+    /* Whole-sprite hardware writes refresh cursor backups; placement retains
+     * the CPU fallback. Repeated publications must not save cursor pixels. */
+    for (unsigned place = 0; place < 2; place++) for (unsigned phase = 0; phase < 16; phase++) {
+        reset(4, 74, 2, place);
+        launches = blitterLaunches;
+        for (unsigned repeat = 0; repeat < 2; repeat++) {
+            reference_sprite(false, 48 + phase, 67, 80);
+            Video_Atari_PresentPlanarSpriteUnshifted(sprite, expandedMasks, 80, 0, 80, 32, 48 + phase, 67);
+            check();
+        }
+        assert(blitterLaunches == launches + (place ? 0 : 16));
+        assert(place ? mergeCalls != 0 : mergeCalls == 0);
+        if (!place) assert(repairCalls == 2);
+        Video_Atari_CursorEraseFull();
+        assert(!memcmp(visible, withoutCursor, sizeof(visible)));
+    }
     return 0;
 }
 """
@@ -289,11 +399,17 @@ int main(void) {
         )
         production = []
         for name in names:
+            if name == "Video_Atari_DrawPlanarTile":
+                production.append(blitter_model(video, tiles=True))
             text = function(video, name)
             if name in ("Video_Atari_PlanarMergeGroup", "Video_Atari_RefreshViewportCursor"):
                 counter = "mergeCalls" if name.endswith("MergeGroup") else "repairCalls"
                 text = text.replace("\n{", "\n{\n    " + counter + "++;", 1)
             production.append(text)
+        limits = "\n".join(line for line in (ROOT / "src/video/video.h").read_text().splitlines()
+                           if line.startswith(("#define VIDEO_ATARI_CURSOR_MAX_WIDTH",
+                                               "#define VIDEO_ATARI_CURSOR_MAX_HEIGHT")))
+        harness = harness.replace("/* CURSOR LIMITS */", limits)
         harness = harness.replace("/* BLOCK */", block).replace("/* VIDEO */", "\n".join(production))
         with tempfile.TemporaryDirectory(prefix="viewport-post-blit-") as directory:
             source = Path(directory) / "test.c"

@@ -16,6 +16,7 @@
 #include "../gui/gui.h"
 #include "../input/input.h"
 #include "../input/mouse.h"
+#include "../inifile.h"
 #include "../opendune.h"
 #include "../os/endian.h"
 #include "../os/atari.h"
@@ -50,6 +51,24 @@ static uint8 * s_framebuffer = NULL;
 static uint32 s_center_image_offset = 0;
 /* ST/STE: composite the mouse cursor directly into the planar screen */
 static bool s_curDirect = false;
+static bool s_viewportBlitter = false;
+static bool s_blitterTileSetup = false;
+
+#define BLITTER_SRC_XINC ((volatile int16 *)0xFFFF8A20UL)
+#define BLITTER_SRC_YINC ((volatile int16 *)0xFFFF8A22UL)
+#define BLITTER_SRC_ADDR ((volatile uint32 *)0xFFFF8A24UL)
+#define BLITTER_ENDMASK1 ((volatile uint16 *)0xFFFF8A28UL)
+#define BLITTER_ENDMASK2 ((volatile uint16 *)0xFFFF8A2AUL)
+#define BLITTER_ENDMASK3 ((volatile uint16 *)0xFFFF8A2CUL)
+#define BLITTER_DST_XINC ((volatile int16 *)0xFFFF8A2EUL)
+#define BLITTER_DST_YINC ((volatile int16 *)0xFFFF8A30UL)
+#define BLITTER_DST_ADDR ((volatile uint32 *)0xFFFF8A32UL)
+#define BLITTER_XCOUNT ((volatile uint16 *)0xFFFF8A36UL)
+#define BLITTER_YCOUNT ((volatile uint16 *)0xFFFF8A38UL)
+#define BLITTER_HOP ((volatile uint8 *)0xFFFF8A3AUL)
+#define BLITTER_OP ((volatile uint8 *)0xFFFF8A3BUL)
+#define BLITTER_CTRL ((volatile uint8 *)0xFFFF8A3CUL)
+#define BLITTER_SKEW ((volatile uint8 *)0xFFFF8A3DUL)
 
 static short s_savedMode = 0;
 static void* s_savedLogBase = 0;
@@ -1080,6 +1099,15 @@ bool Video_Init(int screen_magnification, VideoScaleFilter filter)
 
 	(void)Cconws("Video_Init()\r\n");
 	if(s_machine_type == MCH_UNKNOWN) Detect_Machine();
+	if (IniFile_GetInteger("viewport_blitter", 0) != 0) {
+		s_viewportBlitter = (s_machine_type == MCH_ST || s_machine_type == MCH_STE ||
+		    s_machine_type == MCH_MEGA_STE) && (Blitmode(-1) & 2) != 0;
+		if (!s_viewportBlitter) {
+			Warning("viewport_blitter requested but no ST/STE BLiTTER is available; using CPU renderer\n");
+		} else {
+			Debug("Viewport publication: unshifted sprite BLiTTER experiment\n");
+		}
+	}
 
 	if(s_machine_type == MCH_MEGA_STE && s_savedCpuSpeed < 0) {
 		Atari_SupervisorExec(MegaSTE_SpeedUp);
@@ -1117,6 +1145,8 @@ bool Video_Init(int screen_magnification, VideoScaleFilter filter)
 		s_savedLogBase = Logbase();
 		s_savedPhysBase = Physbase();
 		Setscreen(-1, -1, 0);	 /* set ST-Low resolution */
+		s_blitterTileSetup = false;
+		Warning("ST/STE planar screen base: $%08lx (Logbase)\n", (unsigned long)Logbase());
 		/* set and backup system palette */
 		for (i=0; i<16; i++) {
 			s_paletteBackup[i] = Setcolor(i, ((s_palette4BitPC[i*4+0] << 5) & 0x0700) | ((s_palette4BitPC[i*4+1] << 1) & 0x0070) | ((s_palette4BitPC[i*4+2]>>3) & 0x007));
@@ -1173,6 +1203,7 @@ void Video_Uninit(void)
 	g_consoleActive = true;
 	free(s_framebuffer);
 	s_framebuffer = NULL;
+	s_viewportBlitter = false;
 }
 
 void Video_SwitchFPSDisplay(uint8 key)
@@ -2824,6 +2855,118 @@ void Video_Atari_DecodePlanarTile(const uint8 *src, const uint8 *palette, uint16
 	Video_Atari_EncodePlanarWithLookup(chunky.bytes, pixels, 16, 16, s_tilePenPairMap, 16);
 }
 
+bool Video_Atari_ViewportBlitter(void)
+{
+	return s_viewportBlitter;
+}
+
+#if 0 /* Experimental exclusive BLiTTER ownership: no IRQ barriers. */
+static uint16 Video_Atari_BlitterLock(void)
+{
+	uint16 status;
+
+	__asm__ volatile (
+		"move.w %%sr,%0\n\t"
+		"ori.w #0x0700,%%sr"
+		: "=d" (status) : : "cc", "memory"
+	);
+	return status;
+}
+
+static void Video_Atari_BlitterUnlock(uint16 status)
+{
+	__asm__ volatile ("move.w %0,%%sr" : : "d" (status) : "cc", "memory");
+}
+#endif
+
+static void Video_Atari_BlitterStart(void)
+{
+	*BLITTER_CTRL = 0xc0;
+	while ((*BLITTER_CTRL & 0x80) != 0) {}
+}
+
+/* FXSR adds a source fetch; NFSR moves YINC to the penultimate word. */
+static void Video_Atari_BlitterSetup(uint16 dstStride, uint16 srcStride,
+                                    uint16 words, int16 sourceXinc, int16 destinationXinc,
+                                    uint16 firstMask, uint16 lastMask, uint8 skew)
+{
+	while ((*BLITTER_CTRL & 0x80) != 0) {}
+	*BLITTER_SRC_XINC = sourceXinc;
+	*BLITTER_SRC_YINC = (int16)(srcStride - (words - 1) * sourceXinc -
+	    ((skew & 0x80) ? sourceXinc : 0) + ((skew & 0x40) ? sourceXinc : 0));
+	*BLITTER_ENDMASK1 = words == 1 ? firstMask & lastMask : firstMask;
+	*BLITTER_ENDMASK2 = 0xffff;
+	*BLITTER_ENDMASK3 = lastMask;
+	*BLITTER_DST_XINC = destinationXinc;
+	*BLITTER_DST_YINC = (int16)(dstStride - (words - 1) * destinationXinc);
+	*BLITTER_XCOUNT = words;
+	*BLITTER_HOP = 2;
+	*BLITTER_SKEW = skew;
+}
+
+typedef struct PlanarBlit {
+	uint16 *dst;
+	const uint16 *pixels, *masks;
+	uint16 sourceStride, words, height, firstMask, lastMask;
+	int16 sourceXinc;
+	uint8 skew;
+} PlanarBlit;
+
+static const uint16 s_blitterLeftMasks[16] = {
+	0xffff, 0x7fff, 0x3fff, 0x1fff, 0x0fff, 0x07ff, 0x03ff, 0x01ff,
+	0x00ff, 0x007f, 0x003f, 0x001f, 0x000f, 0x0007, 0x0003, 0x0001
+};
+static const uint16 s_blitterRightMasks[16] = {
+	0xffff, 0x8000, 0xc000, 0xe000, 0xf000, 0xf800, 0xfc00, 0xfe00,
+	0xff00, 0xff80, 0xffc0, 0xffe0, 0xfff0, 0xfff8, 0xfffc, 0xfffe
+};
+
+static PlanarBlit s_planarBlit;
+
+static void Video_Atari_BlitOpaque(void)
+{
+	/* uint16 status = Video_Atari_BlitterLock(); */
+	if (!s_blitterTileSetup) {
+		Video_Atari_BlitterSetup(ST_PLANAR_LINE_BYTES, 8, 4, 2, 2, 0xffff, 0xffff, 0);
+		*BLITTER_OP = 3;
+		s_blitterTileSetup = true;
+	}
+	*BLITTER_SRC_ADDR = (uint32)(size_t)s_planarBlit.pixels;
+	*BLITTER_DST_ADDR = (uint32)(size_t)s_planarBlit.dst;
+	*BLITTER_YCOUNT = 16;
+	Video_Atari_BlitterStart();
+	/* Video_Atari_BlitterUnlock(status); */
+}
+
+static void Video_Atari_BlitMasked(void)
+{
+	uint16 pass, plane;
+
+	/* uint16 status = Video_Atari_BlitterLock(); */
+	s_blitterTileSetup = false;
+	Video_Atari_BlitterSetup(ST_PLANAR_LINE_BYTES, s_planarBlit.sourceStride,
+	    s_planarBlit.words, s_planarBlit.sourceXinc, 8,
+	    s_planarBlit.firstMask, s_planarBlit.lastMask, s_planarBlit.skew);
+	for (pass = 0; pass < 2; pass++) {
+		const uint16 *src = pass == 0 ? s_planarBlit.masks : s_planarBlit.pixels;
+		*BLITTER_OP = pass == 0 ? 4 : 7;
+		for (plane = 0; plane < 4; plane++) {
+			*BLITTER_SRC_ADDR = (uint32)(size_t)(src + plane);
+			*BLITTER_DST_ADDR = (uint32)(size_t)(s_planarBlit.dst + plane);
+			*BLITTER_YCOUNT = s_planarBlit.height;
+			Video_Atari_BlitterStart();
+		}
+	}
+	/* Video_Atari_BlitterUnlock(status); */
+}
+
+static void Video_Atari_BlitTile(const uint16 *pixels, uint8 *base, uint16 x, uint16 y)
+{
+	s_planarBlit.dst = (uint16 *)(base + (uint32)y * ST_PLANAR_LINE_BYTES + (x >> 1));
+	s_planarBlit.pixels = pixels;
+	Atari_SupervisorExec(Video_Atari_BlitOpaque);
+}
+
 /* Keep post-write state out of the ordinary publishers' register allocation. */
 static void __attribute__((noinline)) Video_Atari_PublishViewportCursorRect(
     uint8 *base, const uint16 *pixels, const uint16 *masks, uint16 stride,
@@ -2884,6 +3027,11 @@ void Video_Atari_DrawPlanarTile(const uint16 *pixels, const uint16 *masks, uint1
 	uint16 line;
 
 	assert((x & 15) == 0 && x + 16 <= SCREEN_WIDTH && y + 16 <= SCREEN_HEIGHT);
+	if (s_viewportBlitter && !overlays && copyPixels != NULL && x < 240 && y >= 40) {
+		Video_Atari_BlitTile(copyPixels, base, x, y);
+		GFX_Screen_ClearDirtyRect(x, y, x + 16, y + 16);
+		return;
+	}
 	if (overlays && x < 240 && y >= 40 &&
 	    !Video_Atari_PlacementRectOverlap(base, x, x + 16, y, 16)) {
 		Video_Atari_PublishViewportCursorRect(base, copyPixels != NULL ? copyPixels : pixels,
@@ -2911,6 +3059,11 @@ void Video_Atari_DrawPlanarTileFogged(const uint16 *pixels, const uint16 *masks,
 	uint16 line;
 
 	assert((x & 15) == 0 && x + 16 <= SCREEN_WIDTH && y + 16 <= SCREEN_HEIGHT);
+	if (s_viewportBlitter && !overlays && copyPixels != NULL && x < 240 && y >= 40) {
+		Video_Atari_BlitTile(copyPixels, base, x, y);
+		GFX_Screen_ClearDirtyRect(x, y, x + 16, y + 16);
+		return;
+	}
 	if (overlays && x < 240 && y >= 40 &&
 	    !Video_Atari_PlacementRectOverlap(base, x, x + 16, y, 16)) {
 		Video_Atari_DrawPlanarTileFoggedCursor(base, pixels, masks, fogPixels, fogMasks, x, y, copyPixels);
@@ -3122,6 +3275,107 @@ void Video_Atari_PresentPlanarSprite(const uint16 *pixels, const uint16 *masks,
                                    uint16 width, uint16 height, int16 x, int16 y)
 {
 	Video_Atari_PresentPlanarSpriteStrided(pixels, masks, width, height, x, y, width);
+}
+
+static uint16 Video_Atari_ShiftSpriteWord(const uint16 *row, uint16 groups,
+                                         uint16 sourceX, uint16 destinationPhase, uint16 plane)
+{
+	uint16 group = sourceX >> 4, shift = sourceX & 15;
+	uint16 word = (uint16)(row[group * 4 + plane] << shift);
+
+	if (shift != 0 && group + 1 < groups)
+		word |= row[(group + 1) * 4 + plane] >> (16 - shift);
+	return word >> destinationPhase;
+}
+
+static void __attribute__((noinline)) Video_Atari_RefreshViewportCursorUnshifted(
+    uint8 *base, const uint16 *masks, uint16 sourceWidth, uint16 sourceX,
+    uint16 width, uint16 height, uint16 x, uint16 y)
+{
+	uint16 first = max(x >> 4, s_curDrawnGroup);
+	uint16 end = min((x + width + 15) >> 4, s_curDrawnGroup + s_curDrawnGroups);
+	uint16 top = max(y, s_curDrawnY), bottom = min(y + height, s_curDrawnY + s_curDrawnH);
+	uint16 aligned[CURSOR_MAX_H * CURSOR_MAX_GROUPS], row, group, stride = end - first;
+	uint16 groups = sourceWidth >> 4;
+
+	if (first >= end || top >= bottom) return;
+	for (row = top; row < bottom; row++) {
+		const uint16 *src = masks + (uint32)(row - y) * groups * 4;
+		for (group = first; group < end; group++) {
+			uint16 start = max(x, group * 16), stop = min(x + width, (group + 1) * 16);
+			uint16 phase = start & 15;
+			uint16 edge = s_blitterLeftMasks[phase] & s_blitterRightMasks[stop & 15];
+			aligned[(row - top) * stride + group - first] =
+			    Video_Atari_ShiftSpriteWord(src, groups, sourceX + start - x, phase, 0) & edge;
+		}
+	}
+	Video_Atari_RefreshViewportCursor(base, first, end, top, bottom, aligned, stride);
+}
+
+void Video_Atari_PresentPlanarSpriteUnshifted(const uint16 *pixels, const uint16 *masks,
+                                            uint16 sourceWidth, uint16 sourceX,
+                                            uint16 width, uint16 height, uint16 x, uint16 y)
+{
+	uint8 *base = Video_Atari_PlanarBase();
+	uint16 destinationPhase = x & 15, sourcePhase = sourceX & 15;
+	uint16 first = x >> 4, groups = sourceWidth >> 4;
+	uint16 words = (destinationPhase + width + 15) >> 4;
+	uint16 sourceWords = (sourcePhase + width + 15) >> 4;
+	uint16 firstMask, lastMask;
+	bool cursor, placement;
+
+	assert(sourceWidth > 0 && sourceWidth <= 80 && (sourceWidth & 15) == 0);
+	assert(width > 0 && sourceX + width <= sourceWidth);
+	assert(height > 0 && height <= 64 && x + width <= 240 && y >= 40 && y + height <= 200);
+	firstMask = s_blitterLeftMasks[destinationPhase];
+	lastMask = s_blitterRightMasks[(x + width) & 15];
+	cursor = Video_Atari_CursorRectOverlap(base, first, first + words, y, height);
+	placement = Video_Atari_PlacementRectOverlap(base, first * 16, (first + words) * 16, y, height);
+	if (s_viewportBlitter && !placement) {
+		bool leftShift = sourcePhase > destinationPhase;
+		bool extra = leftShift && (words > 1 || sourceWords > 1);
+		bool suppress = words > 1 && sourceWords < words + (extra ? 1 : 0);
+		s_planarBlit.dst = (uint16 *)(base + (uint32)y * ST_PLANAR_LINE_BYTES + first * 8);
+		s_planarBlit.pixels = pixels + (sourceX >> 4) * 4;
+		s_planarBlit.masks = masks + (sourceX >> 4) * 4;
+		s_planarBlit.sourceStride = sourceWidth / 2;
+		s_planarBlit.words = words;
+		s_planarBlit.height = height;
+		s_planarBlit.firstMask = firstMask;
+		s_planarBlit.lastMask = lastMask;
+		s_planarBlit.skew = ((destinationPhase - sourcePhase) & 15) |
+		    (extra ? 0x80 : 0) | (suppress ? 0x40 : 0);
+		/* A left shift confined to one source word uses the high half of
+		 * the latch. Negative XINC selects it without fetching padding. */
+		s_planarBlit.sourceXinc = !extra && leftShift ? -8 : 8;
+		Atari_SupervisorExec(Video_Atari_BlitMasked);
+		if (cursor) {
+			Video_Atari_RefreshViewportCursorUnshifted(base, masks, sourceWidth, sourceX,
+			    width, height, x, y);
+		}
+	} else {
+		uint16 row, group;
+		for (row = 0; row < height; row++) {
+			for (group = 0; group < words; group++) {
+				uint16 colours[4], plane, phase = group == 0 ? destinationPhase : 0;
+				uint16 source = sourceX + (group == 0 ? 0 : group * 16 - destinationPhase);
+				uint16 edge = group == 0 ? firstMask : 0xffff;
+				uint16 mask;
+				if (group + 1 == words) edge &= lastMask;
+				mask = Video_Atari_ShiftSpriteWord(masks, groups, source, phase, 0) & edge;
+				if (mask == 0) continue;
+				for (plane = 0; plane < 4; plane++)
+					colours[plane] = Video_Atari_ShiftSpriteWord(pixels, groups, source, phase, plane);
+				if (cursor || placement) Video_Atari_PlanarMergeGroup(base, y + row, first + group, mask, colours);
+				else Video_Atari_PlanarMergePlain(
+				    (uint16 *)(base + (uint32)(y + row) * ST_PLANAR_LINE_BYTES + (first + group) * 8),
+				    mask, colours);
+			}
+			pixels += groups * 4;
+			masks += groups * 4;
+		}
+	}
+	GFX_Screen_ClearDirtyRect(first * 16, y, (first + words) * 16, y + height);
 }
 
 /* Install the quantization a following present must use, while the
