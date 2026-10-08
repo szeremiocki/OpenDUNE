@@ -1164,13 +1164,18 @@ static void GUI_FactoryWindow_ScrollList(int16 step)
 {
 	uint16 i;
 	uint16 y = 32;
+	uint16 pixelStep = 1;
+
+#ifdef TOS
+	if (Video_Atari_CursorDirect()) pixelStep = 2;
+#endif
 
 	GUI_FactoryWindow_B495_0F30();
 
 	GUI_Mouse_Hide_Safe();
 
-	for (i = 0; i < 32; i++) {
-		y += step;
+	for (i = 0; i < 32; i += pixelStep) {
+		y += step * pixelStep;
 		GFX_Screen_Copy2(72, y, 72, 16, 32, 136, SCREEN_1, SCREEN_0, false);
 	}
 

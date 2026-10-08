@@ -219,10 +219,21 @@ still update on hits; SCREEN_1 is scratch, not a maintained panel mirror.
 Normal Cancel hover/press redraws retain their existing small-button path.
 Other panels and unsupported layouts keep their original renderer.
 Off-screen composition and viewport fades also retain the original path.
+Factory-list scrolling rebuilds its SCREEN_1 animation strip from the item
+sprites and a retained background colour, including the preceding/following
+items. It never reads chunky SCREEN_0 back. ST/STE scrolling advances two
+pixels per step (16 updates per item); other paths retain one-pixel steps.
+Both directions retain unavailable-item remapping and the selection outline;
+outline removal also uses the retained colour rather than sampling SCREEN_0.
 The planar viewport defers dirty terrain publication until the first
-foreground draw touching each tile, then draws that foreground immediately.
-Each dirty tile is repaired once; remaining tiles are repaired before
-aircraft are drawn. Existing damage estimates and redraw eligibility are
+foreground draw touching each tile. Cached sprites are published in
+tile-sized portions: repair one dirty tile, draw its intersecting sprite
+portion immediately, then continue. Portions over clean tiles are still
+drawn in painter order. Cached pixel/mask row strides are retained without
+copying or re-encoding the composed sprite; cursor/placement protection is
+unchanged. Each dirty tile is repaired once; remaining tiles are repaired
+before aircraft are drawn. Original uncached sprite paths retain whole-sprite
+repair/publication. Existing damage estimates and redraw eligibility are
 unchanged, with no command queue or new protection masks. See
 ATARI_PHASE_REVERSAL.md for the experiment and possible later damage tightening.
 After direct planar rendering, conservative summaries skip battlefield

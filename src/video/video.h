@@ -187,6 +187,11 @@ extern void Video_Atari_ComposePlanarSprite(uint16 *dstPixels, uint16 *dstMasks,
  * are multiples of 16. Clipping preserves cursor/placement backgrounds. */
 extern void Video_Atari_PresentPlanarSprite(const uint16 *pixels, const uint16 *masks,
                                           uint16 width, uint16 height, int16 x, int16 y);
+/* Source pointers select the first group; sourceWidth retains the full
+ * cached row width when publishing a clipped portion. */
+extern void Video_Atari_PresentPlanarSpriteStrided(const uint16 *pixels, const uint16 *masks,
+                                                 uint16 width, uint16 height, int16 x, int16 y,
+                                                 uint16 sourceWidth);
 #endif /* TOS */
 
 #endif /* VIDEO_VIDEO_H */

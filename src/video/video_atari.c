@@ -3046,9 +3046,9 @@ void Video_Atari_ComposePlanarSprite(uint16 *dstPixels, uint16 *dstMasks,
 }
 
 static void __attribute__((noinline)) Video_Atari_PresentPlanarSpriteOverlays(
-    const uint16 *pixels, const uint16 *masks, uint16 width, uint16 height, int16 x, int16 y)
+    const uint16 *pixels, const uint16 *masks, uint16 width, uint16 height, int16 x, int16 y,
+    uint16 sourceGroups)
 {
-	uint16 sourceGroups = width >> 4;
 	uint16 left = max(0, x), right = min(240, x + width);
 	uint16 top = max(40, y), bottom = min(200, y + height);
 	uint16 first = left >> 4, end = (right + 15) >> 4;
@@ -3085,17 +3085,19 @@ static void __attribute__((noinline)) Video_Atari_PublishPlanarSpritePlain(
 	}
 }
 
-void Video_Atari_PresentPlanarSprite(const uint16 *pixels, const uint16 *masks,
-                                   uint16 width, uint16 height, int16 x, int16 y)
+void Video_Atari_PresentPlanarSpriteStrided(const uint16 *pixels, const uint16 *masks,
+                                          uint16 width, uint16 height, int16 x, int16 y,
+                                          uint16 sourceWidth)
 {
 	uint16 left = 0, top = 40, right = 240, bottom = 200;
-	uint16 sourceGroups = width >> 4, first, end;
+	uint16 sourceGroups = sourceWidth >> 4, first, end;
 	uint8 *base = Video_Atari_PlanarBase();
 	uint16 *dstRow;
 	bool overlays;
 
 	assert(width > 0 && width <= 80 && (width & 15) == 0 && (x & 15) == 0 &&
 	       height > 0 && height <= 64);
+	assert(sourceWidth >= width && sourceWidth <= 80 && (sourceWidth & 15) == 0);
 	if (x >= right || x + width <= left || y >= bottom || y + height <= top) return;
 	left = max((int)left, x);
 	top = max((int)top, y);
@@ -3106,7 +3108,7 @@ void Video_Atari_PresentPlanarSprite(const uint16 *pixels, const uint16 *masks,
 	end = (right + 15) >> 4;
 	overlays = Video_Atari_PlanarOverlaysOverlap(base, first * 16, top, (end - first) * 16, bottom - top);
 	if (overlays) {
-		Video_Atari_PresentPlanarSpriteOverlays(pixels, masks, width, height, x, y);
+		Video_Atari_PresentPlanarSpriteOverlays(pixels, masks, width, height, x, y, sourceGroups);
 		return;
 	}
 	pixels += ((top - y) * sourceGroups + (left - x) / 16) * 4;
@@ -3114,6 +3116,12 @@ void Video_Atari_PresentPlanarSprite(const uint16 *pixels, const uint16 *masks,
 	dstRow = (uint16 *)(base + (uint32)top * 160 + first * 8);
 	Video_Atari_PublishPlanarSpritePlain(dstRow, pixels, masks, end - first, bottom - top, sourceGroups);
 	GFX_Screen_ClearDirtyRect(first * 16, top, end * 16, bottom);
+}
+
+void Video_Atari_PresentPlanarSprite(const uint16 *pixels, const uint16 *masks,
+                                   uint16 width, uint16 height, int16 x, int16 y)
+{
+	Video_Atari_PresentPlanarSpriteStrided(pixels, masks, width, height, x, y, width);
 }
 
 /* Install the quantization a following present must use, while the

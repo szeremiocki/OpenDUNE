@@ -104,6 +104,7 @@ bool g_factoryWindowConstructionYard = false;
 FactoryResult g_factoryWindowResult = FACTORY_RESUME;
 bool g_factoryWindowStarport = false;
 static uint8 s_factoryWindowGraymapTbl[256];
+static uint8 s_factoryWindowBackgroundColour;
 static Widget s_factoryWindowWidgets[13];
 static uint8 s_factoryWindowWsaBuffer[64000];
 static uint8 *s_palette1_houseColour;
@@ -1720,11 +1721,24 @@ static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 		entry->key = key;
 	}
 	entry->used = s_viewportPlanarClock;
-	GUI_Widget_Viewport_RepairTiles(x + entry->offsetX, y + entry->offsetY,
-	    x + entry->offsetX + entry->width, y + entry->offsetY + entry->height);
-	GFX_Screen_SetDirtySource(DIRTY_SRC_SPRITE);
-	Video_Atari_PresentPlanarSprite(entry->pixels, entry->masks,
-	    entry->width, entry->height, x + entry->offsetX, y + entry->offsetY);
+	{
+		int16 left = x + entry->offsetX, top = y + entry->offsetY;
+		int16 firstRow = max(40, top), bottom = min(200, top + entry->height);
+		uint16 groups = entry->width >> 4;
+		for (i = 0; i < entry->width; i += 16) {
+			int16 column = left + i, row;
+			if (column < 0 || column >= 240) continue;
+			for (row = firstRow; row < bottom; ) {
+				int16 end = min(bottom, 40 + (((row - 40) >> 4) + 1) * 16);
+				uint16 offset = (row - top) * groups + (i >> 4);
+				GUI_Widget_Viewport_RepairTiles(column, row, column + 16, end);
+				GFX_Screen_SetDirtySource(DIRTY_SRC_SPRITE);
+				Video_Atari_PresentPlanarSpriteStrided(entry->pixels + offset * 4,
+				    entry->masks + offset, 16, end - row, column, row, entry->width);
+				row = end;
+			}
+		}
+	}
 	return true;
 }
 #endif
@@ -4427,7 +4441,8 @@ static void GUI_FactoryWindow_Init(void)
 	GUI_Screen_Copy(0, 0, 0, 0, SCREEN_WIDTH / 8, SCREEN_HEIGHT, SCREEN_1, SCREEN_0);
 	GUI_Mouse_Show_Safe();
 
-	GUI_DrawFilledRectangle(64, 0, 112, SCREEN_HEIGHT - 1, GFX_GetPixel(72, 23));
+	s_factoryWindowBackgroundColour = GFX_GetPixel(72, 23);
+	GUI_DrawFilledRectangle(64, 0, 112, SCREEN_HEIGHT - 1, s_factoryWindowBackgroundColour);
 
 	GUI_FactoryWindow_PrepareScrollList();
 
@@ -5107,14 +5122,7 @@ void GUI_FactoryWindow_B495_0F30(void)
 {
 	GUI_Mouse_Hide_Safe();
 	uint16 y = g_factoryWindowSelected * 32 + 24;
-	GUI_DrawWiredRectangle(71, y - 1, 104, y + 24,  GFX_GetPixel(72, 23));
-/* this was factory item sprite restored without selection rectangle;
- * pulled from private buffer in screen_1; maybe it should be private scratch buffer,
- * beacuse hiding stuff in screen_1 ends badly (see credits scroll rendering buffer,
- * which I was tracking for better part of the day
- *
-	GFX_Screen_Copy2(69, ((g_factoryWindowSelected + 1) * 32) + 5, 69, (g_factoryWindowSelected * 32) + 21, 38, 30, SCREEN_1, SCREEN_0, false);
-*/
+	GUI_DrawWiredRectangle(71, y - 1, 104, y + 24, s_factoryWindowBackgroundColour);
 	GUI_Mouse_Show_Safe();
 }
 
@@ -5433,49 +5441,28 @@ bool GUI_Screen_FadeInPlanar(void *wsa, uint16 xDst, uint16 yDst, uint16 width, 
 
 void GUI_FactoryWindow_PrepareScrollList(void)
 {
-	FactoryWindowItem *item;
+	Screen oldScreenID = GFX_Screen_SetActive(SCREEN_1);
+	int16 i;
 
-/*
- * this is the screen_1 buffer which stores drawed sprites;
- * for now I see that it is mainly used to remove
- * selection rectangle after switching to other
- * factory item; later it will probably be used also
- * for scroling...
- * For now I am removing it because it breaks screen_1
- * authoritativeness -- maybe it should be explitic
- * scratch buffer for loaded factory item sprites
- *
-	GUI_Mouse_Hide_Safe();
-	GUI_Screen_Copy(9, 24, 9, 40, 4, 128, SCREEN_0, SCREEN_1);
-	GUI_Mouse_Show_Safe();
-*/
-	item = GUI_FactoryWindow_GetItem(-1);
+	/* The scroll source is rebuilt, never sampled from the visible screen. */
+	GUI_DrawFilledRectangle(72, 0, 103, SCREEN_HEIGHT - 1, s_factoryWindowBackgroundColour);
 
-	if (item != NULL) {
-		ObjectInfo *oi = item->objectInfo;
+	for (i = -1; i <= 4; i++) {
+		FactoryWindowItem *item = GUI_FactoryWindow_GetItem(i);
+		ObjectInfo *oi;
+		uint16 y = (i + 1) * 32 + 8;
+
+		if (item == NULL) continue;
+		oi = item->objectInfo;
 
 		if (oi->available == -1) {
-			GUI_DrawSprite(SCREEN_1, g_sprites[oi->spriteID], oi->spriteID, GUI_SPRITE_COLOUR_EMBEDDED, 72, 8, 0, DRAWSPRITE_FLAG_REMAP, s_factoryWindowGraymapTbl, 1);
+			GUI_DrawSprite(SCREEN_1, g_sprites[oi->spriteID], oi->spriteID, GUI_SPRITE_COLOUR_EMBEDDED, 72, y, 0, DRAWSPRITE_FLAG_REMAP, s_factoryWindowGraymapTbl, 1);
 		} else {
-			GUI_DrawSprite(SCREEN_1, g_sprites[oi->spriteID], oi->spriteID, GUI_SPRITE_COLOUR_EMBEDDED, 72, 8, 0, 0);
+			GUI_DrawSprite(SCREEN_1, g_sprites[oi->spriteID], oi->spriteID, GUI_SPRITE_COLOUR_EMBEDDED, 72, y, 0, 0);
 		}
-	} else {
-		GUI_Screen_Copy(9, 32, 9, 24, 4, 8, SCREEN_1, SCREEN_1);
 	}
 
-	item = GUI_FactoryWindow_GetItem(4);
-
-	if (item != NULL) {
-		ObjectInfo *oi = item->objectInfo;
-
-		if (oi->available == -1) {
-			GUI_DrawSprite(SCREEN_1, g_sprites[oi->spriteID], oi->spriteID, GUI_SPRITE_COLOUR_EMBEDDED, 72, 168, 0, DRAWSPRITE_FLAG_REMAP, s_factoryWindowGraymapTbl, 1);
-		} else {
-			GUI_DrawSprite(SCREEN_1, g_sprites[oi->spriteID], oi->spriteID, GUI_SPRITE_COLOUR_EMBEDDED, 72, 168, 0, 0);
-		}
-	} else {
-		GUI_Screen_Copy(9, 0, 9, 168, 4, 8, SCREEN_1, SCREEN_1);
-	}
+	GFX_Screen_SetActive(oldScreenID);
 }
 
 /**

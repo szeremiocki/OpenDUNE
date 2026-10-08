@@ -220,6 +220,37 @@ int main(void) {
             Video_Atari_CursorEraseFull();
             assert(!memcmp(visible, withoutCursor, sizeof(visible)));
         }
+    /* Tile portions retain full source strides and repair overlay backups
+     * after every publication, including clipped viewport edges. */
+    for (unsigned place = 0; place < 2; place++) for (unsigned pos = 0; pos < 3; pos++) {
+        reset(pos == 2 ? 14 : pos == 1 ? 0 : 4,
+              pos == 2 ? 176 : pos == 1 ? 32 : 74, 2, place);
+        int x = spritePositions[pos][0], y = spritePositions[pos][1];
+        for (unsigned col = 0; col < 5; col++) {
+            int dx = x + col * 16;
+            if (dx < 0 || dx >= 240) continue;
+            int top = y < 40 ? 40 : y, bottom = y + 32 > 200 ? 200 : y + 32;
+            for (int row = top; row < bottom; ) {
+                int end = 40 + ((row - 40) / 16 + 1) * 16;
+                if (end > bottom) end = bottom;
+                unsigned offset = (row - y) * 5 + col;
+                for (int line = row; line < end; line++) {
+                    unsigned source = (line - y) * 5 + col;
+                    for (unsigned plane = 0; plane < 4; plane++) {
+                        unsigned dest = line * 80 + dx / 16 * 4 + plane;
+                        scene[dest] = (scene[dest] & (uint16)~spriteMasks[source]) |
+                                      (sprite[source * 4 + plane] & spriteMasks[source]);
+                    }
+                }
+                Video_Atari_PresentPlanarSpriteStrided(sprite + offset * 4, spriteMasks + offset,
+                                                      16, end - row, dx, row, 80);
+                check();
+                row = end;
+            }
+        }
+        Video_Atari_CursorEraseFull();
+        assert(!memcmp(visible, withoutCursor, sizeof(visible)));
+    }
     /* Adjacent publications repair only their own tile, then compose a sprite. */
     reset(4, 74, 3, false);
     for (unsigned x = 64; x <= 80; x += 16) {
@@ -253,7 +284,8 @@ int main(void) {
             "Video_Atari_PresentPlanarSpriteOverlays",
             "Video_Atari_PublishPlanarSpritePlain",
             "Video_Atari_DrawPlanarTile", "Video_Atari_DrawPlanarTileFogged",
-            "Video_Atari_PresentSprite", "Video_Atari_PresentPlanarSprite",
+            "Video_Atari_PresentSprite", "Video_Atari_PresentPlanarSpriteStrided",
+            "Video_Atari_PresentPlanarSprite",
         )
         production = []
         for name in names:

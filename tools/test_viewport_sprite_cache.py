@@ -61,6 +61,8 @@ static ViewportSpriteMask s_viewportSpriteCache[512];
 static uint16 *s_viewportSpriteMasks;
 static unsigned decodes, encodes, overlayWrites, dirtyClears;
 static unsigned compositions;
+static bool pendingRepair;
+static int16 repairLeft, repairTop, repairRight, repairBottom;
 #define Warning(...) assert(false)
 /* CACHE */
 /* FREE */
@@ -69,11 +71,18 @@ static ViewportSpriteMask *GUI_ViewportSpriteMaskSlot(const uint8 *sprite) {
     assert(false); return NULL;
 }
 static void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 bottom) {
-    assert(left < right && top < bottom && right - left <= 80 && bottom - top <= 64);
+    assert(!pendingRepair && !(left & 15) && right - left == 16);
+    assert(left >= 0 && right <= 240 && top >= 40 && top < bottom && bottom <= 200);
+    assert((top - 40) / 16 == (bottom - 1 - 40) / 16);
+    pendingRepair = true;
+    repairLeft = left; repairTop = top; repairRight = right; repairBottom = bottom;
 }
 static void GFX_Screen_SetDirtySource(unsigned source) { assert(source == DIRTY_SRC_SPRITE); }
 static void GFX_Screen_ClearDirtyRect(uint16 l, uint16 t, uint16 r, uint16 b) {
     assert(!(l & 15) && !(r & 15) && l < r && r <= 240 && t >= 40 && t < b && b <= 200);
+    assert(pendingRepair && l == repairLeft && t == repairTop &&
+           r == repairRight && b == repairBottom);
+    pendingRepair = false;
     dirtyClears++;
 }
 static uint8 *Video_Atari_PlanarBase(void) { return (uint8 *)visible; }
@@ -149,8 +158,15 @@ static bool draw_identity(uint16 id, uint8 house, int flags, ...) {
     va_end(ap);
     return result;
 }
+static unsigned tile_count(int left, int top, int right, int bottom) {
+    left = max(0, left & ~15); right = min(240, (right + 15) & ~15);
+    top = max(40, top); bottom = min(200, bottom);
+    if (left >= right || top >= bottom) return 0;
+    return (right - left) / 16 * ((bottom - 40 + 15) / 16 - (top - 40) / 16);
+}
 static void check(unsigned id, int x, int y, int flags, bool recolour) {
     int ox = x, oy = y;
+    unsigned before = dirtyClears;
     if (flags & DRAWSPRITE_FLAG_WIDGETPOS) oy += 40;
     if (flags & DRAWSPRITE_FLAG_CENTER) { ox -= 11; oy -= 13; }
     for (unsigned i = 0; i < 16000; i++) visible[i] = expected[i] = i * 137 + 41;
@@ -172,6 +188,7 @@ static void check(unsigned id, int x, int y, int flags, bool recolour) {
     if (recolour) assert(draw(sprites[id], x, y, flags, palette, remap, 1));
     else if (flags & DRAWSPRITE_FLAG_PAL) assert(draw(sprites[id], x, y, flags, palette));
     else assert(draw(sprites[id], x, y, flags));
+    assert(!pendingRepair && dirtyClears == before + tile_count(ox, oy, ox + 23, oy + 27));
     assert(!memcmp(visible, expected, sizeof(visible)));
 }
 static bool draw_layers(const GUI_SpriteLayers *layers, int16 x, int16 y, int flags, ...) {
@@ -208,9 +225,18 @@ static void check_layers(const GUI_SpriteLayers *layers, int x, int y, int flags
                         layer->flags, layer->flags & DRAWSPRITE_FLAG_PAL ? layer->palette : NULL, NULL);
     }
     unsigned before = dirtyClears;
+    int left = 0, top = 0, right = 23, bottom = 27;
+    for (unsigned i = 0; i < layers->count; i++) {
+        left = min(left, layers->layer[i].offsetX);
+        top = min(top, layers->layer[i].offsetY);
+        right = max(right, layers->layer[i].offsetX + 23);
+        bottom = max(bottom, layers->layer[i].offsetY + 27);
+    }
     assert(draw_layers(layers, x, y, flags | DRAWSPRITE_FLAG_CENTER | DRAWSPRITE_FLAG_WIDGETPOS |
                        DRAWSPRITE_FLAG_PAL | DRAWSPRITE_FLAG_REMAP, palette, remap, 1));
-    assert(dirtyClears == before + 1);
+    assert(!pendingRepair && dirtyClears == before +
+           tile_count(x - 11 + left, y + 40 - 13 + top,
+                      x - 11 + right, y + 40 - 13 + bottom));
     assert(!memcmp(visible, expected, sizeof(visible)));
 }
 int main(void) {
@@ -427,6 +453,7 @@ int main(void) {
                                   function(video, "Video_Atari_PublishViewportCursorRect") + "\n" +
                                   function(video, "Video_Atari_PresentPlanarSpriteOverlays") + "\n" +
                                   function(video, "Video_Atari_PublishPlanarSpritePlain") + "\n" +
+                                  function(video, "Video_Atari_PresentPlanarSpriteStrided") + "\n" +
                                   function(video, "Video_Atari_PresentPlanarSprite"))
         harness = harness.replace("/* LOOKUP */", function(gui, "GUI_ViewportDecodeLayer") + "\n" +
                                   function(gui, "GUI_ViewportPlanarComponent") + "\n" +

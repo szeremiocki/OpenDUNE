@@ -1126,10 +1126,7 @@ void GFX_Screen_Copy2(int16 xSrc, int16 ySrc, int16 xDst, int16 yDst, int16 widt
 	 * SCREEN_0-destination caller of this function turns out to source
 	 * from SCREEN_1 already (skipNull is never true for those calls), so
 	 * convert straight from the source buffer to planar and skip the
-	 * chunky write + dirty mark entirely. The one exception (a
-	 * SCREEN_0->SCREEN_1 read-back used by the factory scroll list) is
-	 * left untouched -- it doesn't hit this branch since screenDst there
-	 * is SCREEN_1, not SCREEN_0. */
+	 * chunky write + dirty mark entirely. */
 	if (GFX_IS_SCREEN0(screenDst) && Video_Atari_CursorDirect() && !skipNull) {
 		Video_Atari_PresentChunky(src, SCREEN_WIDTH, xDst, yDst,
 		                          (uint16)width, (uint16)height);
