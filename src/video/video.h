@@ -193,12 +193,23 @@ extern void Video_Atari_PresentPlanarSpriteStrided(const uint16 *pixels, const u
                                                  uint16 width, uint16 height, int16 x, int16 y,
                                                  uint16 sourceWidth);
 extern bool Video_Atari_ViewportBlitter(void);
+typedef struct Video_Atari_SpriteBlitPlan {
+	uint16 words, firstMask, lastMask;
+	int16 sourceXinc, sourceYinc, destinationYinc;
+	uint8 skew;
+} Video_Atari_SpriteBlitPlan;
+/* Sixteen destination phases of the full, horizontally unclipped image.
+ * sourceWidth is group-aligned; width excludes transparent right padding. */
+extern void Video_Atari_BuildSpriteBlitPlans(Video_Atari_SpriteBlitPlan plans[16],
+                                            uint16 sourceWidth, uint16 width);
 /* Visible rectangle of an unshifted composite, up to 80x64. Masks duplicate
  * opacity across four interleaved planes; colour bits outside opacity are zero.
- * sourceX and x are pixel offsets. */
+ * sourceX and x are pixel offsets. plan is NULL for calculated geometry, or
+ * the matching full-image phase plan (sourceX == 0); vertical clipping is OK. */
 extern void Video_Atari_PresentPlanarSpriteUnshifted(const uint16 *pixels, const uint16 *masks,
                                                    uint16 sourceWidth, uint16 sourceX,
-                                                   uint16 width, uint16 height, uint16 x, uint16 y);
+                                                   uint16 width, uint16 height, uint16 x, uint16 y,
+                                                   const Video_Atari_SpriteBlitPlan *plan);
 #endif /* TOS */
 
 #endif /* VIDEO_VIDEO_H */

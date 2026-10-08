@@ -1391,6 +1391,7 @@ typedef struct ViewportPlanarSprite {
 	uint16 width, height;
 	int16 offsetX, offsetY;
 	uint16 extentWidth;
+	Video_Atari_SpriteBlitPlan blitPlans[16];
 	uint16 pixels[80 * 64 / 4];
 	uint16 *masks;
 } ViewportPlanarSprite;
@@ -1734,6 +1735,7 @@ static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 				for (plane = 0; plane < 4; plane++)
 					entry->masks[word * 4 + plane] = opacity;
 			}
+			Video_Atari_BuildSpriteBlitPlans(entry->blitPlans, stride, maxX - minX);
 		}
 		entry->width = stride;
 		entry->height = height;
@@ -1756,7 +1758,9 @@ static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 				GFX_Screen_SetDirtySource(DIRTY_SRC_SPRITE);
 				Video_Atari_PresentPlanarSpriteUnshifted(entry->pixels + offset,
 				    entry->masks + offset, entry->width, start - left,
-				    right - start, bottom - firstRow, start, firstRow);
+				    right - start, bottom - firstRow, start, firstRow,
+				    start == left && right - start == entry->extentWidth ?
+				    &entry->blitPlans[start & 15] : NULL);
 			}
 			return true;
 		}

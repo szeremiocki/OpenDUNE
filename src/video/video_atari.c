@@ -2885,31 +2885,27 @@ static void Video_Atari_BlitterStart(void)
 	while ((*BLITTER_CTRL & 0x80) != 0) {}
 }
 
-/* FXSR adds a source fetch; NFSR moves YINC to the penultimate word. */
-static void Video_Atari_BlitterSetup(uint16 dstStride, uint16 srcStride,
-                                    uint16 words, int16 sourceXinc, int16 destinationXinc,
-                                    uint16 firstMask, uint16 lastMask, uint8 skew)
+static void Video_Atari_BlitterSetup(const Video_Atari_SpriteBlitPlan *plan,
+                                    int16 destinationXinc)
 {
 	while ((*BLITTER_CTRL & 0x80) != 0) {}
-	*BLITTER_SRC_XINC = sourceXinc;
-	*BLITTER_SRC_YINC = (int16)(srcStride - (words - 1) * sourceXinc -
-	    ((skew & 0x80) ? sourceXinc : 0) + ((skew & 0x40) ? sourceXinc : 0));
-	*BLITTER_ENDMASK1 = words == 1 ? firstMask & lastMask : firstMask;
+	*BLITTER_SRC_XINC = plan->sourceXinc;
+	*BLITTER_SRC_YINC = plan->sourceYinc;
+	*BLITTER_ENDMASK1 = plan->firstMask;
 	*BLITTER_ENDMASK2 = 0xffff;
-	*BLITTER_ENDMASK3 = lastMask;
+	*BLITTER_ENDMASK3 = plan->lastMask;
 	*BLITTER_DST_XINC = destinationXinc;
-	*BLITTER_DST_YINC = (int16)(dstStride - (words - 1) * destinationXinc);
-	*BLITTER_XCOUNT = words;
+	*BLITTER_DST_YINC = plan->destinationYinc;
+	*BLITTER_XCOUNT = plan->words;
 	*BLITTER_HOP = 2;
-	*BLITTER_SKEW = skew;
+	*BLITTER_SKEW = plan->skew;
 }
 
 typedef struct PlanarBlit {
 	uint16 *dst;
 	const uint16 *pixels, *masks;
-	uint16 sourceStride, words, height, firstMask, lastMask;
-	int16 sourceXinc;
-	uint8 skew;
+	const Video_Atari_SpriteBlitPlan *plan;
+	uint16 height;
 } PlanarBlit;
 
 static const uint16 s_blitterLeftMasks[16] = {
@@ -2923,11 +2919,52 @@ static const uint16 s_blitterRightMasks[16] = {
 
 static PlanarBlit s_planarBlit;
 
+static void Video_Atari_BuildSpriteBlitPlan(Video_Atari_SpriteBlitPlan *plan,
+                                          uint16 sourceWidth, uint16 sourceX,
+                                          uint16 width, uint16 destinationPhase)
+{
+	uint16 sourcePhase = sourceX & 15;
+	uint16 words = (destinationPhase + width + 15) >> 4;
+	uint16 sourceWords = (sourcePhase + width + 15) >> 4;
+	bool leftShift = sourcePhase > destinationPhase;
+	bool extra = leftShift && (words > 1 || sourceWords > 1);
+	bool suppress = words > 1 && sourceWords < words + (extra ? 1 : 0);
+	/* A one-word left shift uses the latch's high half without prefetch. */
+	int16 sourceXinc = !extra && leftShift ? -8 : 8;
+	uint16 firstMask = s_blitterLeftMasks[destinationPhase];
+	uint16 lastMask = s_blitterRightMasks[(destinationPhase + width) & 15];
+
+	plan->words = words;
+	plan->firstMask = words == 1 ? firstMask & lastMask : firstMask;
+	plan->lastMask = lastMask;
+	plan->sourceXinc = sourceXinc;
+	/* FXSR adds a source fetch; NFSR moves YINC to the penultimate word. */
+	plan->sourceYinc = (int16)(sourceWidth / 2 - (words - 1) * sourceXinc -
+	    (extra ? sourceXinc : 0) + (suppress ? sourceXinc : 0));
+	plan->destinationYinc = ST_PLANAR_LINE_BYTES - (words - 1) * 8;
+	plan->skew = ((destinationPhase - sourcePhase) & 15) |
+	    (extra ? 0x80 : 0) | (suppress ? 0x40 : 0);
+}
+
+void Video_Atari_BuildSpriteBlitPlans(Video_Atari_SpriteBlitPlan plans[16],
+                                    uint16 sourceWidth, uint16 width)
+{
+	uint16 phase;
+
+	assert(sourceWidth > 0 && sourceWidth <= 80 && (sourceWidth & 15) == 0);
+	assert(width > 0 && width <= sourceWidth);
+	for (phase = 0; phase < 16; phase++)
+		Video_Atari_BuildSpriteBlitPlan(&plans[phase], sourceWidth, 0, width, phase);
+}
+
 static void Video_Atari_BlitOpaque(void)
 {
+	static const Video_Atari_SpriteBlitPlan tilePlan = {
+		4, 0xffff, 0xffff, 2, 2, 154, 0
+	};
 	/* uint16 status = Video_Atari_BlitterLock(); */
 	if (!s_blitterTileSetup) {
-		Video_Atari_BlitterSetup(ST_PLANAR_LINE_BYTES, 8, 4, 2, 2, 0xffff, 0xffff, 0);
+		Video_Atari_BlitterSetup(&tilePlan, 2);
 		*BLITTER_OP = 3;
 		s_blitterTileSetup = true;
 	}
@@ -2944,9 +2981,7 @@ static void Video_Atari_BlitMasked(void)
 
 	/* uint16 status = Video_Atari_BlitterLock(); */
 	s_blitterTileSetup = false;
-	Video_Atari_BlitterSetup(ST_PLANAR_LINE_BYTES, s_planarBlit.sourceStride,
-	    s_planarBlit.words, s_planarBlit.sourceXinc, 8,
-	    s_planarBlit.firstMask, s_planarBlit.lastMask, s_planarBlit.skew);
+	Video_Atari_BlitterSetup(s_planarBlit.plan, 8);
 	for (pass = 0; pass < 2; pass++) {
 		const uint16 *src = pass == 0 ? s_planarBlit.masks : s_planarBlit.pixels;
 		*BLITTER_OP = pass == 0 ? 4 : 7;
@@ -3314,40 +3349,32 @@ static void __attribute__((noinline)) Video_Atari_RefreshViewportCursorUnshifted
 
 void Video_Atari_PresentPlanarSpriteUnshifted(const uint16 *pixels, const uint16 *masks,
                                             uint16 sourceWidth, uint16 sourceX,
-                                            uint16 width, uint16 height, uint16 x, uint16 y)
+                                            uint16 width, uint16 height, uint16 x, uint16 y,
+                                            const Video_Atari_SpriteBlitPlan *plan)
 {
 	uint8 *base = Video_Atari_PlanarBase();
-	uint16 destinationPhase = x & 15, sourcePhase = sourceX & 15;
+	uint16 destinationPhase = x & 15;
 	uint16 first = x >> 4, groups = sourceWidth >> 4;
-	uint16 words = (destinationPhase + width + 15) >> 4;
-	uint16 sourceWords = (sourcePhase + width + 15) >> 4;
-	uint16 firstMask, lastMask;
+	uint16 words = plan != NULL ? plan->words : (destinationPhase + width + 15) >> 4;
 	bool cursor, placement;
 
 	assert(sourceWidth > 0 && sourceWidth <= 80 && (sourceWidth & 15) == 0);
 	assert(width > 0 && sourceX + width <= sourceWidth);
 	assert(height > 0 && height <= 64 && x + width <= 240 && y >= 40 && y + height <= 200);
-	firstMask = s_blitterLeftMasks[destinationPhase];
-	lastMask = s_blitterRightMasks[(x + width) & 15];
+	assert(plan == NULL || sourceX == 0);
 	cursor = Video_Atari_CursorRectOverlap(base, first, first + words, y, height);
 	placement = Video_Atari_PlacementRectOverlap(base, first * 16, (first + words) * 16, y, height);
 	if (s_viewportBlitter && !placement) {
-		bool leftShift = sourcePhase > destinationPhase;
-		bool extra = leftShift && (words > 1 || sourceWords > 1);
-		bool suppress = words > 1 && sourceWords < words + (extra ? 1 : 0);
+		Video_Atari_SpriteBlitPlan clippedPlan;
+		if (plan == NULL) {
+			Video_Atari_BuildSpriteBlitPlan(&clippedPlan, sourceWidth, sourceX, width, destinationPhase);
+			plan = &clippedPlan;
+		}
 		s_planarBlit.dst = (uint16 *)(base + (uint32)y * ST_PLANAR_LINE_BYTES + first * 8);
 		s_planarBlit.pixels = pixels + (sourceX >> 4) * 4;
 		s_planarBlit.masks = masks + (sourceX >> 4) * 4;
-		s_planarBlit.sourceStride = sourceWidth / 2;
-		s_planarBlit.words = words;
+		s_planarBlit.plan = plan;
 		s_planarBlit.height = height;
-		s_planarBlit.firstMask = firstMask;
-		s_planarBlit.lastMask = lastMask;
-		s_planarBlit.skew = ((destinationPhase - sourcePhase) & 15) |
-		    (extra ? 0x80 : 0) | (suppress ? 0x40 : 0);
-		/* A left shift confined to one source word uses the high half of
-		 * the latch. Negative XINC selects it without fetching padding. */
-		s_planarBlit.sourceXinc = !extra && leftShift ? -8 : 8;
 		Atari_SupervisorExec(Video_Atari_BlitMasked);
 		if (cursor) {
 			Video_Atari_RefreshViewportCursorUnshifted(base, masks, sourceWidth, sourceX,
@@ -3355,6 +3382,8 @@ void Video_Atari_PresentPlanarSpriteUnshifted(const uint16 *pixels, const uint16
 		}
 	} else {
 		uint16 row, group;
+		uint16 firstMask = s_blitterLeftMasks[destinationPhase];
+		uint16 lastMask = s_blitterRightMasks[(x + width) & 15];
 		for (row = 0; row < height; row++) {
 			for (group = 0; group < words; group++) {
 				uint16 colours[4], plane, phase = group == 0 ? destinationPhase : 0;

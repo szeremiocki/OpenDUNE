@@ -19,6 +19,13 @@ def function(source, name):
     return source[match.start():source.index("\n}\n", match.end()) + 3]
 
 
+def blit_plan_type():
+    header = (ROOT / "src/video/video.h").read_text()
+    start = header.index("typedef struct Video_Atari_SpriteBlitPlan {")
+    end = header.index("} Video_Atari_SpriteBlitPlan;", start) + len("} Video_Atari_SpriteBlitPlan;")
+    return "#ifndef TEST_BLIT_PLAN_TYPE\n#define TEST_BLIT_PLAN_TYPE\n" + header[start:end] + "\n#endif\n"
+
+
 def blitter_model(video, tiles=False):
     """Execute production register setup against a persistent 32-bit latch."""
     model = r"""
@@ -45,7 +52,7 @@ static uint8 reg_hop, reg_op, reg_ctrl, reg_skew;
 #define BLITTER_OP (&reg_op)
 #define BLITTER_CTRL (&reg_ctrl)
 #define BLITTER_SKEW (&reg_skew)
-static unsigned blitterLaunches, blitterLocks, blitterSetups;
+static unsigned blitterLaunches, blitterLocks, blitterSetups, blitterPlanBuilds, cachedPlanDraws;
 static uintptr_t blitterPixels, blitterMasks;
 static uint16 blitterReadStride;
 static void Video_Atari_BlitterStart(void) {
@@ -97,7 +104,10 @@ static void Video_Atari_BlitterStart(void) {
                   video.index("static PlanarBlit s_planarBlit;") + len("static PlanarBlit s_planarBlit;")]
     setup = function(video, "Video_Atari_BlitterSetup")
     setup = setup.replace("\n{\n", "\n{\n    blitterSetups++;\n", 1)
+    builder = function(video, "Video_Atari_BuildSpriteBlitPlan")
+    builder = builder.replace("\n{\n", "\n{\n    blitterPlanBuilds++;\n", 1)
     production = function(video, "Video_Atari_ViewportBlitter") + "\n" + setup + "\n" + block
+    production += "\n" + builder + "\n" + function(video, "Video_Atari_BuildSpriteBlitPlans")
     if tiles:
         production += "\n" + function(video, "Video_Atari_BlitOpaque")
         production += "\n" + function(video, "Video_Atari_BlitTile")
@@ -117,10 +127,11 @@ static bool Video_Atari_CursorRectOverlap(uint8 *base, uint16 first, uint16 end,
         body = function(video, name)
         if name == "Video_Atari_PresentPlanarSpriteUnshifted":
             body = body.replace("\n{\n", "\n{\n"
+                "    if (plan != NULL) cachedPlanDraws++;\n"
                 "    blitterPixels = (uintptr_t)pixels; blitterMasks = (uintptr_t)masks;\n"
                 "    blitterReadStride = sourceWidth / 2;\n", 1)
         production += "\n" + body
-    return model + production.replace("(uint32)(size_t)", "(uintptr_t)")
+    return blit_plan_type() + model + production.replace("(uint32)(size_t)", "(uintptr_t)")
 
 
 class ViewportSpriteCacheTest(unittest.TestCase):
@@ -387,15 +398,25 @@ int main(int argc, char **argv) {
     for (unsigned flags = 0; flags < 4; flags++) for (unsigned phase = 0; phase < 16; phase++) {
         check(0, 64 + phase, 60, flags, false);
         before = decodes;
+        unsigned plans = blitterPlanBuilds, cached = cachedPlanDraws;
         check(0, 64 + phase, 60, flags, false);
         assert(decodes == before);
+        assert(blitterPlanBuilds == plans);
+        assert(cachedPlanDraws == cached + (s_viewportBlitter ? 1 : 0));
     }
     assert(decodes == 4 && encodes == 4);
     assert(compositions == (s_viewportBlitter ? 4 : 64));
+    assert(blitterPlanBuilds == (s_viewportBlitter ? 4 * 16 : 0));
     if (s_viewportBlitter) assert(blitterLaunches && !(blitterLaunches % 8));
     for (unsigned flags = 0; flags < 4; flags++) {
+        unsigned plans = blitterPlanBuilds;
+        check(0, 64, 33, flags, false);
+        check(0, 64, 191, flags, false);
+        assert(blitterPlanBuilds == plans);
         check(0, -13, 33, flags, false);
+        assert(blitterPlanBuilds == plans + (s_viewportBlitter ? 1 : 0));
         check(0, 231, 191, flags, false);
+        assert(blitterPlanBuilds == plans + (s_viewportBlitter ? 2 : 0));
         check(0, 4, 45, flags | DRAWSPRITE_FLAG_CENTER, false);
         check(0, 64, 20, flags | DRAWSPRITE_FLAG_WIDGETPOS, false);
     }
@@ -597,12 +618,47 @@ int main(int argc, char **argv) {
                             unsigned launches = blitterLaunches, setups = blitterSetups;
                             GUI_Widget_Viewport_RepairTiles(x & ~15, y, (x + width + 15) & ~15, y + height);
                             Video_Atari_PresentPlanarSpriteUnshifted(image, masks, stride, sourceX,
-                                                                    width, height, x, y);
+                                                                    width, height, x, y, NULL);
                             assert(!pendingRepair && blitterLaunches == launches + 8);
                             assert(blitterSetups == setups + 1);
                             assert(!memcmp(visible, expected, sizeof(visible)));
                         }
                     }
+            /* Compare every full-image width/phase plan with calculated
+             * geometry, including retained source padding and vertical clips. */
+            for (unsigned width = 1; width <= stride; width++) {
+                Video_Atari_SpriteBlitPlan plans[16];
+                unsigned builds = blitterPlanBuilds;
+                Video_Atari_BuildSpriteBlitPlans(plans, stride, width);
+                assert(blitterPlanBuilds == builds + 16);
+                for (unsigned phase = 0; phase < 16; phase++) {
+                    Video_Atari_SpriteBlitPlan calculated;
+                    Video_Atari_BuildSpriteBlitPlan(&calculated, stride, 0, width, phase);
+                    assert(plans[phase].words == calculated.words);
+                    assert(plans[phase].firstMask == calculated.firstMask);
+                    assert(plans[phase].lastMask == calculated.lastMask);
+                    assert(plans[phase].sourceXinc == calculated.sourceXinc);
+                    assert(plans[phase].sourceYinc == calculated.sourceYinc);
+                    assert(plans[phase].destinationYinc == calculated.destinationYinc);
+                    assert(plans[phase].skew == calculated.skew);
+                    for (unsigned top = 0; top < 2; top++) {
+                        uint16 reference[16000];
+                        unsigned offset = top * groups * 4;
+                        for (unsigned i = 0; i < 16000; i++) visible[i] = i * 113 + 17;
+                        GUI_Widget_Viewport_RepairTiles(64, 136, (64 + phase + width + 15) & ~15, 152);
+                        Video_Atari_PresentPlanarSpriteUnshifted(image + offset, masks + offset,
+                            stride, 0, width, 16, 64 + phase, 136, NULL);
+                        memcpy(reference, visible, sizeof(reference));
+                        for (unsigned i = 0; i < 16000; i++) visible[i] = i * 113 + 17;
+                        builds = blitterPlanBuilds;
+                        GUI_Widget_Viewport_RepairTiles(64, 136, (64 + phase + width + 15) & ~15, 152);
+                        Video_Atari_PresentPlanarSpriteUnshifted(image + offset, masks + offset,
+                            stride, 0, width, 16, 64 + phase, 136, &plans[phase]);
+                        assert(blitterPlanBuilds == builds && !pendingRepair);
+                        assert(!memcmp(reference, visible, sizeof(reference)));
+                    }
+                }
+            }
         }
     }
     assert(dirtyClears);
@@ -615,7 +671,7 @@ int main(int argc, char **argv) {
 }
 """
         harness = harness.replace("/* FLAGS */", flags).replace("/* LAYER TYPES */", layer_types)
-        harness = harness.replace("/* CACHE */", cache)
+        harness = harness.replace("/* CACHE */", blit_plan_type() + cache)
         harness = harness.replace("/* FREE */", function(gui, "GUI_FreeViewportSpriteCache"))
         harness = harness.replace("/* MERGE */", function(video, "Video_Atari_PlanarMergePlain"))
         composer = function(video, "Video_Atari_ComposePlanarSprite")

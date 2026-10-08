@@ -253,6 +253,13 @@ For each visible sprite rectangle, hardware skew aligns four AND-NOT mask
 passes followed by four OR image passes, sharing one register setup.
 Two small global end-mask tables protect rectangular edges; FXSR/NFSR
 and one-word left shifts keep source fetching within the cached rows.
+Each composite cache fill also prepares sixteen BLiTTER geometry plans,
+one per destination X phase, including word counts, edge masks, skew and
+source/destination row increments. Horizontally unclipped hits reuse the
+matching plan, including vertically clipped draws; horizontal clipping
+uses the same plan builder for the visible portion. Addresses and height
+remain dynamic. The plans add 14 KiB across the 64 composite slots
+(also reserved in CPU mode); they do not add phase-keyed pixel images.
 Eligible opaque terrain repairs use one BLiTTER copy from the existing
 tile cache, reusing setup until sprite publication changes it;
 mixed/fog-composed writes retain CPU publication.
