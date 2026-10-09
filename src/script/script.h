@@ -91,6 +91,10 @@ extern void Script_Reset(ScriptEngine *script, ScriptInfo *scriptInfo);
 extern void Script_Load(ScriptEngine *script, uint8 typeID);
 extern bool Script_IsLoaded(ScriptEngine *script);
 extern bool Script_Run(ScriptEngine *script);
+/* Run up to budget opcodes (zero is a no-op), stopping if delay is set.
+ * Delay/budget exhaustion succeeds; script errors retain a false result.
+ * Script_Run remains a single step even when delay is already nonzero. */
+extern bool Script_RunBudget(ScriptEngine *script, uint16 budget);
 extern void Script_LoadAsSubroutine(ScriptEngine *script, uint8 typeID);
 extern void Script_ClearInfo(ScriptInfo *scriptInfo);
 extern uint16 Script_LoadFromFile(const char *filename, ScriptInfo *scriptInfo, const ScriptFunction *functions, uint8 *data);

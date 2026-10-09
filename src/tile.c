@@ -384,9 +384,15 @@ int8 Tile_GetDirection(tile32 from, tile32 to)
 		if (dx != 0) gradient = (dy << 8) / dx;
 	}
 
-	for (i = 0; i < lengthof(directions); i++) {
-		if (directions[i] <= gradient) break;
-	}
+	/* A 16-bit countdown lets 68000 GCC emit DBRA. */
+	const int32 *p = directions;
+	int16 remaining = lengthof(directions) - 1;
+
+	do {
+		if (*p++ <= gradient) break;
+	} while (--remaining >= 0);
+
+	i = lengthof(directions) - 1 - remaining;
 
 	if (!invert) i = 64 - i;
 

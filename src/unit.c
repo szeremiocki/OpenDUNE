@@ -296,9 +296,7 @@ void GameLoop_Unit(void)
 
 					u->o.script.variables[3] = g_playerHouseID;
 
-					for (; opcodesLeft > 0 && u->o.script.delay == 0; opcodesLeft--) {
-						if (!Script_Run(&u->o.script)) break;
-					}
+					Script_RunBudget(&u->o.script, opcodesLeft);
 				}
 			} else {
 				u->o.script.delay--;
