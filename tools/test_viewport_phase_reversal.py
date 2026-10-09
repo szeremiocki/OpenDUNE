@@ -18,7 +18,8 @@ class ViewportPhaseReversalTest(unittest.TestCase):
     def test_hidden_tile_damage_gate(self):
         viewport = (ROOT / "src/gui/viewport.c").read_text()
         start = viewport.index("\tif (g_dirtyViewportCount != 0 || forceRedraw) {")
-        terrain = viewport[start:viewport.index("\n\t/* Draw Sandworm */", start)]
+        terrain = viewport[start:viewport.index(
+            "\n#ifdef TOS\n\tGUI_Widget_Viewport_BeginSpriteDamage", start)]
         harness = r"""
 #include <assert.h>
 #include <stdbool.h>

@@ -239,6 +239,8 @@ extern void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool pl
 extern bool GUI_Widget_Viewport_IsPlanar(void);
 extern void GUI_Widget_Viewport_InvalidateMinimap(void);
 extern void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 bottom);
+extern bool GUI_Widget_Viewport_ShouldDrawSprite(int16 left, int16 top, int16 right, int16 bottom);
+extern void GUI_Widget_Viewport_InvalidateSpriteDamage(void);
 #endif
 #ifdef GFX_DIRTY_SOURCE_STATS
 extern void Viewport_EagerReport(void);

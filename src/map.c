@@ -654,9 +654,8 @@ void Map_Update(uint16 packed, uint16 type, bool ignoreInvisible)
 			return;
 
 		case 4: {
-			/* Single-tile invalidation for shifted scroll edges and isolated
-			 * structure animation tiles. Callers must preserve cross-tile
-			 * sprite recomposition dependencies themselves. */
+			/* Single-tile invalidation for shifted scroll edges. Callers
+			 * must preserve cross-tile sprite recomposition dependencies. */
 			if (BitArray_Test(g_dirtyMinimap, packed)) return;
 
 			g_dirtyViewportCount++;

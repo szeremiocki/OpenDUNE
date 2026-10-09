@@ -176,6 +176,8 @@ static ViewportSpriteMask s_viewportSpriteCache[512];
 static uint16 *s_viewportSpriteMasks;
 static unsigned decodes, encodes, overlayWrites, dirtyClears;
 static unsigned compositions;
+static bool rejectSprite;
+static int16 boundsLeft, boundsTop, boundsRight, boundsBottom;
 static bool pendingRepair;
 static int16 repairLeft, repairTop, repairRight, repairBottom;
 #define Warning(...) assert(false)
@@ -194,6 +196,10 @@ static void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, 
     }
     pendingRepair = true;
     repairLeft = left; repairTop = top; repairRight = right; repairBottom = bottom;
+}
+static bool GUI_Widget_Viewport_ShouldDrawSprite(int16 left, int16 top, int16 right, int16 bottom) {
+    boundsLeft = left; boundsTop = top; boundsRight = right; boundsBottom = bottom;
+    return !rejectSprite;
 }
 static void GFX_Screen_SetDirtySource(unsigned source) { assert(source == DIRTY_SRC_SPRITE); }
 static void GFX_Screen_ClearDirtyRect(uint16 l, uint16 t, uint16 r, uint16 b) {
@@ -308,6 +314,14 @@ static void check(unsigned id, int x, int y, int flags, bool recolour) {
     else if (flags & DRAWSPRITE_FLAG_PAL) assert(draw(sprites[id], x, y, flags, palette));
     else assert(draw(sprites[id], x, y, flags));
     unsigned portions = tile_count(ox, oy, ox + 23, oy + 27);
+    if (portions) {
+        assert(boundsLeft == ox && boundsTop == oy && boundsRight == ox + 23 && boundsBottom == oy + 27);
+        rejectSprite = true;
+        if (recolour) assert(draw(sprites[id], x, y, flags, palette, remap, 1));
+        else if (flags & DRAWSPRITE_FLAG_PAL) assert(draw(sprites[id], x, y, flags, palette));
+        else assert(draw(sprites[id], x, y, flags));
+        rejectSprite = false;
+    }
     assert(!pendingRepair && dirtyClears == before + (s_viewportBlitter ? !!portions : portions));
     assert(blitterLaunches == launches + (s_viewportBlitter && portions && !overlays ? 8 : 0));
     assert(blitterSetups == setups + (s_viewportBlitter && portions && !overlays ? 1 : 0));
@@ -359,6 +373,14 @@ static void check_layers(const GUI_SpriteLayers *layers, int x, int y, int flags
                        DRAWSPRITE_FLAG_PAL | DRAWSPRITE_FLAG_REMAP, palette, remap, 1));
     unsigned portions = tile_count(x - 11 + left, y + 40 - 13 + top,
                                   x - 11 + right, y + 40 - 13 + bottom);
+    if (portions) {
+        assert(boundsLeft == x - 11 + left && boundsTop == y + 40 - 13 + top &&
+               boundsRight == x - 11 + right && boundsBottom == y + 40 - 13 + bottom);
+        rejectSprite = true;
+        assert(draw_layers(layers, x, y, flags | DRAWSPRITE_FLAG_CENTER | DRAWSPRITE_FLAG_WIDGETPOS |
+                           DRAWSPRITE_FLAG_PAL | DRAWSPRITE_FLAG_REMAP, palette, remap, 1));
+        rejectSprite = false;
+    }
     assert(!pendingRepair && dirtyClears == before + (s_viewportBlitter ? !!portions : portions));
     assert(blitterLaunches == launches + (s_viewportBlitter && portions && !overlays ? 8 : 0));
     assert(blitterSetups == setups + (s_viewportBlitter && portions && !overlays ? 1 : 0));
@@ -449,7 +471,7 @@ int main(int argc, char **argv) {
     assert(decodes == before + 1);
     s_viewportPlanarClock = 65535;
     check(0, 64, 60, 0, false);
-    assert(s_viewportPlanarClock == 1 && decodes == before + 1);
+    assert(s_viewportPlanarClock == 2 && decodes == before + 1);
     before = decodes;
     assert(draw(sprites[0], -100, -100, 0) && decodes == before);
     assert(!draw(sprites[0], 64, 60, DRAWSPRITE_FLAG_ZOOM));
@@ -723,6 +745,7 @@ static uint8 assets[5], *g_sprites[5], screen[2], bodyPalette[16], remap[256];
 static GUI_SpriteLayers layers;
 static bool cached;
 static unsigned attempts, draws;
+static void GUI_Widget_Viewport_InvalidateSpriteDamage(void) {}
 static uint8 *GFX_Screen_Get_ByIndex(Screen id) { return screen + id; }
 static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 id, uint8 house,
                                     int16 x, int16 y, int flags, va_list *ap,

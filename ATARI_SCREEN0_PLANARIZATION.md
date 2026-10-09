@@ -219,28 +219,28 @@ pixels matched the reference, including unchanged pixels in both gaps.
 
 ### Structure animation changed-tile marking (2026-09-30)
 
-On ST/STE, `Animation_Func_SetGroundTile()` now uses the existing
+The initial ST/STE implementation used the existing
 non-neighbor `Map_Update(...,4,false)` for changed structure animation
 tiles. Its existing tile-ID comparison still skips unchanged tiles in the
 structure layout; minimap queuing, house assignment, overlay handling and
 selection repaint bookkeeping are preserved.
 
-There is a deliberate conservative exception: if a unit or active explosion
-is centered in the changed tile's 3x3 neighborhood, retain type 0. The
+There was a deliberate conservative exception: if a unit or active explosion
+was centered in the changed tile's 3x3 neighborhood, retain type 0. The
 existing compositor uses center-tile dirty flags to choose neighboring
-sprites for recomposition after terrain restoration. This guard avoids
+sprites for recomposition after terrain restoration. This guard avoided
 erasing an overlapping unit/effect without introducing the larger
 presentation/reconstruction separation described in the unit proposal.
-Already-dirty terrain skips the actor scan because both update types
+Already-dirty terrain skipped the actor scan because both update types
 deduplicate that event. The guard is conservative, not a precise sprite
 intersection test; animation updates near actors can still have a halo.
 
-Only changed ground-frame updates use this rule. Animation stop/abort,
+Only changed ground-frame updates used this rule. Animation stop/abort,
 structure creation/state rebuilding, overlay animations and non-ST/STE
-paths keep their existing behavior.
+paths kept their existing behavior.
 
-An isolated changed tile now publishes 256 pixels rather than the
-2304-pixel 3x3 halo. Cross-target regression exercised the actual animation,
+In that presentation path an isolated changed tile published 256 pixels
+rather than the 2304-pixel 3x3 halo. Cross-target regression exercised the actual animation,
 Map_Update and viewport marking code under an 8 MHz 68000 in Hatari:
 unchanged frames, all neighboring actor positions, distant/inactive
 effects, non-direct mode, visibility, selection, overlay retention and
@@ -248,6 +248,61 @@ turret rotation. Existing sparse-row and real-c2p batching tests also pass.
 The `opendune_damage_limited.txt` comparison observed 17.14% fewer assembly
 pixels per video callback, with modest throughput improvement. Differing
 fade phases and cursor footprints prevent an isolated speedup claim.
+
+### Removing animation actor scans (2026-10-09)
+
+`Animation_Func_SetGroundTile()` again uses `Map_Update(...,0,false)` on
+all targets, without scanning units or explosions. The unchanged-tile
+comparison still limits a construction-yard flag transition to one
+terrain tile: its normal frames are `[292,293,297,298]` and
+`[294,293,297,298]` in `ICON.MAP`.
+
+Type 0 marks the changed tile for terrain restoration and its 3x3
+neighborhood for foreground selection. With native phase-reversed
+publication, `RepairTiles()` consumes only terrain-dirty tiles, so the
+foreground halo does not itself restore unchanged visible structure
+tiles. Conservative actor selection remains necessary when a neighboring
+sprite overlaps the changed tile.
+
+The separate hidden-fog repair remains: viewport-dirty hidden tiles are
+promoted to terrain restoration to erase sprite remnants. The broader
+animation marks can therefore cause additional neighboring fog writes or
+selection-outline repaint. Non-native viewport presentation may also
+cover a broader region. These are intentional tradeoffs for removing the
+per-animation actor scan, whose `Unit_Find()` calls consumed 1.09% of
+`battle8` before counting neighborhood arithmetic and explosion checks.
+
+Footprint-based sprite selection is not implemented by this change.
+
+### Filtering tile-driven native sprite publications (2026-10-09)
+
+The native ST/STE phase-reversed renderer now rejects otherwise-clean
+foreground candidates whose composed sprite bounds do not intersect actual
+terrain damage or earlier foreground writes. This applies to all tile-driven
+redraws, not just structure animations; no animation-source bits or cosmetic
+classification are added. The existing center-tile candidate selection and
+ground/explosion/air drawing order remain unchanged.
+
+After terrain marking, including hidden-fog promotion, ten 15-bit row masks
+retain the initial terrain damage. These 20 bytes survive consumption by
+`RepairTiles()`. Accepted foreground publications expand the masks, so later
+candidates are not rejected when an earlier sprite can have overwritten them
+outside the original terrain damage. Structure selection-outline publication
+also expands the masks. Intersection is conservative at tile granularity;
+transparent holes and overlap within a shared tile do not get finer tests.
+
+Unit/effect `isDirty` still overrides rejection. Forced redraws, scrolling
+and non-native rendering retain their existing publication behavior. An
+unexpected sprite-cache fallback disables further rejection for the pass.
+There is no new actor scan, occupancy map, deferred animation or change to
+map tile state, minimap queuing or fog repair.
+
+The check runs after composed-cache lookup but before terrain repair and
+sprite publication. Cached bounds include turret, smoke, harvesting and
+selection layers, but exclude CPU alignment padding. Rejection saves repair
+and publication, not layer construction, cache lookup or composition on a
+cache miss. Net speedup and rejection frequency require a new profile;
+`battle8` predates this change.
 
 ### Opaque money-counter batch presentation (2026-09-30)
 

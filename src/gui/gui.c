@@ -1247,6 +1247,7 @@ void GUI_DrawSprite(Screen screenID, const uint8 *sprite, uint16 spriteID, uint8
 			va_end(ap);
 			return;
 		}
+		GUI_Widget_Viewport_InvalidateSpriteDamage();
 	}
 #endif
 #ifndef TOS
@@ -1391,6 +1392,8 @@ typedef struct ViewportPlanarSprite {
 	uint16 width, height;
 	int16 offsetX, offsetY;
 	uint16 extentWidth;
+	int16 boundsOffsetX;
+	uint16 boundsWidth;
 	Video_Atari_SpriteBlitPlan blitPlans[16];
 	uint16 pixels[80 * 64 / 4];
 	uint16 *masks;
@@ -1686,9 +1689,9 @@ static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 	}
 	if (entry == NULL) {
 		ViewportSpriteMask *masks[5];
-		int16 left[5], top[5], minX = 0, minY = 0;
+		int16 left[5], top[5], minX = 0, minY = 0, boundsOffsetX;
 		int16 maxX = mask->width, maxY = mask->height;
-		uint16 stride, height, groups;
+		uint16 stride, height, groups, boundsWidth;
 		masks[0] = mask;
 		left[0] = top[0] = 0;
 		for (i = 0; i < count; i++) {
@@ -1703,6 +1706,8 @@ static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 			maxX = max(maxX, left[i + 1] + m->width);
 			maxY = max(maxY, top[i + 1] + m->height);
 		}
+		boundsOffsetX = minX;
+		boundsWidth = maxX - minX;
 		if (!blitter) minX -= (uint16)(x + minX) & 15;
 		stride = (maxX - minX + 15) & ~15;
 		height = maxY - minY;
@@ -1742,6 +1747,8 @@ static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 		entry->offsetX = minX;
 		entry->offsetY = minY;
 		entry->extentWidth = maxX - minX;
+		entry->boundsOffsetX = boundsOffsetX;
+		entry->boundsWidth = boundsWidth;
 		memcpy(entry->layerKeys, layerKeys, sizeof(layerKeys));
 		entry->key = key;
 	}
@@ -1750,6 +1757,9 @@ static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 		int16 left = x + entry->offsetX, top = y + entry->offsetY;
 		int16 firstRow = max(40, top), bottom = min(200, top + entry->height);
 		uint16 groups = entry->width >> 4;
+		int16 boundsLeft = x + entry->boundsOffsetX;
+		if (!GUI_Widget_Viewport_ShouldDrawSprite(boundsLeft, top,
+		    boundsLeft + entry->boundsWidth, top + entry->height)) return true;
 		if (blitter) {
 			int16 start = max(0, left), right = min(240, left + entry->extentWidth);
 			if (start < right && firstRow < bottom) {

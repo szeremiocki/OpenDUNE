@@ -48,6 +48,9 @@ static uint32 s_tickClick;                                  /*!< Stores last tim
 
 static bool s_viewportWasPlanar;
 static bool s_viewportRepairActive;
+static bool s_viewportSpriteFilterActive;
+static bool s_viewportSpriteNeedsRedraw;
+static uint16 s_viewportSpriteDamage[10];
 static uint8 s_minimapAppearance[64 * 64];
 static uint8 s_minimapAppearanceValid[64 * 64 / 8];
 static uint16 s_minimapAppearanceScale;
@@ -117,6 +120,65 @@ static bool GUI_Widget_Viewport_CanDrawPlanar(void)
 		if (e->spriteID < 111 || e->spriteID > 354) return false;
 	}
 	return true;
+}
+
+static void GUI_Widget_Viewport_BeginSpriteDamage(bool active)
+{
+	uint16 y;
+
+	s_viewportSpriteFilterActive = active;
+	s_viewportSpriteNeedsRedraw = true;
+	if (!active) return;
+	for (y = 0; y < 10; y++) {
+		uint16 packed = g_viewportPosition + (y << 6);
+		const uint8 *bits = &g_dirtyMinimap[packed >> 3];
+		uint16 shift = packed & 7;
+		uint32 word = (uint32)bits[0] | ((uint32)bits[1] << 8);
+
+		if (shift > 1) word |= (uint32)bits[2] << 16;
+		/* RepairTiles consumes the live bits; retain the original damage. */
+		s_viewportSpriteDamage[y] = (word >> shift) & 0x7fff;
+	}
+}
+
+static bool GUI_Widget_Viewport_SpriteDamageRect(int16 left, int16 top, int16 right, int16 bottom, bool redraw)
+{
+	uint16 first, end, y, columns, firstRow, endRow;
+
+	left = max(left, 0);
+	top = max(top, 40);
+	right = min(right, 240);
+	bottom = min(bottom, 200);
+	if (left >= right || top >= bottom) return false;
+	first = left >> 4;
+	end = (right + 15) >> 4;
+	columns = (0x7fff >> (15 - end)) & (0x7fff << first);
+	firstRow = (top - 40) >> 4;
+	endRow = (bottom - 40 + 15) >> 4;
+	if (!redraw) {
+		for (y = firstRow; y < endRow; y++) {
+			if ((s_viewportSpriteDamage[y] & columns) != 0) break;
+		}
+		if (y == endRow) return false;
+	}
+	/* Earlier foreground writes can require later foreground recomposition,
+	 * even outside the initial terrain damage. */
+	for (y = firstRow; y < endRow; y++) s_viewportSpriteDamage[y] |= columns;
+	return true;
+}
+
+bool GUI_Widget_Viewport_ShouldDrawSprite(int16 left, int16 top, int16 right, int16 bottom)
+{
+	if (!s_viewportSpriteFilterActive) return true;
+	return GUI_Widget_Viewport_SpriteDamageRect(left, top, right, bottom, s_viewportSpriteNeedsRedraw);
+}
+
+void GUI_Widget_Viewport_InvalidateSpriteDamage(void)
+{
+	uint16 y;
+
+	if (!s_viewportSpriteFilterActive) return;
+	for (y = 0; y < 10; y++) s_viewportSpriteDamage[y] = 0x7fff;
 }
 
 void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 bottom)
@@ -783,6 +845,10 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 		g_dirtyViewportCount = 0;
 	}
 
+#ifdef TOS
+	GUI_Widget_Viewport_BeginSpriteDamage(planarViewport && !forceRedraw && !hasScrolled);
+#endif
+
 	/* Draw Sandworm */
 	find.type    = UNIT_SANDWORM;
 	find.index   = 0xFFFF;
@@ -833,6 +899,11 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 		GUI_Widget_Viewport_RepairTiles((int16)x1, (int16)y1, (int16)(x2 + 1), (int16)(y2 + 1));
 #endif
 		GUI_DrawWiredRectangle(x1, y1, x2, y2, 0xFF);
+#ifdef TOS
+		if (s_viewportSpriteFilterActive) {
+			GUI_Widget_Viewport_SpriteDamageRect((int16)x1, (int16)y1, (int16)(x2 + 1), (int16)(y2 + 1), true);
+		}
+#endif
 
 		if (g_selectionState == 0 && g_selectionType == SELECTIONTYPE_PLACE) {
 			GUI_DrawLine(x1, y1, x2, y2, 0xFF);
@@ -870,6 +941,9 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 			packed = Tile_PackTile(u->o.position);
 
 			if ((!u->o.flags.s.isDirty || u->o.flags.s.isNotOnMap) && !forceRedraw && !BitArray_Test(g_dirtyViewport, packed)) continue;
+#ifdef TOS
+			s_viewportSpriteNeedsRedraw = u->o.flags.s.isDirty || forceRedraw;
+#endif
 			u->o.flags.s.isDirty = false;
 
 			if (!g_map[packed].isUnveiled && !g_debugScenario) continue;
@@ -1035,6 +1109,9 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 
 		curPos = Tile_PackTile(e->position);
 
+#ifdef TOS
+		s_viewportSpriteNeedsRedraw = e->isDirty || forceRedraw;
+#endif
 		if (BitArray_Test(g_dirtyViewport, curPos)) e->isDirty = true;
 
 		if (!e->isDirty && !forceRedraw) continue;
@@ -1082,6 +1159,9 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 			curPos = Tile_PackTile(u->o.position);
 
 			if ((!u->o.flags.s.isDirty || u->o.flags.s.isNotOnMap) && !forceRedraw && !BitArray_Test(g_dirtyViewport, curPos)) continue;
+#ifdef TOS
+			s_viewportSpriteNeedsRedraw = u->o.flags.s.isDirty || forceRedraw;
+#endif
 			u->o.flags.s.isDirty = false;
 
 			if (!g_map[curPos].isUnveiled && !g_debugScenario) continue;
@@ -1158,6 +1238,9 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 		g_dirtyAirUnitCount = 0;
 	}
 
+#ifdef TOS
+	s_viewportSpriteFilterActive = false;
+#endif
 	if (updateDisplay) {
 		memset(g_dirtyMinimap,  0, sizeof(g_dirtyMinimap));
 		memset(g_dirtyViewport, 0, sizeof(g_dirtyViewport));
