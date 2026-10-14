@@ -42,12 +42,14 @@ enum { SCREEN_0, SCREEN_1, TIMER_GAME };
 /* SELECTION */
 static int16 s_viewportFade = -1;
 static uint16 g_announcementPhase, g_creditsPhase;
+static bool g_enableCosmeticAnimations;
 static const char *option;
 static unsigned warnings;
 static char *IniFile_GetString(const char *key, const char *fallback, char *out, uint16 size) {
     assert(fallback == NULL);
     if (strcmp(key, "viewport_fade")) {
-        assert(!strcmp(key, "phase_announcement") || !strcmp(key, "phase_credits"));
+        assert(!strcmp(key, "phase_announcement") || !strcmp(key, "phase_credits") ||
+               !strcmp(key, "cosmetic_animations"));
         return NULL;
     }
     if (option == NULL) return NULL;

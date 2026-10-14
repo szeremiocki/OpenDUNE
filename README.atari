@@ -149,6 +149,20 @@ cold-cache work. Other screen transitions are unchanged. The default remains
 enabled on TT/Falcon and non-Atari platforms. Invalid values warn and use the
 platform default.
 
+Cosmetic structure flag waving can be disabled with:
+
+[opendune]
+cosmetic_animations=0
+
+Use 1 (default) to retain the original animations. Currently this option only
+freezes structure flags at their completed-building pose, including flags in
+factory activity sequences. It prevents recurring flag-driven terrain updates
+and neighboring sprite redraws. Factory/repair doors, refinery activity,
+Outpost radar rotation, turret aiming, construction and unit/map effects remain
+unchanged. Animation commands still run with their original timing and random
+pauses, preserving shared RNG consumption; flag-only frames do not dirty tiles.
+This engine-level setting works on every platform. Invalid values warn and use 1.
+
 Based on a typical scene on level 1 :
 
 - 68000 build on ST/STE is 6-15fps (busy-quiet), Mega STE is 18fps

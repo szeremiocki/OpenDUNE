@@ -39,6 +39,7 @@ enum { SCREEN_0, SCREEN_1, SCREEN_WIDTH = 320 };
 #define min(a,b) ((a) < (b) ? (a) : (b))
 static uint16 g_announcementPhase = 1;
 static uint16 g_creditsPhase = 1;
+static bool g_enableCosmeticAnimations = true;
 static int16 s_viewportFade = -1;
 static uint32 g_timerGUI;
 static bool g_textDisplayNeedsUpdate;
@@ -58,7 +59,7 @@ static char *IniFile_GetString(const char *key, const char *fallback, char *out,
     else if (!strcmp(key, "phase_credits")) {
         value = creditsOption;
     } else {
-        assert(!strcmp(key, "viewport_fade"));
+        assert(!strcmp(key, "viewport_fade") || !strcmp(key, "cosmetic_animations"));
         value = NULL;
     }
     if (value == NULL) return NULL;

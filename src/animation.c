@@ -8,6 +8,7 @@
 #include "animation.h"
 
 #include "audio/sound.h"
+#include "config.h"
 #include "map.h"
 #include "sprites.h"
 #include "structure.h"
@@ -132,14 +133,39 @@ static void Animation_Func_Rewind(Animation *animation, int16 parameter)
  */
 static void Animation_Func_SetGroundTile(Animation *animation, int16 parameter)
 {
+	/* Flag-only cells in completed structure frames; WOR's flag spans two tiles. */
+	static const uint8 flagTileMasks[ICM_ICONGROUP_EOF] = {
+		[ICM_ICONGROUP_HOUSE_PALACE]          = 0x01,
+		[ICM_ICONGROUP_LIGHT_VEHICLE_FACTORY] = 0x02,
+		[ICM_ICONGROUP_HEAVY_VEHICLE_FACTORY] = 0x01,
+		[ICM_ICONGROUP_HI_TECH_FACTORY]       = 0x08,
+		[ICM_ICONGROUP_IX_RESEARCH]           = 0x08,
+		[ICM_ICONGROUP_WOR_TROOPER_FACILITY]  = 0x05,
+		[ICM_ICONGROUP_CONSTRUCTION_YARD]    = 0x01,
+		[ICM_ICONGROUP_INFANTRY_BARRACKS]     = 0x08,
+		[ICM_ICONGROUP_WINDTRAP_POWER]        = 0x08,
+		[ICM_ICONGROUP_STARPORT_FACILITY]     = 0x01,
+		[ICM_ICONGROUP_SPICE_REFINERY]        = 0x02,
+		[ICM_ICONGROUP_VEHICLE_REPAIR_CENTRE]  = 0x02,
+		[ICM_ICONGROUP_SPICE_STORAGE_SILO]    = 0x02,
+		[ICM_ICONGROUP_RADAR_OUTPOST]        = 0x04
+	};
 	uint16 specialMap[1];
 	uint16 *iconMap;
+	const uint16 *flagMap = NULL;
+	uint16 flagTiles = 0;
 	const uint16 *layout = g_table_structure_layoutTiles[animation->tileLayout];
 	uint16 layoutTileCount = g_table_structure_layoutTileCount[animation->tileLayout];
 	uint16 packed = Tile_PackTile(animation->tile);
 	int i;
 
 	iconMap = &g_iconMap[g_iconMap[animation->iconGroup] + layoutTileCount * parameter];
+
+	if (!g_enableCosmeticAnimations && parameter >= 2 && animation->tileLayout != 0 &&
+	    animation->iconGroup < ICM_ICONGROUP_EOF) {
+		flagTiles = flagTileMasks[animation->iconGroup];
+		flagMap = &g_iconMap[g_iconMap[animation->iconGroup] + layoutTileCount * 2];
+	}
 
 	/* Some special case for turrets */
 	if ((parameter > 1) && (animation->iconGroup == ICM_ICONGROUP_BASE_DEFENSE_TURRET || animation->iconGroup == ICM_ICONGROUP_BASE_ROCKET_TURRET)) {
@@ -155,6 +181,9 @@ static void Animation_Func_SetGroundTile(Animation *animation, int16 parameter)
 		uint16 position = packed + (*layout++);
 		uint16 tileID = *iconMap++;
 		Tile *t = &g_map[position];
+
+		if ((flagTiles & 1) != 0) tileID = flagMap[i];
+		flagTiles >>= 1;
 
 		if (t->groundTileID == tileID) continue;
 		t->groundTileID = tileID;

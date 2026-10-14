@@ -22,6 +22,7 @@ GameCfg g_gameConfig = { 1, 1, 2, 1, 0 };
 DuneCfg g_config;
 uint16 g_announcementPhase = 1;
 uint16 g_creditsPhase = 1;
+bool g_enableCosmeticAnimations = true;
 bool g_enableSoundMusic = true;
 bool g_enableVoices = true;
 /* Options load before Video_Init; resolve the default after machine detection. */
@@ -55,6 +56,7 @@ void Config_LoadAnimationPhases(void)
 	g_announcementPhase = Config_ReadAnimationPhase("phase_announcement");
 	g_creditsPhase = Config_ReadAnimationPhase("phase_credits");
 	s_viewportFade = Config_ReadAnimationOption("viewport_fade", -1, 1);
+	g_enableCosmeticAnimations = Config_ReadAnimationOption("cosmetic_animations", 1, 1) != 0;
 }
 
 bool Config_ViewportFadeEnabled(void)

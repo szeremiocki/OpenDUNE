@@ -19,7 +19,11 @@ class AnimationDamageTest(unittest.TestCase):
         map_source = (ROOT / "src/map.c").read_text()
         start = animation.index("typedef struct Animation {")
         structure = animation[start:animation.index("} Animation;", start) + len("} Animation;")]
+        sprites = (ROOT / "src/sprites.h").read_text()
+        start = sprites.index("typedef enum IconMapEntries")
+        icons = sprites[start:sprites.index("} IconMapEntries;", start) + len("} IconMapEntries;")]
         production = "\n".join((
+            icons,
             structure,
             function(map_source, "Map_Update"),
             function(map_source, "Map_MarkTileDirty"),
@@ -38,8 +42,7 @@ typedef struct { uint16 x, y; } tile32;
 typedef struct { unsigned command; int16 parameter; } AnimationCommandStruct;
 typedef struct { uint16 groundTileID, overlayTileID; uint8 houseID; } Tile;
 typedef struct { uint16 rotationSpriteDiff; } Structure;
-#define ICM_ICONGROUP_BASE_DEFENSE_TURRET 19
-#define ICM_ICONGROUP_BASE_ROCKET_TURRET 20
+static bool g_enableCosmeticAnimations = true;
 #define lengthof(a) (sizeof(a) / sizeof((a)[0]))
 static Tile g_map[4096];
 static uint8 g_dirtyViewport[512], g_dirtyMinimap[512], g_displayedViewport[512];

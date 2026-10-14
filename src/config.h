@@ -37,6 +37,7 @@ extern GameCfg g_gameConfig;
 extern DuneCfg g_config;
 extern uint16 g_announcementPhase;
 extern uint16 g_creditsPhase;
+extern bool g_enableCosmeticAnimations;
 
 extern bool g_enableSoundMusic;
 extern bool g_enableVoices;
