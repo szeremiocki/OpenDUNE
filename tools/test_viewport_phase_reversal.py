@@ -15,6 +15,183 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ViewportPhaseReversalTest(unittest.TestCase):
+    def test_sandworm_reserved_slots(self):
+        viewport = (ROOT / "src/gui/viewport.c").read_text()
+        start = viewport.index("\t/* Draw Sandworm */")
+        worm = viewport[start:viewport.index("\n\tif (g_unitSelected == NULL", start)]
+        pool = (ROOT / "src/pool/unit.c").read_text()
+        harness = r"""
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
+typedef uint8_t uint8;
+typedef uint16_t uint16;
+typedef struct {
+    struct {
+        struct { struct { bool used, isNotOnMap, isDirty; } s; } flags;
+        uint16 type, position, houseID;
+    } o;
+    uint16 targetLast, targetPreLast;
+} Unit;
+typedef struct { uint16 type, index, houseID; } PoolFindStruct;
+#define UNIT_SANDWORM 25
+#define UNIT_INDEX_INVALID 0xffff
+#define HOUSE_INVALID 0xffff
+#define SCREEN_ACTIVE 0
+#define GUI_SPRITE_COLOUR_EMBEDDED 0
+#define DRAWSPRITE_FLAG_BLUR 1
+#define DRAWSPRITE_FLAG_WIDGETPOS 2
+#define DRAWSPRITE_FLAG_CENTER 4
+static Unit units[102], *g_unitSelected;
+static struct { uint16 indexStart, indexEnd, groundSpriteID; } g_table_unitInfo[27] = {
+    [UNIT_SANDWORM] = {16, 17, 111}
+};
+static struct { bool isUnveiled; } g_map[4096];
+static uint8 pixels[112], *g_sprites[112];
+static bool g_debugScenario, visible[4096];
+static uint16 g_validateStrictIfZero;
+static unsigned peeks, draws, checks;
+static uint16 drawn[8], checked[8];
+static Unit *Unit_Get_ByIndex(uint16 index) {
+    assert(index == 16 || index == 17);
+    peeks++;
+    return &units[index];
+}
+static uint16 Unit_GetHouseID(Unit *u) { return u->o.houseID; }
+#ifndef TOS
+static Unit *g_unitFindArray[102];
+static uint16 g_unitFindCount;
+/* FIND */
+#endif
+static uint16 Tile_PackTile(uint16 position) { return position; }
+static void GUI_Widget_Viewport_GetSprite_HousePalette(uint16 id, uint16 house, uint8 *palette) {
+    assert(id == 111 && house == 0);
+    (void)palette;
+}
+static bool Map_IsPositionInViewport(uint16 position, uint16 *x, uint16 *y) {
+    assert(checks < 8);
+    checked[checks++] = position;
+    *x = position; *y = 0;
+    return visible[position];
+}
+static void GUI_DrawSprite(int screen, uint8 *sprite, uint16 id, int colour,
+                           uint16 x, uint16 y, int widget, int flags) {
+    assert(screen == 0 && sprite == g_sprites[id] && colour == 0 && y == 0 && widget == 2);
+    assert(flags == (id == 6 ? 6 : 7));
+    assert(draws < 8);
+    drawn[draws++] = id == 6 ? 1000 + x : x;
+}
+static void draw(bool forceRedraw) {
+    uint16 i = 0, x, y;
+    PoolFindStruct find = {0};
+    uint8 paletteHouse[16] = {0};
+    (void)i; (void)find;
+    /* WORM */
+}
+static void reset(void) {
+    memset(units, 0, sizeof(units));
+    memset(g_map, 0, sizeof(g_map));
+    memset(visible, 0, sizeof(visible));
+    peeks = draws = checks = 0;
+    g_debugScenario = false;
+    g_validateStrictIfZero = 0;
+    g_unitSelected = NULL;
+    for (unsigned i = 0; i < 112; i++) g_sprites[i] = &pixels[i];
+    for (unsigned i = 16; i <= 17; i++) {
+        Unit *u = &units[i];
+        u->o.type = UNIT_SANDWORM;
+        u->o.position = i;
+        u->targetLast = i + 100;
+        u->targetPreLast = i + 200;
+        g_map[i].isUnveiled = true;
+        visible[i] = visible[i + 100] = visible[i + 200] = true;
+    }
+#ifndef TOS
+    g_unitFindCount = 0;
+#endif
+}
+static void activate(unsigned i) {
+    units[i].o.flags.s.used = true;
+    units[i].o.flags.s.isDirty = true;
+#ifndef TOS
+    g_unitFindArray[g_unitFindCount++] = &units[i];
+#endif
+}
+int main(void) {
+    reset();
+    draw(true);
+    assert(!draws && !checks);
+#ifdef TOS
+    assert(peeks == 2);
+#else
+    assert(!peeks);
+#endif
+    /* Empty/wrong-type/off-map slots must not consume dirty flags. */
+    reset();
+    activate(16); activate(17);
+    units[16].o.type = 0;
+    units[17].o.flags.s.isNotOnMap = true;
+    draw(true);
+    assert(!draws && !checks);
+    assert(units[16].o.flags.s.isDirty && units[17].o.flags.s.isDirty);
+    /* Both worms, three positions each, plus selection; stable slot order on TOS. */
+    reset();
+    activate(17); activate(16);
+    g_unitSelected = &units[17];
+    draw(false);
+    assert(draws == 7 && checks == 7);
+    assert(!units[16].o.flags.s.isDirty && !units[17].o.flags.s.isDirty);
+#ifdef TOS
+    assert(peeks == 2);
+    assert(drawn[0] == 16 && drawn[1] == 116 && drawn[2] == 216);
+    assert(drawn[3] == 17 && drawn[6] == 1017);
+#else
+    assert(!peeks);
+    assert(drawn[0] == 17 && drawn[3] == 1017 && drawn[4] == 16);
+#endif
+    /* Clean worm, forced redraw, fog and debug fog override. */
+    reset(); activate(16);
+    units[16].o.flags.s.isDirty = false;
+    draw(false);
+    assert(!draws && !checks);
+    draw(true);
+    assert(draws == 3);
+    reset(); activate(16);
+    g_map[16].isUnveiled = false;
+    draw(false);
+    assert(!draws && !checks && !units[16].o.flags.s.isDirty);
+    g_debugScenario = true;
+    draw(true);
+    assert(draws == 3);
+    /* A trailing position can be visible while the current position is outside. */
+    reset(); activate(16);
+    visible[16] = visible[216] = false;
+    draw(false);
+    assert(draws == 1 && drawn[0] == 116 && checks == 3);
+    /* Match Unit_Find's strict-validation exception for off-map units. */
+    reset(); activate(17);
+    units[17].o.flags.s.isNotOnMap = true;
+    g_validateStrictIfZero = 1;
+    draw(false);
+    assert(draws == 3 && !units[17].o.flags.s.isDirty);
+    return 0;
+}
+"""
+        harness = harness.replace("/* WORM */", worm)
+        harness = harness.replace("/* FIND */", function(pool, "Unit_Find"))
+        with tempfile.TemporaryDirectory(prefix="viewport-worm-slots-") as directory:
+            source = Path(directory) / "test.c"
+            binary = Path(directory) / "test"
+            source.write_text(harness)
+            compiler = shlex.split(os.environ.get("CC", "cc"))
+            flags = shlex.split(os.environ.get("TEST_CFLAGS", ""))
+            for platform in ([], ["-DTOS"]):
+                subprocess.run([*compiler, "-std=c99", "-O2", "-Wall", "-Wextra",
+                                "-Werror", "-Wno-unused-function", *flags, *platform,
+                                str(source), "-o", str(binary)], check=True)
+                subprocess.run([str(binary)], check=True)
+
     def test_hidden_tile_damage_gate(self):
         viewport = (ROOT / "src/gui/viewport.c").read_text()
         start = viewport.index("\tif (g_dirtyViewportCount != 0 || forceRedraw) {")
@@ -168,7 +345,7 @@ int main(void) {
                             str(source), "-o", str(binary)], check=True)
             subprocess.run([str(binary)], check=True)
 
-    def test_aircraft_shadow_policy(self):
+    def test_aircraft_shadow_and_readiness_policy(self):
         viewport = (ROOT / "src/gui/viewport.c").read_text()
         eligibility = function(viewport, "GUI_Widget_Viewport_CanDrawPlanar")
         shadow_gate = re.search(r"if \(ui->o.flags.hasShadow.*?\) \{", viewport, re.S).group()
@@ -193,38 +370,10 @@ static bool draws_shadow(bool shadow, bool directViewport) {
     return false;
 }
 #ifdef TOS
-#define HOUSE_INVALID 0xffff
-#define UNIT_SANDWORM 10
-#define EXPLOSION_MAX 1
-typedef struct { uint16 type, index, houseID; } PoolFindStruct;
-typedef struct {
-    struct { uint16 type, index, position; } o;
-    uint16 targetLast, targetPreLast;
-    int16_t spriteOffset;
-} Unit;
-typedef struct { void *commands; uint16 spriteID, position; } Explosion;
-static Unit unit;
-static UnitInfo g_table_unitInfo[11];
-static struct { bool isUnveiled; } g_map[1] = {{true}};
-static Explosion explosion;
-static bool g_debugScenario, direct = true, ready = true, visible = true;
+static bool direct, tilesReady, spritesReady;
 static bool Video_Atari_CursorDirect(void) { return direct; }
-static bool GFX_PlanarTilesReady(void) { return ready; }
-static bool GUI_ViewportSpriteCacheReady(void) { return ready; }
-static Unit *Unit_Find(PoolFindStruct *find) {
-    if (find->index != 0xffff) return NULL;
-    find->index = 0;
-    return &unit;
-}
-static uint16 Tile_PackTile(uint16 position) { return position; }
-static bool Map_IsPositionInViewport(uint16 position, uint16 *x, uint16 *y) {
-    (void)position; (void)x; (void)y;
-    return visible;
-}
-static Explosion *Explosion_Get_ByIndex(uint16 index) {
-    assert(index == 0);
-    return &explosion;
-}
+static bool GFX_PlanarTilesReady(void) { return tilesReady; }
+static bool GUI_ViewportSpriteCacheReady(void) { return spritesReady; }
 /* ELIGIBILITY */
 #endif
 int main(void) {
@@ -233,29 +382,13 @@ int main(void) {
     assert(draws_shadow(true, false));
 #ifdef TOS
     assert(!draws_shadow(true, true));
-    UnitInfo *ui = &g_table_unitInfo[0];
-    ui->groundSpriteID = 236;
-    ui->turretSpriteID = 0xffff;
-    ui->o.flags.hasShadow = true;
-    assert(GUI_Widget_Viewport_CanDrawPlanar());
-    ui->o.flags.blurTile = true;
-    assert(!GUI_Widget_Viewport_CanDrawPlanar());
-    ui->o.flags.blurTile = false;
-    ui->groundSpriteID = 355;
-    assert(!GUI_Widget_Viewport_CanDrawPlanar());
-    ui->groundSpriteID = 236;
-    explosion.commands = &unit;
-    explosion.spriteID = 355;
-    assert(!GUI_Widget_Viewport_CanDrawPlanar());
-    explosion.commands = NULL;
-    unit.o.type = UNIT_SANDWORM;
-    assert(!GUI_Widget_Viewport_CanDrawPlanar());
-    unit.o.type = 0;
-    direct = false;
-    assert(!GUI_Widget_Viewport_CanDrawPlanar());
-    direct = true;
-    ready = false;
-    assert(!GUI_Widget_Viewport_CanDrawPlanar());
+    /* No actor APIs are supplied: eligibility must only inspect readiness. */
+    for (unsigned state = 0; state < 8; state++) {
+        direct = (state & 1) != 0;
+        tilesReady = (state & 2) != 0;
+        spritesReady = (state & 4) != 0;
+        assert(GUI_Widget_Viewport_CanDrawPlanar() == (state == 7));
+    }
 #else
     assert(draws_shadow(true, true));
 #endif
@@ -275,6 +408,55 @@ int main(void) {
                                 "-Werror", *flags, *platform, str(source), "-o", str(binary)],
                                check=True)
                 subprocess.run([str(binary)], check=True)
+
+    def test_stock_actor_sprite_cache_coverage(self):
+        gui = (ROOT / "src/gui/gui.c").read_text()
+        cache = function(gui, "GUI_InitViewportSpriteCache")
+        bounds = re.search(
+            r"for \(id = (\d+); id <= (\d+); id = id == (\d+) \? (\d+) : id \+ 1\)",
+            cache,
+        )
+        self.assertIsNotNone(bounds)
+        special, last, selector, first = map(int, bounds.groups())
+        self.assertEqual(special, selector)
+        prepared = {special, *range(first, last + 1)}
+        units = (ROOT / "src/table/unitinfo.c").read_text()
+        entries = re.findall(
+            r'/\* name\s+\*/ "([^"]+)",.*?'
+            r'/\* groundSpriteID\s+\*/ (\d+),\s*'
+            r'/\* turretSpriteID\s+\*/ (-?\d+),.*?'
+            r'/\* displayMode\s+\*/ (\w+),\s*'
+            r'/\* destroyedSpriteID\s+\*/ (\d+)', units, re.S,
+        )
+        self.assertEqual(len(entries), len(re.findall(r"/\* name\s+\*/", units)))
+        self.assertGreater(len(entries), 0)
+        for name, body, turret, mode, destroyed in entries:
+            with self.subTest(unit=name):
+                body, turret, destroyed = map(int, (body, turret, destroyed))
+                if mode == "DISPLAYMODE_INFANTRY_4_FRAMES":
+                    offsets = range(12)
+                elif mode == "DISPLAYMODE_INFANTRY_3_FRAMES":
+                    offsets = range(9)
+                elif mode == "DISPLAYMODE_ORNITHOPTER":
+                    offsets = range(9)
+                elif mode == "DISPLAYMODE_ROCKET":
+                    offsets = range(10)
+                elif mode == "DISPLAYMODE_UNIT":
+                    offsets = range(6)
+                else:
+                    offsets = range(2)
+                self.assertTrue({body + i for i in offsets} <= prepared)
+                if turret != -1:
+                    self.assertTrue({turret + i for i in range(5)} <= prepared)
+                if destroyed:
+                    # spriteOffset is signed 8-bit; cover every negative value.
+                    self.assertTrue({destroyed - i - 1 for i in range(-128, 0)} <= prepared)
+        explosions = (ROOT / "src/table/explosion.c").read_text()
+        frames = set(map(int, re.findall(
+            r"\{\s*EXPLOSION_SET_SPRITE\s*,\s*(\d+)\s*\}", explosions,
+        )))
+        self.assertGreater(len(frames), 0)
+        self.assertTrue(frames <= prepared)
 
     def test_pending_tile_repair(self):
         viewport = (ROOT / "src/gui/viewport.c").read_text()

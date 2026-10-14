@@ -84,42 +84,7 @@ static bool GUI_Widget_Viewport_MinimapUpdateDue(void)
 
 static bool GUI_Widget_Viewport_CanDrawPlanar(void)
 {
-	PoolFindStruct find;
-	Unit *u;
-	uint16 x, y, i;
-	Explosion *explosions;
-
-	if (!Video_Atari_CursorDirect() || !GFX_PlanarTilesReady() || !GUI_ViewportSpriteCacheReady()) return false;
-	/* These effects need the original destination palette indices, not
-	 * the already-quantized pens. Reconstruct SCREEN_1 before using them. */
-	find.type = find.index = 0xffff;
-	find.houseID = HOUSE_INVALID;
-	while ((u = Unit_Find(&find)) != NULL) {
-		const UnitInfo *ui = &g_table_unitInfo[u->o.type];
-		if (!g_map[Tile_PackTile(u->o.position)].isUnveiled && !g_debugScenario) continue;
-		if (u->o.type == UNIT_SANDWORM) {
-			if (Map_IsPositionInViewport(u->o.position, &x, &y) ||
-			    Map_IsPositionInViewport(u->targetLast, &x, &y) ||
-			    Map_IsPositionInViewport(u->targetPreLast, &x, &y)) return false;
-			continue;
-		}
-		if (u->o.index > 15 && (u->o.index < 20 || u->o.index > 101)) continue;
-		if (!Map_IsPositionInViewport(u->o.position, &x, &y)) continue;
-		if (ui->o.flags.blurTile) return false;
-		if (ui->groundSpriteID < 111 || ui->groundSpriteID > 350) return false;
-		if (u->spriteOffset < 0 && ui->destroyedSpriteID != 0 &&
-		    (ui->destroyedSpriteID < 111 || ui->destroyedSpriteID - u->spriteOffset - 1 > 354)) return false;
-		if (ui->turretSpriteID != 0xffff && (ui->turretSpriteID < 111 || ui->turretSpriteID > 350)) return false;
-	}
-	explosions = Explosion_Get_ByIndex(0);
-	for (i = 0; i < EXPLOSION_MAX; i++) {
-		Explosion *e = explosions + i;
-		if (e->commands == NULL || e->spriteID == 0) continue;
-		if (!g_map[Tile_PackTile(e->position)].isUnveiled && !g_debugScenario) continue;
-		if (!Map_IsPositionInViewport(e->position, &x, &y)) continue;
-		if (e->spriteID < 111 || e->spriteID > 354) return false;
-	}
-	return true;
+	return Video_Atari_CursorDirect() && GFX_PlanarTilesReady() && GUI_ViewportSpriteCacheReady();
 }
 
 static void GUI_Widget_Viewport_BeginSpriteDamage(bool active)
@@ -850,17 +815,27 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 #endif
 
 	/* Draw Sandworm */
+#ifdef TOS
+	for (i = g_table_unitInfo[UNIT_SANDWORM].indexStart; i <= g_table_unitInfo[UNIT_SANDWORM].indexEnd; i++) {
+#else
 	find.type    = UNIT_SANDWORM;
 	find.index   = 0xFFFF;
 	find.houseID = HOUSE_INVALID;
 
 	while (true) {
+#endif
 		Unit *u;
 		uint8 *sprite;
 
+#ifdef TOS
+		u = Unit_Get_ByIndex(i);
+		if (!u->o.flags.s.used || u->o.type != UNIT_SANDWORM) continue;
+		if (u->o.flags.s.isNotOnMap && g_validateStrictIfZero == 0) continue;
+#else
 		u = Unit_Find(&find);
 
 		if (u == NULL) break;
+#endif
 
 		if (!u->o.flags.s.isDirty && !forceRedraw) continue;
 		u->o.flags.s.isDirty = false;

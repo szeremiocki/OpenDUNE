@@ -49,9 +49,13 @@ clear the original bitset. Byte-wise extraction supports every viewport alignmen
 without unaligned word reads or a third-byte read past the map's end.
 
 Scope is the eligible direct planar ST/STE viewport. Other machines,
-off-screen drawing, fades and background-reading effects retain the existing
+off-screen drawing and fades retain the existing
 terrain-first fallback. Aircraft shadows are omitted on ST/STE in both planar
-and chunky viewport paths; other background-reading effects retain their fallback.
+and chunky viewport paths. The current profiling experiment removes unit and
+explosion eligibility scans, retaining only hardware/cache readiness checks.
+Worm and Sonic Blast distortion remain unimplemented in native planar form;
+they no longer select the chunky backend. Avoid those scenes for profiling
+until native replacements are available.
 Viewport-only damage in fully hidden cells is promoted into pending terrain
 repair. Hidden repairs publish a cached opaque colour-12 tile even without a
 forced redraw, consuming the pending bit before publication just like ordinary

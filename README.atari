@@ -273,9 +273,20 @@ fixed gameplay palette mapping; subsequent repairs need no c2p conversion.
 Aircraft shadows are omitted on ST/STE, including its
 chunky fallbacks, so a flyover no longer disables cached planar rendering
 for the whole viewport. Aircraft bodies retain their normal colours and
-painter order; other platforms retain their shadows. Visible sandworm blur
-and blurred units retain the original chunky compositor because they read
-underlying logical palette indices. Switching paths reconstructs the complete scene.
+painter order; other platforms retain their shadows. For the current ST/STE
+profiling experiment, viewport backend selection checks only hardware and
+tile/sprite-cache readiness; it no longer scans units or explosions.
+The Atari sandworm drawing pass checks its reserved unit slots (16 and 17)
+in slot order instead of searching the active unit list. It retains the
+used/type, on-map, dirty, fog and current/trailing-position drawing checks.
+This assumes normal unit allocation; hacked saves with worms outside their
+reserved slots are not supported by this shortcut.
+Stock battlefield sprite ranges are covered by the cache. Sandworm and
+Sonic Blast distortion do not yet have native planar implementations and
+no longer trigger a chunky fallback: scenes containing them are not supported
+by this experiment yet. Profile scenes without these effects until the planned
+planar replacements are implemented. Off-screen composition and viewport
+dissolves retain their existing paths; backend changes reconstruct the scene.
 ST/STE unit-to-target and target-to-unit selection changes reset widget state
 without redrawing unchanged base widgets or running the second full widget
 draw pass. Changed widget visibility/selection still triggers drawing, and
