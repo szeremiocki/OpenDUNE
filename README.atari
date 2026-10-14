@@ -104,6 +104,17 @@ than battle12), again with a different workload. Hatari profiles must include
 both the native runner/handlers and generated entries in heap ST_RAM, not
 only Script_RunInternal or PROGRAM_TEXT.
 
+Ground-unit pathfinding keeps both obstacle-following walks inside one
+connection search, alternating one candidate step per active walk, clockwise
+first. Each walk is limited to 40 accepted steps. The first arrival wins,
+with clockwise winning same-step ties; the other walk stops immediately.
+This intentionally replaces the original lowest-smoothed-cost selection and
+100-step limit. The complete winning detour is smoothed before the caller
+copies the prefix that fits its output capacity. Longer valid bypasses may
+now fail and require later retries. tools/test_pathfinder_connect.py compares
+paired walks and complete paths with an independent first-arrival reference,
+including success on step 40, rejection beyond the limit and bounded prefixes.
+
 The engine announcement banner supports this opendune.ini setting:
 
 [opendune]

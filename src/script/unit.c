@@ -1107,67 +1107,112 @@ static void Script_Unit_Pathfinder_Smoothen(Pathfinder_Data *data)
 }
 
 /**
- * Try to connect two tiles (packedDst and data->packed) via a simplistic algorithm.
+ * Alternate obstacle-following walks, taking the first arrival within 40 steps.
  * @param packedDst The tile to try to get to.
- * @param data Information about the found route, and the start point.
- * @param searchDirection The search direction (1 for clockwise, -1 for counterclockwise).
+ * @param data Start point and output buffer; receives the complete smoothed route and cost.
  * @param directionStart The direction to start looking at.
  * @return True if a route was found.
  */
-static bool Script_Unit_Pathfinder_Connect(uint16 packedDst, Pathfinder_Data *data, int8 searchDirection, uint8 directionStart)
+static bool Script_Unit_Pathfinder_Connect(uint16 packedDst, Pathfinder_Data *data, uint8 directionStart)
 {
-	uint16 packedNext;
-	uint16 packedCur;
-	uint8 *buffer;
-	uint16 bufferSize;
+	uint8 bufferC[42], bufferCC[42];
+	uint16 packedCurC, packedCurCC, packedNext = data->packed;
+	uint16 bufferSize = 0;
+	uint8 directionC, directionCC;
 
-	packedCur  = data->packed;
-	buffer     = data->buffer;
-	bufferSize = 0;
+	bool walkC = true, walkCC = true;
 
-	while (bufferSize < 100) {
-		uint8 direction = directionStart;
+	packedCurC = packedCurCC = data->packed;
+	directionC = directionCC = directionStart;
 
-		while (true) {
-			/* Look around us, first in the start direction, for a valid tile */
-			direction = (direction + searchDirection) & 0x7;
+	while ((walkC || walkCC) && bufferSize < 40) {
 
-			/* In case we are directly looking at our destination tile, we are pretty much done */
-			if ((direction & 0x1) != 0 && (packedCur + s_mapDirection[(direction + searchDirection) & 0x7]) == packedDst) {
-				direction = (direction + searchDirection) & 0x7;
-				packedNext = packedCur + s_mapDirection[direction];
+		/* clockwise walk step */
+		uint8 direction = directionC;
+		while (walkC) {
+			direction = (direction + 1) & 0x7;
+
+			if ((direction & 0x1) != 0 && (packedCurC + s_mapDirection[(direction + 1) & 0x7]) == packedDst) {
+				direction = (direction + 1) & 0x7;
+				packedNext = packedCurC + s_mapDirection[direction];
 				break;
-			} else {
-				/* If we are back to our start direction, we didn't find a route */
-				if (direction == directionStart) return false;
+			}
 
-				/* See if the tile next to us is a valid position */
-				packedNext = packedCur + s_mapDirection[direction];
-				if (Script_Unit_Pathfind_GetScore(packedNext, direction) <= 255) break;
+			if (direction == directionC) {
+				walkC = false;
+				break;
+			}
+
+			packedNext = packedCurC + s_mapDirection[direction];
+			if (Script_Unit_Pathfind_GetScore(packedNext, direction) <= 255) break;
+		}
+
+		if (walkC) {
+			bufferC[bufferSize] = direction;
+
+			if (packedNext == packedDst) {
+				bufferC[++bufferSize] = 0xFF;
+				memcpy(data->buffer, bufferC, bufferSize);
+				data->routeSize = bufferSize;
+				Script_Unit_Pathfinder_Smoothen(data);
+				data->routeSize--;
+				return true;
+			}
+
+			/* If we return to our start tile, we didn't find a route */
+			if (data->packed == packedNext)
+				walkC = false;
+			else {
+				/* Now look at the next tile, starting 3 directions back */
+				directionC = (direction - 3) & 0x7;
+				packedCurC = packedNext;
+			}
+		}
+		/* counter-clockwise step */
+		direction = directionCC;
+		while (walkCC) {
+			direction = (direction - 1) & 0x7;
+
+			if ((direction & 0x1) != 0 && (packedCurCC + s_mapDirection[(direction - 1) & 0x7]) == packedDst) {
+				direction = (direction - 1) & 0x7;
+				packedNext = packedCurCC + s_mapDirection[direction];
+				break;
+			}
+
+			if (direction == directionCC) {
+				walkCC = false;
+				break;
+			}
+
+			packedNext = packedCurCC + s_mapDirection[direction];
+			if (Script_Unit_Pathfind_GetScore(packedNext, direction) <= 255) break;
+		}
+
+		if (walkCC) {
+			bufferCC[bufferSize] = direction;
+
+			if (packedNext == packedDst) {
+				bufferCC[++bufferSize] = 0xFF;
+				memcpy(data->buffer, bufferCC, bufferSize);
+				data->routeSize = bufferSize;
+				Script_Unit_Pathfinder_Smoothen(data);
+				data->routeSize--;
+				return true;
+			}
+
+			/* If we return to our start tile, we didn't find a route */
+			if (data->packed == packedNext)
+				walkCC = false;
+			else {
+				/* Now look at the next tile, starting 3 directions back */
+				directionCC = (direction + 3) & 0x7;
+				packedCurCC = packedNext;
 			}
 		}
 
-		*buffer++ = direction;
 		bufferSize++;
-
-		/* If we found the destination, smooth the route and we are done */
-		if (packedNext == packedDst) {
-			*buffer = 0xFF;
-			data->routeSize = bufferSize;
-			Script_Unit_Pathfinder_Smoothen(data);
-			data->routeSize--;
-			return true;
-		}
-
-		/* If we return to our start tile, we didn't find a route */
-		if (data->packed == packedNext) return false;
-
-		/* Now look at the next tile, starting 3 directions back */
-		directionStart = (direction - searchDirection * 3) & 0x7;
-		packedCur = packedNext;
 	}
 
-	/* We ran out of search space and didn't find a route */
 	return false;
 }
 
@@ -1213,12 +1258,14 @@ static Pathfinder_Data Script_Unit_Pathfinder(uint16 packedSrc, uint16 packedDst
 			res.score += score;
 		} else {
 			uint8 dir;
-			bool foundCounterclockwise = false;
-			bool foundClockwise = false;
+			bool found = false;
 			int16 routeSize;
-			Pathfinder_Data routes[2];
-			uint8 routesBuffer[2][102];
-			Pathfinder_Data *bestRoute;
+			uint8 routeBuffer[52];
+			Pathfinder_Data route;
+			route.packed = packedCur;
+			route.score = 0;
+			route.routeSize = 0;
+			route.buffer = routeBuffer;
 
 			while (true) {
 				if (packedNext == packedDst) break;
@@ -1229,19 +1276,8 @@ static Pathfinder_Data Script_Unit_Pathfinder(uint16 packedSrc, uint16 packedDst
 				if (Script_Unit_Pathfind_GetScore(packedNext, dir) > 255) continue;
 
 				/* Try to find a connection between our last valid tile and the new valid tile */
-				routes[1].packed    = packedCur;
-				routes[1].score     = 0;
-				routes[1].routeSize = 0;
-				routes[1].buffer    = routesBuffer[0];
-				foundCounterclockwise = Script_Unit_Pathfinder_Connect(packedNext, &routes[1], -1, direction);
-
-				routes[0].packed    = packedCur;
-				routes[0].score     = 0;
-				routes[0].routeSize = 0;
-				routes[0].buffer    = routesBuffer[1];
-				foundClockwise = Script_Unit_Pathfinder_Connect(packedNext, &routes[0], 1, direction);
-
-				if (foundCounterclockwise || foundClockwise) break;
+				found = Script_Unit_Pathfinder_Connect(packedNext, &route, direction);
+				if (found) break;
 
 				do {
 					if (packedNext == packedDst) break;
@@ -1251,26 +1287,15 @@ static Pathfinder_Data Script_Unit_Pathfinder(uint16 packedSrc, uint16 packedDst
 				} while (Script_Unit_Pathfind_GetScore(packedNext, dir) <= 255);
 			}
 
-			if (foundCounterclockwise || foundClockwise) {
-				/* Find the best (partial) route */
-				if (!foundClockwise) {
-					bestRoute = &routes[1];
-				} else if (!foundCounterclockwise) {
-					bestRoute = &routes[0];
-				} else {
-					bestRoute = &routes[routes[1].score < routes[0].score ? 1 : 0];
-				}
-
-				/* Calculate how much more we can copy into our own buffer */
-				routeSize = min(bufferSize - res.routeSize, bestRoute->routeSize);
+			if (found) {
+				routeSize = min(bufferSize - res.routeSize, route.routeSize);
 				if (routeSize <= 0) break;
 
-				/* Copy the rest into our own buffer */
-				memcpy(&res.buffer[res.routeSize], bestRoute->buffer, routeSize);
+				memcpy(&res.buffer[res.routeSize], route.buffer, routeSize);
 				res.routeSize += routeSize;
-				res.score     += bestRoute->score;
+				res.score += route.score;
 			} else {
-				/* Means we didn't find a route. packedNext is now equal to packedDst */
+				/* No connection found. */
 				break;
 			}
 		}
