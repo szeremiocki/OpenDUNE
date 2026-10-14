@@ -62,7 +62,17 @@ typedef struct ScriptInfo {
 	uint16 startCount;                                      /*!< Number of words in start. */
 	const ScriptFunction *functions;                        /*!< Pointer to an array of functions pointers which scripts with this scriptInfo can call. */
 	uint16 isAllocated;                                     /*!< Memory has been allocated on load. */
+#ifdef TOS
+	uint16 *nativeCode;                                     /*!< Sixteen-byte 68000 entry per original DATA word. */
+#endif
 } ScriptInfo;
+
+#ifdef TOS
+extern bool Script_CompileNative(ScriptInfo *scriptInfo);
+extern bool Script_RunNative(ScriptEngine *script, uint16 budget, bool stopOnDelay);
+extern bool Script_RunNativeFallback(ScriptEngine *script, uint16 budget, bool stopOnDelay);
+extern bool Script_NativeError(ScriptEngine *script, uint16 opcode, uint16 parameter);
+#endif
 
 #ifdef _DEBUG
 #define STACK_PUSH(value) Script_Stack_Push(script, value, __FILE__, __LINE__)

@@ -605,6 +605,7 @@ void Sprites_Init(void)
 void Sprites_Uninit(void)
 {
 	uint16 i;
+	Script_ClearInfo(g_scriptUnit);
 #ifdef TOS
 	GUI_FreeViewportSpriteCache();
 	GUI_FreeMinimapIconCache();

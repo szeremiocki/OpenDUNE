@@ -1,0 +1,473 @@
+; Plain 68000 native EMC runner. Compiled entries advance the original PC.
+; D2 = budget, D3 = stop-on-delay, D6 = DATA bytes, D7 = native step;
+; A2 = engine, A3 = info, A4 = code base, A5 = code end, A6 = cursor.
+	xdef	_Script_RunNative
+	xdef	_Script_NativeHandlers
+	xdef	_Script_NativeNext
+	xref	_Script_RunNativeFallback
+	xref	_Script_NativeError
+	xref	_Script_NativePush
+	xref	_Script_NativePop
+	xref	_Script_NativePeek
+
+	text
+
+PUSH macro
+	moveq	#0,d0
+	move.b	13(a2),d0
+	beq	.bad\@
+	subq.b	#1,13(a2)
+	subq.w	#1,d0
+	add.w	d0,d0
+	move.w	\1,24(a2,d0.w)
+	bra	.end\@
+.bad\@:
+	move.l	d1,-(sp)
+	moveq	#0,d0
+	move.w	\1,d0
+	move.l	d0,-(sp)
+	move.l	a2,-(sp)
+	jsr	_Script_NativePush
+	addq.l	#8,sp
+	move.l	(sp)+,d1
+.end\@:
+	endm
+
+POP macro
+	moveq	#0,d0
+	move.b	13(a2),d0
+	cmp.b	#15,d0
+	bcc	.bad\@
+	addq.b	#1,13(a2)
+	add.w	d0,d0
+	move.w	24(a2,d0.w),\1
+	bra	.end\@
+.bad\@:
+	move.l	d1,-(sp)
+	move.l	a2,-(sp)
+	jsr	_Script_NativePop
+	addq.l	#4,sp
+	move.l	(sp)+,d1
+	move.w	d0,\1
+.end\@:
+	endm
+
+PEEK macro
+	cmp.b	#16-\1,13(a2)
+	bcc	.bad\@
+	bra	.end\@
+.bad\@:
+	move.l	#\1,-(sp)
+	move.l	a2,-(sp)
+	jsr	_Script_NativePeek
+	addq.l	#8,sp
+	bra	NativeFailure
+.end\@:
+	endm
+
+_Script_RunNative:
+	movem.l	d2-d7/a2-a6,-(sp)
+	move.l	48(sp),a2
+	move.w	54(sp),d2
+	moveq	#0,d3
+	move.b	59(sp),d3
+	cmpa.w	#0,a2
+	beq	NativeFailure
+	bra	NativeRebindCheck
+
+_Script_NativeNext:
+	adda.w	d7,a6
+	subq.w	#1,d2
+NativeCheck:
+	tst.w	d2
+	beq	NativeSuccess
+	tst.b	d3
+	beq	NativeCursorFetch
+	tst.w	(a2)
+	bne	NativeSuccess
+NativeCursorFetch:
+	tst.l	2(a2)
+	beq	NativeFailure
+	cmpa.l	a5,a6
+	bcc	NativeBounds
+	jmp	(a6)
+
+NativeNextOneWord:
+	moveq	#16,d7
+	bra	_Script_NativeNext
+NativeNextTwoWords:
+	moveq	#32,d7
+	bra	_Script_NativeNext
+
+NativeResolveNext:
+	subq.w	#1,d2
+	tst.w	d2
+	beq	NativeSuccess
+	tst.b	d3
+	beq	NativeFetch
+	tst.w	(a2)
+	bne	NativeSuccess
+NativeFetch:
+	move.l	2(a2),a0
+	cmpa.w	#0,a0
+	beq	NativeFailure
+	move.l	a0,d0
+	sub.l	4(a3),d0
+	cmp.l	d6,d0
+	bcc	NativeBounds
+	btst	#0,d0
+	bne	NativeBounds
+	lsl.l	#3,d0
+	lea	(a4,d0.l),a6
+	jmp	(a6)
+
+NativeReenter:
+	subq.w	#1,d2
+NativeRebindCheck:
+	tst.w	d2
+	beq	NativeSuccess
+	tst.b	d3
+	beq	NativeRebind
+	tst.w	(a2)
+	bne	NativeSuccess
+NativeRebind:
+	; Only callbacks can replace/unload info or free/recompile its code.
+	move.l	2(a2),a0
+	cmpa.w	#0,a0
+	beq	NativeFailure
+	move.l	6(a2),a3
+	cmpa.w	#0,a3
+	beq	NativeFailure
+	move.l	22(a3),a4
+	cmpa.w	#0,a4
+	beq	NativeFallback
+	moveq	#0,d6
+	move.w	14(a3),d6
+	add.l	d6,d6
+	move.l	d6,d0
+	lsl.l	#3,d0
+	lea	(a4,d0.l),a5
+	bra	NativeFetch
+
+NativeFallback:
+	move.l	d3,-(sp)
+	moveq	#0,d0
+	move.w	d2,d0
+	move.l	d0,-(sp)
+	move.l	a2,-(sp)
+	jsr	_Script_RunNativeFallback
+	lea	12(sp),sp
+	bra	NativeExit
+NativeBounds:
+	moveq	#32,d0
+	moveq	#0,d1
+	bra	NativeInvalid
+NativeTruncated:
+	moveq	#33,d0
+	bra	NativeInvalid
+NativeSuccess:
+	moveq	#1,d0
+	bra	NativeExit
+NativeFailure:
+	moveq	#0,d0
+NativeExit:
+	movem.l	(sp)+,d2-d7/a2-a6
+	rts
+
+NativeInvalid:
+	and.l	#$ffff,d1
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	a2,-(sp)
+	jsr	_Script_NativeError
+	lea	12(sp),sp
+	bra	NativeExit
+
+NativeJump:
+	and.l	#$ffff,d1
+	add.l	d1,d1
+	add.l	4(a3),d1
+	move.l	d1,2(a2)
+	bra	NativeResolveNext
+NativeSetReturn:
+	move.w	d1,10(a2)
+	bra	_Script_NativeNext
+NativePushReturn:
+	tst.w	d1
+	beq	.pushReturn
+	cmp.w	#1,d1
+	bne	.invalid
+	move.l	2(a2),d4
+	sub.l	4(a3),d4
+	lsr.l	#1,d4
+	addq.l	#1,d4
+	PUSH	d4
+	moveq	#0,d4
+	move.b	12(a2),d4
+	PUSH	d4
+	move.b	13(a2),d0
+	addq.b	#2,d0
+	move.b	d0,12(a2)
+	bra	_Script_NativeNext
+.pushReturn:
+	move.w	10(a2),d4
+	PUSH	d4
+	bra	_Script_NativeNext
+.invalid:
+	moveq	#2,d0
+	bra	NativeInvalid
+NativePush:
+	PUSH	d1
+	bra	_Script_NativeNext
+NativePushVariable:
+	and.l	#$ffff,d1
+	add.l	d1,d1
+	move.w	14(a2,d1.l),d4
+	PUSH	d4
+	bra	_Script_NativeNext
+
+LOCAL_INDEX macro
+	and.l	#$ffff,d1
+	moveq	#0,d4
+	move.b	12(a2),d4
+	sub.l	d1,d4
+	subq.l	#2,d4
+	cmp.l	#15,d4
+	bge	NativeStackBounds
+	add.l	d4,d4
+	endm
+PARAMETER_INDEX macro
+	and.l	#$ffff,d1
+	moveq	#0,d4
+	move.b	12(a2),d4
+	add.l	d1,d4
+	subq.l	#1,d4
+	cmp.l	#15,d4
+	bge	NativeStackBounds
+	add.l	d4,d4
+	endm
+
+NativePushLocal:
+	LOCAL_INDEX
+	move.w	24(a2,d4.l),d4
+	PUSH	d4
+	bra	_Script_NativeNext
+NativePushParameter:
+	PARAMETER_INDEX
+	move.w	24(a2,d4.l),d4
+	PUSH	d4
+	bra	_Script_NativeNext
+NativeStackBounds:
+	; Use the existing peek diagnostic without changing the stack pointer.
+	move.l	#16,-(sp)
+	move.l	a2,-(sp)
+	jsr	_Script_NativePeek
+	addq.l	#8,sp
+	bra	NativeFailure
+NativePopReturn:
+	tst.w	d1
+	beq	.popReturn
+	cmp.w	#1,d1
+	bne	.invalid
+	PEEK	2
+	POP	d4
+	move.b	d4,12(a2)
+	POP	d4
+	and.l	#$ffff,d4
+	add.l	d4,d4
+	add.l	4(a3),d4
+	move.l	d4,2(a2)
+	bra	NativeResolveNext
+.popReturn:
+	POP	d4
+	move.w	d4,10(a2)
+	bra	_Script_NativeNext
+.invalid:
+	moveq	#8,d0
+	bra	NativeInvalid
+NativePopVariable:
+	and.l	#$ffff,d1
+	add.l	d1,d1
+	move.l	d1,d5
+	POP	d4
+	move.w	d4,14(a2,d5.l)
+	bra	_Script_NativeNext
+NativePopLocal:
+	LOCAL_INDEX
+	move.l	d4,d5
+	POP	d4
+	move.w	d4,24(a2,d5.l)
+	bra	_Script_NativeNext
+NativePopParameter:
+	PARAMETER_INDEX
+	move.l	d4,d5
+	POP	d4
+	move.w	d4,24(a2,d5.l)
+	bra	_Script_NativeNext
+NativeStackRewind:
+	add.b	d1,13(a2)
+	bra	_Script_NativeNext
+NativeStackForward:
+	sub.b	d1,13(a2)
+	bra	_Script_NativeNext
+NativeFunction:
+	and.l	#$ff,d1
+	cmp.w	#64,d1
+	bcc	.invalid
+	move.l	d1,d4
+	lsl.l	#2,d4
+	move.l	16(a3),a1
+	move.l	(a1,d4.l),a1
+	cmpa.w	#0,a1
+	beq	.invalid
+	move.l	a2,-(sp)
+	jsr	(a1)
+	addq.l	#4,sp
+	move.w	d0,10(a2)
+	bra	NativeReenter
+.invalid:
+	moveq	#14,d0
+	bra	NativeInvalid
+NativeJumpNE:
+	PEEK	1
+	POP	d4
+	tst.w	d4
+	bne	_Script_NativeNext
+	and.w	#$7fff,d1
+	bra	NativeJump
+NativeReturn:
+	PEEK	2
+	POP	d4
+	move.w	d4,10(a2)
+	POP	d4
+	and.l	#$ffff,d4
+	add.l	d4,d4
+	add.l	4(a3),d4
+	move.l	d4,2(a2)
+	clr.b	54(a2)
+	bra	NativeResolveNext
+
+UNARY macro
+	POP	d4
+	\1	d4
+	PUSH	d4
+	bra	_Script_NativeNext
+	endm
+NativeNot:
+	POP	d4
+	tst.w	d4
+	seq	d4
+	and.w	#1,d4
+	PUSH	d4
+	bra	_Script_NativeNext
+NativeNeg:
+	UNARY	neg.w
+NativeComplement:
+	UNARY	not.w
+
+BINARY_LOAD macro
+	POP	d5
+	POP	d4
+	endm
+BINARY_STORE macro
+	PUSH	d4
+	bra	_Script_NativeNext
+	endm
+COMPARISON macro
+	BINARY_LOAD
+	cmp.w	d5,d4
+	\1	d4
+	and.w	#1,d4
+	BINARY_STORE
+	endm
+BINARY_OP macro
+	BINARY_LOAD
+	\1	d5,d4
+	BINARY_STORE
+	endm
+
+NativeAnd:
+	BINARY_LOAD
+	tst.w	d5
+	sne	d5
+	tst.w	d4
+	sne	d4
+	and.w	d5,d4
+	and.w	#1,d4
+	BINARY_STORE
+NativeOr:
+	BINARY_LOAD
+	or.w	d5,d4
+	sne	d4
+	and.w	#1,d4
+	BINARY_STORE
+NativeEqual:
+	COMPARISON	seq
+NativeNotEqual:
+	COMPARISON	sne
+NativeLess:
+	COMPARISON	slt
+NativeLessEqual:
+	COMPARISON	sle
+NativeGreater:
+	COMPARISON	sgt
+NativeGreaterEqual:
+	COMPARISON	sge
+NativeAdd:
+	BINARY_OP	add.w
+NativeSubtract:
+	BINARY_OP	sub.w
+NativeMultiply:
+	BINARY_OP	muls.w
+NativeDivide:
+	BINARY_LOAD
+	ext.l	d4
+	divs.w	d5,d4
+	BINARY_STORE
+NativeShiftRight:
+	BINARY_LOAD
+	ext.l	d4
+	asr.l	d5,d4
+	BINARY_STORE
+NativeShiftLeft:
+	BINARY_LOAD
+	ext.l	d4
+	lsl.l	d5,d4
+	BINARY_STORE
+NativeBitAnd:
+	BINARY_OP	and.w
+NativeBitOr:
+	BINARY_OP	or.w
+NativeModulo:
+	BINARY_LOAD
+	ext.l	d4
+	divs.w	d5,d4
+	bvs	.overflow
+	swap	d4
+	bra	.store
+.overflow:
+	moveq	#0,d4
+.store:
+	BINARY_STORE
+NativeBitXor:
+	BINARY_OP	eor.w
+NativeBinaryInvalid:
+	BINARY_LOAD
+	moveq	#17,d0
+	bra	NativeInvalid
+
+	data
+	even
+_Script_NativeHandlers:
+	dc.l	NativeJump,NativeSetReturn,NativePushReturn,NativePush,NativePush
+	dc.l	NativePushVariable,NativePushLocal,NativePushParameter,NativePopReturn
+	dc.l	NativePopVariable,NativePopLocal,NativePopParameter
+	dc.l	NativeStackRewind,NativeStackForward,NativeFunction,NativeJumpNE
+	dc.l	NativeInvalid,NativeInvalid,NativeReturn
+	dc.l	NativeNot,NativeNeg,NativeComplement
+	dc.l	NativeAnd,NativeOr,NativeEqual,NativeNotEqual,NativeLess,NativeLessEqual
+	dc.l	NativeGreater,NativeGreaterEqual,NativeAdd,NativeSubtract,NativeMultiply
+	dc.l	NativeDivide,NativeShiftRight,NativeShiftLeft,NativeBitAnd,NativeBitOr
+	dc.l	NativeModulo,NativeBitXor,NativeInvalid,NativeTruncated,NativeNextOneWord
+	dc.l	NativeBinaryInvalid
+	dc.l	NativeNextTwoWords

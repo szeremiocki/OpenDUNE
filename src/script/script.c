@@ -14,6 +14,9 @@
 
 #include "../file.h"
 #include "../object.h"
+#ifdef TOS
+#include "../video/video.h"
+#endif
 
 struct Object *g_scriptCurrentObject;
 struct Structure *g_scriptCurrentStructure;
@@ -563,12 +566,47 @@ static bool Script_RunInternal(ScriptEngine *script, uint16 budget, bool stopOnD
 	return true;
 }
 
+static bool Script_RunDispatch(ScriptEngine *script, uint16 budget, bool stopOnDelay)
+{
+#ifdef TOS
+	if (script != NULL && script->scriptInfo != NULL && script->scriptInfo->nativeCode != NULL) {
+		return Script_RunNative(script, budget, stopOnDelay);
+	}
+#endif
+	return Script_RunInternal(script, budget, stopOnDelay);
+}
+
+#ifdef TOS
+bool Script_RunNativeFallback(ScriptEngine *script, uint16 budget, bool stopOnDelay)
+{
+	return Script_RunInternal(script, budget, stopOnDelay);
+}
+
+bool Script_NativeError(ScriptEngine *script, uint16 opcode, uint16 parameter)
+{
+	if (opcode == 32) {
+		Script_Error("Script instruction outside DATA");
+	} else if (opcode == 33) {
+		Script_Error("Truncated script instruction");
+	} else if (opcode == SCRIPT_FUNCTION) {
+		Script_Error("Unknown function %d for opcode 14", parameter & 0xFF);
+		return false;
+	} else if (opcode <= SCRIPT_RETURN) {
+		Script_Error("Unknown parameter %d for opcode %d", parameter, opcode);
+	} else {
+		Script_Error("Unknown opcode %d", opcode);
+	}
+	script->script = NULL;
+	return false;
+}
+#endif
+
 /**
  * Run one opcode, retaining the original single-step delay semantics.
  */
 bool Script_Run(ScriptEngine *script)
 {
-	return Script_RunInternal(script, 1, false);
+	return Script_RunDispatch(script, 1, false);
 }
 
 /**
@@ -576,7 +614,7 @@ bool Script_Run(ScriptEngine *script)
  */
 bool Script_RunBudget(ScriptEngine *script, uint16 budget)
 {
-	return Script_RunInternal(script, budget, true);
+	return Script_RunDispatch(script, budget, true);
 }
 
 /**
@@ -610,6 +648,10 @@ void Script_ClearInfo(ScriptInfo *scriptInfo)
 {
 	if (scriptInfo == NULL) return;
 
+#ifdef TOS
+	free(scriptInfo->nativeCode);
+	scriptInfo->nativeCode = NULL;
+#endif
 	if (scriptInfo->isAllocated != 0) {
 		free(scriptInfo->text);
 		free(scriptInfo->offsets);
@@ -707,5 +749,10 @@ uint16 Script_LoadFromFile(const char *filename, ScriptInfo *scriptInfo, const S
 
 	ChunkFile_Close(index);
 
+#if defined(TOS) && !defined(__M68020__)
+	if (Video_Atari_CursorDirect() && !Script_CompileNative(scriptInfo)) {
+		Warning("Native script compilation unavailable for %s; using bytecode decoder\n", filename);
+	}
+#endif
 	return total & 0xFFFF;
 }

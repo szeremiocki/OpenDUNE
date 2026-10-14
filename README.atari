@@ -57,6 +57,53 @@ mode after one Super(0L); it does not pass the game loop to Supexec.
 
 * Performance
 
+ST/STE script loading experimentally compiles EMC scripts to plain 68000
+code. Unit, structure and team scripts each share one compiled image.
+Every original DATA word has a sixteen-byte native entry, including words
+also used as operands. Entries advance the original bytecode PC and enter
+the corresponding native handler without opcode decoding or switch dispatch.
+Binary/unary operation selection is resolved during compilation; return-value
+stores and stack-pointer adjustments are emitted directly into entries.
+The original bytecode remains resident: DATA plus compiled storage is
+eighteen bytes per original word, nine times the uncached DATA size.
+
+Original PCs, saved-game offsets, VM stacks and callback interfaces remain
+unchanged. A shared native boundary enforces instruction budgets and delays;
+budget one provides single stepping, retaining Script_Run's existing ability
+to execute despite a nonzero delay. Ordinary fall-through advances a
+register-held native cursor by sixteen or thirty-two bytes instead of
+resolving the original PC again. Jumps, stack returns and callback reentry
+still resolve the original PC; operand words remain valid jump destinations.
+Cursor bounds and unload checks occur only when the next opcode may execute,
+preserving final-budget-opcode and delay behavior. Entry size is unchanged.
+Metadata and compiled pointers are rebound after every native callback,
+including rewinds, replacement, unloading or recompilation. Replacement by
+an uncached script resumes the original interpreter with the remaining budget.
+
+Compilation is enabled only on ST/STE in 68000/68010 builds. The emitted
+instructions are 68000-compatible; these CPUs have no instruction cache to
+flush after generation. 68020+ builds, TT/Falcon and non-Atari targets retain
+raw decoding. Allocation failure warns and retains raw decoding. Reload and
+cleanup free the independent native image even when UNIT.EMC occupies borrowed
+SCREEN_2 storage; final unit-script cleanup is at sprite shutdown, not
+game-loop teardown. Executed out-of-range/misaligned PCs or truncated two-word
+entries report an error and unload that engine. Unreachable truncated trailing
+words do not prevent compilation.
+
+tools/test_script_native.py runs the real compiler, emitted entries and
+assembly runner on a simulated 68000 against the C interpreter, in release
+and debug configurations. It requires the Atari cross toolchain and optional
+Python unicorn package. Compiler/loader ownership tests run with host
+sanitizers. Simulation also checks fast-cursor versus PC-resolution dispatch
+counts. This establishes tested behavior, not cycle-accurate performance.
+The first native backend measured 372.44 VM-own cycles/opcode in battle12
+versus 483.67 for the raw interpreter in battle9 (about 23% less); these
+were different playthroughs, not a controlled FPS comparison. The subsequent
+cursor optimization measured 360.83 cycles/opcode in battle13 (about 3% less
+than battle12), again with a different workload. Hatari profiles must include
+both the native runner/handlers and generated entries in heap ST_RAM, not
+only Script_RunInternal or PROGRAM_TEXT.
+
 The engine announcement banner supports this opendune.ini setting:
 
 [opendune]

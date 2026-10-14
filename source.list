@@ -140,6 +140,10 @@ saveload/unit.c
 scenario.c
 script/general.c
 script/script.c
+#if TOS
+script/script_native.c
+script/script_native_runner.s
+#endif
 script/structure.c
 script/team.c
 script/unit.c
