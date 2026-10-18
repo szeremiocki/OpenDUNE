@@ -54,8 +54,10 @@ static uint32 SaveLoad_UnitSelected(void *object, uint32 value, bool loading)
 	VARIABLE_NOT_USED(object);
 
 	if (loading) {
+		if (g_unitSelected != NULL) Unit_ClearViewportKey(g_unitSelected);
 		if ((uint16)value != 0xFFFF && value < UNIT_INDEX_MAX) {
 			g_unitSelected = Unit_Get_ByIndex((uint16)value);
+			Unit_ClearViewportKey(g_unitSelected);
 		} else {
 			g_unitSelected = NULL;
 		}

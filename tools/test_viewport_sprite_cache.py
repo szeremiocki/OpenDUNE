@@ -135,6 +135,321 @@ static bool Video_Atari_CursorRectOverlap(uint8 *base, uint16 first, uint16 end,
 
 
 class ViewportSpriteCacheTest(unittest.TestCase):
+    def test_unit_identity_mutation_and_lifecycle(self):
+        gui = (ROOT / "src/gui/gui.c").read_text()
+        unit = (ROOT / "src/unit.c").read_text()
+        pool = (ROOT / "src/pool/unit.c").read_text()
+        script = (ROOT / "src/script/unit.c").read_text()
+        save = (ROOT / "src/saveload/unit.c").read_text()
+        for name in ("Unit_SetOrientation", "Unit_SetAction", "Unit_Damage", "Unit_EnterStructure"):
+            self.assertIn("Unit_ClearViewportKey(", function(unit, name), name)
+        self.assertIn("Unit_ClearViewportKey(", function(unit, "Unit_UpdateMap"))
+        for name in ("GameLoop_Unit", "Unit_Rotate", "Unit_SetPosition", "Unit_StartMovement",
+                     "Unit_Deviate", "Unit_Deviation_Decrease"):
+            self.assertIn("Unit_UpdateMap(", function(unit, name), name)
+        for name in ("Unit_Load", "UnitNew_Load"):
+            self.assertIn("Unit_ClearViewportKey(u)", function(save, name))
+        for name in ("Script_Unit_SetSprite", "Script_Unit_IdleAction"):
+            self.assertIn("Unit_UpdateMap(2, u)", function(script, name))
+        harness = r"""
+#include <assert.h>
+#include <stdlib.h>
+#include <string.h>
+#include "types.h"
+#include "src/unit.h"
+#include "src/house.h"
+#include "src/map.h"
+#include "src/tile.h"
+#include "src/pool/unit.h"
+#include "src/pool/house.h"
+#include "src/gui/gui.h"
+UnitInfo g_table_unitInfo[UNIT_MAX];
+const ActionInfo g_table_actionInfo[ACTION_MAX] = {
+    [ACTION_GUARD] = {.switchType = 1},
+    [ACTION_HARVEST] = {.switchType = 1},
+    [ACTION_MOVE] = {.switchType = 0}
+};
+Unit *g_unitSelected, *g_scriptCurrentUnit;
+ScriptInfo *g_scriptUnit;
+static Unit g_unitArray[UNIT_INDEX_MAX];
+Unit *g_unitFindArray[UNIT_INDEX_MAX];
+uint16 g_unitFindCount;
+static House house;
+static unsigned mapUpdates;
+static uint16 g_validateStrictIfZero;
+static bool g_debugGame;
+HouseType g_playerHouseID;
+Tile g_map[64 * 64];
+uint8 g_functions[3][3];
+uint16 g_dirtyUnitCount, g_dirtyAirUnitCount;
+House *House_Get_ByIndex(uint8 index) { assert(index == 0); return &house; }
+uint8 Unit_GetHouseID(Unit *unit) { return unit->o.houseID; }
+void Unit_DisplayStatusText(Unit *unit) { assert(unit != NULL); }
+void GUI_Widget_ActionPanel_Draw(bool force) { assert(force); }
+void Sound_StartSound(uint16 index) { (void)index; }
+uint16 GUI_DisplayHint(uint16 stringID, uint16 spriteID) {
+    (void)stringID; (void)spriteID; return 0;
+}
+void GUI_ChangeSelectionType(uint16 type) { (void)type; }
+uint16 Map_SetSelectionObjectPosition(uint16 packed) { assert(packed == 0xffff); return 0; }
+void Script_Reset(ScriptEngine *script, ScriptInfo *info) { (void)script; (void)info; }
+void Script_Load(ScriptEngine *script, uint8 type) { (void)script; (void)type; }
+void Script_LoadAsSubroutine(ScriptEngine *script, uint8 type) { (void)script; (void)type; }
+uint16 Script_Stack_Peek(ScriptEngine *script, int position) {
+    (void)script; assert(position == 1); return 7;
+}
+void Unit_HouseUnitCount_Add(Unit *unit, uint8 houseID) { (void)unit; (void)houseID; }
+void Unit_HouseUnitCount_Remove(Unit *unit) { (void)unit; }
+bool House_AreAllied(uint8 a, uint8 b) { return a == b; }
+bool Map_IsPositionUnveiled(uint16 packed) { (void)packed; return true; }
+Object *Object_GetByPackedTile(uint16 packed) { (void)packed; return NULL; }
+void Tile_RemoveFogInRadius(tile32 tile, uint16 radius) { (void)tile; (void)radius; }
+void Map_UpdateAround(uint16 radius, tile32 position, Unit *unit, uint8 operation) {
+    (void)radius; (void)position; (void)operation;
+    assert(unit != NULL); mapUpdates++;
+}
+/* PRODUCTION */
+static void warm(Unit *unit) {
+    assert(unit->o.index < UNIT_INDEX_MAX);
+    unit->viewportKey.main = 111;
+}
+static bool valid(Unit *unit) { return unit->viewportKey.main != 0; }
+int main(void) {
+    g_table_unitInfo[UNIT_TANK].indexStart = 20;
+    g_table_unitInfo[UNIT_TANK].indexEnd = 101;
+    g_table_unitInfo[UNIT_TANK].turningSpeed = 2;
+    house.unitCountMax = 100;
+    Unit_Init();
+    Unit *u = Unit_Allocate(20, UNIT_TANK, 0);
+    assert(u && !valid(u) && house.unitCount == 1 && g_unitFindCount == 1);
+    u->orientation[0].speed = 8;
+    u->orientation[0].target = 32;
+    warm(u);
+    Unit_Rotate(u, 0);
+    assert(!valid(u) && u->orientation[0].current == 8);
+    Unit_Rotate(u, 0);
+    assert(!valid(u) && u->orientation[0].current == 16 && mapUpdates == 2);
+    warm(u);
+    Unit_Rotate(u, 0);
+    assert(!valid(u) && u->orientation[0].current == 24);
+    Unit_SetOrientation(u, 25, true, 0);
+    assert(!valid(u));
+    Unit_SetOrientation(u, 64, true, 0);
+    assert(!valid(u));
+    warm(u);
+    Unit_SetOrientation(u, 96, false, 1);
+    assert(valid(u) && u->orientation[1].current == 0);
+    Unit_Rotate(u, 1);
+    assert(!valid(u));
+    Unit_Rotate(u, 1);
+    assert(!valid(u) && u->orientation[1].current == 16);
+    warm(u);
+    g_scriptCurrentUnit = u;
+    Script_Unit_SetSprite(&u->o.script);
+    assert(!valid(u) && u->spriteOffset == -7);
+    warm(u);
+    Unit_SetAction(u, ACTION_GUARD);
+    assert(!valid(u));
+    u->o.type = UNIT_HARVESTER;
+    Unit_SetAction(u, ACTION_HARVEST);
+    assert(!valid(u) && u->actionID == ACTION_HARVEST);
+    warm(u);
+    Unit_SetAction(u, ACTION_HARVEST);
+    assert(!valid(u));
+    warm(u);
+    u->currentDestination.x = 1;
+    Unit_SetAction(u, ACTION_MOVE);
+    assert(!valid(u) && u->actionID == ACTION_HARVEST && u->nextActionID == ACTION_MOVE);
+    u->currentDestination.x = 0;
+    Unit_SetAction(u, ACTION_MOVE);
+    assert(!valid(u) && u->actionID == ACTION_MOVE);
+    warm(u);
+    u->o.position.x += 256;
+    Unit_UpdateMap(1, u);
+    assert(!valid(u));
+    warm(u);
+    u->o.flags.s.isNotOnMap = true;
+    unsigned before = mapUpdates;
+    Unit_UpdateMap(2, u);
+    assert(!valid(u) && mapUpdates == before);
+    u->o.flags.s.isNotOnMap = false;
+    Unit_UpdateMap(2, NULL);
+    warm(u);
+    Unit_Free(u);
+    assert(!valid(u) && house.unitCount == 0 && g_unitFindCount == 0);
+    warm(u);
+    u = Unit_Allocate(20, UNIT_TANK, 0);
+    assert(u && !valid(u));
+    warm(u);
+    Unit *other = Unit_Allocate(21, UNIT_TANK, 0);
+    assert(other && valid(u) && !valid(other));
+    u->o.seenByHouses = other->o.seenByHouses = 1;
+    warm(other);
+    Unit_Select(u);
+    assert(g_unitSelected == u && !valid(u) && valid(other));
+    warm(u);
+    Unit_Select(other);
+    assert(g_unitSelected == other && !valid(u) && !valid(other));
+    warm(other);
+    Unit_Select(NULL);
+    assert(g_unitSelected == NULL && !valid(other));
+    warm(u);
+    warm(other);
+    SaveLoad_UnitSelected(NULL, 20, true);
+    assert(g_unitSelected == u && !valid(u) && valid(other));
+    warm(u);
+    SaveLoad_UnitSelected(NULL, 21, true);
+    assert(g_unitSelected == other && !valid(u) && !valid(other));
+    warm(other);
+    SaveLoad_UnitSelected(NULL, 0xffff, true);
+    assert(g_unitSelected == NULL && !valid(other));
+    warm(u);
+    warm(other);
+    Unit_Init();
+    assert(!valid(u) && !valid(other) && g_unitFindCount == 0);
+    return 0;
+}
+"""
+        tile = (ROOT / "src/tile.c").read_text()
+        implementations = [
+            function(pool, "Unit_Get_ByIndex"), function(pool, "Unit_Init"),
+            function(pool, "Unit_Allocate"), function(pool, "Unit_Free"),
+            function(tile, "Orientation_Orientation256ToOrientation8"),
+            function(tile, "Orientation_Orientation256ToOrientation16"),
+            function(unit, "Unit_UpdateMap"),
+            function(unit, "Unit_Rotate"), function(unit, "Unit_SetOrientation"),
+            function(unit, "Unit_SetAction"), function(script, "Script_Unit_SetSprite"),
+            function(unit, "Unit_Select"),
+            function((ROOT / "src/saveload/info.c").read_text(), "SaveLoad_UnitSelected"),
+        ]
+        harness = harness.replace("/* PRODUCTION */", "\n".join(implementations))
+        with tempfile.TemporaryDirectory(prefix="unit-sprite-identity-") as directory:
+            source = Path(directory) / "test.c"
+            binary = Path(directory) / "test"
+            source.write_text(harness)
+            compiler = shlex.split(os.environ.get("CC", "cc"))
+            subprocess.run([*compiler, "-std=c99", "-O2", "-Wall", "-Wextra", "-Werror",
+                            "-DTOS", "-I", str(ROOT), "-I", str(ROOT / "include"),
+                            str(source), "-o", str(binary)], check=True)
+            subprocess.run([str(binary)], check=True)
+
+    def test_map_updates_without_unit_key_lookup(self):
+        source_map = (ROOT / "src/map.c").read_text()
+        harness = r"""
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stddef.h>
+typedef uint8_t uint8;
+typedef uint16_t uint16;
+typedef int16_t int16;
+typedef uint32_t uint32;
+static bool visible;
+static uint8 g_dirtyMinimap[4096], g_dirtyViewport[4096], g_displayedViewport[4096];
+static uint16 g_dirtyViewportCount;
+static bool g_selectionRectangleNeedRepaint;
+static bool Map_IsTileVisible(uint16 packed) { return packed < 4096 && visible; }
+static bool BitArray_Test(const uint8 *bits, uint16 packed) { assert(packed < 4096); return bits[packed]; }
+static void BitArray_Set(uint8 *bits, uint16 packed) { assert(packed < 4096); bits[packed] = 1; }
+/* MAP UPDATE */
+int main(void) {
+    Map_Update(200, 0, false);
+    assert(!g_dirtyViewportCount);
+    visible = true;
+    g_dirtyMinimap[200] = 1;
+    Map_Update(200, 0, false);
+    assert(!g_dirtyViewportCount);
+    Map_Update(200, 1, false);
+    assert(g_dirtyViewport[200]);
+    Map_Update(201, 0, false);
+    assert(g_dirtyViewportCount == 1 && g_dirtyMinimap[201]);
+    assert(g_dirtyViewport[137] && g_dirtyViewport[201] && g_dirtyViewport[266]);
+    assert(!g_selectionRectangleNeedRepaint);
+    Map_Update(0xffff, 0, false);
+    return 0;
+}
+"""
+        harness = harness.replace("/* MAP UPDATE */", function(source_map, "Map_Update"))
+        with tempfile.TemporaryDirectory(prefix="viewport-terrain-identity-") as directory:
+            source = Path(directory) / "test.c"
+            binary = Path(directory) / "test"
+            source.write_text(harness)
+            compiler = shlex.split(os.environ.get("CC", "cc"))
+            subprocess.run([*compiler, "-std=c99", "-O2", "-Wall", "-Wextra", "-Werror",
+                            "-DTOS", str(source), "-o", str(binary)], check=True)
+            subprocess.run([str(binary)], check=True)
+
+    def test_viewport_bypasses_harvester_keys(self):
+        viewport = (ROOT / "src/gui/viewport.c").read_text()
+        start = viewport.index("\t\t\tspriteFlags |= DRAWSPRITE_FLAG_LAYERS;")
+        end = viewport.index("\n\t\t}\n\n\t\tg_dirtyUnitCount", start)
+        flags = "\n".join(line for line in (ROOT / "src/gui/gui.h").read_text().splitlines()
+                          if line.startswith("#define DRAWSPRITE_FLAG_"))
+        harness = r"""
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <stdarg.h>
+typedef uint32_t uint32;
+/* KEY TYPE */
+/* FLAGS */
+enum { UNIT_HARVESTER = 16, SCREEN_ACTIVE = 0 };
+typedef struct { struct { unsigned type; } o; ViewportCompositeKey viewportKey; } Unit;
+static uint8_t sprite, *g_sprites[] = {&sprite}, paletteHouse[16], g_paletteMapping2[256];
+static ViewportCompositeKey *expectedKey;
+static unsigned calls;
+static void GUI_DrawSprite(int screen, const uint8_t *body, unsigned index, unsigned house,
+                           int x, int y, int window, int flags, ...) {
+    assert(screen == SCREEN_ACTIVE && body == &sprite && !index && !house);
+    assert(x == 64 && y == 60 && window == 2);
+    assert(flags & DRAWSPRITE_FLAG_LAYERS);
+    va_list ap;
+    va_start(ap, flags);
+    assert(va_arg(ap, const unsigned *) != NULL);
+#ifdef TOS
+    assert(flags & DRAWSPRITE_FLAG_VIEWPORT_KEY);
+    assert(va_arg(ap, ViewportCompositeKey *) == expectedKey);
+#endif
+    if (flags & DRAWSPRITE_FLAG_PAL) assert(va_arg(ap, uint8_t *) == paletteHouse);
+    assert(va_arg(ap, uint8_t *) == g_paletteMapping2);
+    assert(va_arg(ap, int) == 1);
+    va_end(ap);
+    calls++;
+}
+static void submit(Unit *u, int spriteFlags) {
+    unsigned index = 0, bodyHouse = 0, layers = 0;
+    int x = 64, y = 60;
+    (void)u;
+    /* SUBMISSION */
+}
+int main(void) {
+    Unit unit = {0};
+    for (unsigned type = 0; type < 2; type++) {
+        unit.o.type = type ? UNIT_HARVESTER : 9;
+        unit.viewportKey.main = 111;
+        expectedKey = type ? NULL : &unit.viewportKey;
+        submit(&unit, 0);
+        submit(&unit, DRAWSPRITE_FLAG_PAL);
+        assert(unit.viewportKey.main == 111);
+    }
+    assert(calls == 4);
+    return 0;
+}
+"""
+        harness = harness.replace("/* KEY TYPE */", (ROOT / "src/gui/viewport_key.h").read_text())
+        harness = harness.replace("/* FLAGS */", flags)
+        harness = harness.replace("/* SUBMISSION */", viewport[start:end])
+        with tempfile.TemporaryDirectory(prefix="viewport-harvester-key-") as directory:
+            source = Path(directory) / "test.c"
+            binary = Path(directory) / "test"
+            source.write_text(harness)
+            compiler = shlex.split(os.environ.get("CC", "cc"))
+            for defines in ([], ["-DTOS"]):
+                subprocess.run([*compiler, "-std=c99", "-O2", "-Wall", "-Wextra", "-Werror",
+                                *defines, str(source), "-o", str(binary)], check=True)
+                subprocess.run([str(binary)], check=True)
+
     def test_cache_and_direct_blits(self):
         gui = (ROOT / "src/gui/gui.c").read_text()
         video = (ROOT / "src/video/video_atari.c").read_text()
@@ -152,6 +467,7 @@ class ViewportSpriteCacheTest(unittest.TestCase):
 #include <stdlib.h>
 #include <string.h>
 typedef uint8_t uint8;
+typedef int8_t int8;
 typedef uint16_t uint16;
 typedef int16_t int16;
 typedef uint32_t uint32;
@@ -161,6 +477,25 @@ typedef uint32_t uint32;
 #define DIRTY_SRC_SPRITE 1
 #define HOUSE_MAX 6
 #define VARIABLE_NOT_USED(x) ((void)(x))
+enum { UNIT_INDEX_MAX = 102, UNIT_HARVESTER = 1, ACTION_HARVEST = 5,
+       LST_SPICE = 8, LST_THICK_SPICE = 9 };
+/* KEY TYPE */
+typedef struct { uint16 x, y; } tile32;
+typedef struct {
+    struct { uint16 index, type; tile32 position; } o;
+    uint8 actionID;
+    int8 spriteOffset;
+    struct { int8 speed, target, current; } orientation[2];
+    ViewportCompositeKey viewportKey;
+} Unit;
+static Unit *g_unitSelected, *drawUnit;
+static Unit pool[UNIT_INDEX_MAX];
+static Unit *Unit_Get_ByIndex(uint16 index) {
+    assert(index < UNIT_INDEX_MAX); return &pool[index];
+}
+static void Unit_ClearViewportKey(Unit *unit) {
+    ViewportCompositeKey_Clear(&unit->viewportKey);
+}
 /* FLAGS */
 /* LAYER TYPES */
 typedef struct { uint16 xBase, yBase, width, height; } WidgetProperties;
@@ -180,6 +515,7 @@ static unsigned evictionCandidates;
 static unsigned lookupCandidates;
 static unsigned lastHitMatches;
 static unsigned layerComparisons;
+static unsigned keyBuilds;
 static unsigned firstBinaryPosition;
 static bool rejectSprite;
 static int16 boundsLeft, boundsTop, boundsRight, boundsBottom;
@@ -189,41 +525,41 @@ static int16 repairLeft, repairTop, repairRight, repairBottom;
 /* CACHE */
 static int compare_directory_keys(const void *left, const void *right) {
     const ViewportPlanarSpriteKey *a = left, *b = right;
-    if (a->key != b->key) return a->key < b->key ? -1 : 1;
-    if (!(a->key >> 20)) return 0;
+    if (a->key.main != b->key.main) return a->key.main < b->key.main ? -1 : 1;
+    if (!(a->key.main >> 20)) return 0;
     for (unsigned i = 0; i < 3; i++)
-        if (a->layerKeys[i] != b->layerKeys[i])
-            return a->layerKeys[i] < b->layerKeys[i] ? -1 : 1;
+        if (a->key.tail[i] != b->key.tail[i])
+            return a->key.tail[i] < b->key.tail[i] ? -1 : 1;
     return 0;
 }
 static void assert_directory(void) {
     unsigned count = 0, live = 0;
     for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++)
-        if (s_viewportPlanarSprites[i].key) count++;
+        if (s_viewportPlanarSprites[i].key.main) count++;
     for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) {
         const ViewportPlanarSpriteKey *key = s_viewportPlanarKeys + i;
         assert(key->sprite >= s_viewportPlanarSprites &&
                key->sprite < s_viewportPlanarSprites + VIEWPORT_PLANAR_SPRITES);
-        assert(key->key == key->sprite->key);
-        if (key->key) {
+        assert(key->key.main == key->sprite->key.main);
+        if (key->key.main) {
             live++;
             assert(i >= VIEWPORT_PLANAR_SPRITES - count);
-            assert(!memcmp(key->layerKeys, key->sprite->layerKeys, sizeof(key->layerKeys)));
-            if (!(key->key >> 20))
-                assert(!key->layerKeys[0] && !key->layerKeys[1] && !key->layerKeys[2]);
+            assert(!memcmp(key->key.tail, key->sprite->key.tail, sizeof(key->key.tail)));
+            if (!(key->key.main >> 20))
+                assert(!key->key.tail[0] && !key->key.tail[1] && !key->key.tail[2]);
         } else {
             assert(i < VIEWPORT_PLANAR_SPRITES - count);
             const uint32 zeros[3] = {0};
-            assert(!memcmp(key->layerKeys, zeros, sizeof(zeros)));
+            assert(!memcmp(key->key.tail, zeros, sizeof(zeros)));
         }
         assert(key->sprite->masks == s_viewportPlanarMasks +
                (key->sprite - s_viewportPlanarSprites) * 320 * (batchRepairs ? 4 : 1));
-        if (i) assert(compare_directory_keys(key - 1, key) <= (key->key ? -1 : 0));
+        if (i) assert(compare_directory_keys(key - 1, key) <= (key->key.main ? -1 : 0));
         for (unsigned j = 0; j < i; j++) assert(s_viewportPlanarKeys[j].sprite != key->sprite);
     }
     assert(count == live);
     assert(s_viewportPlanarLastHitPosition == VIEWPORT_PLANAR_SPRITES ||
-           s_viewportPlanarKeys[s_viewportPlanarLastHitPosition].key != 0);
+           s_viewportPlanarKeys[s_viewportPlanarLastHitPosition].key.main != 0);
 }
 static void rebuild_directory(void) {
     s_viewportPlanarLastHitPosition = VIEWPORT_PLANAR_SPRITES;
@@ -231,8 +567,8 @@ static void rebuild_directory(void) {
     for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) {
         ViewportPlanarSprite *entry = s_viewportPlanarSprites + i;
         ViewportPlanarSpriteKey *key = s_viewportPlanarKeys + i;
-        key->key = entry->key;
-        if (entry->key) memcpy(key->layerKeys, entry->layerKeys, sizeof(key->layerKeys));
+        key->key.main = entry->key.main;
+        if (entry->key.main) memcpy(key->key.tail, entry->key.tail, sizeof(key->key.tail));
         key->sprite = entry;
     }
     qsort(s_viewportPlanarKeys, VIEWPORT_PLANAR_SPRITES,
@@ -243,7 +579,7 @@ static ViewportPlanarSprite *expected_sprite_victim(void) {
     ViewportPlanarSprite *oldest = s_viewportPlanarSprites;
     for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) {
         ViewportPlanarSprite *candidate = s_viewportPlanarSprites + i;
-        if (!candidate->key) return candidate;
+        if (!candidate->key.main) return candidate;
         if (candidate->used < oldest->used) oldest = candidate;
     }
     return oldest;
@@ -341,6 +677,12 @@ static void Video_Atari_EncodePlanar(const uint8 *src, uint16 *dst, uint16 width
 }
 /* BLITTER */
 /* LOOKUP */
+static ViewportCompositeKey *draw_key(void) {
+    if (drawUnit == NULL) return NULL;
+    Unit *u = drawUnit;
+    /* KEY POLICY */
+    return viewportKey;
+}
 static bool draw(const uint8 *sprite, int16 x, int16 y, int flags, ...) {
     bool result;
     va_list ap;
@@ -348,7 +690,8 @@ static bool draw(const uint8 *sprite, int16 x, int16 y, int flags, ...) {
     if (id == 0) id = 111;
     va_start(ap, flags);
     result = GUI_ViewportPlanarSprite(sprite, id,
-        flags & DRAWSPRITE_FLAG_PAL ? 0 : GUI_SPRITE_COLOUR_EMBEDDED, x, y, flags, &ap, NULL);
+        flags & DRAWSPRITE_FLAG_PAL ? 0 : GUI_SPRITE_COLOUR_EMBEDDED, x, y, flags, &ap, NULL,
+        draw_key());
     va_end(ap);
     return result;
 }
@@ -356,7 +699,8 @@ static bool draw_identity(uint16 id, uint8 house, int flags, ...) {
     bool result;
     va_list ap;
     va_start(ap, flags);
-    result = GUI_ViewportPlanarSprite(sprites[0], id, house, 64, 60, flags, &ap, NULL);
+    result = GUI_ViewportPlanarSprite(sprites[0], id, house, 64, 60, flags, &ap, NULL,
+                                    draw_key());
     va_end(ap);
     return result;
 }
@@ -409,7 +753,8 @@ static bool draw_layers(const GUI_SpriteLayers *layers, int16 x, int16 y, int fl
     va_list ap;
     bool result;
     va_start(ap, flags);
-    result = GUI_ViewportPlanarSprite(sprites[0], 111, 0, x, y, flags, &ap, layers);
+    result = GUI_ViewportPlanarSprite(sprites[0], 111, 0, x, y, flags, &ap, layers,
+                                    draw_key());
     va_end(ap);
     return result;
 }
@@ -522,8 +867,11 @@ static uint32 next_key_random(uint32 *state) {
 }
 static void check_compact_keys(void) {
     assert(sizeof(ViewportCompositeKey) == 16);
-    assert(sizeof(s_viewportPlanarSprites[0].layerKeys) == 12);
-    assert(sizeof(s_viewportPlanarKeys[0].layerKeys) == 12);
+    assert(sizeof(s_viewportPlanarSprites[0].key.tail) == 12);
+    assert(sizeof(s_viewportPlanarKeys[0].key.tail) == 12);
+    assert(offsetof(ViewportPlanarSprite, key) == 0);
+    assert(offsetof(ViewportPlanarSprite, used) == 16);
+    assert(offsetof(ViewportPlanarSpriteKey, sprite) == 16);
     GUI_SpriteLayers full = {0}, empty = {0};
     ViewportCompositeKey reused;
     full.count = 4;
@@ -620,11 +968,110 @@ static void check_compact_keys(void) {
         check_compact_key(base, &layers);
     }
 }
+static void check_unit_key(Unit *unit, uint16 id, uint8 house, int flags,
+                            bool highlighted, int x, bool blitter,
+                            const GUI_SpriteLayers *layers, unsigned rebuilds) {
+    ViewportCompositeKey reference;
+    ViewportCompositeKey *actual = &unit->viewportKey;
+    GUI_ViewportBuildCompositeKey(&reference, id, house, flags, highlighted, x, blitter, layers);
+    uint32 oldTail[3];
+    memcpy(oldTail, actual->tail, sizeof(oldTail));
+    unsigned before = keyBuilds;
+    if (blitter) GUI_ViewportBuildCompositeKeyBlitter(actual, id, house, flags, highlighted, layers);
+    else GUI_ViewportBuildCompositeKeyCPU(actual, id, house, flags, highlighted, x, layers);
+    assert(keyBuilds == before + rebuilds);
+    assert(actual->main == reference.main);
+    if (actual->main >> 20) assert(!memcmp(actual->tail, reference.tail, sizeof(actual->tail)));
+    else assert(!memcmp(actual->tail, oldTail, sizeof(oldTail)));
+}
+static void check_unit_keys(void) {
+    Unit unit = {0}, other = {0};
+    unit.o.index = 20;
+    other.o.index = 21;
+    int flags = DRAWSPRITE_FLAG_CENTER | DRAWSPRITE_FLAG_WIDGETPOS;
+    Unit_ClearViewportKey(&unit);
+    check_unit_key(&unit, 111, 0, flags, false, 0, false, NULL, 1);
+    for (unsigned blitter = 0; blitter < 2; blitter++)
+        for (int x = -48; x < 48; x++) {
+            unit.o.position.x = (x + 48) * 16;
+            check_unit_key(&unit, 111, 0, flags, false, x, blitter, NULL, 0);
+        }
+    GUI_SpriteLayers layers = {0};
+    layers.count = 4;
+    for (unsigned i = 0; i < 4; i++) {
+        layers.layer[i].spriteID = i + 1;
+        layers.layer[i].colourHouse = i;
+        layers.layer[i].flags = i & 3;
+        layers.layer[i].offsetX = -14 + i;
+        layers.layer[i].offsetY = 7 - i;
+    }
+    Unit_ClearViewportKey(&unit);
+    check_unit_key(&unit, 112, 2, flags | 3, true, -17, false, &layers, 1);
+    for (unsigned blitter = 0; blitter < 2; blitter++)
+        for (int x = -32; x < 32; x++)
+            check_unit_key(&unit, 112, 2, flags | 3, true, x, blitter, &layers, 0);
+    for (unsigned i = 0; i < 4; i++) {
+        layers.layer[i].spriteID++;
+        layers.layer[i].colourHouse = GUI_SPRITE_COLOUR_EMBEDDED;
+        layers.layer[i].flags ^= 3;
+        layers.layer[i].offsetX++;
+        layers.layer[i].offsetY--;
+        Unit_ClearViewportKey(&unit);
+        check_unit_key(&unit, 112, 2, flags | 3, true, 10, false, &layers, 1);
+    }
+    /* External appearance events clear keys; preparation does not rediscover them. */
+    layers.count = 0;
+    Unit_ClearViewportKey(&unit);
+    check_unit_key(&unit, 111, 0, flags, false, 1, false, &layers, 1);
+    layers.count = 1;
+    layers.layer[0].spriteID = 6;
+    layers.layer[0].offsetX = layers.layer[0].offsetY = 0;
+    g_unitSelected = &unit;
+    Unit_ClearViewportKey(&unit);
+    check_unit_key(&unit, 111, 0, flags, false, 1, false, &layers, 1);
+    check_unit_key(&unit, 111, 0, flags, false, 2, false, &layers, 0);
+    g_unitSelected = &other;
+    Unit_ClearViewportKey(&unit);
+    Unit_ClearViewportKey(&other);
+    check_unit_key(&other, 111, 0, flags, false, 1, false, &layers, 1);
+    layers.count = 0;
+    check_unit_key(&unit, 111, 0, flags, false, 1, false, &layers, 1);
+    g_unitSelected = NULL;
+    Unit_ClearViewportKey(&other);
+    check_unit_key(&other, 111, 0, flags, false, 1, false, &layers, 1);
+    assert(unit.viewportKey.main == other.viewportKey.main);
+    /* Explicit invalidation rebuilds changed layer identities. */
+    unit.actionID = ACTION_HARVEST;
+    unit.o.position.x = unit.o.position.y = 0;
+    Unit_ClearViewportKey(&unit);
+    check_unit_key(&unit, 111, 0, flags, false, 1, false, &layers, 1);
+    Unit_ClearViewportKey(&unit);
+    layers.count = 1;
+    layers.layer[0].spriteID = 223;
+    check_unit_key(&unit, 111, 0, flags, false, 1, false, &layers, 1);
+    Unit_ClearViewportKey(&unit);
+    check_unit_key(&unit, 111, 0, flags, false, 1, false, &layers, 1);
+    unit.o.position.x = 256;
+    Unit_ClearViewportKey(&unit);
+    check_unit_key(&unit, 111, 0, flags, false, 1, false, &layers, 1);
+    Unit_ClearViewportKey(&unit);
+    layers.count = 0;
+    check_unit_key(&unit, 111, 0, flags, false, 1, false, &layers, 1);
+    unit.spriteOffset = -1;
+    Unit_ClearViewportKey(&unit);
+    check_unit_key(&unit, 111, 0, flags, false, 1, false, &layers, 1);
+    /* Switching render paths patches phase without rebuilding or moving tails. */
+    for (unsigned i = 0; i < 32; i++) {
+        check_unit_key(&unit, 111, 0, flags, false, i, false, &layers, 0);
+        check_unit_key(&unit, 111, 0, flags, false, i, true, &layers, 0);
+    }
+}
 int main(int argc, char **argv) {
     unsigned before;
     ViewportPlanarSprite *saved;
     (void)argv;
     check_compact_keys();
+    check_unit_keys();
     s_viewportBlitter = argc > 1;
     batchRepairs = s_viewportBlitter;
     for (unsigned id = 0; id < 70; id++) {
@@ -737,7 +1184,7 @@ int main(int argc, char **argv) {
     s_viewportPlanarComponents = NULL;
     assert(!draw(sprites[0], 64, 60, 0));
     s_viewportPlanarComponents = savedComponents;
-    for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) s_viewportPlanarSprites[i].key = 0;
+    for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) s_viewportPlanarSprites[i].key.main = 0;
     rebuild_directory();
     memset(s_viewportPlanarComponents, 0, VIEWPORT_PLANAR_COMPONENTS * sizeof(*s_viewportPlanarComponents));
     /* Complete unit: attachment, independent turret, smoke, direct-index selection.
@@ -783,7 +1230,7 @@ int main(int argc, char **argv) {
     check_layers(&layers, 65, 50, DRAWSPRITE_FLAG_RTL);
     assert(decodes == before);
     /* A composite eviction must not discard its independently cached parts. */
-    for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) s_viewportPlanarSprites[i].key = 0;
+    for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) s_viewportPlanarSprites[i].key.main = 0;
     rebuild_directory();
     encoded = encodes;
     composed = compositions;
@@ -942,7 +1389,7 @@ int main(int argc, char **argv) {
     }
     assert(dirtyClears);
     /* A late hit must not select earlier empty slots for eviction. */
-    for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) s_viewportPlanarSprites[i].key = 0;
+    for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) s_viewportPlanarSprites[i].key.main = 0;
     rebuild_directory();
     memset(s_viewportPlanarComponents, 0, VIEWPORT_PLANAR_COMPONENTS * sizeof(*s_viewportPlanarComponents));
     check(0, 64, 60, 0, false);
@@ -951,7 +1398,7 @@ int main(int argc, char **argv) {
            320 * (s_viewportBlitter ? 4 : 1) * sizeof(*lateMasks));
     s_viewportPlanarSprites[63] = s_viewportPlanarSprites[0];
     s_viewportPlanarSprites[63].masks = lateMasks;
-    s_viewportPlanarSprites[0].key = 0;
+    s_viewportPlanarSprites[0].key.main = 0;
     s_viewportPlanarComponents[63] = s_viewportPlanarComponents[0];
     s_viewportPlanarComponents[0].key = 0;
     rebuild_directory();
@@ -961,18 +1408,18 @@ int main(int argc, char **argv) {
     check(0, 64, 60, 0, false);
     assert(evictionCandidates == scans && s_viewportPlanarClock == 2);
     assert(lookupCandidates == probes + 7);
-    assert(s_viewportPlanarSprites[63].used == 2 && !s_viewportPlanarSprites[0].key);
+    assert(s_viewportPlanarSprites[63].used == 2 && !s_viewportPlanarSprites[0].key.main);
     /* Physical slot order is independent of directory order. */
-    s_viewportPlanarSprites[0].key = s_viewportPlanarSprites[63].key;
-    s_viewportPlanarSprites[63].key = 0;
+    s_viewportPlanarSprites[0].key.main = s_viewportPlanarSprites[63].key.main;
+    s_viewportPlanarSprites[63].key.main = 0;
     rebuild_directory();
     probes = lookupCandidates;
     check(0, 64, 60, 0, false);
     assert(lookupCandidates == probes + 7);
     assert(evictionCandidates == scans && s_viewportPlanarSprites[0].used == 4);
     /* Same body with and without a layer must remain distinct. */
-    s_viewportPlanarSprites[1].key = s_viewportPlanarSprites[0].key | (0xc06u << 20);
-    s_viewportPlanarSprites[1].layerKeys[0] = 1;
+    s_viewportPlanarSprites[1].key.main = s_viewportPlanarSprites[0].key.main | (0xc06u << 20);
+    s_viewportPlanarSprites[1].key.tail[0] = 1;
     rebuild_directory();
     probes = lookupCandidates;
     check(0, 64, 60, 0, false);
@@ -984,7 +1431,7 @@ int main(int argc, char **argv) {
     assert(evictionCandidates == scans && !s_viewportPlanarComponents[0].key);
     for (unsigned empty = 0; empty < 2; empty++) {
         for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) {
-            s_viewportPlanarSprites[i].key = 0xdead0000UL | i;
+            s_viewportPlanarSprites[i].key.main = 0xdead0000UL | i;
             s_viewportPlanarSprites[i].used = 9;
         }
         for (unsigned i = 0; i < VIEWPORT_PLANAR_COMPONENTS; i++) {
@@ -994,7 +1441,7 @@ int main(int argc, char **argv) {
         s_viewportPlanarSprites[7].used = s_viewportPlanarSprites[19].used = 3;
         s_viewportPlanarComponents[7].used = s_viewportPlanarComponents[19].used = 3;
         if (empty) {
-            s_viewportPlanarSprites[11].key = s_viewportPlanarSprites[23].key = 0;
+            s_viewportPlanarSprites[11].key.main = s_viewportPlanarSprites[23].key.main = 0;
             s_viewportPlanarComponents[11].key = s_viewportPlanarComponents[23].key = 0;
         }
         rebuild_directory();
@@ -1005,18 +1452,18 @@ int main(int argc, char **argv) {
         unsigned victim = empty ? 11 : 7;
         assert(lookupCandidates > probes && lookupCandidates <= probes + 14);
         assert_directory();
-        assert(s_viewportPlanarSprites[victim].key == 0x00000c6fUL);
+        assert(s_viewportPlanarSprites[victim].key.main == 0x00000c6fUL);
         assert(s_viewportPlanarComponents[victim].key == 0x80000c6fUL);
-        assert(s_viewportPlanarSprites[19].key == 0xdead0013UL);
+        assert(s_viewportPlanarSprites[19].key.main == 0xdead0013UL);
         assert(s_viewportPlanarComponents[19].key == 0xdead0013UL);
         if (empty) {
-            assert(!s_viewportPlanarSprites[23].key && !s_viewportPlanarComponents[23].key);
+            assert(!s_viewportPlanarSprites[23].key.main && !s_viewportPlanarComponents[23].key);
         }
     }
     /* Exercise insertion at both ends and every packed word comparison, including
      * unsigned values and absent layers, independently of sprite decoding. */
     for (unsigned differing = 0; differing < 4; differing++) {
-        for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) s_viewportPlanarSprites[i].key = 0;
+        for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) s_viewportPlanarSprites[i].key.main = 0;
         rebuild_directory();
         for (unsigned n = 0; n < 64; n++) {
             unsigned slot = (n * 37) & 63;
@@ -1031,8 +1478,8 @@ int main(int argc, char **argv) {
                 s_viewportPlanarLastHitPosition < VIEWPORT_PLANAR_SPRITES ?
                 s_viewportPlanarKeys[s_viewportPlanarLastHitPosition].sprite : NULL;
             ViewportPlanarSprite *entry = s_viewportPlanarSprites + slot;
-            entry->key = words[0];
-            memcpy(entry->layerKeys, words + 1, sizeof(entry->layerKeys));
+            entry->key.main = words[0];
+            memcpy(entry->key.tail, words + 1, sizeof(entry->key.tail));
             GUI_ViewportIndexPlanarSprite(entry, position);
             assert_directory();
             if (previousHit)
@@ -1042,7 +1489,7 @@ int main(int argc, char **argv) {
             for (unsigned index = 64 - n - 1; index < 64; index++) {
                 const ViewportPlanarSpriteKey *key = s_viewportPlanarKeys + index;
                 probes = lookupCandidates;
-                assert(GUI_ViewportFindPlanarSprite(key->key, key->layerKeys, &position) == key->sprite);
+                assert(GUI_ViewportFindPlanarSprite(key->key.main, key->key.tail, &position) == key->sprite);
                 assert(position == index && lookupCandidates <= probes + 8);
             }
             uint16 last = s_viewportPlanarLastHitPosition;
@@ -1059,19 +1506,19 @@ int main(int argc, char **argv) {
             ViewportPlanarSprite *entry = s_viewportPlanarSprites + slot;
             uint16 position;
             probes = lookupCandidates;
-            assert(GUI_ViewportFindPlanarSprite(entry->key, entry->layerKeys, &position) == entry);
+            assert(GUI_ViewportFindPlanarSprite(entry->key.main, entry->key.tail, &position) == entry);
             assert(lookupCandidates > probes && lookupCandidates <= probes + 8);
             assert(position == slot);
             unsigned matches = lastHitMatches;
             unsigned comparisons = layerComparisons;
             probes = lookupCandidates;
-            assert(GUI_ViewportFindPlanarSprite(entry->key, entry->layerKeys, &position) == entry);
+            assert(GUI_ViewportFindPlanarSprite(entry->key.main, entry->key.tail, &position) == entry);
             assert(position == slot && lookupCandidates == probes + 1);
             assert(lastHitMatches == matches + 1);
             assert(layerComparisons == comparisons);
             uint32 words[4];
-            words[0] = entry->key;
-            memcpy(words + 1, entry->layerKeys, sizeof(entry->layerKeys));
+            words[0] = entry->key.main;
+            memcpy(words + 1, entry->key.tail, sizeof(entry->key.tail));
             words[differing]++;
             probes = lookupCandidates;
             assert(!GUI_ViewportFindPlanarSprite(words[0], words + 1, &position));
@@ -1088,15 +1535,15 @@ int main(int argc, char **argv) {
             uint16 position;
             if (pass >= 2) {
                 ViewportPlanarSprite *middle = s_viewportPlanarSprites + 32;
-                assert(GUI_ViewportFindPlanarSprite(middle->key, middle->layerKeys, &position) == middle);
+                assert(GUI_ViewportFindPlanarSprite(middle->key.main, middle->key.tail, &position) == middle);
             }
             assert(!GUI_ViewportFindPlanarSprite(words[0], words + 1, &position));
             ViewportPlanarSprite *previousHit =
                 s_viewportPlanarKeys[s_viewportPlanarLastHitPosition].sprite;
-            uint32 oldKey = entry->key, oldLayers[3];
-            memcpy(oldLayers, entry->layerKeys, sizeof(oldLayers));
-            entry->key = words[0];
-            memcpy(entry->layerKeys, words + 1, sizeof(entry->layerKeys));
+            uint32 oldKey = entry->key.main, oldLayers[3];
+            memcpy(oldLayers, entry->key.tail, sizeof(oldLayers));
+            entry->key.main = words[0];
+            memcpy(entry->key.tail, words + 1, sizeof(entry->key.tail));
             GUI_ViewportIndexPlanarSprite(entry, position);
             assert_directory();
             if (entry == previousHit) {
@@ -1104,7 +1551,7 @@ int main(int argc, char **argv) {
             } else {
                 assert(s_viewportPlanarKeys[s_viewportPlanarLastHitPosition].sprite == previousHit);
                 probes = lookupCandidates;
-                assert(GUI_ViewportFindPlanarSprite(previousHit->key, previousHit->layerKeys,
+                assert(GUI_ViewportFindPlanarSprite(previousHit->key.main, previousHit->key.tail,
                                                    &position) == previousHit);
                 assert(lookupCandidates == probes + 1);
             }
@@ -1118,8 +1565,8 @@ int main(int argc, char **argv) {
     for (unsigned count = 0; count <= 64; count++) {
         for (unsigned slot = 0; slot < 64; slot++) {
             ViewportPlanarSprite *entry = s_viewportPlanarSprites + slot;
-            entry->key = slot < count ? slot * 2 + 1 : 0;
-            memset(entry->layerKeys, 0, sizeof(entry->layerKeys));
+            entry->key.main = slot < count ? slot * 2 + 1 : 0;
+            memset(entry->key.tail, 0, sizeof(entry->key.tail));
         }
         rebuild_directory();
         for (unsigned key = 1; key <= 129; key++) {
@@ -1138,7 +1585,7 @@ int main(int argc, char **argv) {
         }
     }
     /* Real insertions/evictions and layered hits retain fixed image slots. */
-    for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) s_viewportPlanarSprites[i].key = 0;
+    for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) s_viewportPlanarSprites[i].key.main = 0;
     rebuild_directory();
     for (unsigned id = 0; id < 70; id++) {
         check(id, 64, 60, 0, false);
@@ -1159,13 +1606,66 @@ int main(int argc, char **argv) {
         assert(!memcmp(&actual, images + i, sizeof(actual)));
     }
     assert_directory();
+    /* Unit identity reuse still performs shared-image lookup after eviction. */
+    Unit unit = {0}, twin = {0};
+    unit.o.index = 20;
+    twin.o.index = 21;
+    drawUnit = &unit;
+    Unit_ClearViewportKey(drawUnit);
+    before = keyBuilds;
+    for (int phase = 0; phase < 16; phase++)
+        check(1, 64 + phase, 60, DRAWSPRITE_FLAG_CENTER | DRAWSPRITE_FLAG_WIDGETPOS, false);
+    assert(keyBuilds == before + 1);
+    Unit_ClearViewportKey(drawUnit);
+    layers.count = 1;
+    layers.layer[0].spriteID = 6;
+    layers.layer[0].colourHouse = GUI_SPRITE_COLOUR_EMBEDDED;
+    layers.layer[0].flags = 0;
+    layers.layer[0].offsetX = layers.layer[0].offsetY = 0;
+    g_unitSelected = &unit;
+    Unit_ClearViewportKey(&unit);
+    check_layers(&layers, 64, 50, 0);
+    before = keyBuilds;
+    for (int phase = 0; phase < 16; phase++) check_layers(&layers, 64 + phase, 50, 0);
+    assert(keyBuilds == before);
+    /* A second unit shares the same image: its index is not part of the key. */
+    drawUnit = &twin;
+    g_unitSelected = &twin;
+    unsigned oldCompositions = compositions;
+    check_layers(&layers, 79, 50, 0);
+    assert(compositions == oldCompositions);
+    drawUnit = NULL;
+    for (unsigned id = 0; id < 70; id++) check(id, 64, 60, 0, false);
+    drawUnit = &twin;
+    before = keyBuilds;
+    oldCompositions = compositions;
+    check_layers(&layers, 79, 50, 0);
+    assert(keyBuilds == before && compositions == oldCompositions + 1 + layers.count);
+    /* Terrain-dependent layers rebuild harvester keys, not cached images. */
+    unit.o.type = UNIT_HARVESTER;
+    drawUnit = &unit;
+    ViewportCompositeKey unusedKey = unit.viewportKey;
+    for (unsigned state = 0; state < 4; state++) {
+        layers.count = state & 1;
+        check_layers(&layers, 64, 50, 0);
+        assert(!memcmp(&unit.viewportKey, &unusedKey, sizeof(unusedKey)));
+        before = keyBuilds;
+        oldCompositions = compositions;
+        check_layers(&layers, 64, 50, 0);
+        assert(keyBuilds == before + 2 && compositions == oldCompositions);
+        assert(!memcmp(&unit.viewportKey, &unusedKey, sizeof(unusedKey)));
+    }
+    drawUnit = NULL;
+    g_unitSelected = NULL;
+    for (unsigned i = 0; i < UNIT_INDEX_MAX; i++) pool[i].viewportKey.main = i + 1;
     GUI_FreeViewportSpriteCache();
+    for (unsigned i = 0; i < UNIT_INDEX_MAX; i++) assert(!pool[i].viewportKey.main);
     assert(!s_viewportPlanarSprites && !s_viewportPlanar && !s_viewportSpriteReady && !s_viewportPlanarClock);
     assert(!s_viewportPlanarComponents && !s_viewportComponentClock);
     assert(!s_viewportPlanarMasks && !blitterLocks);
     for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) {
-        assert(!s_viewportPlanarKeys[i].key && !s_viewportPlanarKeys[i].sprite);
-        for (unsigned word = 0; word < 3; word++) assert(!s_viewportPlanarKeys[i].layerKeys[word]);
+        assert(!s_viewportPlanarKeys[i].key.main && !s_viewportPlanarKeys[i].sprite);
+        for (unsigned word = 0; word < 3; word++) assert(!s_viewportPlanarKeys[i].key.tail[word]);
     }
     assert(s_viewportPlanarLastHitPosition == VIEWPORT_PLANAR_SPRITES);
     assert(!draw(sprites[0], 64, 60, 0));
@@ -1173,6 +1673,10 @@ int main(int argc, char **argv) {
 }
 """
         harness = harness.replace("/* FLAGS */", flags).replace("/* LAYER TYPES */", layer_types)
+        harness = harness.replace("/* KEY TYPE */", (ROOT / "src/gui/viewport_key.h").read_text())
+        key_policy = next(line.strip() for line in (ROOT / "src/gui/viewport.c").read_text().splitlines()
+                          if "ViewportCompositeKey *viewportKey =" in line)
+        harness = harness.replace("/* KEY POLICY */", key_policy)
         harness = harness.replace("/* CACHE */", blit_plan_type() + cache)
         harness = harness.replace("/* FREE */", function(gui, "GUI_FreeViewportSpriteCache"))
         harness = harness.replace("/* PLANAR SCOPE */", function(gui, "GUI_SetViewportPlanar"))
@@ -1209,7 +1713,10 @@ int main(int argc, char **argv) {
         indexer = indexer[:-2] + "    assert_directory();\n}\n"
         comparator = function(gui, "GUI_ViewportCompareLayerKeys")
         comparator = comparator.replace("\n{\n", "\n{\n    layerComparisons++;\n", 1)
-        lookup = function(gui, "GUI_ViewportBuildCompositeKey") + "\n"
+        builder = function(gui, "GUI_ViewportBuildCompositeKey")
+        builder = builder.replace("\n{\n", "\n{\n    keyBuilds++;\n", 1)
+        lookup = builder + "\n" + function(gui, "GUI_ViewportBuildCompositeKeyBlitter") + "\n"
+        lookup += function(gui, "GUI_ViewportBuildCompositeKeyCPU") + "\n"
         lookup += comparator + "\n" + finder + "\n" + indexer
         lookup += "\n" + function(gui, "GUI_ViewportDecodeLayer")
         for name, victim_check in (("GUI_ViewportPlanarComponent", "expected_component_victim"),
@@ -1249,7 +1756,10 @@ int main(int argc, char **argv) {
 typedef uint8_t uint8;
 typedef uint16_t uint16;
 typedef int16_t int16;
+typedef uint32_t uint32;
 typedef int Screen;
+/* KEY TYPE */
+typedef struct { uint16 index; ViewportCompositeKey viewportKey; } Unit;
 #define SCREEN_0 0
 #define VARIABLE_NOT_USED(x) ((void)(x))
 /* FLAGS */
@@ -1258,19 +1768,23 @@ static uint8 assets[5], *g_sprites[5], screen[2], bodyPalette[16], remap[256];
 static GUI_SpriteLayers layers;
 static bool cached;
 static unsigned attempts, draws;
+static Unit unit;
+static bool withUnit, withKeyArg;
 static void GUI_Widget_Viewport_InvalidateSpriteDamage(void) {}
 static uint8 *GFX_Screen_Get_ByIndex(Screen id) { return screen + id; }
 static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 id, uint8 house,
                                     int16 x, int16 y, int flags, va_list *ap,
-                                    const GUI_SpriteLayers *composition) {
+                                    const GUI_SpriteLayers *composition, ViewportCompositeKey *key) {
     attempts++;
     if (sprite != g_sprites[0]) {
-        assert(composition == NULL);
+        assert(composition == NULL && key == NULL);
         return false;
     }
     assert(sprite == g_sprites[0] && id == 0 && house == 1);
     assert(x == 50 && y == 60 && !(flags & DRAWSPRITE_FLAG_LAYERS));
     assert(composition == &layers);
+    assert(key == (withUnit ? &unit.viewportKey : NULL));
+    assert(!(flags & DRAWSPRITE_FLAG_VIEWPORT_KEY));
     assert(va_arg(*ap, uint8 *) == bodyPalette);
     assert(va_arg(*ap, uint8 *) == remap && va_arg(*ap, int) == 1);
     return cached;
@@ -1281,7 +1795,8 @@ static void GUI_DrawSpriteInternal(Screen screenID, const uint8 *sprite, int16 x
     unsigned id = draws++;
     assert(id < 5 && sprite == g_sprites[id] && windowID == 2);
     assert(screenID == 0 || screenID == 1);
-    assert(!target && !width && !height && !(flags & DRAWSPRITE_FLAG_LAYERS));
+    assert(!target && !width && !height &&
+           !(flags & (DRAWSPRITE_FLAG_LAYERS | DRAWSPRITE_FLAG_VIEWPORT_KEY)));
     if (id == 0) {
         assert(x == 50 && y == 60);
         assert(va_arg(*ap, uint8 *) == bodyPalette);
@@ -1294,6 +1809,19 @@ static void GUI_DrawSpriteInternal(Screen screenID, const uint8 *sprite, int16 x
     }
 }
 /* DRAW */
+static void draw_body(Screen screenID, int flags) {
+#ifdef TOS
+    if (withKeyArg) {
+        GUI_DrawSprite(screenID, g_sprites[0], 0, 1, 50, 60, 2,
+                       flags | DRAWSPRITE_FLAG_VIEWPORT_KEY, &layers,
+                       withUnit ? &unit.viewportKey : (ViewportCompositeKey *)NULL,
+                       bodyPalette, remap, 1);
+        return;
+    }
+#endif
+    GUI_DrawSprite(screenID, g_sprites[0], 0, 1, 50, 60, 2,
+                   flags, &layers, bodyPalette, remap, 1);
+}
 int main(void) {
     for (unsigned i = 0; i < 5; i++) g_sprites[i] = assets + i;
     layers.count = 4;
@@ -1310,25 +1838,31 @@ int main(void) {
     spriteFlags |= DRAWSPRITE_FLAG_LAYERS;
     assert(spriteFlags & DRAWSPRITE_FLAG_LAYERS);
     int flags = spriteFlags;
-    cached = true;
-    GUI_DrawSprite(0, g_sprites[0], 0, 1, 50, 60, 2, flags, &layers, bodyPalette, remap, 1);
+    for (unsigned variant = 0; variant < 3; variant++) {
+        withUnit = variant == 1;
+        withKeyArg = variant != 0;
+        draws = attempts = 0;
+        cached = true;
+        draw_body(0, flags);
 #ifdef TOS
-    assert(attempts == 1 && draws == 0);
+        assert(attempts == 1 && draws == 0);
 #else
-    assert(attempts == 0 && draws == 5);
+        assert(attempts == 0 && draws == 5);
 #endif
-    draws = attempts = 0;
-    cached = false;
-    GUI_DrawSprite(0, g_sprites[0], 0, 1, 50, 60, 2, flags, &layers, bodyPalette, remap, 1);
-    assert(draws == 5);
-    draws = attempts = 0;
-    GUI_DrawSprite(1, g_sprites[0], 0, 1, 50, 60, 2, flags, &layers, bodyPalette, remap, 1);
-    assert(attempts == 0 && draws == 5);
+        draws = attempts = 0;
+        cached = false;
+        draw_body(0, flags);
+        assert(draws == 5);
+        draws = attempts = 0;
+        draw_body(1, flags);
+        assert(attempts == 0 && draws == 5);
+    }
     return 0;
 }
 """
         harness = harness.replace("/* FLAGS */", flags).replace("/* LAYER TYPES */", layer_types)
         harness = harness.replace("/* VIEWPORT FLAGS */", viewport_flags)
+        harness = harness.replace("/* KEY TYPE */", (ROOT / "src/gui/viewport_key.h").read_text())
         harness = harness.replace("/* DRAW */", function(gui, "GUI_DrawSprite"))
         with tempfile.TemporaryDirectory(prefix="viewport-layer-dispatch-") as directory:
             source = Path(directory) / "test.c"

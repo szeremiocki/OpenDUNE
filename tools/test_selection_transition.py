@@ -47,7 +47,8 @@ typedef struct Widget {
     struct { bool selected; } state;
     struct { bool invisible; } flags;
 } Widget;
-typedef struct { uint16 position; } Unit;
+typedef struct { uint16 position; bool keyValid; } Unit;
+static void Unit_ClearViewportKey(Unit *u) { assert(u != NULL); u->keyValid = false; }
 static Unit unit;
 static Unit *g_unitSelected;
 static Widget widgets[18], *g_widgetLinkedListHead;
@@ -87,6 +88,7 @@ static void GUI_DisplayText(const char *text, int priority) {
 }
 static void Unit_UpdateMap(unsigned kind, Unit *u) {
     assert(kind == 2 && u == &unit);
+    Unit_ClearViewportKey(u);
     unitUpdates++;
 }
 static void GUI_DrawInterfaceAndRadar(Screen screen) {
@@ -189,6 +191,7 @@ static void init(unsigned old, unsigned variant, bool useDirect) {
     if (variant == 2) widgets[1].flags.invisible = true;
     for (unsigned i = 0; i < 18; i++) GUI_Widget_Draw(&widgets[i]);
     g_unitSelected = variant == 3 ? NULL : &unit;
+    unit.keyValid = true;
     g_cursorDefaultSpriteID = old == SELECTIONTYPE_TARGET ? 5 : 0;
     g_cursorSpriteID = 5; g_curWidgetIndex = 6;
     g_structureActivePosition = 12; g_selectionPosition = 34;
@@ -201,6 +204,12 @@ static void init(unsigned old, unsigned variant, bool useDirect) {
     unitUpdates = mapSelections = spriteChanges = placementHides = 0;
 }
 int main(void) {
+    init(SELECTIONTYPE_UNIT, 0, false);
+    GUI_ChangeSelectionType(SELECTIONTYPE_STRUCTURE);
+    assert(!g_unitSelected && !unit.keyValid);
+    init(SELECTIONTYPE_UNIT, 0, false);
+    GUI_ChangeSelectionType(SELECTIONTYPE_MENTAT);
+    assert(!g_unitSelected && !unit.keyValid);
     assert(memcmp(g_table_selectionType[SELECTIONTYPE_UNIT].visibleWidgets,
                   g_table_selectionType[SELECTIONTYPE_TARGET].visibleWidgets,
                   sizeof(g_table_selectionType[0].visibleWidgets)) == 0);

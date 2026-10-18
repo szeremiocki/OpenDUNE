@@ -140,6 +140,10 @@ extern bool g_var_37B8;
 /* First vararg: const GUI_SpriteLayers *, followed by the usual varargs.
  * Layers are centered at offsets from the body's caller-supplied position. */
 #define DRAWSPRITE_FLAG_LAYERS 0x20000
+#ifdef TOS
+/* Mutable ViewportCompositeKey * (NULL for temporary) after layers, before palette/remap. */
+#define DRAWSPRITE_FLAG_VIEWPORT_KEY 0x40000
+#endif
 
 #define GUI_ClearScreen(screenID) GFX_ClearScreen(screenID)
 extern void GUI_DrawScreen(Screen screenID);

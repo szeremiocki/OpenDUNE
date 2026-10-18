@@ -4,6 +4,9 @@
 #define UNIT_H
 
 #include "object.h"
+#ifdef TOS
+#include "gui/viewport_key.h"
+#endif
 
 /**
  * Types of Units available in the game.
@@ -167,7 +170,19 @@ typedef struct Unit {
 	uint8  team;                                            /*!< If non-zero, unit is part of team. Value 1 means team 0, etc. */
 	uint16 timer;                                           /*!< Timer used in animation, to count down when to do the next step. */
 	uint8  route[14];                                       /*!< The current route the Unit is following. */
+#ifdef TOS
+	ViewportCompositeKey viewportKey;
+#endif
 } Unit;
+
+static inline void Unit_ClearViewportKey(Unit *unit)
+{
+#ifdef TOS
+	ViewportCompositeKey_Clear(&unit->viewportKey);
+#else
+	(void)unit;
+#endif
+}
 
 /**
  * Static information per Unit type.

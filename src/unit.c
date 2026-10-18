@@ -499,6 +499,7 @@ void Unit_SetAction(Unit *u, ActionType action)
 	if (u == NULL) return;
 	if (u->actionID == ACTION_DESTRUCT || u->actionID == ACTION_DIE || action == ACTION_INVALID) return;
 
+	Unit_ClearViewportKey(u);
 	ai = &g_table_actionInfo[action];
 
 	switch (ai->switchType) {
@@ -1597,6 +1598,7 @@ bool Unit_Damage(Unit *unit, uint16 damage, uint16 range)
 	unit->o.flags.s.isSmoking = true;
 	unit->spriteOffset = 0;
 	unit->timer = 0;
+	Unit_ClearViewportKey(unit);
 
 	return false;
 }
@@ -1678,6 +1680,7 @@ void Unit_SetOrientation(Unit *unit, int8 orientation, bool rotateInstantly, uin
 	unit->orientation[level].target = orientation;
 
 	if (rotateInstantly) {
+		Unit_ClearViewportKey(unit);
 		unit->orientation[level].current = orientation;
 		return;
 	}
@@ -2215,6 +2218,7 @@ void Unit_EnterStructure(Unit *unit, Structure *s)
 			unit->o.hitpoints = ui->o.hitpoints;
 			unit->o.flags.s.isSmoking = false;
 			unit->spriteOffset = 0;
+			Unit_ClearViewportKey(unit);
 		}
 		unit->o.linkedID = s->o.linkedID;
 		s->o.linkedID = unit->o.index & 0xFF;
@@ -2243,7 +2247,10 @@ void Unit_EnterStructure(Unit *unit, Structure *s)
 
 		if (s->o.linkedID != 0xFF) {
 			Unit *u = Unit_Get_ByIndex(s->o.linkedID);
-			if (u != NULL) u->o.houseID = Unit_GetHouseID(unit);
+			if (u != NULL) {
+				u->o.houseID = Unit_GetHouseID(unit);
+				Unit_ClearViewportKey(u);
+			}
 		}
 
 		House_CalculatePowerAndCredit(House_Get_ByIndex(s->o.houseID));
@@ -2469,7 +2476,9 @@ void Unit_UpdateMap(uint16 type, Unit *unit)
 	Tile *t;
 	uint16 radius;
 
-	if (unit == NULL || unit->o.flags.s.isNotOnMap || !unit->o.flags.s.used) return;
+	if (unit == NULL) return;
+	Unit_ClearViewportKey(unit);
+	if (unit->o.flags.s.isNotOnMap || !unit->o.flags.s.used) return;
 
 	ui = &g_table_unitInfo[unit->o.type];
 

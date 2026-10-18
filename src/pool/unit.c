@@ -162,6 +162,7 @@ void Unit_Free(Unit *u)
 {
 	int i;
 
+	Unit_ClearViewportKey(u);
 	memset(&u->o.flags, 0, sizeof(u->o.flags));
 
 	Script_Reset(&u->o.script, g_scriptUnit);

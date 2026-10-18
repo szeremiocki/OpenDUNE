@@ -1067,12 +1067,25 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 			}
 
 			spriteFlags |= DRAWSPRITE_FLAG_LAYERS;
+#ifdef TOS
+			/* Harvesting layers depend on terrain outside the unit's state. */
+			ViewportCompositeKey *viewportKey = u->o.type == UNIT_HARVESTER ? NULL : &u->viewportKey;
+			spriteFlags |= DRAWSPRITE_FLAG_VIEWPORT_KEY;
+#endif
 			if (spriteFlags & DRAWSPRITE_FLAG_PAL) {
 				GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[index], index, bodyHouse, x, y, 2,
-				               spriteFlags, &layers, paletteHouse, g_paletteMapping2, 1);
+				               spriteFlags, &layers,
+#ifdef TOS
+				               viewportKey,
+#endif
+				               paletteHouse, g_paletteMapping2, 1);
 			} else {
 				GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[index], index, bodyHouse, x, y, 2,
-				               spriteFlags, &layers, g_paletteMapping2, 1);
+				               spriteFlags, &layers,
+#ifdef TOS
+				               viewportKey,
+#endif
+				               g_paletteMapping2, 1);
 			}
 		}
 

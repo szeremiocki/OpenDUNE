@@ -227,11 +227,32 @@ The main word contains the body and the first layer's frame/colour variant;
 three tail words hold the remaining layer bits, with four spare bits kept zero.
 One shared builder encodes the complete body/layer identity into a caller-owned
 16-byte key struct (main word and three tail words), without hashing or collisions.
+Units, composite image entries and directory records use that same key type.
 For sprites without layers (NULL or a count-zero list), it writes only the body
 identity, skipping tail writes, temporary layer initialization and cross-word
 packing. A zero layer prefix in the main word makes the caller's tails undefined
 and irrelevant: lookup accepts a matching main word without reading the tails.
 Stored cache tails are cleared only on a layerless miss.
+Ground units embed an opaque 16-byte composite key on TOS. Unit code only clears
+it through an inline helper: animation, orientation, highlight, smoke, colour,
+type and harvesting-action mutations invalidate it. Map updates around a unit
+also invalidate conservatively, including ordinary movement and selection
+changes. Direct selection resets clear the affected unit. Harvesters always use
+a temporary key because their harvesting attachment also depends on terrain
+outside the unit's state. They rebuild the key on each draw but still reuse the
+shared component and composite image caches; map dirty notifications need no
+unit-key invalidation hook.
+The next eligible planar draw constructs an empty key in place. CPU-specialized
+key preparation updates only the final screen-X phase on reuse; BLiTTER-specialized
+preparation clears those bits, including when switching from CPU drawing.
+Lookup uses the embedded main and tail words directly, without sidecar indexing,
+dependency checks or tail copying. Generic draws also use a temporary key.
+Only keys are retained: body/layer resolution and validation still run normally.
+Keys own no image slots and contain no unit index, so identical units share images
+and every draw still searches the shared cache after possible eviction.
+Pool reset/allocation, free, save loading and sprite-cache teardown invalidate
+embedded keys. The TOS Unit structure grows by 16 bytes; non-TOS units and the
+explicitly serialized save format are unchanged.
 Sprite 0 (the separately cached mouse) is rejected as a base or layer by the
 viewport image-cache path and by the component cache; selection sprite 6
 remains supported. Nonzero sprite IDs make zero an absent layer or unused key,
@@ -258,7 +279,9 @@ directory position; there is no runtime midpoint or fallback index arithmetic.
 Each node compares the unsigned main key inline. Matching main keys call one
 shared, non-inlined/non-cloned three-word tail comparator, reducing code duplication
 while preserving lexicographic unsigned ordering. The last-hit shortcut still
-compares the complete key inline. This trades layer-comparison call overhead
+compares the complete key inline. Layer-presence predicates mask the upper
+12 bits instead of shifting by 20, allowing a single upper-word comparison on
+68000. This trades layer-comparison call overhead
 for a smaller executable than duplicating the full comparison at every node.
 Each record retains its image-slot pointer, including while its key is zero.
 Repeated hits examine one candidate; otherwise up to eight candidates are

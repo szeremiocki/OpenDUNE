@@ -93,6 +93,7 @@ static Screen GFX_Screen_SetActive(Screen screen) {
 }
 static void Map_SetSelection(uint16 position) { assert(position == g_selectionPosition); }
 static void Map_SetSelectionSize(uint16 layout) { assert(layout == 0); }
+static void Unit_ClearViewportKey(Unit *u) { assert(u == &unit); }
 static void Unit_UpdateMap(uint16 mode, Unit *u) { assert(mode == 2 && u == &unit); }
 static void Unit_Select(Unit *u) { assert(u == NULL); g_unitSelected = u; }
 static void Timer_SetTimer(unsigned timer, bool enabled) {

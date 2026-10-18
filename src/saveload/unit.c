@@ -102,6 +102,7 @@ bool Unit_Load(FILE *fp, uint32 length)
 
 		/* Copy over the data */
 		*u = ul;
+		Unit_ClearViewportKey(u);
 	}
 	if (length != 0) return false;
 
@@ -159,6 +160,7 @@ bool UnitNew_Load(FILE *fp, uint32 length)
 		if (u == NULL) return false;
 
 		/* Read the "new" information for this unit */
+		Unit_ClearViewportKey(u);
 		if (!SaveLoad_Load(s_saveUnitNew, fp, u)) return false;
 
 		length -= SaveLoad_GetLength(s_saveUnitNew);

@@ -1220,7 +1220,7 @@ static void GUI_DrawSpriteInternal(Screen screenID, const uint8 *sprite, int16 p
 #ifdef TOS
 static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8 colourHouse,
                                     int16 x, int16 y, int flags, va_list *ap,
-                                    const GUI_SpriteLayers *layers);
+                                    const GUI_SpriteLayers *layers, ViewportCompositeKey *key);
 #endif
 
 void GUI_DrawSprite(Screen screenID, const uint8 *sprite, uint16 spriteID, uint8 colourHouse,
@@ -1229,6 +1229,9 @@ void GUI_DrawSprite(Screen screenID, const uint8 *sprite, uint16 spriteID, uint8
 	va_list ap;
 	const GUI_SpriteLayers *layers = NULL;
 	uint16 i;
+#ifdef TOS
+	ViewportCompositeKey *key = NULL;
+#endif
 
 	va_start(ap, flags);
 	if (flags & DRAWSPRITE_FLAG_LAYERS) {
@@ -1237,11 +1240,15 @@ void GUI_DrawSprite(Screen screenID, const uint8 *sprite, uint16 spriteID, uint8
 		flags &= ~DRAWSPRITE_FLAG_LAYERS;
 	}
 #ifdef TOS
+	if (flags & DRAWSPRITE_FLAG_VIEWPORT_KEY) {
+		key = va_arg(ap, ViewportCompositeKey *);
+		flags &= ~DRAWSPRITE_FLAG_VIEWPORT_KEY;
+	}
 	if (windowID == 2 && GFX_Screen_Get_ByIndex(screenID) == GFX_Screen_Get_ByIndex(SCREEN_0)) {
 		va_list cached;
 		bool drawn;
 		va_copy(cached, ap);
-		drawn = GUI_ViewportPlanarSprite(sprite, spriteID, colourHouse, posX, posY, flags, &cached, layers);
+		drawn = GUI_ViewportPlanarSprite(sprite, spriteID, colourHouse, posX, posY, flags, &cached, layers, key);
 		va_end(cached);
 		if (drawn) {
 			va_end(ap);
@@ -1378,11 +1385,6 @@ static uint16 *s_viewportSpriteMasks;
 static bool s_viewportSpriteReady, s_viewportPlanar;
 
 enum { VIEWPORT_PLANAR_SPRITES = 64, VIEWPORT_PLANAR_COMPONENTS = 64 };
-typedef struct ViewportCompositeKey {
-	uint32 main;
-	uint32 tail[3]; /* Defined only when the main word's layer prefix is nonzero. */
-} ViewportCompositeKey;
-
 typedef struct ViewportPlanarComponent {
 	uint32 key;
 	uint16 used, width, height;
@@ -1391,8 +1393,7 @@ typedef struct ViewportPlanarComponent {
 } ViewportPlanarComponent;
 
 typedef struct ViewportPlanarSprite {
-	uint32 key;
-	uint32 layerKeys[3];
+	ViewportCompositeKey key;
 	uint16 used;
 	uint16 width, height;
 	int16 offsetX, offsetY;
@@ -1405,8 +1406,7 @@ typedef struct ViewportPlanarSprite {
 } ViewportPlanarSprite;
 
 typedef struct ViewportPlanarSpriteKey {
-	uint32 key;
-	uint32 layerKeys[3];
+	ViewportCompositeKey key;
 	ViewportPlanarSprite *sprite;
 } ViewportPlanarSpriteKey;
 
@@ -1419,6 +1419,9 @@ static uint16 s_viewportPlanarClock, s_viewportComponentClock;
 
 void GUI_FreeViewportSpriteCache(void)
 {
+	uint16 i;
+
+	for (i = 0; i < UNIT_INDEX_MAX; i++) Unit_ClearViewportKey(Unit_Get_ByIndex(i));
 	free(s_viewportPlanarSprites);
 	s_viewportPlanarSprites = NULL;
 	memset(s_viewportPlanarKeys, 0, sizeof(s_viewportPlanarKeys));
@@ -1667,6 +1670,28 @@ static void GUI_ViewportBuildCompositeKey(ViewportCompositeKey *out,
 	out->main = main | (layer[0] << 20);
 }
 
+static void GUI_ViewportBuildCompositeKeyBlitter(ViewportCompositeKey *key,
+                                                uint16 spriteID, uint8 colourHouse, int flags,
+                                                bool highlighted, const GUI_SpriteLayers *layers)
+{
+	if (key->main == 0) {
+		GUI_ViewportBuildCompositeKey(key, spriteID, colourHouse, flags, highlighted, 0, true, layers);
+	} else {
+		key->main &= ~0x00078000UL;
+	}
+}
+
+static void GUI_ViewportBuildCompositeKeyCPU(ViewportCompositeKey *key,
+                                            uint16 spriteID, uint8 colourHouse, int flags,
+                                            bool highlighted, int16 x, const GUI_SpriteLayers *layers)
+{
+	if (key->main == 0) {
+		GUI_ViewportBuildCompositeKey(key, spriteID, colourHouse, flags, highlighted, x, false, layers);
+	} else {
+		key->main = (key->main & ~0x00078000UL) | ((uint32)((uint16)x & 15) << 15);
+	}
+}
+
 static int __attribute__((noinline, noclone)) GUI_ViewportCompareLayerKeys(
     const uint32 candidate[3], const uint32 requested[3])
 {
@@ -1685,9 +1710,9 @@ static ViewportPlanarSprite *GUI_ViewportFindPlanarSprite(uint32 key,
 {
 	if (s_viewportPlanarLastHitPosition < VIEWPORT_PLANAR_SPRITES) {
 		const ViewportPlanarSpriteKey *candidate = &s_viewportPlanarKeys[s_viewportPlanarLastHitPosition];
-		if (candidate->key == key && ((key >> 20) == 0 ||
-		    (candidate->layerKeys[0] == layerKeys[0] && candidate->layerKeys[1] == layerKeys[1] &&
-		     candidate->layerKeys[2] == layerKeys[2]))) {
+		if (candidate->key.main == key && ((key & 0xfff00000UL) == 0 ||
+		    (candidate->key.tail[0] == layerKeys[0] && candidate->key.tail[1] == layerKeys[1] &&
+		     candidate->key.tail[2] == layerKeys[2]))) {
 			*position = s_viewportPlanarLastHitPosition;
 			return candidate->sprite;
 		}
@@ -1700,9 +1725,9 @@ static ViewportPlanarSprite *GUI_ViewportFindPlanarSprite(uint32 key,
 #define VIEWPORT_SEARCH_NODE(slot, lower, higher) \
 	search_##slot: { \
 		const ViewportPlanarSpriteKey *candidate = &s_viewportPlanarKeys[slot]; \
-		VIEWPORT_SEARCH_COMPARE(candidate->key, key, lower, higher) \
-		if (key >> 20) { \
-			int order = GUI_ViewportCompareLayerKeys(candidate->layerKeys, layerKeys); \
+		VIEWPORT_SEARCH_COMPARE(candidate->key.main, key, lower, higher) \
+		if (key & 0xfff00000UL) { \
+			int order = GUI_ViewportCompareLayerKeys(candidate->key.tail, layerKeys); \
 			if (order < 0) { higher; } \
 			if (order > 0) { lower; } \
 		} \
@@ -1803,7 +1828,6 @@ static void GUI_ViewportIndexPlanarSprite(ViewportPlanarSprite *entry, uint16 po
 	    (VIEWPORT_PLANAR_SPRITES - 1 - position) * sizeof(*s_viewportPlanarKeys));
 	destination = &s_viewportPlanarKeys[position];
 	destination->key = entry->key;
-	memcpy(destination->layerKeys, entry->layerKeys, sizeof(destination->layerKeys));
 	destination->sprite = entry;
 	if (s_viewportPlanarLastHitPosition < VIEWPORT_PLANAR_SPRITES &&
 	    s_viewportPlanarLastHitPosition >= position)
@@ -1812,14 +1836,14 @@ static void GUI_ViewportIndexPlanarSprite(ViewportPlanarSprite *entry, uint16 po
 
 static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8 colourHouse,
                                     int16 x, int16 y, int flags, va_list *ap,
-                                    const GUI_SpriteLayers *layers)
+                                    const GUI_SpriteLayers *layers, ViewportCompositeKey *key)
 {
 	ViewportSpriteMask *mask;
 	ViewportPlanarSprite *entry = NULL;
 	const uint8 *palette = NULL;
 	uint8 *remap = NULL;
 	uint16 i, position, count = layers != NULL ? layers->count : 0;
-	ViewportCompositeKey key;
+	ViewportCompositeKey temporary;
 	int16 centreX = 0, centreY = 0;
 	int16 remapCount = 0;
 	bool blitter = Video_Atari_ViewportBlitter();
@@ -1860,13 +1884,20 @@ static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 			if (layer->colourHouse >= HOUSE_MAX || (READ_LE_UINT16(g_sprites[layer->spriteID]) & 1) == 0) return false;
 		} else if (layer->colourHouse != GUI_SPRITE_COLOUR_EMBEDDED) return false;
 	}
-	GUI_ViewportBuildCompositeKey(&key, spriteID, colourHouse, flags,
-	                             remapCount != 0, x, blitter, layers);
+	if (key == NULL) {
+		temporary.main = 0;
+		key = &temporary;
+	}
+	if (blitter) {
+		GUI_ViewportBuildCompositeKeyBlitter(key, spriteID, colourHouse, flags, remapCount != 0, layers);
+	} else {
+		GUI_ViewportBuildCompositeKeyCPU(key, spriteID, colourHouse, flags, remapCount != 0, x, layers);
+	}
 	if (++s_viewportPlanarClock == 0) {
 		s_viewportPlanarClock = 1;
 		for (i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) s_viewportPlanarSprites[i].used = 0;
 	}
-	entry = GUI_ViewportFindPlanarSprite(key.main, key.tail, &position);
+	entry = GUI_ViewportFindPlanarSprite(key->main, key->tail, &position);
 	if (entry == NULL) {
 		ViewportPlanarSprite *victim = NULL;
 		ViewportSpriteMask *masks[5];
@@ -1900,8 +1931,8 @@ static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 		groups = stride >> 4;
 		for (i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) {
 			ViewportPlanarSprite *candidate = &s_viewportPlanarSprites[i];
-			if (victim == NULL || (victim->key != 0 &&
-			    (candidate->key == 0 || candidate->used < victim->used))) victim = candidate;
+			if (victim == NULL || (victim->key.main != 0 &&
+			    (candidate->key.main == 0 || candidate->used < victim->used))) victim = candidate;
 		}
 		entry = victim;
 		memset(entry->pixels, 0, stride * height / 2);
@@ -1935,9 +1966,9 @@ static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 		entry->extentWidth = maxX - minX;
 		entry->boundsOffsetX = boundsOffsetX;
 		entry->boundsWidth = boundsWidth;
-		if (key.main >> 20) memcpy(entry->layerKeys, key.tail, sizeof(key.tail));
-		else memset(entry->layerKeys, 0, sizeof(entry->layerKeys));
-		entry->key = key.main;
+		if (key->main & 0xfff00000UL) memcpy(entry->key.tail, key->tail, sizeof(key->tail));
+		else memset(entry->key.tail, 0, sizeof(entry->key.tail));
+		entry->key.main = key->main;
 		GUI_ViewportIndexPlanarSprite(entry, position);
 	}
 	entry->used = s_viewportPlanarClock;
@@ -4024,6 +4055,7 @@ void GUI_ChangeSelectionType(uint16 selectionType)
 	}
 
 	if (selectionType == SELECTIONTYPE_STRUCTURE && g_unitSelected != NULL) {
+		Unit_ClearViewportKey(g_unitSelected);
 		g_unitSelected = NULL;
 	}
 
