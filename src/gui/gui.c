@@ -1378,6 +1378,11 @@ static uint16 *s_viewportSpriteMasks;
 static bool s_viewportSpriteReady, s_viewportPlanar;
 
 enum { VIEWPORT_PLANAR_SPRITES = 64, VIEWPORT_PLANAR_COMPONENTS = 64 };
+typedef struct ViewportCompositeKey {
+	uint32 main;
+	uint32 tail[3]; /* Defined only when the main word's layer prefix is nonzero. */
+} ViewportCompositeKey;
+
 typedef struct ViewportPlanarComponent {
 	uint32 key;
 	uint16 used, width, height;
@@ -1387,7 +1392,7 @@ typedef struct ViewportPlanarComponent {
 
 typedef struct ViewportPlanarSprite {
 	uint32 key;
-	uint32 layerKeys[4];
+	uint32 layerKeys[3];
 	uint16 used;
 	uint16 width, height;
 	int16 offsetX, offsetY;
@@ -1399,7 +1404,15 @@ typedef struct ViewportPlanarSprite {
 	uint16 *masks;
 } ViewportPlanarSprite;
 
+typedef struct ViewportPlanarSpriteKey {
+	uint32 key;
+	uint32 layerKeys[3];
+	ViewportPlanarSprite *sprite;
+} ViewportPlanarSpriteKey;
+
 static ViewportPlanarSprite *s_viewportPlanarSprites;
+static ViewportPlanarSpriteKey s_viewportPlanarKeys[VIEWPORT_PLANAR_SPRITES];
+static uint16 s_viewportPlanarLastHitPosition = VIEWPORT_PLANAR_SPRITES;
 static uint16 *s_viewportPlanarMasks;
 static ViewportPlanarComponent *s_viewportPlanarComponents;
 static uint16 s_viewportPlanarClock, s_viewportComponentClock;
@@ -1408,6 +1421,8 @@ void GUI_FreeViewportSpriteCache(void)
 {
 	free(s_viewportPlanarSprites);
 	s_viewportPlanarSprites = NULL;
+	memset(s_viewportPlanarKeys, 0, sizeof(s_viewportPlanarKeys));
+	s_viewportPlanarLastHitPosition = VIEWPORT_PLANAR_SPRITES;
 	free(s_viewportPlanarMasks);
 	s_viewportPlanarMasks = NULL;
 	s_viewportPlanarClock = 0;
@@ -1526,8 +1541,10 @@ void GUI_InitViewportSpriteCache(void)
 		s_viewportPlanarComponents = NULL;
 	} else {
 		uint16 maskWords = 5 * 64 * (Video_Atari_ViewportBlitter() ? 4 : 1);
-		for (id = 0; id < VIEWPORT_PLANAR_SPRITES; id++)
+		for (id = 0; id < VIEWPORT_PLANAR_SPRITES; id++) {
 			s_viewportPlanarSprites[id].masks = s_viewportPlanarMasks + id * maskWords;
+			s_viewportPlanarKeys[id].sprite = &s_viewportPlanarSprites[id];
+		}
 	}
 }
 
@@ -1566,9 +1583,10 @@ static ViewportPlanarComponent *GUI_ViewportPlanarComponent(ViewportSpriteMask *
 	uint32 key = 0x80000000UL | spriteID |
 	    ((uint32)(colourHouse == GUI_SPRITE_COLOUR_EMBEDDED ? 6 : colourHouse) << 9) |
 	    ((uint32)(flags & 3) << 12) | ((uint32)(remap != NULL) << 14);
-	ViewportPlanarComponent *entry = NULL, *victim = NULL;
+	ViewportPlanarComponent *entry = NULL;
 	uint16 i;
 
+	if (spriteID == 0) return NULL;
 	if (++s_viewportComponentClock == 0) {
 		s_viewportComponentClock = 1;
 		for (i = 0; i < VIEWPORT_PLANAR_COMPONENTS; i++) s_viewportPlanarComponents[i].used = 0;
@@ -1579,15 +1597,19 @@ static ViewportPlanarComponent *GUI_ViewportPlanarComponent(ViewportSpriteMask *
 			entry = candidate;
 			break;
 		}
-		if (victim == NULL || (victim->key != 0 &&
-		    (candidate->key == 0 || candidate->used < victim->used))) victim = candidate;
 	}
 	if (entry == NULL) {
+		ViewportPlanarComponent *victim = NULL;
 		union { uint32 aligned; uint8 bytes[32 * 32]; } scratch;
 		uint16 stride = (mask->width + 15) & ~15;
 		uint16 groups = stride >> 4, row;
 		const uint16 *rows = mask->rows + ((flags & DRAWSPRITE_FLAG_RTL) ? groups * mask->height : 0);
 
+		for (i = 0; i < VIEWPORT_PLANAR_COMPONENTS; i++) {
+			ViewportPlanarComponent *candidate = &s_viewportPlanarComponents[i];
+			if (victim == NULL || (victim->key != 0 &&
+			    (candidate->key == 0 || candidate->used < victim->used))) victim = candidate;
+		}
 		entry = victim;
 		memset(scratch.bytes, 0, stride * mask->height);
 		GUI_ViewportDecodeLayer(scratch.bytes, stride, mask->height, mask->sprite, 0, 0,
@@ -1608,22 +1630,201 @@ static ViewportPlanarComponent *GUI_ViewportPlanarComponent(ViewportSpriteMask *
 	return entry;
 }
 
+/* Validated nonzero IDs make zero an absent layer or an unused composite. */
+static void GUI_ViewportBuildCompositeKey(ViewportCompositeKey *out,
+                                          uint16 spriteID, uint8 colourHouse, int flags,
+                                          bool highlighted, int16 x, bool blitter,
+                                          const GUI_SpriteLayers *layers)
+{
+	uint16 phase = blitter ? 0 : (uint16)x & 15;
+	uint16 count = layers != NULL ? layers->count : 0;
+
+	uint32 main = spriteID |
+	    ((uint32)(colourHouse == GUI_SPRITE_COLOUR_EMBEDDED ? 6 : colourHouse) << 9) |
+	    ((uint32)(flags & 3) << 12) | ((uint32)highlighted << 14) |
+	    ((uint32)phase << 15) | ((uint32)((flags & DRAWSPRITE_FLAG_CENTER) != 0) << 19);
+	if (count == 0) {
+		out->main = main;
+		return;
+	}
+
+	uint32 layer[4] = {0, 0, 0, 0};
+	uint16 i;
+
+	for (i = 0; i < count; i++) {
+		const GUI_SpriteLayer *src = &layers->layer[i];
+		uint32 colour = src->colourHouse == GUI_SPRITE_COLOUR_EMBEDDED ? 6 : src->colourHouse;
+
+		layer[i] = (uint32)src->spriteID | (colour << 9) |
+		    ((uint32)(src->flags & 3) << 12) |
+		    ((uint32)(src->offsetX & 63) << 14) | ((uint32)(src->offsetY & 63) << 20);
+	}
+	/* Concatenate 20 body bits and four 26-bit layers, low bits first. */
+	out->tail[0] = (layer[0] >> 12) | (layer[1] << 14);
+	out->tail[1] = (layer[1] >> 18) | (layer[2] << 8);
+	out->tail[2] = (layer[2] >> 24) | (layer[3] << 2);
+	out->main = main | (layer[0] << 20);
+}
+
+static int __attribute__((noinline, noclone)) GUI_ViewportCompareLayerKeys(
+    const uint32 candidate[3], const uint32 requested[3])
+{
+	uint16 i;
+
+	for (i = 0; i < 3; i++) {
+		if (candidate[i] < requested[i]) return -1;
+		if (candidate[i] > requested[i]) return 1;
+	}
+	return 0;
+}
+
+static ViewportPlanarSprite *GUI_ViewportFindPlanarSprite(uint32 key,
+                                                        const uint32 layerKeys[3],
+                                                        uint16 *position)
+{
+	if (s_viewportPlanarLastHitPosition < VIEWPORT_PLANAR_SPRITES) {
+		const ViewportPlanarSpriteKey *candidate = &s_viewportPlanarKeys[s_viewportPlanarLastHitPosition];
+		if (candidate->key == key && ((key >> 20) == 0 ||
+		    (candidate->layerKeys[0] == layerKeys[0] && candidate->layerKeys[1] == layerKeys[1] &&
+		     candidate->layerKeys[2] == layerKeys[2]))) {
+			*position = s_viewportPlanarLastHitPosition;
+			return candidate->sprite;
+		}
+	}
+	/* Complete 64-slot tree: every fallback address is a compile-time constant. */
+#define VIEWPORT_SEARCH_MISS(slot) { *position = (slot); return NULL; }
+#define VIEWPORT_SEARCH_COMPARE(a, b, lower, higher) \
+	if ((a) < (b)) { higher; } \
+	if ((a) > (b)) { lower; }
+#define VIEWPORT_SEARCH_NODE(slot, lower, higher) \
+	search_##slot: { \
+		const ViewportPlanarSpriteKey *candidate = &s_viewportPlanarKeys[slot]; \
+		VIEWPORT_SEARCH_COMPARE(candidate->key, key, lower, higher) \
+		if (key >> 20) { \
+			int order = GUI_ViewportCompareLayerKeys(candidate->layerKeys, layerKeys); \
+			if (order < 0) { higher; } \
+			if (order > 0) { lower; } \
+		} \
+		*position = (slot); \
+		s_viewportPlanarLastHitPosition = (slot); \
+		return candidate->sprite; \
+	}
+	goto search_32;
+	VIEWPORT_SEARCH_NODE(32, goto search_16, goto search_48)
+	VIEWPORT_SEARCH_NODE(16, goto search_8, goto search_24)
+	VIEWPORT_SEARCH_NODE(48, goto search_40, goto search_56)
+	VIEWPORT_SEARCH_NODE(8, goto search_4, goto search_12)
+	VIEWPORT_SEARCH_NODE(24, goto search_20, goto search_28)
+	VIEWPORT_SEARCH_NODE(40, goto search_36, goto search_44)
+	VIEWPORT_SEARCH_NODE(56, goto search_52, goto search_60)
+	VIEWPORT_SEARCH_NODE(4, goto search_2, goto search_6)
+	VIEWPORT_SEARCH_NODE(12, goto search_10, goto search_14)
+	VIEWPORT_SEARCH_NODE(20, goto search_18, goto search_22)
+	VIEWPORT_SEARCH_NODE(28, goto search_26, goto search_30)
+	VIEWPORT_SEARCH_NODE(36, goto search_34, goto search_38)
+	VIEWPORT_SEARCH_NODE(44, goto search_42, goto search_46)
+	VIEWPORT_SEARCH_NODE(52, goto search_50, goto search_54)
+	VIEWPORT_SEARCH_NODE(60, goto search_58, goto search_62)
+	VIEWPORT_SEARCH_NODE(2, goto search_1, goto search_3)
+	VIEWPORT_SEARCH_NODE(6, goto search_5, goto search_7)
+	VIEWPORT_SEARCH_NODE(10, goto search_9, goto search_11)
+	VIEWPORT_SEARCH_NODE(14, goto search_13, goto search_15)
+	VIEWPORT_SEARCH_NODE(18, goto search_17, goto search_19)
+	VIEWPORT_SEARCH_NODE(22, goto search_21, goto search_23)
+	VIEWPORT_SEARCH_NODE(26, goto search_25, goto search_27)
+	VIEWPORT_SEARCH_NODE(30, goto search_29, goto search_31)
+	VIEWPORT_SEARCH_NODE(34, goto search_33, goto search_35)
+	VIEWPORT_SEARCH_NODE(38, goto search_37, goto search_39)
+	VIEWPORT_SEARCH_NODE(42, goto search_41, goto search_43)
+	VIEWPORT_SEARCH_NODE(46, goto search_45, goto search_47)
+	VIEWPORT_SEARCH_NODE(50, goto search_49, goto search_51)
+	VIEWPORT_SEARCH_NODE(54, goto search_53, goto search_55)
+	VIEWPORT_SEARCH_NODE(58, goto search_57, goto search_59)
+	VIEWPORT_SEARCH_NODE(62, goto search_61, goto search_63)
+	VIEWPORT_SEARCH_NODE(1, goto search_0, VIEWPORT_SEARCH_MISS(2))
+	VIEWPORT_SEARCH_NODE(3, VIEWPORT_SEARCH_MISS(3), VIEWPORT_SEARCH_MISS(4))
+	VIEWPORT_SEARCH_NODE(5, VIEWPORT_SEARCH_MISS(5), VIEWPORT_SEARCH_MISS(6))
+	VIEWPORT_SEARCH_NODE(7, VIEWPORT_SEARCH_MISS(7), VIEWPORT_SEARCH_MISS(8))
+	VIEWPORT_SEARCH_NODE(9, VIEWPORT_SEARCH_MISS(9), VIEWPORT_SEARCH_MISS(10))
+	VIEWPORT_SEARCH_NODE(11, VIEWPORT_SEARCH_MISS(11), VIEWPORT_SEARCH_MISS(12))
+	VIEWPORT_SEARCH_NODE(13, VIEWPORT_SEARCH_MISS(13), VIEWPORT_SEARCH_MISS(14))
+	VIEWPORT_SEARCH_NODE(15, VIEWPORT_SEARCH_MISS(15), VIEWPORT_SEARCH_MISS(16))
+	VIEWPORT_SEARCH_NODE(17, VIEWPORT_SEARCH_MISS(17), VIEWPORT_SEARCH_MISS(18))
+	VIEWPORT_SEARCH_NODE(19, VIEWPORT_SEARCH_MISS(19), VIEWPORT_SEARCH_MISS(20))
+	VIEWPORT_SEARCH_NODE(21, VIEWPORT_SEARCH_MISS(21), VIEWPORT_SEARCH_MISS(22))
+	VIEWPORT_SEARCH_NODE(23, VIEWPORT_SEARCH_MISS(23), VIEWPORT_SEARCH_MISS(24))
+	VIEWPORT_SEARCH_NODE(25, VIEWPORT_SEARCH_MISS(25), VIEWPORT_SEARCH_MISS(26))
+	VIEWPORT_SEARCH_NODE(27, VIEWPORT_SEARCH_MISS(27), VIEWPORT_SEARCH_MISS(28))
+	VIEWPORT_SEARCH_NODE(29, VIEWPORT_SEARCH_MISS(29), VIEWPORT_SEARCH_MISS(30))
+	VIEWPORT_SEARCH_NODE(31, VIEWPORT_SEARCH_MISS(31), VIEWPORT_SEARCH_MISS(32))
+	VIEWPORT_SEARCH_NODE(33, VIEWPORT_SEARCH_MISS(33), VIEWPORT_SEARCH_MISS(34))
+	VIEWPORT_SEARCH_NODE(35, VIEWPORT_SEARCH_MISS(35), VIEWPORT_SEARCH_MISS(36))
+	VIEWPORT_SEARCH_NODE(37, VIEWPORT_SEARCH_MISS(37), VIEWPORT_SEARCH_MISS(38))
+	VIEWPORT_SEARCH_NODE(39, VIEWPORT_SEARCH_MISS(39), VIEWPORT_SEARCH_MISS(40))
+	VIEWPORT_SEARCH_NODE(41, VIEWPORT_SEARCH_MISS(41), VIEWPORT_SEARCH_MISS(42))
+	VIEWPORT_SEARCH_NODE(43, VIEWPORT_SEARCH_MISS(43), VIEWPORT_SEARCH_MISS(44))
+	VIEWPORT_SEARCH_NODE(45, VIEWPORT_SEARCH_MISS(45), VIEWPORT_SEARCH_MISS(46))
+	VIEWPORT_SEARCH_NODE(47, VIEWPORT_SEARCH_MISS(47), VIEWPORT_SEARCH_MISS(48))
+	VIEWPORT_SEARCH_NODE(49, VIEWPORT_SEARCH_MISS(49), VIEWPORT_SEARCH_MISS(50))
+	VIEWPORT_SEARCH_NODE(51, VIEWPORT_SEARCH_MISS(51), VIEWPORT_SEARCH_MISS(52))
+	VIEWPORT_SEARCH_NODE(53, VIEWPORT_SEARCH_MISS(53), VIEWPORT_SEARCH_MISS(54))
+	VIEWPORT_SEARCH_NODE(55, VIEWPORT_SEARCH_MISS(55), VIEWPORT_SEARCH_MISS(56))
+	VIEWPORT_SEARCH_NODE(57, VIEWPORT_SEARCH_MISS(57), VIEWPORT_SEARCH_MISS(58))
+	VIEWPORT_SEARCH_NODE(59, VIEWPORT_SEARCH_MISS(59), VIEWPORT_SEARCH_MISS(60))
+	VIEWPORT_SEARCH_NODE(61, VIEWPORT_SEARCH_MISS(61), VIEWPORT_SEARCH_MISS(62))
+	VIEWPORT_SEARCH_NODE(63, VIEWPORT_SEARCH_MISS(63), VIEWPORT_SEARCH_MISS(64))
+	VIEWPORT_SEARCH_NODE(0, VIEWPORT_SEARCH_MISS(0), VIEWPORT_SEARCH_MISS(1))
+#undef VIEWPORT_SEARCH_NODE
+#undef VIEWPORT_SEARCH_COMPARE
+#undef VIEWPORT_SEARCH_MISS
+}
+
+static void GUI_ViewportIndexPlanarSprite(ViewportPlanarSprite *entry, uint16 position)
+{
+	uint16 i;
+	ViewportPlanarSpriteKey *destination;
+
+	/* Every slot has a directory record, including the zero-key prefix. */
+	for (i = 0; i < VIEWPORT_PLANAR_SPRITES; i++)
+		if (s_viewportPlanarKeys[i].sprite == entry) break;
+	assert(i < VIEWPORT_PLANAR_SPRITES);
+	assert(position <= VIEWPORT_PLANAR_SPRITES);
+	if (s_viewportPlanarLastHitPosition == i)
+		s_viewportPlanarLastHitPosition = VIEWPORT_PLANAR_SPRITES;
+	else if (s_viewportPlanarLastHitPosition < VIEWPORT_PLANAR_SPRITES &&
+	         s_viewportPlanarLastHitPosition > i)
+		s_viewportPlanarLastHitPosition--;
+	memmove(&s_viewportPlanarKeys[i], &s_viewportPlanarKeys[i + 1],
+	    (VIEWPORT_PLANAR_SPRITES - 1 - i) * sizeof(*s_viewportPlanarKeys));
+	if (i < position) position--;
+	assert(position < VIEWPORT_PLANAR_SPRITES);
+	memmove(&s_viewportPlanarKeys[position + 1], &s_viewportPlanarKeys[position],
+	    (VIEWPORT_PLANAR_SPRITES - 1 - position) * sizeof(*s_viewportPlanarKeys));
+	destination = &s_viewportPlanarKeys[position];
+	destination->key = entry->key;
+	memcpy(destination->layerKeys, entry->layerKeys, sizeof(destination->layerKeys));
+	destination->sprite = entry;
+	if (s_viewportPlanarLastHitPosition < VIEWPORT_PLANAR_SPRITES &&
+	    s_viewportPlanarLastHitPosition >= position)
+		s_viewportPlanarLastHitPosition++;
+}
+
 static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8 colourHouse,
                                     int16 x, int16 y, int flags, va_list *ap,
                                     const GUI_SpriteLayers *layers)
 {
 	ViewportSpriteMask *mask;
-	ViewportPlanarSprite *entry = NULL, *victim = NULL;
+	ViewportPlanarSprite *entry = NULL;
 	const uint8 *palette = NULL;
 	uint8 *remap = NULL;
-	uint16 i, phase, count = layers != NULL ? layers->count : 0;
-	uint32 key, layerKeys[4] = {0, 0, 0, 0};
+	uint16 i, position, count = layers != NULL ? layers->count : 0;
+	ViewportCompositeKey key;
 	int16 centreX = 0, centreY = 0;
 	int16 remapCount = 0;
 	bool blitter = Video_Atari_ViewportBlitter();
 
 	if (!s_viewportPlanar || s_viewportPlanarSprites == NULL || s_viewportPlanarComponents == NULL || sprite == NULL ||
-	    spriteID > 354 || g_sprites[spriteID] != sprite ||
+	    spriteID == 0 || spriteID > 354 || g_sprites[spriteID] != sprite ||
 	    (flags & ~(DRAWSPRITE_FLAG_RTL | DRAWSPRITE_FLAG_BOTTOMUP | DRAWSPRITE_FLAG_PAL |
 	               DRAWSPRITE_FLAG_REMAP | DRAWSPRITE_FLAG_SPRITEPAL |
 	               DRAWSPRITE_FLAG_CENTER | DRAWSPRITE_FLAG_WIDGETPOS)) != 0) return false;
@@ -1651,43 +1852,22 @@ static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 	if (count > 4) return false;
 	for (i = 0; i < count; i++) {
 		const GUI_SpriteLayer *layer = &layers->layer[i];
-		if (layer->spriteID > 354 || g_sprites[layer->spriteID] == NULL ||
+		if (layer->spriteID == 0 || layer->spriteID > 354 || g_sprites[layer->spriteID] == NULL ||
 		    (layer->flags & ~(DRAWSPRITE_FLAG_RTL | DRAWSPRITE_FLAG_BOTTOMUP | DRAWSPRITE_FLAG_PAL)) != 0 ||
 		    layer->offsetX < -32 || layer->offsetX > 31 || layer->offsetY < -32 || layer->offsetY > 31) return false;
 		if (layer->flags & DRAWSPRITE_FLAG_PAL) {
 			if (layer->colourHouse >= HOUSE_MAX || (READ_LE_UINT16(g_sprites[layer->spriteID]) & 1) == 0) return false;
 		} else if (layer->colourHouse != GUI_SPRITE_COLOUR_EMBEDDED) return false;
-		/* Each ordered layer has a frame, colour variant, flips and two
-		 * signed six-bit offsets. Zero means absent, including selection. */
-		layerKeys[i] = 0x80000000UL | layer->spriteID |
-		    ((uint32)(layer->colourHouse == GUI_SPRITE_COLOUR_EMBEDDED ? 6 : layer->colourHouse) << 9) |
-		    ((uint32)(layer->flags & 3) << 12) |
-		    ((uint32)(layer->offsetX & 63) << 14) | ((uint32)(layer->offsetY & 63) << 20);
 	}
-	phase = blitter ? 0 : (uint16)x & 15;
-	/* 9-bit frame, 3-bit colour variant (6 = embedded), two flips,
-	 * highlight and four-bit X phase (zero for hardware shifting).
-	 * Bit 31 distinguishes empty slots. */
-	key = 0x80000000UL | spriteID |
-	      ((uint32)(colourHouse == GUI_SPRITE_COLOUR_EMBEDDED ? 6 : colourHouse) << 9) |
-	      ((uint32)(flags & 3) << 12) | ((uint32)(remapCount != 0) << 14) |
-	      ((uint32)phase << 15) | ((uint32)((flags & DRAWSPRITE_FLAG_CENTER) != 0) << 19);
+	GUI_ViewportBuildCompositeKey(&key, spriteID, colourHouse, flags,
+	                             remapCount != 0, x, blitter, layers);
 	if (++s_viewportPlanarClock == 0) {
 		s_viewportPlanarClock = 1;
 		for (i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) s_viewportPlanarSprites[i].used = 0;
 	}
-	for (i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) {
-		ViewportPlanarSprite *candidate = &s_viewportPlanarSprites[i];
-		if (candidate->key == key && candidate->layerKeys[0] == layerKeys[0] &&
-		    candidate->layerKeys[1] == layerKeys[1] && candidate->layerKeys[2] == layerKeys[2] &&
-		    candidate->layerKeys[3] == layerKeys[3]) {
-			entry = candidate;
-			break;
-		}
-		if (victim == NULL || (victim->key != 0 &&
-		    (candidate->key == 0 || candidate->used < victim->used))) victim = candidate;
-	}
+	entry = GUI_ViewportFindPlanarSprite(key.main, key.tail, &position);
 	if (entry == NULL) {
+		ViewportPlanarSprite *victim = NULL;
 		ViewportSpriteMask *masks[5];
 		int16 left[5], top[5], minX = 0, minY = 0, boundsOffsetX;
 		int16 maxX = mask->width, maxY = mask->height;
@@ -1717,6 +1897,11 @@ static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 		}
 		if (x + minX >= 240 || x + maxX <= 0 || y + minY >= 200 || y + maxY <= 40) return true;
 		groups = stride >> 4;
+		for (i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) {
+			ViewportPlanarSprite *candidate = &s_viewportPlanarSprites[i];
+			if (victim == NULL || (victim->key != 0 &&
+			    (candidate->key == 0 || candidate->used < victim->used))) victim = candidate;
+		}
 		entry = victim;
 		memset(entry->pixels, 0, stride * height / 2);
 		memset(entry->masks, 0, groups * height * sizeof(*entry->masks));
@@ -1749,8 +1934,10 @@ static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 		entry->extentWidth = maxX - minX;
 		entry->boundsOffsetX = boundsOffsetX;
 		entry->boundsWidth = boundsWidth;
-		memcpy(entry->layerKeys, layerKeys, sizeof(layerKeys));
-		entry->key = key;
+		if (key.main >> 20) memcpy(entry->layerKeys, key.tail, sizeof(key.tail));
+		else memset(entry->layerKeys, 0, sizeof(entry->layerKeys));
+		entry->key = key.main;
+		GUI_ViewportIndexPlanarSprite(entry, position);
 	}
 	entry->used = s_viewportPlanarClock;
 	{

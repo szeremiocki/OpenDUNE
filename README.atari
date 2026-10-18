@@ -214,11 +214,25 @@ on first use, then drawn directly from cached plane words and opacity masks.
 GUI_DrawSprite takes the final sprite/frame ID and colour-house identity
 alongside its existing arguments. Embedded palettes have a separate identity;
 unknown assets or arbitrary palettes retain the general renderer. Internally,
-a packed five-word prescription includes the body's frame, colour-house
+a packed four-word prescription includes the body's frame, colour-house
 variant, both flips, canonical highlight and resolved X phase (x & 15),
 plus up to four ordered layers, each with its frame, colour-house variant,
 flips and signed offsets. An absent selection layer distinguishes unselected
 variants. Embedded-palette and direct palette-index sprites are supported.
+The identity uses 124 bits: 20 body bits followed by four 26-bit layers.
+The main word contains the body and the first layer's frame/colour variant;
+three tail words hold the remaining layer bits, with four spare bits kept zero.
+One shared builder encodes the complete body/layer identity into a caller-owned
+16-byte key struct (main word and three tail words), without hashing or collisions.
+For sprites without layers (NULL or a count-zero list), it writes only the body
+identity, skipping tail writes, temporary layer initialization and cross-word
+packing. A zero layer prefix in the main word makes the caller's tails undefined
+and irrelevant: lookup accepts a matching main word without reading the tails.
+Stored cache tails are cleared only on a layerless miss.
+Sprite 0 (the separately cached mouse) is rejected as a base or layer by the
+viewport image-cache path and by the component cache; selection sprite 6
+remains supported. Nonzero sprite IDs make zero an absent layer or unused key,
+without validity bits in the composite identity.
 Ground units submit body, harvesting attachment, turret, smoke and selection
 to one GUI_DrawSprite call. Individual components are cached independently
 by frame, house, flips and highlight, without position or X phase. Only a
@@ -228,10 +242,36 @@ in the original layer order, aligning them in private planar memory.
 Adding selection or smoke, moving a turret, or changing X phase reuses the
 other components without decoding or c2p. Composite eviction does not evict
 components; component eviction does not invalidate completed composites.
+Only misses scan for an eviction slot, preferring the first empty slot, then
+the least recently used entry. Composite lookup binary-searches a sorted
+directory of full four-word keys and image pointers, comparing unsigned main
+keys first and then packed tail words only for layered keys. A last-hit-first
+experiment checks the complete previous hit key before searching. If it differs,
+a full binary search starts at the directory midpoint, without narrowing its bounds.
+The directory always contains 64 records: unused records have zero keys and
+sort before live keys. The fallback is a fully unrolled 64-slot decision tree,
+starting at slot 32 even for a cold/partial cache. Every node uses a constant
+directory position; there is no runtime midpoint or fallback index arithmetic.
+Each node compares the unsigned main key inline. Matching main keys call one
+shared, non-inlined/non-cloned three-word tail comparator, reducing code duplication
+while preserving lexicographic unsigned ordering. The last-hit shortcut still
+compares the complete key inline. This trades layer-comparison call overhead
+for a smaller executable than duplicating the full comparison at every node.
+Each record retains its image-slot pointer, including while its key is zero.
+Repeated hits examine one candidate; otherwise up to eight candidates are
+examined for 64 entries (one hint and seven binary-search candidates).
+Only hits update the hint; it persists across viewport draws, follows directory
+shifts, and is invalidated when its image is evicted or the cache is freed.
+The directory occupies 1,280 bytes on Atari (20 bytes per record);
+insertion and eviction shift only directory records, never image pixels,
+masks, geometry plans or usage timestamps. Sprite reloads empty the directory.
+Component lookup still scans from slot zero; its key format is unchanged.
+The smaller directory and image-entry keys save 512 bytes across both 64-slot
+arrays compared with the previous five-word composite identity.
 Hits publish the complete unit in one overlay-safe blit; the selection marker
 is not drawn separately. Entries accommodate aligned composites up to 80x64.
-Each tier uses the same flat-array lookup and global least-recently-used
-replacement as atari-st-planar-present, with integer-key comparisons and
+Each tier retains global least-recently-used
+replacement, with integer-key comparisons and
 independent 16-bit usage clocks resetting timestamps on wrap.
 Aligned/flipped planar
 pixels and opacity masks are generated on demand; cache hits do not decode,

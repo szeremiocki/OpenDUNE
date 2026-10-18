@@ -176,13 +176,90 @@ static ViewportSpriteMask s_viewportSpriteCache[512];
 static uint16 *s_viewportSpriteMasks;
 static unsigned decodes, encodes, overlayWrites, dirtyClears;
 static unsigned compositions;
+static unsigned evictionCandidates;
+static unsigned lookupCandidates;
+static unsigned lastHitMatches;
+static unsigned layerComparisons;
+static unsigned firstBinaryPosition;
 static bool rejectSprite;
 static int16 boundsLeft, boundsTop, boundsRight, boundsBottom;
 static bool pendingRepair;
 static int16 repairLeft, repairTop, repairRight, repairBottom;
 #define Warning(...) assert(false)
 /* CACHE */
+static int compare_directory_keys(const void *left, const void *right) {
+    const ViewportPlanarSpriteKey *a = left, *b = right;
+    if (a->key != b->key) return a->key < b->key ? -1 : 1;
+    if (!(a->key >> 20)) return 0;
+    for (unsigned i = 0; i < 3; i++)
+        if (a->layerKeys[i] != b->layerKeys[i])
+            return a->layerKeys[i] < b->layerKeys[i] ? -1 : 1;
+    return 0;
+}
+static void assert_directory(void) {
+    unsigned count = 0, live = 0;
+    for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++)
+        if (s_viewportPlanarSprites[i].key) count++;
+    for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) {
+        const ViewportPlanarSpriteKey *key = s_viewportPlanarKeys + i;
+        assert(key->sprite >= s_viewportPlanarSprites &&
+               key->sprite < s_viewportPlanarSprites + VIEWPORT_PLANAR_SPRITES);
+        assert(key->key == key->sprite->key);
+        if (key->key) {
+            live++;
+            assert(i >= VIEWPORT_PLANAR_SPRITES - count);
+            assert(!memcmp(key->layerKeys, key->sprite->layerKeys, sizeof(key->layerKeys)));
+            if (!(key->key >> 20))
+                assert(!key->layerKeys[0] && !key->layerKeys[1] && !key->layerKeys[2]);
+        } else {
+            assert(i < VIEWPORT_PLANAR_SPRITES - count);
+            const uint32 zeros[3] = {0};
+            assert(!memcmp(key->layerKeys, zeros, sizeof(zeros)));
+        }
+        assert(key->sprite->masks == s_viewportPlanarMasks +
+               (key->sprite - s_viewportPlanarSprites) * 320 * (batchRepairs ? 4 : 1));
+        if (i) assert(compare_directory_keys(key - 1, key) <= (key->key ? -1 : 0));
+        for (unsigned j = 0; j < i; j++) assert(s_viewportPlanarKeys[j].sprite != key->sprite);
+    }
+    assert(count == live);
+    assert(s_viewportPlanarLastHitPosition == VIEWPORT_PLANAR_SPRITES ||
+           s_viewportPlanarKeys[s_viewportPlanarLastHitPosition].key != 0);
+}
+static void rebuild_directory(void) {
+    s_viewportPlanarLastHitPosition = VIEWPORT_PLANAR_SPRITES;
+    memset(s_viewportPlanarKeys, 0, sizeof(s_viewportPlanarKeys));
+    for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) {
+        ViewportPlanarSprite *entry = s_viewportPlanarSprites + i;
+        ViewportPlanarSpriteKey *key = s_viewportPlanarKeys + i;
+        key->key = entry->key;
+        if (entry->key) memcpy(key->layerKeys, entry->layerKeys, sizeof(key->layerKeys));
+        key->sprite = entry;
+    }
+    qsort(s_viewportPlanarKeys, VIEWPORT_PLANAR_SPRITES,
+          sizeof(*s_viewportPlanarKeys), compare_directory_keys);
+    assert_directory();
+}
+static ViewportPlanarSprite *expected_sprite_victim(void) {
+    ViewportPlanarSprite *oldest = s_viewportPlanarSprites;
+    for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) {
+        ViewportPlanarSprite *candidate = s_viewportPlanarSprites + i;
+        if (!candidate->key) return candidate;
+        if (candidate->used < oldest->used) oldest = candidate;
+    }
+    return oldest;
+}
+static ViewportPlanarComponent *expected_component_victim(void) {
+    ViewportPlanarComponent *oldest = s_viewportPlanarComponents;
+    for (unsigned i = 0; i < VIEWPORT_PLANAR_COMPONENTS; i++) {
+        ViewportPlanarComponent *candidate = s_viewportPlanarComponents + i;
+        if (!candidate->key) return candidate;
+        if (candidate->used < oldest->used) oldest = candidate;
+    }
+    return oldest;
+}
 /* FREE */
+static void GFX_Screen_SetViewportPlanar(bool active) { (void)active; }
+/* PLANAR SCOPE */
 static ViewportSpriteMask *GUI_ViewportSpriteMaskSlot(const uint8 *sprite) {
     for (unsigned i = 0; i < 70; i++) if (slots[i].sprite == sprite) return slots + i;
     assert(false); return NULL;
@@ -268,6 +345,7 @@ static bool draw(const uint8 *sprite, int16 x, int16 y, int flags, ...) {
     bool result;
     va_list ap;
     uint16 id = (sprite - sprites[0]) / sizeof(sprites[0]);
+    if (id == 0) id = 111;
     va_start(ap, flags);
     result = GUI_ViewportPlanarSprite(sprite, id,
         flags & DRAWSPRITE_FLAG_PAL ? 0 : GUI_SPRITE_COLOUR_EMBEDDED, x, y, flags, &ap, NULL);
@@ -331,7 +409,7 @@ static bool draw_layers(const GUI_SpriteLayers *layers, int16 x, int16 y, int fl
     va_list ap;
     bool result;
     va_start(ap, flags);
-    result = GUI_ViewportPlanarSprite(sprites[0], 0, 0, x, y, flags, &ap, layers);
+    result = GUI_ViewportPlanarSprite(sprites[0], 111, 0, x, y, flags, &ap, layers);
     va_end(ap);
     return result;
 }
@@ -386,10 +464,167 @@ static void check_layers(const GUI_SpriteLayers *layers, int x, int y, int flags
     assert(blitterSetups == setups + (s_viewportBlitter && portions && !overlays ? 1 : 0));
     assert(!memcmp(visible, expected, sizeof(visible)));
 }
+static void append_key_field(uint32 words[4], unsigned *position,
+                             uint32 value, unsigned width) {
+    for (unsigned bit = 0; bit < width; bit++, (*position)++)
+        if ((value >> bit) & 1)
+            words[*position / 32] |= (uint32)1 << (*position % 32);
+}
+static void check_compact_key_inputs(uint16 spriteID, uint8 colourHouse, int flags,
+                                     bool highlighted, int16 x, bool blitter,
+                                     const GUI_SpriteLayers *layers) {
+    ViewportCompositeKey actual;
+    uint32 reference[4] = {0};
+    unsigned position = 0;
+    memset(&actual, 0xa5, sizeof(actual));
+    GUI_ViewportBuildCompositeKey(&actual, spriteID, colourHouse, flags,
+                                  highlighted, x, blitter, layers);
+    append_key_field(reference, &position, spriteID, 9);
+    append_key_field(reference, &position,
+                     colourHouse == GUI_SPRITE_COLOUR_EMBEDDED ? 6 : colourHouse, 3);
+    append_key_field(reference, &position, flags & 3, 2);
+    append_key_field(reference, &position, highlighted, 1);
+    append_key_field(reference, &position, blitter ? 0 : (uint16)x % 16, 4);
+    append_key_field(reference, &position, !!(flags & DRAWSPRITE_FLAG_CENTER), 1);
+    for (unsigned i = 0; i < 4; i++) {
+        if (!layers || i >= layers->count) {
+            append_key_field(reference, &position, 0, 26);
+            continue;
+        }
+        const GUI_SpriteLayer *layer = &layers->layer[i];
+        append_key_field(reference, &position, layer->spriteID, 9);
+        append_key_field(reference, &position,
+                         layer->colourHouse == GUI_SPRITE_COLOUR_EMBEDDED ? 6 : layer->colourHouse, 3);
+        append_key_field(reference, &position, layer->flags & 3, 2);
+        append_key_field(reference, &position, layer->offsetX & 63, 6);
+        append_key_field(reference, &position, layer->offsetY & 63, 6);
+    }
+    assert(position == 124 && actual.main == reference[0] && actual.main);
+    if (layers && layers->count) {
+        assert(!memcmp(actual.tail, reference + 1, sizeof(actual.tail)));
+        assert((actual.tail[2] & 0xf0000000UL) == 0);
+    } else {
+        for (unsigned i = 0; i < 3; i++) assert(actual.tail[i] == 0xa5a5a5a5UL);
+    }
+}
+static void check_compact_key(uint32 base, const GUI_SpriteLayers *layers) {
+    unsigned colour = (base >> 9) & 7;
+    int flags = (base >> 12) & 3;
+    if (base & 0x80000u) flags |= DRAWSPRITE_FLAG_CENTER;
+    check_compact_key_inputs(base & 511,
+                            colour == 6 ? GUI_SPRITE_COLOUR_EMBEDDED : colour,
+                            flags, !!(base & 0x4000u), (base >> 15) & 15,
+                            false, layers);
+}
+static uint32 next_key_random(uint32 *state) {
+    *state = *state * 1664525u + 1013904223u;
+    return *state;
+}
+static void check_compact_keys(void) {
+    assert(sizeof(ViewportCompositeKey) == 16);
+    assert(sizeof(s_viewportPlanarSprites[0].layerKeys) == 12);
+    assert(sizeof(s_viewportPlanarKeys[0].layerKeys) == 12);
+    GUI_SpriteLayers full = {0}, empty = {0};
+    ViewportCompositeKey reused;
+    full.count = 4;
+    for (unsigned i = 0; i < full.count; i++) {
+        full.layer[i].spriteID = 354;
+        full.layer[i].colourHouse = GUI_SPRITE_COLOUR_EMBEDDED;
+        full.layer[i].flags = 3;
+        full.layer[i].offsetX = -32;
+        full.layer[i].offsetY = 31;
+    }
+    for (unsigned i = 0; i < 2; i++) {
+        GUI_ViewportBuildCompositeKey(&reused, 354, 0, 0, false, 0, true, &full);
+        assert(reused.main >> 20);
+        assert(reused.tail[0] && reused.tail[1] && reused.tail[2]);
+        uint32 tails[3];
+        memcpy(tails, reused.tail, sizeof(tails));
+        GUI_ViewportBuildCompositeKey(&reused, 354, 0, 0, false, 0, true, i ? &empty : NULL);
+        assert(reused.main == 354);
+        assert(!memcmp(reused.tail, tails, sizeof(tails)));
+    }
+    check_compact_key(1, NULL);
+    for (unsigned id = 1; id <= 354; id++) {
+        check_compact_key(id, NULL);
+        check_compact_key(id | 0xffc00u, NULL);
+    }
+    for (unsigned colour = 0; colour <= 6; colour++)
+        for (unsigned flips = 0; flips < 4; flips++)
+            for (unsigned highlighted = 0; highlighted < 2; highlighted++)
+                for (unsigned centered = 0; centered < 2; centered++)
+                    for (unsigned blitter = 0; blitter < 2; blitter++)
+                        for (int x = -17; x <= 31; x++) {
+                            int flags = flips | DRAWSPRITE_FLAG_WIDGETPOS |
+                                        DRAWSPRITE_FLAG_PAL | DRAWSPRITE_FLAG_REMAP;
+                            if (centered) flags |= DRAWSPRITE_FLAG_CENTER;
+                            check_compact_key_inputs(354,
+                                colour == 6 ? GUI_SPRITE_COLOUR_EMBEDDED : colour,
+                                flags, highlighted, x, blitter, NULL);
+                        }
+    for (unsigned count = 0; count <= 4; count++) {
+        GUI_SpriteLayers layers = {0};
+        layers.count = count;
+        for (unsigned i = 0; i < count; i++) {
+            layers.layer[i].spriteID = 354;
+            layers.layer[i].colourHouse = GUI_SPRITE_COLOUR_EMBEDDED;
+            layers.layer[i].flags = 3;
+            layers.layer[i].offsetX = -32;
+            layers.layer[i].offsetY = 31;
+        }
+        check_compact_key(0xffd62u, &layers);
+        for (unsigned i = 0; i < count; i++) {
+            GUI_SpriteLayer saved = layers.layer[i];
+            GUI_SpriteLayer *layer = &layers.layer[i];
+            for (unsigned id = 1; id <= 354; id++) {
+                layer->spriteID = id;
+                check_compact_key(0xffd62u, &layers);
+            }
+            *layer = saved;
+            for (unsigned colour = 0; colour <= 6; colour++) {
+                layer->colourHouse = colour == 6 ? GUI_SPRITE_COLOUR_EMBEDDED : colour;
+                check_compact_key(0xffd62u, &layers);
+            }
+            *layer = saved;
+            for (unsigned flags = 0; flags < 4; flags++) {
+                layer->flags = flags;
+                check_compact_key(0xffd62u, &layers);
+            }
+            *layer = saved;
+            for (int offset = -32; offset <= 31; offset++) {
+                layer->offsetX = offset;
+                check_compact_key(0xffd62u, &layers);
+                layer->offsetX = saved.offsetX;
+                layer->offsetY = offset;
+                check_compact_key(0xffd62u, &layers);
+                layer->offsetY = saved.offsetY;
+            }
+        }
+    }
+    uint32 state = 0x98765432u;
+    for (unsigned trial = 0; trial < 4096; trial++) {
+        GUI_SpriteLayers layers = {0};
+        layers.count = next_key_random(&state) % 5;
+        uint32 base = (next_key_random(&state) & 0xff000u) |
+                      ((next_key_random(&state) % 7) << 9) |
+                      (next_key_random(&state) % 354 + 1);
+        for (unsigned i = 0; i < layers.count; i++) {
+            GUI_SpriteLayer *layer = &layers.layer[i];
+            layer->spriteID = next_key_random(&state) % 354 + 1;
+            unsigned colour = next_key_random(&state) % 7;
+            layer->colourHouse = colour == 6 ? GUI_SPRITE_COLOUR_EMBEDDED : colour;
+            layer->flags = next_key_random(&state) & 3;
+            layer->offsetX = (int)(next_key_random(&state) & 63) - 32;
+            layer->offsetY = (int)(next_key_random(&state) & 63) - 32;
+        }
+        check_compact_key(base, &layers);
+    }
+}
 int main(int argc, char **argv) {
     unsigned before;
     ViewportPlanarSprite *saved;
     (void)argv;
+    check_compact_keys();
     s_viewportBlitter = argc > 1;
     batchRepairs = s_viewportBlitter;
     for (unsigned id = 0; id < 70; id++) {
@@ -407,6 +642,7 @@ int main(int argc, char **argv) {
                 if (sprite[(id == 6 ? 10 : 26) + y * 23 + (mirror ? 22 - x : x)])
                     maskStorage[id][mirror * 54 + y * 2 + (x >> 4)] |= 0x8000u >> (x & 15);
     }
+    g_sprites[111] = sprites[0];
     for (unsigned x = 0; x < 16; x++) palette[x] = x + 16;
     for (unsigned x = 0; x < 256; x++) remap[x] = x;
     remap[17] = 0; remap[0] = 2;
@@ -417,11 +653,27 @@ int main(int argc, char **argv) {
     assert(s_viewportPlanarSprites && s_viewportPlanarMasks && s_viewportPlanarComponents);
     for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++)
         s_viewportPlanarSprites[i].masks = s_viewportPlanarMasks + i * 320 * (s_viewportBlitter ? 4 : 1);
+    rebuild_directory();
+    uint16 emptyPosition = 99;
+    const uint32 emptyLayers[3] = {0};
+    assert(!draw_identity(0, GUI_SPRITE_COLOUR_EMBEDDED, 0));
+    assert(!GUI_ViewportPlanarComponent(slots, 0, GUI_SPRITE_COLOUR_EMBEDDED, 0, NULL, NULL));
+    GUI_SpriteLayers mouseLayer = {1, {{0, GUI_SPRITE_COLOUR_EMBEDDED, 0, 0, 0, {0}}}};
+    assert(!draw_layers(&mouseLayer, 64, 60, DRAWSPRITE_FLAG_PAL, palette));
+    assert(!s_viewportPlanarClock && !s_viewportComponentClock && !decodes && !encodes);
+    assert_directory();
+    assert(!GUI_ViewportFindPlanarSprite(0x80000000UL, emptyLayers, &emptyPosition));
+    assert(emptyPosition == 64 && lookupCandidates == 6 && firstBinaryPosition == 32);
     for (unsigned flags = 0; flags < 4; flags++) for (unsigned phase = 0; phase < 16; phase++) {
         check(0, 64 + phase, 60, flags, false);
         before = decodes;
         unsigned plans = blitterPlanBuilds, cached = cachedPlanDraws;
+        unsigned scans = evictionCandidates;
+        unsigned probes = lookupCandidates;
         check(0, 64 + phase, 60, flags, false);
+        assert(evictionCandidates == scans);
+        assert(lookupCandidates > probes && lookupCandidates <= probes + 14);
+        assert_directory();
         assert(decodes == before);
         assert(blitterPlanBuilds == plans);
         assert(cachedPlanDraws == cached + (s_viewportBlitter ? 1 : 0));
@@ -453,15 +705,15 @@ int main(int argc, char **argv) {
     assert(!draw(sprites[0], 64, 60, DRAWSPRITE_FLAG_PAL | DRAWSPRITE_FLAG_REMAP, palette, remap, 2));
     assert(!draw_identity(GUI_SPRITE_ID_UNKNOWN, GUI_SPRITE_COLOUR_EMBEDDED, 0));
     assert(!draw_identity(1, GUI_SPRITE_COLOUR_EMBEDDED, 0));
-    assert(!draw_identity(0, GUI_SPRITE_COLOUR_UNKNOWN, DRAWSPRITE_FLAG_PAL, palette));
-    assert(!draw_identity(0, 0, 0));
+    assert(!draw_identity(111, GUI_SPRITE_COLOUR_UNKNOWN, DRAWSPRITE_FLAG_PAL, palette));
+    assert(!draw_identity(111, 0, 0));
     assert(decodes == before);
     /* Explicit house 0, embedded palette, and another house are separate keys. */
-    assert(draw_identity(0, 0, DRAWSPRITE_FLAG_PAL, palette));
-    assert(draw_identity(0, 1, DRAWSPRITE_FLAG_PAL, palette));
+    assert(draw_identity(111, 0, DRAWSPRITE_FLAG_PAL, palette));
+    assert(draw_identity(111, 1, DRAWSPRITE_FLAG_PAL, palette));
     before = decodes;
-    assert(draw_identity(0, 0, DRAWSPRITE_FLAG_PAL, palette));
-    assert(draw_identity(0, 1, DRAWSPRITE_FLAG_PAL, palette));
+    assert(draw_identity(111, 0, DRAWSPRITE_FLAG_PAL, palette));
+    assert(draw_identity(111, 1, DRAWSPRITE_FLAG_PAL, palette));
     assert(decodes == before);
     for (unsigned id = 1; id < 70; id++) check(id, 64, 60, 0, false);
     before = decodes;
@@ -473,7 +725,10 @@ int main(int argc, char **argv) {
     check(0, 64, 60, 0, false);
     assert(s_viewportPlanarClock == 2 && decodes == before + 1);
     before = decodes;
+    ViewportPlanarSpriteKey savedDirectory[64];
+    memcpy(savedDirectory, s_viewportPlanarKeys, sizeof(savedDirectory));
     assert(draw(sprites[0], -100, -100, 0) && decodes == before);
+    assert(!memcmp(savedDirectory, s_viewportPlanarKeys, sizeof(savedDirectory)));
     assert(!draw(sprites[0], 64, 60, DRAWSPRITE_FLAG_ZOOM));
     saved = s_viewportPlanarSprites; s_viewportPlanarSprites = NULL;
     assert(!draw(sprites[0], 64, 60, 0));
@@ -483,6 +738,7 @@ int main(int argc, char **argv) {
     assert(!draw(sprites[0], 64, 60, 0));
     s_viewportPlanarComponents = savedComponents;
     for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) s_viewportPlanarSprites[i].key = 0;
+    rebuild_directory();
     memset(s_viewportPlanarComponents, 0, VIEWPORT_PLANAR_COMPONENTS * sizeof(*s_viewportPlanarComponents));
     /* Complete unit: attachment, independent turret, smoke, direct-index selection.
      * Overlap, opaque colour 0, wide negative offsets and taller bounds matter. */
@@ -528,6 +784,7 @@ int main(int argc, char **argv) {
     assert(decodes == before);
     /* A composite eviction must not discard its independently cached parts. */
     for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) s_viewportPlanarSprites[i].key = 0;
+    rebuild_directory();
     encoded = encodes;
     composed = compositions;
     check_layers(&layers, 65, 50, DRAWSPRITE_FLAG_RTL);
@@ -562,7 +819,7 @@ int main(int argc, char **argv) {
     check_layers(&layers, 79, 50, 0);
     assert(decodes == before && encodes == encoded);
     s_viewportComponentClock = 65535;
-    ViewportPlanarComponent *component = GUI_ViewportPlanarComponent(slots, 0, 0, 0, palette, remap);
+    ViewportPlanarComponent *component = GUI_ViewportPlanarComponent(slots, 111, 0, 0, palette, remap);
     assert(s_viewportComponentClock == 1 && decodes == before && component->used == 1);
     /* Component evictions cannot invalidate a completed composite. */
     for (unsigned id = 7; id < 70; id++)
@@ -684,10 +941,233 @@ int main(int argc, char **argv) {
         }
     }
     assert(dirtyClears);
+    /* A late hit must not select earlier empty slots for eviction. */
+    for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) s_viewportPlanarSprites[i].key = 0;
+    rebuild_directory();
+    memset(s_viewportPlanarComponents, 0, VIEWPORT_PLANAR_COMPONENTS * sizeof(*s_viewportPlanarComponents));
+    check(0, 64, 60, 0, false);
+    uint16 *lateMasks = s_viewportPlanarSprites[63].masks;
+    memcpy(lateMasks, s_viewportPlanarSprites[0].masks,
+           320 * (s_viewportBlitter ? 4 : 1) * sizeof(*lateMasks));
+    s_viewportPlanarSprites[63] = s_viewportPlanarSprites[0];
+    s_viewportPlanarSprites[63].masks = lateMasks;
+    s_viewportPlanarSprites[0].key = 0;
+    s_viewportPlanarComponents[63] = s_viewportPlanarComponents[0];
+    s_viewportPlanarComponents[0].key = 0;
+    rebuild_directory();
+    unsigned scans = evictionCandidates;
+    unsigned probes = lookupCandidates;
+    s_viewportPlanarClock = 65535;
+    check(0, 64, 60, 0, false);
+    assert(evictionCandidates == scans && s_viewportPlanarClock == 2);
+    assert(lookupCandidates == probes + 7);
+    assert(s_viewportPlanarSprites[63].used == 2 && !s_viewportPlanarSprites[0].key);
+    /* Physical slot order is independent of directory order. */
+    s_viewportPlanarSprites[0].key = s_viewportPlanarSprites[63].key;
+    s_viewportPlanarSprites[63].key = 0;
+    rebuild_directory();
+    probes = lookupCandidates;
+    check(0, 64, 60, 0, false);
+    assert(lookupCandidates == probes + 7);
+    assert(evictionCandidates == scans && s_viewportPlanarSprites[0].used == 4);
+    /* Same body with and without a layer must remain distinct. */
+    s_viewportPlanarSprites[1].key = s_viewportPlanarSprites[0].key | (0xc06u << 20);
+    s_viewportPlanarSprites[1].layerKeys[0] = 1;
+    rebuild_directory();
+    probes = lookupCandidates;
+    check(0, 64, 60, 0, false);
+    assert(lookupCandidates == probes + 6);
+    assert(evictionCandidates == scans);
+    s_viewportComponentClock = 65535;
+    component = GUI_ViewportPlanarComponent(slots, 111, GUI_SPRITE_COLOUR_EMBEDDED, 0, NULL, NULL);
+    assert(component == s_viewportPlanarComponents + 63 && component->used == 1);
+    assert(evictionCandidates == scans && !s_viewportPlanarComponents[0].key);
+    for (unsigned empty = 0; empty < 2; empty++) {
+        for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) {
+            s_viewportPlanarSprites[i].key = 0xdead0000UL | i;
+            s_viewportPlanarSprites[i].used = 9;
+        }
+        for (unsigned i = 0; i < VIEWPORT_PLANAR_COMPONENTS; i++) {
+            s_viewportPlanarComponents[i].key = 0xdead0000UL | i;
+            s_viewportPlanarComponents[i].used = 9;
+        }
+        s_viewportPlanarSprites[7].used = s_viewportPlanarSprites[19].used = 3;
+        s_viewportPlanarComponents[7].used = s_viewportPlanarComponents[19].used = 3;
+        if (empty) {
+            s_viewportPlanarSprites[11].key = s_viewportPlanarSprites[23].key = 0;
+            s_viewportPlanarComponents[11].key = s_viewportPlanarComponents[23].key = 0;
+        }
+        rebuild_directory();
+        scans = evictionCandidates;
+        probes = lookupCandidates;
+        check(0, 64, 60, 0, false);
+        assert(evictionCandidates == scans + VIEWPORT_PLANAR_SPRITES + VIEWPORT_PLANAR_COMPONENTS);
+        unsigned victim = empty ? 11 : 7;
+        assert(lookupCandidates > probes && lookupCandidates <= probes + 14);
+        assert_directory();
+        assert(s_viewportPlanarSprites[victim].key == 0x00000c6fUL);
+        assert(s_viewportPlanarComponents[victim].key == 0x80000c6fUL);
+        assert(s_viewportPlanarSprites[19].key == 0xdead0013UL);
+        assert(s_viewportPlanarComponents[19].key == 0xdead0013UL);
+        if (empty) {
+            assert(!s_viewportPlanarSprites[23].key && !s_viewportPlanarComponents[23].key);
+        }
+    }
+    /* Exercise insertion at both ends and every packed word comparison, including
+     * unsigned values and absent layers, independently of sprite decoding. */
+    for (unsigned differing = 0; differing < 4; differing++) {
+        for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) s_viewportPlanarSprites[i].key = 0;
+        rebuild_directory();
+        for (unsigned n = 0; n < 64; n++) {
+            unsigned slot = (n * 37) & 63;
+            uint32 words[4] = {0x80000001UL, 0, 0, 0};
+            words[differing] = 0x80000000UL + slot * 2;
+            uint16 position;
+            probes = lookupCandidates;
+            assert(!GUI_ViewportFindPlanarSprite(words[0], words + 1, &position));
+            assert(lookupCandidates <= probes + 8);
+            assert(firstBinaryPosition == 32);
+            ViewportPlanarSprite *previousHit =
+                s_viewportPlanarLastHitPosition < VIEWPORT_PLANAR_SPRITES ?
+                s_viewportPlanarKeys[s_viewportPlanarLastHitPosition].sprite : NULL;
+            ViewportPlanarSprite *entry = s_viewportPlanarSprites + slot;
+            entry->key = words[0];
+            memcpy(entry->layerKeys, words + 1, sizeof(entry->layerKeys));
+            GUI_ViewportIndexPlanarSprite(entry, position);
+            assert_directory();
+            if (previousHit)
+                assert(s_viewportPlanarKeys[s_viewportPlanarLastHitPosition].sprite == previousHit);
+            /* Check every occupancy from one through 64, including searches
+             * on either side of the live suffix and hints shifted by insertion. */
+            for (unsigned index = 64 - n - 1; index < 64; index++) {
+                const ViewportPlanarSpriteKey *key = s_viewportPlanarKeys + index;
+                probes = lookupCandidates;
+                assert(GUI_ViewportFindPlanarSprite(key->key, key->layerKeys, &position) == key->sprite);
+                assert(position == index && lookupCandidates <= probes + 8);
+            }
+            uint16 last = s_viewportPlanarLastHitPosition;
+            unsigned comparisons = layerComparisons;
+            assert(!GUI_ViewportFindPlanarSprite(1, emptyLayers, &position));
+            assert(position == 64 - n - 1 && firstBinaryPosition == 32);
+            assert(s_viewportPlanarLastHitPosition == last);
+            assert(!GUI_ViewportFindPlanarSprite(0xffffffffUL, emptyLayers, &position));
+            assert(position == 64 && firstBinaryPosition == 32);
+            assert(s_viewportPlanarLastHitPosition == last);
+            assert(layerComparisons == comparisons);
+        }
+        for (unsigned slot = 0; slot < 64; slot++) {
+            ViewportPlanarSprite *entry = s_viewportPlanarSprites + slot;
+            uint16 position;
+            probes = lookupCandidates;
+            assert(GUI_ViewportFindPlanarSprite(entry->key, entry->layerKeys, &position) == entry);
+            assert(lookupCandidates > probes && lookupCandidates <= probes + 8);
+            assert(position == slot);
+            unsigned matches = lastHitMatches;
+            unsigned comparisons = layerComparisons;
+            probes = lookupCandidates;
+            assert(GUI_ViewportFindPlanarSprite(entry->key, entry->layerKeys, &position) == entry);
+            assert(position == slot && lookupCandidates == probes + 1);
+            assert(lastHitMatches == matches + 1);
+            assert(layerComparisons == comparisons);
+            uint32 words[4];
+            words[0] = entry->key;
+            memcpy(words + 1, entry->layerKeys, sizeof(entry->layerKeys));
+            words[differing]++;
+            probes = lookupCandidates;
+            assert(!GUI_ViewportFindPlanarSprite(words[0], words + 1, &position));
+            assert(position == slot + 1 && lookupCandidates <= probes + 8);
+            assert(s_viewportPlanarLastHitPosition == slot);
+            assert(firstBinaryPosition == 32);
+        }
+        /* Replace a high key with a low key and then a low key with a high
+         * key: removal must adjust the saved insertion position correctly. */
+        for (unsigned pass = 0; pass < 4; pass++) {
+            ViewportPlanarSprite *entry = s_viewportPlanarSprites + (pass ? 0 : 63);
+            uint32 words[4] = {0x80000001UL, 0, 0, 0};
+            words[differing] = pass & 1 ? 0xffffffffUL : pass == 0 ? 1 : 2;
+            uint16 position;
+            if (pass >= 2) {
+                ViewportPlanarSprite *middle = s_viewportPlanarSprites + 32;
+                assert(GUI_ViewportFindPlanarSprite(middle->key, middle->layerKeys, &position) == middle);
+            }
+            assert(!GUI_ViewportFindPlanarSprite(words[0], words + 1, &position));
+            ViewportPlanarSprite *previousHit =
+                s_viewportPlanarKeys[s_viewportPlanarLastHitPosition].sprite;
+            uint32 oldKey = entry->key, oldLayers[3];
+            memcpy(oldLayers, entry->layerKeys, sizeof(oldLayers));
+            entry->key = words[0];
+            memcpy(entry->layerKeys, words + 1, sizeof(entry->layerKeys));
+            GUI_ViewportIndexPlanarSprite(entry, position);
+            assert_directory();
+            if (entry == previousHit) {
+                assert(s_viewportPlanarLastHitPosition == VIEWPORT_PLANAR_SPRITES);
+            } else {
+                assert(s_viewportPlanarKeys[s_viewportPlanarLastHitPosition].sprite == previousHit);
+                probes = lookupCandidates;
+                assert(GUI_ViewportFindPlanarSprite(previousHit->key, previousHit->layerKeys,
+                                                   &position) == previousHit);
+                assert(lookupCandidates == probes + 1);
+            }
+            assert(!GUI_ViewportFindPlanarSprite(oldKey, oldLayers, &position));
+            assert(GUI_ViewportFindPlanarSprite(words[0], words + 1, &position) == entry);
+            assert(position == (pass & 1 ? 63 : pass == 0 ? 0 : 1));
+        }
+    }
+    /* Every layerless hit/miss accepts an unreadable requested tail, including
+     * the hint shortcut and every directory occupancy. */
+    for (unsigned count = 0; count <= 64; count++) {
+        for (unsigned slot = 0; slot < 64; slot++) {
+            ViewportPlanarSprite *entry = s_viewportPlanarSprites + slot;
+            entry->key = slot < count ? slot * 2 + 1 : 0;
+            memset(entry->layerKeys, 0, sizeof(entry->layerKeys));
+        }
+        rebuild_directory();
+        for (unsigned key = 1; key <= 129; key++) {
+            uint16 position;
+            unsigned comparisons = layerComparisons;
+            ViewportPlanarSprite *entry = GUI_ViewportFindPlanarSprite(key, NULL, &position);
+            bool found = (key & 1) && key / 2 < count;
+            assert(entry == (found ? s_viewportPlanarSprites + key / 2 : NULL));
+            assert(position == 64 - count + min(count, key / 2));
+            assert(layerComparisons == comparisons);
+            if (entry) {
+                unsigned matches = lastHitMatches;
+                assert(GUI_ViewportFindPlanarSprite(key, NULL, &position) == entry);
+                assert(lastHitMatches == matches + 1 && layerComparisons == comparisons);
+            }
+        }
+    }
+    /* Real insertions/evictions and layered hits retain fixed image slots. */
+    for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) s_viewportPlanarSprites[i].key = 0;
+    rebuild_directory();
+    for (unsigned id = 0; id < 70; id++) {
+        check(id, 64, 60, 0, false);
+        assert_directory();
+    }
+    check_layers(&layers, 64, 50, 0);
+    assert_directory();
+    ViewportPlanarSprite images[64];
+    memcpy(images, s_viewportPlanarSprites, sizeof(images));
+    before = decodes; encoded = encodes; composed = compositions;
+    GUI_SetViewportPlanar(false);
+    GUI_SetViewportPlanar(true);
+    check_layers(&layers, 64, 50, 0);
+    assert(decodes == before && encodes == encoded && compositions == composed);
+    for (unsigned i = 0; i < 64; i++) {
+        ViewportPlanarSprite actual = s_viewportPlanarSprites[i];
+        actual.used = images[i].used;
+        assert(!memcmp(&actual, images + i, sizeof(actual)));
+    }
+    assert_directory();
     GUI_FreeViewportSpriteCache();
     assert(!s_viewportPlanarSprites && !s_viewportPlanar && !s_viewportSpriteReady && !s_viewportPlanarClock);
     assert(!s_viewportPlanarComponents && !s_viewportComponentClock);
     assert(!s_viewportPlanarMasks && !blitterLocks);
+    for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) {
+        assert(!s_viewportPlanarKeys[i].key && !s_viewportPlanarKeys[i].sprite);
+        for (unsigned word = 0; word < 3; word++) assert(!s_viewportPlanarKeys[i].layerKeys[word]);
+    }
+    assert(s_viewportPlanarLastHitPosition == VIEWPORT_PLANAR_SPRITES);
     assert(!draw(sprites[0], 64, 60, 0));
     return 0;
 }
@@ -695,6 +1175,7 @@ int main(int argc, char **argv) {
         harness = harness.replace("/* FLAGS */", flags).replace("/* LAYER TYPES */", layer_types)
         harness = harness.replace("/* CACHE */", blit_plan_type() + cache)
         harness = harness.replace("/* FREE */", function(gui, "GUI_FreeViewportSpriteCache"))
+        harness = harness.replace("/* PLANAR SCOPE */", function(gui, "GUI_SetViewportPlanar"))
         harness = harness.replace("/* MERGE */", function(video, "Video_Atari_PlanarMergePlain"))
         composer = function(video, "Video_Atari_ComposePlanarSprite")
         composer = composer.replace("\n{\n", "\n{\n    compositions++;\n", 1)
@@ -706,9 +1187,41 @@ int main(int argc, char **argv) {
                                   function(video, "Video_Atari_PresentPlanarSpriteStrided") + "\n" +
                                   function(video, "Video_Atari_PresentPlanarSprite") + "\n" +
                                   blitter_model(video))
-        harness = harness.replace("/* LOOKUP */", function(gui, "GUI_ViewportDecodeLayer") + "\n" +
-                                  function(gui, "GUI_ViewportPlanarComponent") + "\n" +
-                                  function(gui, "GUI_ViewportPlanarSprite"))
+        finder = function(gui, "GUI_ViewportFindPlanarSprite")
+        finder = finder.replace("\n{\n", "\n{\n    assert_directory();\n", 1)
+        finder = finder.replace("if (s_viewportPlanarLastHitPosition < VIEWPORT_PLANAR_SPRITES) {",
+                                "if (s_viewportPlanarLastHitPosition < VIEWPORT_PLANAR_SPRITES) {\n"
+                                "        lookupCandidates++;")
+        finder = finder.replace("*position = s_viewportPlanarLastHitPosition;",
+                                "lastHitMatches++;\n"
+                                "            *position = s_viewportPlanarLastHitPosition;")
+        nodes = re.findall(r"^\s*VIEWPORT_SEARCH_NODE\((\d+),", finder, re.M)
+        self.assertEqual(sorted(map(int, nodes)), list(range(64)))
+        self.assertNotRegex(finder, r"\b(?:while|for)\s*\(")
+        finder = finder.replace("\n{\n", "\n{\n    bool firstBinary = true;\n", 1)
+        node_probe = "const ViewportPlanarSpriteKey *candidate = &s_viewportPlanarKeys[slot];"
+        self.assertEqual(finder.count(node_probe), 1)
+        finder = finder.replace(node_probe, node_probe + " \\\n"
+                                "        lookupCandidates++; \\\n"
+                                "        if (firstBinary) firstBinaryPosition = (slot); \\\n"
+                                "        firstBinary = false;")
+        indexer = function(gui, "GUI_ViewportIndexPlanarSprite")
+        indexer = indexer[:-2] + "    assert_directory();\n}\n"
+        comparator = function(gui, "GUI_ViewportCompareLayerKeys")
+        comparator = comparator.replace("\n{\n", "\n{\n    layerComparisons++;\n", 1)
+        lookup = function(gui, "GUI_ViewportBuildCompositeKey") + "\n"
+        lookup += comparator + "\n" + finder + "\n" + indexer
+        lookup += "\n" + function(gui, "GUI_ViewportDecodeLayer")
+        for name, victim_check in (("GUI_ViewportPlanarComponent", "expected_component_victim"),
+                                   ("GUI_ViewportPlanarSprite", "expected_sprite_victim")):
+            body = function(gui, name)
+            self.assertEqual(body.count("if (victim == NULL"), 1)
+            self.assertEqual(body.count("entry = victim;"), 1)
+            body = body.replace("if (victim == NULL", "evictionCandidates++;\n\t\t\tif (victim == NULL")
+            body = body.replace("entry = victim;",
+                                "assert(victim == " + victim_check + "());\n\t\tentry = victim;")
+            lookup += "\n" + body
+        harness = harness.replace("/* LOOKUP */", lookup)
         with tempfile.TemporaryDirectory(prefix="viewport-sprite-cache-") as directory:
             source = Path(directory) / "test.c"
             binary = Path(directory) / "test"
