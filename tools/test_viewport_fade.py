@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import tempfile
@@ -19,6 +20,10 @@ class ViewportFadeTest(unittest.TestCase):
         gui = (ROOT / "src/gui/gui.c").read_text()
         header = (ROOT / "src/gui/gui.h").read_text()
         selection = (ROOT / "src/table/selectiontype.c").read_text()
+        viewport = (ROOT / "src/gui/viewport.c").read_text()
+        fade_gate = re.search(
+            r"if \(g_viewport_fadein.*?\) \{",
+            function(viewport, "GUI_Widget_Viewport_Draw"), re.S).group()
         enum = header[header.index("typedef enum SelectionType"):
                       header.index("} SelectionType;") + len("} SelectionType;")]
         table_type = header[header.index("typedef struct SelectionTypeStruct"):
@@ -118,6 +123,13 @@ static void Sprites_SetMouseSprite(unsigned x, unsigned y, const uint8 *pixels) 
     assert(x == 0 && y == 0 && pixels == &sprite);
 }
 /* TRANSITION */
+static bool renderer_fades(bool requested) {
+    g_viewport_fadein = requested;
+    /* FADE GATE */
+        return true;
+    }
+    return false;
+}
 static void transition(uint16 from, uint16 to, bool rebuild) {
     g_selectionType = from;
     g_unitSelected = (to == SELECTIONTYPE_UNIT || to == SELECTIONTYPE_TARGET) ? &unit : NULL;
@@ -166,6 +178,7 @@ int main(void) {
         option = NULL;
         Config_LoadAnimationPhases();
         assert(Config_ViewportFadeEnabled() == defaultFade);
+        assert(renderer_fades(true) == defaultFade && !renderer_fades(false));
         assert(g_announcementPhase == 1 && g_creditsPhase == 1);
         transitions();
         const char *valid[] = {"0", "1", " 1\t", "+0", "00"};
@@ -174,7 +187,12 @@ int main(void) {
             unsigned before = warnings;
             option = valid[i];
             Config_LoadAnimationPhases();
-            assert(Config_ViewportFadeEnabled() == values[i] && warnings == before);
+            bool expected = values[i];
+#ifdef TOS
+            expected = expected && !direct;
+#endif
+            assert(Config_ViewportFadeEnabled() == expected && warnings == before);
+            assert(renderer_fades(true) == expected && !renderer_fades(false));
             transitions();
         }
         const char *invalid[] = {"", "2", "-1", "no", "1x", "1.5",
@@ -195,6 +213,7 @@ int main(void) {
                  "Config_LoadAnimationPhases", "Config_ViewportFadeEnabled")
         harness = harness.replace("/* CONFIG */", "\n".join(function(config, name) for name in names))
         harness = harness.replace("/* TRANSITION */", function(gui, "GUI_ChangeSelectionType"))
+        harness = harness.replace("/* FADE GATE */", fade_gate)
         with tempfile.TemporaryDirectory(prefix="viewport-fade-") as directory:
             source = Path(directory) / "test.c"
             binary = Path(directory) / "test"

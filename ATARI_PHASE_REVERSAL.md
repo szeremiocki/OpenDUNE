@@ -48,9 +48,10 @@ shifted mask is empty or the requested range ends; actual repairs still
 clear the original bitset. Byte-wise extraction supports every viewport alignment
 without unaligned word reads or a third-byte read past the map's end.
 
-Scope is the eligible direct planar ST/STE viewport. Other machines,
-off-screen drawing and fades retain the existing
-terrain-first fallback. Aircraft shadows are omitted on ST/STE in both planar
+Scope is the eligible direct planar ST/STE viewport. Other machines
+and off-screen drawing retain the existing terrain-first fallback. ST/STE
+viewport dissolves are disabled until native drawing supports a selectable
+destination screen. Aircraft shadows are omitted on ST/STE in both planar
 and chunky viewport paths. The current profiling experiment removes unit and
 explosion eligibility scans, retaining only hardware/cache readiness checks.
 Worm and Sonic Blast distortion remain unimplemented in native planar form;
@@ -61,6 +62,13 @@ repair. Hidden repairs publish a cached opaque colour-12 tile even without a
 forced redraw, consuming the pending bit before publication just like ordinary
 terrain. This removes old foreground traces at fog boundaries without repeating
 repairs under current sprites. Undamaged hidden cells remain untouched.
+
+Native composition owns the battlefield's planar pixels, not its chunky
+publication masks. Entry retires pending publication in both mask arrays before
+enabling the scope. Marks inside x=0..239, y=40..199 are then omitted, and native
+publishers skip per-rectangle clears there. Crossing marks retain their outside
+groups/scanlines. Scope exit restores ordinary publication for dialogs and
+fallbacks; sidebar/minimap publication and engine repair damage are unchanged.
 
 ## Isolated improvements ported onto this renderer
 

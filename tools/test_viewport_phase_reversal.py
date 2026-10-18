@@ -15,6 +15,116 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ViewportPhaseReversalTest(unittest.TestCase):
+    def test_copy_bookkeeping_and_messages(self):
+        viewport = function(
+            (ROOT / "src/gui/viewport.c").read_text(), "GUI_Widget_Viewport_Draw")
+        setup = viewport[viewport.index("\tbool updateDisplay;"):viewport.index(
+            "\n#ifdef TOS\n\toldScreenID")]
+        self.assertNotRegex(setup, r"dirtyColumns\[10\]\s*=")
+        for declaration in ("static int16 minX[10];", "static int16 maxX[10];",
+                            "static uint16 dirtyColumns[10];"):
+            self.assertIn(declaration, setup)
+        self.assertNotIn("g_viewport_fadein", setup)
+        setup = setup.replace("\tupdateDisplay = forceRedraw;", """
+    memset(minX, 0x5a, sizeof(minX));
+    memset(maxX, 0x5a, sizeof(maxX));
+#ifdef GFX_STORE_DIRTY_AREA_BLOCKS
+    memset(dirtyColumns, 0x5a, sizeof(dirtyColumns));
+#endif
+    updateDisplay = forceRedraw;
+""")
+        first = viewport.index("\tif ((g_viewportMessageCounter & 1)")
+        last = viewport.index("\n\tif (updateDisplay && !drawToMainScreen", first)
+        message = viewport[first:last]
+        publication = viewport[last:viewport.index("{", last) + 1]
+        harness = r"""
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <string.h>
+typedef int16_t int16;
+typedef uint16_t uint16;
+typedef int Screen;
+typedef struct { uint16 index, type, houseID; } PoolFindStruct;
+static uint16 g_viewportMessageCounter;
+static const char *g_viewportMessageText;
+static bool g_viewport_fadein, ready, s_viewportWasPlanar;
+static bool g_selectionRectangleNeedRepaint;
+static unsigned draws;
+#ifdef TOS
+static bool Video_Atari_CursorDirect(void) { return true; }
+static bool GUI_Widget_Viewport_CanDrawPlanar(void) { return ready; }
+#endif
+static void GUI_DrawText_Wrapper(const char *text, int x, int y, int fg, int bg, int flags) {
+    assert(text == g_viewportMessageText && x == 112 && y == 139);
+    assert(fg == 15 && bg == 0 && flags == 0x132);
+    draws++;
+}
+static void check(bool drawToMainScreen, bool forceRedraw, bool hasScrolled, bool planarShifted) {
+    bool expectedPlanar = false;
+    (void)hasScrolled; (void)planarShifted;
+#ifdef TOS
+    expectedPlanar = !drawToMainScreen && ready;
+    s_viewportWasPlanar = expectedPlanar;
+#endif
+    /* SETUP */
+    assert(trackCopyDamage == !expectedPlanar);
+    bool visible = (g_viewportMessageCounter & 1) && g_viewportMessageText != NULL;
+    for (unsigned row = 0; row < 10; row++) {
+        assert(minX[row] == (expectedPlanar ? 0x5a5a : 0x0f0f));
+        assert(maxX[row] == (expectedPlanar ? 0x5a5a : 0));
+#ifdef GFX_STORE_DIRTY_AREA_BLOCKS
+        assert(dirtyColumns[row] == (expectedPlanar ? 0x5a5a : 0));
+#endif
+    }
+    draws = 0;
+    /* MESSAGE */
+    assert(draws == visible);
+    for (unsigned row = 0; row < 10; row++) {
+        bool messageRow = visible && row == 6;
+        assert(minX[row] == (expectedPlanar ? 0x5a5a : messageRow ? -1 : 0x0f0f));
+        assert(maxX[row] == (expectedPlanar ? 0x5a5a : messageRow ? 14 : 0));
+#ifdef GFX_STORE_DIRTY_AREA_BLOCKS
+        assert(dirtyColumns[row] == (expectedPlanar ? 0x5a5a : messageRow ? 0x7fff : 0));
+#endif
+    }
+    bool published = false;
+    /* PUBLICATION */
+        published = true;
+    }
+    assert(published == (forceRedraw && !drawToMainScreen && !expectedPlanar));
+}
+int main(void) {
+    for (unsigned state = 0; state < 64; state++) {
+        ready = (state & 1) != 0;
+        g_viewport_fadein = (state & 2) != 0;
+        for (unsigned counter = 0; counter <= 4; counter++)
+            for (unsigned text = 0; text < 2; text++) {
+                g_viewportMessageCounter = counter;
+                g_viewportMessageText = text ? "Feedback" : NULL;
+                check((state & 4) != 0, (state & 8) != 0,
+                      (state & 16) != 0, (state & 32) != 0);
+            }
+    }
+    return 0;
+}
+"""
+        harness = harness.replace("/* SETUP */", setup)
+        harness = harness.replace("/* MESSAGE */", message)
+        harness = harness.replace("/* PUBLICATION */", publication)
+        with tempfile.TemporaryDirectory(prefix="viewport-copy-bookkeeping-") as directory:
+            source = Path(directory) / "test.c"
+            binary = Path(directory) / "test"
+            source.write_text(harness)
+            compiler = shlex.split(os.environ.get("CC", "cc"))
+            flags = shlex.split(os.environ.get("TEST_CFLAGS", ""))
+            for platform in ([], ["-DTOS", "-DGFX_STORE_DIRTY_AREA_BLOCKS"]):
+                subprocess.run([*compiler, "-std=c99", "-O2", "-Wall", "-Wextra",
+                                "-Werror", "-Wno-unused-variable", *flags, *platform,
+                                str(source), "-o", str(binary)], check=True)
+                subprocess.run([str(binary)], check=True)
+
     def test_sandworm_reserved_slots(self):
         viewport = (ROOT / "src/gui/viewport.c").read_text()
         start = viewport.index("\t/* Draw Sandworm */")
@@ -248,12 +358,28 @@ static void GUI_DrawFilledRectangle(uint16 l, uint16 t, uint16 r, uint16 b, uint
 /* REPAIR */
 static bool scan(bool planarViewport, bool forceRedraw) {
     bool drawToMainScreen = true, updateDisplay = forceRedraw;
+    bool trackCopyDamage = !planarViewport;
     uint16 x, y, curPos, fullyFoggedTileID = 99;
-    int minX[10], maxX[10];
-    uint16 dirtyColumns[10] = {0};
-    for (y = 0; y < 10; y++) { minX[y] = 15; maxX[y] = 0; }
+    int16 minX[10], maxX[10];
+    uint16 dirtyColumns[10];
+    for (y = 0; y < 10; y++) {
+        minX[y] = planarViewport ? 0x5a5a : 15;
+        maxX[y] = planarViewport ? 0x5a5a : 0;
+        dirtyColumns[y] = planarViewport ? 0x5a5a : 0;
+    }
     s_viewportRepairActive = planarViewport;
     /* TERRAIN */
+    for (y = 0; y < 10; y++) {
+        if (planarViewport) {
+            assert(minX[y] == 0x5a5a && maxX[y] == 0x5a5a);
+            assert(dirtyColumns[y] == 0x5a5a);
+        } else {
+            bool dirty = forceRedraw || (y == 0 && updateDisplay);
+            assert(minX[y] == (dirty ? 0 : 15));
+            assert(maxX[y] == (forceRedraw ? 14 : 0));
+            assert(dirtyColumns[y] == (forceRedraw ? 0x7fff : dirty ? 1 : 0));
+        }
+    }
     return updateDisplay;
 }
 static void reset(void) {

@@ -136,18 +136,21 @@ machines retain the original sound timing. Forced/reset draws and the final sett
 value are always displayed, even in mode 2.
 These settings are independent and neither changes game speed.
 
-Gameplay viewport entry/return defaults to immediate display on ST/STE.
-The original randomized 8x2-pixel dissolve can be restored with:
+Gameplay viewport entry/return is immediate on ST/STE. Its chunky dissolve is
+disabled, including when viewport_fade=1 is requested. Re-enabling it requires
+native planar viewport drawing with a selectable destination screen.
+
+On TT/Falcon and non-Atari platforms, the original randomized 8x2-pixel
+dissolve remains enabled by default and can be controlled with:
 
 [opendune]
 viewport_fade=1
 
-Use 0 to disable the dissolve explicitly. This engine-level policy covers
+Use 0 to disable the dissolve on those platforms. This engine-level policy covers
 scenario entry and returns from Mentat and Factory screens. The viewport is
 still redrawn normally; it only skips the dissolve, not asset loading or
-cold-cache work. Other screen transitions are unchanged. The default remains
-enabled on TT/Falcon and non-Atari platforms. Invalid values warn and use the
-platform default.
+cold-cache work. Other screen transitions are unchanged. Invalid values warn
+and use the platform default.
 
 Cosmetic structure flag waving can be disabled with:
 
@@ -316,6 +319,16 @@ for the whole viewport. Aircraft bodies retain their normal colours and
 painter order; other platforms retain their shadows. For the current ST/STE
 profiling experiment, viewport backend selection checks only hardware and
 tile/sprite-cache readiness; it no longer scans units or explosions.
+Native planar drawing skips chunky row-copy extent and column-mask bookkeeping.
+Pending terrain repairs, foreground damage and message blink/erasure remain
+unchanged. Legacy copy extents use static scratch storage, not the viewport
+draw stack, and are initialized only for chunky rendering.
+The native draw scope also excludes the battlefield from per-scanline chunky
+publication masks. Pending battlefield publication is retired at scope entry;
+tile, sprite and glyph publishers then skip redundant dirty-rectangle clears.
+Marks crossing the battlefield boundary retain their topbar/sidebar portions.
+The scope ends after composition, so dialogs, other screens and chunky fallbacks
+keep their existing publication. Minimap SCREEN_1 publication is unchanged.
 The Atari sandworm drawing pass checks its reserved unit slots (16 and 17)
 in slot order instead of searching the active unit list. It retains the
 used/type, on-map, dirty, fog and current/trailing-position drawing checks.
@@ -325,8 +338,8 @@ Stock battlefield sprite ranges are covered by the cache. Sandworm and
 Sonic Blast distortion do not yet have native planar implementations and
 no longer trigger a chunky fallback: scenes containing them are not supported
 by this experiment yet. Profile scenes without these effects until the planned
-planar replacements are implemented. Off-screen composition and viewport
-dissolves retain their existing paths; backend changes reconstruct the scene.
+planar replacements are implemented. Off-screen composition retains its
+existing path; backend changes reconstruct the scene.
 ST/STE unit-to-target and target-to-unit selection changes reset widget state
 without redrawing unchanged base widgets or running the second full widget
 draw pass. Changed widget visibility/selection still triggers drawing, and

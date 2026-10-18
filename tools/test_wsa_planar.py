@@ -255,7 +255,8 @@ static void Video_Atari_PlanarFinishRun(uint8 *base, uint16 x, uint16 y,
         cursor_draw();
     }
 }
-void GFX_Screen_ClearDirtyRect(uint16 left, uint16 top, uint16 right, uint16 bottom) {
+bool g_screenViewportPlanar;
+void GFX_Screen_ClearDirtyRect_(uint16 left, uint16 top, uint16 right, uint16 bottom) {
     for (unsigned y = top; y < bottom; y++)
         for (unsigned g = left / 16; g < (right + 15u) / 16; g++) dirtyScreen[y] &= ~(1u << g);
 }

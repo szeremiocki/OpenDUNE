@@ -61,12 +61,11 @@ void Config_LoadAnimationPhases(void)
 
 bool Config_ViewportFadeEnabled(void)
 {
-	if (s_viewportFade >= 0) return s_viewportFade != 0;
 #ifdef TOS
-	return !Video_Atari_CursorDirect();
-#else
-	return true;
+	if (Video_Atari_CursorDirect()) return false;
 #endif
+	if (s_viewportFade >= 0) return s_viewportFade != 0;
+	return true;
 }
 
 /**

@@ -1442,6 +1442,7 @@ bool GUI_ViewportSpriteCacheReady(void)
 
 void GUI_SetViewportPlanar(bool active)
 {
+	GFX_Screen_SetViewportPlanar(active);
 	s_viewportPlanar = active;
 }
 

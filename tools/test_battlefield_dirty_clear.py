@@ -14,15 +14,33 @@ ROOT = Path(__file__).resolve().parents[1]
 class BattlefieldDirtyClearTest(unittest.TestCase):
     def test_mask_parity(self):
         source = (ROOT / "src/gfx.c").read_text()
+        header = (ROOT / "src/gfx.h").read_text()
+        gui = (ROOT / "src/gui/gui.c").read_text()
+        viewport = (ROOT / "src/gui/viewport.c").read_text()
+        self.assertIn("GUI_SetViewportPlanar(planarViewport);", viewport)
+        self.assertIn("GUI_SetViewportPlanar(false);", viewport)
+        self.assertNotIn("GFX_Screen_ClearDirtyBattlefield();", viewport)
         functions = []
+        for name in ("GFX_Screen_IsNativeViewportRect", "GFX_Screen_ClearDirtyRect"):
+            start = header.index(name + "(")
+            start = header.rfind("\n", 0, start) + 1
+            functions.append(header[start:header.index("\n}", start) + 2])
         for name in ("GFX_Screen_SetDirtySuppress", "GFX_Screen_DirtyIntersectsBattlefield",
+                     "GFX_Screen_SetDirtyBlocks",
                      "GFX_Screen_SetDirty_", "GFX_Screen_SetClean",
                      "GFX_Screen_SetDirtyViewport", "GFX_Screen_SetCleanViewport",
-                     "GFX_Screen_ClearDirtyRect", "GFX_Screen_ClearDirtyViewportRect",
-                     "GFX_Screen_ClearDirtyBattlefield"):
+                     "GFX_Screen_ClearDirtyRect_", "GFX_Screen_ClearDirtyViewportRect",
+                     "GFX_Screen_ClearDirtyBattlefield", "GFX_Screen_SetViewportPlanar"):
             start = source.index(name + "(")
             start = source.rfind("\n", 0, start) + 1
-            functions.append(source[start:source.index("\n}", start) + 2])
+            implementation = source[start:source.index("\n}", start) + 2]
+            if name == "GFX_Screen_ClearDirtyRect_":
+                implementation = implementation.replace(
+                    "\n{", "\n{\n    dirtyClearCalls++;", 1)
+            functions.append(implementation)
+        start = gui.index("GUI_SetViewportPlanar(")
+        start = gui.rfind("\n", 0, start) + 1
+        functions.append(gui[start:gui.index("\n}", start) + 2])
         harness = r"""
 #include <assert.h>
 #include <stdbool.h>
@@ -34,12 +52,21 @@ typedef uint16_t uint16;
 typedef uint32_t uint32;
 #define SCREEN_HEIGHT 200
 #define GFX_STORE_DIRTY_AREA_BLOCKS
+#define min(a,b) ((a) < (b) ? (a) : (b))
+#define max(a,b) ((a) > (b) ? (a) : (b))
 typedef enum { SCREEN_0, SCREEN_1, SCREEN_ACTIVE } Screen;
 struct dirty_area { uint16 left, top, right, bottom; };
 static Screen s_screenActiveID = SCREEN_0;
 static bool s_dirtySuppress, s_screen0_is_dirty, s_screen1_is_dirty;
 static bool s_screen0_battlefield_dirty, s_screen1_battlefield_dirty;
+static bool g_screenViewportPlanar, s_viewportPlanar;
+static unsigned dirtyClearCalls;
 static struct dirty_area s_screen0_dirty_area, s_screen1_dirty_area;
+#ifdef GFX_DIRTY_SOURCE_STATS
+static int s_dirtySource;
+static uint32 s_dirtyCalls[1], s_dirtyPx[1], s_dirtyAlignedPx[1], s_dirtyNewBlocks[1];
+#endif
+void GFX_Screen_ClearDirtyRect_(uint16 left, uint16 top, uint16 right, uint16 bottom);
 typedef struct {
     uint32 before;
     uint32 rows[SCREEN_HEIGHT];
@@ -67,11 +94,91 @@ static void compare(void) {
     assert(!s_screen0_battlefield_dirty && !s_screen1_battlefield_dirty);
 }
 static void reset(void) {
+    GUI_SetViewportPlanar(false);
     GFX_Screen_SetDirtySuppress(false);
     s_screenActiveID = SCREEN_0;
     GFX_Screen_SetClean(SCREEN_0);
     GFX_Screen_SetCleanViewport();
     assert(!s_screen0_battlefield_dirty && !s_screen1_battlefield_dirty);
+}
+static void native_scope(void) {
+    unsigned y, group;
+    reset();
+    GFX_Screen_SetDirty_(0, 0, 320, 200);
+    GFX_Screen_SetDirtyViewport(0, 0, 320, 200);
+    inputNormal = normal;
+    inputViewport = viewport;
+    GUI_SetViewportPlanar(true);
+    assert(g_screenViewportPlanar && s_viewportPlanar);
+    assert(!s_screen0_battlefield_dirty && !s_screen1_battlefield_dirty);
+    for (y = 0; y < SCREEN_HEIGHT; y++) {
+        uint32 kept = y < 40 ? UINT32_MAX : UINT32_C(0xffff8000);
+        assert(normal.rows[y] == (inputNormal.rows[y] & kept));
+        assert(viewport.rows[y] == (inputViewport.rows[y] & kept));
+    }
+    inputNormal = normal;
+    inputViewport = viewport;
+    unsigned before = dirtyClearCalls;
+    GFX_Screen_SetDirty_(0, 40, 240, 200);
+    GFX_Screen_SetDirtyViewport(239, 199, 240, 200);
+    GFX_Screen_ClearDirtyRect(0, 40, 240, 200);
+    GFX_Screen_ClearDirtyRect(239, 199, 240, 200);
+    assert(dirtyClearCalls == before);
+    assert(!memcmp(&normal, &inputNormal, sizeof(normal)));
+    assert(!memcmp(&viewport, &inputViewport, sizeof(viewport)));
+    GFX_Screen_ClearDirtyRect(239, 39, 241, 41);
+    GFX_Screen_ClearDirtyRect(240, 40, 320, 200);
+    assert(dirtyClearCalls == before + 2);
+    GUI_SetViewportPlanar(false);
+    GFX_Screen_SetDirty_(0, 40, 16, 41);
+    GFX_Screen_SetDirtyViewport(0, 40, 16, 41);
+    assert(!g_screenViewportPlanar && !s_viewportPlanar);
+    assert(normal.rows[40] & 1);
+    assert(viewport.rows[40] & 1);
+    assert(s_screen0_battlefield_dirty && s_screen1_battlefield_dirty);
+    GFX_Screen_ClearDirtyRect(0, 40, 16, 41);
+    assert(dirtyClearCalls == before + 3 && !(normal.rows[40] & 1));
+    reset();
+    GUI_SetViewportPlanar(true);
+    struct dirty_area area0 = s_screen0_dirty_area, area1 = s_screen1_dirty_area;
+    GFX_Screen_SetDirty_(16, 56, 32, 72);
+    GFX_Screen_SetDirtyViewport(16, 56, 32, 72);
+    assert(!s_screen0_is_dirty && !s_screen1_is_dirty);
+    assert(!memcmp(&area0, &s_screen0_dirty_area, sizeof(area0)));
+    assert(!memcmp(&area1, &s_screen1_dirty_area, sizeof(area1)));
+    GFX_Screen_SetDirty_(239, 39, 241, 41);
+    GFX_Screen_SetDirtyViewport(239, 39, 241, 41);
+    assert(normal.rows[39] == 0xc000 && normal.rows[40] == 0x8000);
+    assert(viewport.rows[39] == 0xc000 && viewport.rows[40] == 0x8000);
+    assert(!s_screen0_battlefield_dirty && !s_screen1_battlefield_dirty);
+    reset();
+    GUI_SetViewportPlanar(true);
+#ifdef GFX_DIRTY_SOURCE_STATS
+    uint32 oldPx = s_dirtyPx[0], oldBlocks = s_dirtyNewBlocks[0];
+#endif
+    GFX_Screen_SetDirty_(0, 0, 320, 200);
+    GFX_Screen_SetDirtyViewport(0, 0, 320, 200);
+    for (y = 0; y < SCREEN_HEIGHT; y++) {
+        for (group = 0; group < 20; group++) {
+            bool outside = y < 40 || group >= 15;
+            assert(((normal.rows[y] >> group) & 1) == outside);
+            assert(((viewport.rows[y] >> group) & 1) == outside);
+        }
+    }
+#ifdef GFX_DIRTY_SOURCE_STATS
+    assert(s_dirtyPx[0] - oldPx == 25600);
+    assert(s_dirtyNewBlocks[0] - oldBlocks == 1600);
+#endif
+    assert(!s_screen0_battlefield_dirty && !s_screen1_battlefield_dirty);
+    reset();
+    GUI_SetViewportPlanar(true);
+    GFX_Screen_SetDirtySuppress(true);
+    GFX_Screen_SetDirty_(240, 40, 320, 200);
+    GFX_Screen_SetDirtyViewport(256, 136, 320, 200);
+    assert(!s_screen0_is_dirty && s_screen1_is_dirty);
+    assert(viewport.rows[136] == 0xf0000);
+    assert(!normal.rows[136]);
+    reset();
 }
 static void check_summary(void) {
     unsigned y;
@@ -156,7 +263,7 @@ static void sequences(void) {
     expectedNormal = normal;
     expectedViewport = viewport;
     for (step = 0; step < 2000; step++) {
-        unsigned op = next_random(&random) % 7;
+        unsigned op = next_random(&random) % 9;
         uint16 left = next_random(&random) % 320;
         uint16 right = left + 1 + next_random(&random) % (320 - left);
         uint16 top = next_random(&random) % 200;
@@ -166,7 +273,9 @@ static void sequences(void) {
             Masks *expected = op == 0 ? &expectedNormal : &expectedViewport;
             mask = (UINT32_C(1) << ((right + 15) >> 4)) -
                    (UINT32_C(1) << (left >> 4));
-            for (y = top; y < bottom; y++) expected->rows[y] |= mask;
+            for (y = top; y < bottom; y++)
+                expected->rows[y] |= g_screenViewportPlanar && y >= 40 ?
+                                     mask & 0xFFFF8000UL : mask;
             if (op == 0) GFX_Screen_SetDirty_(left, top, right, bottom);
             else GFX_Screen_SetDirtyViewport(left, top, right, bottom);
         } else if (op < 4) {
@@ -185,9 +294,19 @@ static void sequences(void) {
         } else if (op == 5) {
             memset(expectedNormal.rows, 0, sizeof(expectedNormal.rows));
             GFX_Screen_SetClean(SCREEN_0);
-        } else {
+        } else if (op == 6) {
             memset(expectedViewport.rows, 0, sizeof(expectedViewport.rows));
             GFX_Screen_SetCleanViewport();
+        } else if (op == 7) {
+            if (!g_screenViewportPlanar) {
+                for (y = 40; y < SCREEN_HEIGHT; y++) {
+                    expectedNormal.rows[y] &= 0xFFFF8000UL;
+                    expectedViewport.rows[y] &= 0xFFFF8000UL;
+                }
+                GUI_SetViewportPlanar(true);
+            }
+        } else {
+            GUI_SetViewportPlanar(false);
         }
         assert(!memcmp(&normal, &expectedNormal, sizeof(normal)));
         assert(!memcmp(&viewport, &expectedViewport, sizeof(viewport)));
@@ -230,7 +349,9 @@ int main(void) {
     }
     compare();
     transitions();
+    native_scope();
     sequences();
+    reset();
 #ifdef TOS
     {
         void (*volatile clearNormal)(uint16, uint16, uint16, uint16) = GFX_Screen_ClearDirtyRect;
@@ -284,9 +405,10 @@ int main(void) {
             binary = Path(directory) / "test"
             test.write_text(harness)
             compiler = shlex.split(os.environ.get("CC", "cc"))
-            subprocess.run([*compiler, "-std=c99", "-O2", "-Wall", "-Wextra", "-Werror",
-                            str(test), "-o", str(binary)], check=True)
-            subprocess.run([str(binary)], check=True)
+            for flags in ([], ["-DGFX_DIRTY_SOURCE_STATS"]):
+                subprocess.run([*compiler, "-std=c99", "-O2", "-Wall", "-Wextra", "-Werror",
+                                *flags, str(test), "-o", str(binary)], check=True)
+                subprocess.run([str(binary)], check=True)
 
 
 if __name__ == "__main__":

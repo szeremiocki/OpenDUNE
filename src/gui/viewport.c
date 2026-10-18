@@ -693,14 +693,16 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 	uint16 i;
 	uint16 curPos;
 	bool updateDisplay;
+	bool trackCopyDamage = true;
 	Screen oldScreenID;
 	uint16 oldWidgetID;
-	int16 minX[10];
-	int16 maxX[10];
+	static int16 minX[10];
+	static int16 maxX[10];
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
-	uint16 dirtyColumns[10] = {0};
+	static uint16 dirtyColumns[10];
 	bool directViewport = Video_Atari_CursorDirect();
-	bool planarViewport = !drawToMainScreen && !g_viewport_fadein && GUI_Widget_Viewport_CanDrawPlanar();
+	bool planarViewport = !drawToMainScreen && GUI_Widget_Viewport_CanDrawPlanar();
+	trackCopyDamage = !planarViewport;
 	if (planarViewport != s_viewportWasPlanar || (planarViewport && hasScrolled && !planarShifted)) {
 		forceRedraw = true;
 		g_selectionRectangleNeedRepaint = true;
@@ -711,8 +713,13 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 
 	updateDisplay = forceRedraw;
 
-	memset(minX, 0xF, sizeof(minX));
-	memset(maxX, 0,   sizeof(minX));
+	if (trackCopyDamage) {
+		memset(minX, 0xF, sizeof(minX));
+		memset(maxX, 0, sizeof(maxX));
+#ifdef GFX_STORE_DIRTY_AREA_BLOCKS
+		memset(dirtyColumns, 0, sizeof(dirtyColumns));
+#endif
+	}
 
 #ifdef TOS
 	oldScreenID = GFX_Screen_SetActive(planarViewport ? SCREEN_0 : SCREEN_1);
@@ -742,11 +749,13 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 
 				viewportDirty = x < 15 && !forceRedraw && BitArray_Test(g_dirtyViewport, curPos);
 				if (viewportDirty) {
-					if (maxX[y] < x) maxX[y] = x;
-					if (minX[y] > x) minX[y] = x;
+					if (trackCopyDamage) {
+						if (maxX[y] < x) maxX[y] = x;
+						if (minX[y] > x) minX[y] = x;
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
-					dirtyColumns[y] |= 1u << x;
+						dirtyColumns[y] |= 1u << x;
 #endif
+					}
 					updateDisplay = true;
 				}
 
@@ -766,11 +775,13 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 
 				if (x < 15) {
 					updateDisplay = true;
-					if (maxX[y] < x) maxX[y] = x;
-					if (minX[y] > x) minX[y] = x;
+					if (trackCopyDamage) {
+						if (maxX[y] < x) maxX[y] = x;
+						if (minX[y] > x) minX[y] = x;
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
-					dirtyColumns[y] |= 1u << x;
+						dirtyColumns[y] |= 1u << x;
 #endif
+					}
 				}
 
 #ifdef TOS
@@ -1299,21 +1310,21 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 		}
 	}
 
-	if ((g_viewportMessageCounter & 1) != 0 && g_viewportMessageText != NULL && (minX[6] <= 14 || maxX[6] >= 0 || hasScrolled || forceRedraw)) {
+	if ((g_viewportMessageCounter & 1) != 0 && g_viewportMessageText != NULL) {
 		GUI_DrawText_Wrapper(g_viewportMessageText, 112, 139, 15, 0, 0x132);
-		minX[6] = -1;
-		maxX[6] = 14;
+		if (trackCopyDamage) {
+			minX[6] = -1;
+			maxX[6] = 14;
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
-		dirtyColumns[6] = 0x7fff;
+			dirtyColumns[6] = 0x7fff;
 #endif
+		}
 	}
 
-	if (updateDisplay && !drawToMainScreen
-#ifdef TOS
-	    && !planarViewport
-#endif
-	   ) {
-		if (g_viewport_fadein) {
+	if (updateDisplay && !drawToMainScreen && trackCopyDamage) {
+		if (g_viewport_fadein && Config_ViewportFadeEnabled()) {
+			/* ST/STE dissolves require native planar viewport drawing
+			 * with a selectable destination screen before re-enabling. */
 			GUI_Mouse_Hide_InWidget(g_curWidgetIndex);
 
 			/* ENHANCEMENT -- When fading in the game on start, you don't see the fade as it is against the already drawn screen. */
@@ -1395,9 +1406,6 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 	}
 
 #ifdef TOS
-	if (planarViewport) {
-		GFX_Screen_ClearDirtyBattlefield();
-	}
 	GUI_SetViewportPlanar(false);
 	s_viewportWasPlanar = planarViewport;
 #endif

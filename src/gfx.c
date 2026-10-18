@@ -375,6 +375,7 @@ static bool s_screen1_is_dirty = false;
 static bool s_screen1_battlefield_dirty = false;
 static struct dirty_area s_screen1_dirty_area = { 0, 0, 0, 0 };
 uint32 g_dirty_blocks_viewport[200];
+bool g_screenViewportPlanar = false;
 #endif
 #endif
 
@@ -510,15 +511,32 @@ static bool GFX_Screen_DirtyIntersectsBattlefield(uint32 mask, uint16 top, uint1
 {
 	return (mask & 0x7FFFUL) != 0 && top < SCREEN_HEIGHT && bottom > 40 && top < bottom;
 }
+
+static void GFX_Screen_SetDirtyBlocks(uint32 *blocks, uint32 mask, uint16 top, uint16 bottom)
+{
+	uint16 y;
+
+	if (g_screenViewportPlanar) {
+		uint16 topBottom = bottom < 40 ? bottom : 40;
+		for (y = top; y < topBottom; y++) blocks[y] |= mask;
+		mask &= 0xFFFF8000UL;
+		if (top < 40) top = 40;
+	}
+	if (mask != 0) {
+		for (y = top; y < bottom; y++) blocks[y] |= mask;
+	}
+}
 #endif
 
 void GFX_Screen_SetDirty_(uint16 left, uint16 top, uint16 right, uint16 bottom)
 {
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
 	uint32 mask;
-	uint16 y;
 #endif
 	if (s_dirtySuppress) return;
+#ifdef GFX_STORE_DIRTY_AREA_BLOCKS
+	if (GFX_Screen_IsNativeViewportRect(left, top, right, bottom)) return;
+#endif
 	/* The SCREEN_ACTIVE resolution and the SCREEN_0 test are done by the
 	 * GFX_Screen_SetDirty() macro in gfx.h, so callers that target another
 	 * screen never reach here and the screen ID need not be passed. */
@@ -530,11 +548,18 @@ void GFX_Screen_SetDirty_(uint16 left, uint16 top, uint16 right, uint16 bottom)
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
 	mask = (1 << ((right + 15) >> 4)) - 1;
 	mask -= (1 << (left >> 4)) - 1;
-	if (GFX_Screen_DirtyIntersectsBattlefield(mask, top, bottom)) s_screen0_battlefield_dirty = true;
+	if (!g_screenViewportPlanar && GFX_Screen_DirtyIntersectsBattlefield(mask, top, bottom)) s_screen0_battlefield_dirty = true;
 #ifdef GFX_DIRTY_SOURCE_STATS
 	{
 		int src = s_dirtySource;
 		uint32 px = (uint32)(right - left) * (bottom - top);
+		uint16 y;
+
+		if (g_screenViewportPlanar && left < 240 && bottom > 40 && top < bottom) {
+			uint16 nativeRight = right < 240 ? right : 240;
+			uint16 nativeTop = top > 40 ? top : 40;
+			px -= (uint32)(nativeRight - left) * (bottom - nativeTop);
+		}
 
 		s_dirtyCalls[src]++;
 		s_dirtyPx[src] += px;
@@ -543,11 +568,12 @@ void GFX_Screen_SetDirty_(uint16 left, uint16 top, uint16 right, uint16 bottom)
 		 * planar-direct blit would need no read-modify-write. */
 		if ((left & 15) == 0 && (right & 15) == 0) s_dirtyAlignedPx[src] += px;
 		for (y = top; y < bottom; y++) {
-			s_dirtyNewBlocks[src] += __builtin_popcount(mask & ~g_dirty_blocks[y]);
+			uint32 rowMask = g_screenViewportPlanar && y >= 40 ? mask & 0xFFFF8000UL : mask;
+			s_dirtyNewBlocks[src] += __builtin_popcount(rowMask & ~g_dirty_blocks[y]);
 		}
 	}
 #endif
-	for (y = top; y < bottom; y++) g_dirty_blocks[y] |= mask;
+	GFX_Screen_SetDirtyBlocks(g_dirty_blocks, mask, top, bottom);
 #endif
 }
 
@@ -583,7 +609,8 @@ void GFX_Screen_SetClean(Screen screenID)
 void GFX_Screen_SetDirtyViewport(uint16 left, uint16 top, uint16 right, uint16 bottom)
 {
 	uint32 mask;
-	uint16 y;
+
+	if (GFX_Screen_IsNativeViewportRect(left, top, right, bottom)) return;
 
 	s_screen1_is_dirty = true;
 	if (left < s_screen1_dirty_area.left) s_screen1_dirty_area.left = left;
@@ -593,8 +620,8 @@ void GFX_Screen_SetDirtyViewport(uint16 left, uint16 top, uint16 right, uint16 b
 
 	mask = (1 << ((right + 15) >> 4)) - 1;
 	mask -= (1 << (left >> 4)) - 1;
-	if (GFX_Screen_DirtyIntersectsBattlefield(mask, top, bottom)) s_screen1_battlefield_dirty = true;
-	for (y = top; y < bottom; y++) g_dirty_blocks_viewport[y] |= mask;
+	if (!g_screenViewportPlanar && GFX_Screen_DirtyIntersectsBattlefield(mask, top, bottom)) s_screen1_battlefield_dirty = true;
+	GFX_Screen_SetDirtyBlocks(g_dirty_blocks_viewport, mask, top, bottom);
 }
 
 bool GFX_Screen_IsDirtyViewport(void)
@@ -645,6 +672,14 @@ void GFX_Screen_ClearDirtyBattlefield(void)
 		s_screen1_battlefield_dirty = false;
 	}
 }
+
+void GFX_Screen_SetViewportPlanar(bool active)
+{
+	assert(!active || !g_screenViewportPlanar);
+	/* Retire stale chunky publication before native publishers skip clears. */
+	if (active) GFX_Screen_ClearDirtyBattlefield();
+	g_screenViewportPlanar = active;
+}
 #endif
 
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
@@ -661,7 +696,7 @@ void GFX_Screen_ClearDirtyBattlefield(void)
  * walks the box but skips scanlines whose block mask came out empty, so a
  * stale box costs a cheap test per line and no conversion work.
  */
-void GFX_Screen_ClearDirtyRect(uint16 left, uint16 top, uint16 right, uint16 bottom)
+void GFX_Screen_ClearDirtyRect_(uint16 left, uint16 top, uint16 right, uint16 bottom)
 {
 	uint32 mask;
 	uint16 y;

@@ -62,6 +62,7 @@ static uint8_t pixels[46];
 static unsigned draws[46], fullPasses, panels, timerCalls, borders;
 static unsigned interfaces, textClears, unitUpdates, mapSelections, spriteChanges;
 static unsigned placementHides;
+static bool Config_ViewportFadeEnabled(void) { return true; }
 static Screen GFX_Screen_SetActive(Screen screen) {
     Screen old = active;
     active = screen;

@@ -106,7 +106,24 @@ extern Screen g_screenActiveID;
 	} while (0)
 extern void GFX_Screen_SetClean(Screen screenID);
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
-extern void GFX_Screen_ClearDirtyRect(uint16 left, uint16 top, uint16 right, uint16 bottom);
+/* Exposed so native publishers can discard redundant clear calls inline. */
+extern bool g_screenViewportPlanar;
+extern void GFX_Screen_SetViewportPlanar(bool active);
+
+static inline bool GFX_Screen_IsNativeViewportRect(uint16 left, uint16 top, uint16 right, uint16 bottom)
+{
+	return g_screenViewportPlanar && left < right && top < bottom &&
+	       right <= 240 && top >= 40 && bottom <= SCREEN_HEIGHT;
+}
+
+extern void GFX_Screen_ClearDirtyRect_(uint16 left, uint16 top, uint16 right, uint16 bottom);
+
+static inline void GFX_Screen_ClearDirtyRect(uint16 left, uint16 top, uint16 right, uint16 bottom)
+{
+	if (!GFX_Screen_IsNativeViewportRect(left, top, right, bottom)) {
+		GFX_Screen_ClearDirtyRect_(left, top, right, bottom);
+	}
+}
 #else
 #define GFX_Screen_ClearDirtyRect(left, top, right, bottom)
 #endif
@@ -115,13 +132,10 @@ extern struct dirty_area * GFX_Screen_GetDirtyArea(Screen screenID);
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
 extern uint32 g_dirty_blocks[200];
 
-/* Separate dirty tracking for the viewport rectangle's SCREEN_1 source (see
- * the ST/STE dirty-mark-only branch in GUI_Widget_Viewport_Draw()). Kept
- * entirely apart from the SCREEN_0 tracking above -- and only ever fed by
- * that one call site -- so Video_Tick() can run its normal per-band/per-run
- * c2p sweep unchanged over each set independently, one sourcing SCREEN_0 as
- * before and the other sourcing SCREEN_1, with no per-run source-splitting
- * needed. */
+/* Explicit publication from final SCREEN_1 pixels: chunky viewport fallback
+ * and minimap updates. Ordinary off-screen SCREEN_1 composition is not tracked.
+ * Native viewport composition excludes only its battlefield groups; the
+ * sidebar/minimap still uses this independent c2p source. */
 extern uint32 g_dirty_blocks_viewport[200];
 extern void GFX_Screen_SetDirtyViewport(uint16 left, uint16 top, uint16 right, uint16 bottom);
 extern bool GFX_Screen_IsDirtyViewport(void);
