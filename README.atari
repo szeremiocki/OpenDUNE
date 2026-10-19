@@ -166,6 +166,13 @@ unchanged. Animation commands still run with their original timing and random
 pauses, preserving shared RNG consumption; flag-only frames do not dirty tiles.
 This engine-level setting works on every platform. Invalid values warn and use 1.
 
+Direction calculation retains the original sub-tile coordinates and angular
+thresholds, but classifies slopes with a five/six-comparison multiplication
+tree instead of software division and a linear threshold scan. Unsigned
+16-bit operands use native 68000 MULU instructions. Axis/identical-position
+results, large-displacement halving and quadrant handling remain unchanged;
+no FPU is required.
+
 Based on a typical scene on level 1 :
 
 - 68000 build on ST/STE is 6-15fps (busy-quiet), Mega STE is 18fps
@@ -207,6 +214,15 @@ House-colored tiles have six cached variants; unaffected tiles share one
 image. The gameplay IBM palette and quantization are fixed, so hardware
 fades/dimming need no tile-cache rebuild. Tile decoding uses private buffers
 and never writes to the visible screen as scratch.
+
+Non-forced native-planar viewport preparation processes the engine's dirty
+bitmaps as 15-column row masks. Pending background repairs propagate to
+foreground damage in bulk; only viewport-dirty tiles without pending
+background repair are inspected for fully fogged/veiled neighbours that
+must be restored. Clean rows skip tile inspection, and fully terrain-dirty
+rows need none either. Forced redraw and chunky fallback retain the original
+tile traversal. Repair-on-first-touch still consumes the same pending bits;
+sprite filtering retains a snapshot of that damage before repairs begin.
 
 Ordinary battlefield sprites are decoded into small private buffers and
 converted with explicit silhouette masks; no final background c2p sweep is

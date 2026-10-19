@@ -15,6 +15,130 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ViewportPhaseReversalTest(unittest.TestCase):
+    def test_row_preparation_matches_tile_scan(self):
+        viewport = (ROOT / "src/gui/viewport.c").read_text()
+        production = "\n".join(function(viewport, name) for name in (
+            "GUI_Widget_Viewport_ReadRow", "GUI_Widget_Viewport_OrRow",
+            "GUI_Widget_Viewport_PrepareRows"))
+        harness = r"""
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
+typedef uint8_t uint8;
+typedef uint16_t uint16;
+typedef uint32_t uint32;
+typedef struct { uint16 overlayTileID; } Tile;
+static Tile g_map[4096];
+static uint8 g_dirtyViewport[512], g_dirtyMinimap[512];
+static uint16 g_viewportPosition, g_veiledTileID = 98;
+static bool g_debugScenario;
+/* PRODUCTION */
+static uint32 randomState = 123;
+static uint32 next(void) {
+    randomState ^= randomState << 13;
+    randomState ^= randomState >> 17;
+    randomState ^= randomState << 5;
+    return randomState;
+}
+static bool test(const uint8 *bits, unsigned packed) {
+    return (bits[packed >> 3] & (1u << (packed & 7))) != 0;
+}
+static void set(uint8 *bits, unsigned packed, bool value) {
+    if (value) bits[packed >> 3] |= 1u << (packed & 7);
+    else bits[packed >> 3] &= ~(1u << (packed & 7));
+}
+static bool reference(uint8 *viewport, uint8 *terrain) {
+    bool updated = false;
+    for (unsigned y = 0; y < 10; y++) {
+        for (unsigned x = 0; x < 15; x++) {
+            unsigned packed = g_viewportPosition + y * 64 + x;
+            bool v = test(viewport, packed), t = test(terrain, packed);
+            uint16 overlay = g_map[packed].overlayTileID;
+            if (v) updated = true;
+            if (!t && (!v || g_debugScenario ||
+                (overlay != g_veiledTileID && overlay != 99))) continue;
+            set(viewport, packed, true);
+            set(terrain, packed, true);
+            updated = true;
+        }
+    }
+    return updated;
+}
+int main(void) {
+    /* Exhaust both row operations at every bitmap alignment, preserving neighbours. */
+    for (unsigned shift = 0; shift < 8; shift++) {
+        for (unsigned columns = 0; columns <= 0x7fff; columns++) {
+            uint8 bits[3] = {0xa5, 0x5a, 0xc3};
+            uint32 original = bits[0] | ((uint32)bits[1] << 8) | ((uint32)bits[2] << 16);
+            uint16 expected = (original >> shift) & 0x7fff;
+            assert(GUI_Widget_Viewport_ReadRow(bits, shift) == expected);
+            GUI_Widget_Viewport_OrRow(bits, shift, columns);
+            uint32 result = bits[0] | ((uint32)bits[1] << 8) | ((uint32)bits[2] << 16);
+            assert(result == (original | ((uint32)columns << shift)));
+            assert(GUI_Widget_Viewport_ReadRow(bits, shift) == (expected | columns));
+        }
+    }
+    /* Includes all alignments, final map row, outside-viewport sentinels,
+     * quiet/dense/sparse rows, both fog kinds, partial fog and debug mode. */
+    for (unsigned origin = 0; origin <= 49; origin++)
+        for (unsigned top = 0; top <= 54; top += 27)
+            for (unsigned debug = 0; debug < 2; debug++)
+                for (unsigned pattern = 0; pattern < 10; pattern++) {
+                    uint8 expectedViewport[512], expectedTerrain[512];
+                    static const uint16 overlays[] = {0, 97, 98, 99, 100};
+                    for (unsigned i = 0; i < 512; i++) {
+                        g_dirtyViewport[i] = next();
+                        g_dirtyMinimap[i] = next();
+                    }
+                    for (unsigned i = 0; i < 4096; i++)
+                        g_map[i].overlayTileID = overlays[next() % 5];
+                    g_viewportPosition = top * 64 + origin;
+                    g_debugScenario = debug != 0;
+                    for (unsigned y = 0; y < 10; y++) {
+                        for (unsigned x = 0; x < 15; x++) {
+                            unsigned packed = g_viewportPosition + y * 64 + x;
+                            bool v, t;
+                            if (pattern < 4) {
+                                v = (pattern & 1) != 0;
+                                t = (pattern & 2) != 0;
+                            } else if (pattern == 4) {
+                                v = (x & 1) != 0; t = !v;
+                            } else if (pattern == 5) {
+                                v = x == 0; t = x == 14;
+                            } else if (pattern == 6) {
+                                v = x == 14; t = x == 0;
+                            } else if (pattern == 7) {
+                                v = y == 9; t = y == 0;
+                            } else {
+                                v = (next() & 7) == 0;
+                                t = (next() & 7) == 0;
+                            }
+                            set(g_dirtyViewport, packed, v);
+                            set(g_dirtyMinimap, packed, t);
+                        }
+                    }
+                    memcpy(expectedViewport, g_dirtyViewport, 512);
+                    memcpy(expectedTerrain, g_dirtyMinimap, 512);
+                    bool expected = reference(expectedViewport, expectedTerrain);
+                    assert(GUI_Widget_Viewport_PrepareRows(99) == expected);
+                    assert(memcmp(g_dirtyViewport, expectedViewport, 512) == 0);
+                    assert(memcmp(g_dirtyMinimap, expectedTerrain, 512) == 0);
+                }
+    return 0;
+}
+"""
+        harness = harness.replace("/* PRODUCTION */", production)
+        with tempfile.TemporaryDirectory(prefix="viewport-row-preparation-") as directory:
+            source = Path(directory) / "test.c"
+            binary = Path(directory) / "test"
+            source.write_text(harness)
+            compiler = shlex.split(os.environ.get("CC", "cc"))
+            flags = shlex.split(os.environ.get("TEST_CFLAGS", ""))
+            subprocess.run([*compiler, "-std=c99", "-O2", "-Wall", "-Wextra",
+                            "-Werror", *flags, str(source), "-o", str(binary)], check=True)
+            subprocess.run([str(binary)], check=True)
+
     def test_copy_bookkeeping_and_messages(self):
         viewport = function(
             (ROOT / "src/gui/viewport.c").read_text(), "GUI_Widget_Viewport_Draw")
@@ -421,6 +545,11 @@ int main(void) {
     reset();
     g_debugScenario = false;
     g_map[0].overlayTileID = 98;
+    BitArray_Set(g_dirtyViewport, 0);
+    g_dirtyViewportCount = 0;
+    assert(!scan(true, false));
+    assert(!BitArray_Test(g_dirtyMinimap, 0));
+    assert(BitArray_Test(g_dirtyViewport, 0));
     assert(scan(true, true));
     GUI_Widget_Viewport_RepairTiles(0, 40, 240, 200);
     assert(fogDraws == 1 && groundDraws == 149 && !filledDraws);
@@ -459,7 +588,10 @@ int main(void) {
 }
 """
         harness = harness.replace("/* TERRAIN */", terrain)
-        harness = harness.replace("/* REPAIR */", function(viewport, "GUI_Widget_Viewport_RepairTiles"))
+        harness = harness.replace("/* REPAIR */", "\n".join(
+            function(viewport, name) for name in (
+                "GUI_Widget_Viewport_ReadRow", "GUI_Widget_Viewport_OrRow",
+                "GUI_Widget_Viewport_PrepareRows", "GUI_Widget_Viewport_RepairTiles")))
         with tempfile.TemporaryDirectory(prefix="viewport-fog-damage-") as directory:
             source = Path(directory) / "test.c"
             binary = Path(directory) / "test"
@@ -756,7 +888,8 @@ int main(void) {
 }
 """
         harness = harness.replace(
-            "/* REPAIR */", function(viewport, "GUI_Widget_Viewport_RepairTiles"))
+            "/* REPAIR */", "\n".join(function(viewport, name) for name in (
+                "GUI_Widget_Viewport_ReadRow", "GUI_Widget_Viewport_RepairTiles")))
         with tempfile.TemporaryDirectory(prefix="viewport-phase-reversal-") as directory:
             source = Path(directory) / "test.c"
             binary = Path(directory) / "test"

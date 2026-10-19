@@ -17,6 +17,7 @@ class ViewportSpriteDamageTest(unittest.TestCase):
     def test_damage_snapshot_and_foreground_dependencies(self):
         viewport = (ROOT / "src/gui/viewport.c").read_text()
         production = "\n".join(function(viewport, name) for name in (
+            "GUI_Widget_Viewport_ReadRow",
             "GUI_Widget_Viewport_BeginSpriteDamage",
             "GUI_Widget_Viewport_SpriteDamageRect",
             "GUI_Widget_Viewport_ShouldDrawSprite",

@@ -342,7 +342,7 @@ tile32 Tile_MoveByRandom(tile32 tile, uint16 distance, bool center)
 int8 Tile_GetDirection(tile32 from, tile32 to)
 {
 	static const uint16 orientationOffsets[] = {0x40, 0x80, 0x0, 0xC0};
-	static const int32 directions[] = {
+	static const uint16 directions[] = {
 			0x3FFF, 0x28BC, 0x145A, 0xD8E,  0xA27, 0x81B, 0x6BD, 0x5C3,  0x506, 0x474, 0x3FE, 0x39D,  0x34B, 0x306, 0x2CB, 0x297,
 			0x26A,  0x241,  0x21D,  0x1FC,  0x1DE, 0x1C3, 0x1AB, 0x194,  0x17F, 0x16B, 0x159, 0x148,  0x137, 0x128, 0x11A, 0x10C
 	};
@@ -350,7 +350,6 @@ int8 Tile_GetDirection(tile32 from, tile32 to)
 	int32 dx;
 	int32 dy;
 	uint16 i;
-	int32 gradient;
 	uint16 baseOrientation;
 	bool invert;
 	uint16 quadrant = 0;
@@ -374,25 +373,21 @@ int8 Tile_GetDirection(tile32 from, tile32 to)
 	}
 
 	baseOrientation = orientationOffsets[quadrant];
-	invert = false;
-	gradient = 0x7FFF;
+	invert = dx < dy;
+	const uint16 minor = invert ? dx : dy;
+	const uint32 scaledMajor = (uint32)(invert ? dy : dx) << 8;
 
-	if (dx >= dy) {
-		if (dy != 0) gradient = (dx << 8) / dy;
-	} else {
-		invert = true;
-		if (dx != 0) gradient = (dy << 8) / dx;
+	i = 0;
+	if (minor != 0) {
+		/* floor(scaledMajor / minor) >= threshold iff scaledMajor >= minor * threshold. */
+		if (scaledMajor < (uint32)minor * directions[15]) i = 16;
+		if (scaledMajor < (uint32)minor * directions[i + 7]) i += 8;
+		if (scaledMajor < (uint32)minor * directions[i + 3]) i += 4;
+		if (scaledMajor < (uint32)minor * directions[i + 1]) i += 2;
+		if (scaledMajor < (uint32)minor * directions[i]) i++;
+		/* The final two of the 33 possible results need one more comparison. */
+		if (i == 31 && scaledMajor < (uint32)minor * directions[31]) i++;
 	}
-
-	/* A 16-bit countdown lets 68000 GCC emit DBRA. */
-	const int32 *p = directions;
-	int16 remaining = lengthof(directions) - 1;
-
-	do {
-		if (*p++ <= gradient) break;
-	} while (--remaining >= 0);
-
-	i = lengthof(directions) - 1 - remaining;
 
 	if (!invert) i = 64 - i;
 
