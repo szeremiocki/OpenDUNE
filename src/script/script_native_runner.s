@@ -1,4 +1,4 @@
-; Plain 68000 native EMC runner. Compiled entries advance the original PC.
+; Plain 68000 native EMC runner. A6 is authoritative between C boundaries.
 ; D2 = budget, D3 = stop-on-delay, D6 = DATA bytes, D7 = native step;
 ; A2 = engine, A3 = info, A4 = code base, A5 = code end, A6 = cursor.
 	xdef	_Script_RunNative
@@ -12,6 +12,27 @@
 
 	text
 
+PUBLISH_PC macro
+	move.l	a6,d0
+	sub.l	a4,d0
+	lsr.l	#3,d0
+	add.l	4(a3),d0
+	move.l	d0,2(a2)
+	endm
+
+PUBLISH_NEXT_PC macro
+	; Never resurrect a script unloaded by an earlier stack error.
+	tst.l	2(a2)
+	beq	.done\@
+	move.l	a6,d0
+	add.l	d7,d0
+	sub.l	a4,d0
+	lsr.l	#3,d0
+	add.l	4(a3),d0
+	move.l	d0,2(a2)
+.done\@:
+	endm
+
 PUSH macro
 	moveq	#0,d0
 	move.b	13(a2),d0
@@ -22,6 +43,7 @@ PUSH macro
 	move.w	\1,24(a2,d0.w)
 	bra	.end\@
 .bad\@:
+	PUBLISH_NEXT_PC
 	move.l	d1,-(sp)
 	moveq	#0,d0
 	move.w	\1,d0
@@ -43,6 +65,7 @@ POP macro
 	move.w	24(a2,d0.w),\1
 	bra	.end\@
 .bad\@:
+	PUBLISH_NEXT_PC
 	move.l	d1,-(sp)
 	move.l	a2,-(sp)
 	jsr	_Script_NativePop
@@ -57,6 +80,7 @@ PEEK macro
 	bcc	.bad\@
 	bra	.end\@
 .bad\@:
+	PUBLISH_NEXT_PC
 	move.l	#\1,-(sp)
 	move.l	a2,-(sp)
 	jsr	_Script_NativePeek
@@ -80,33 +104,26 @@ _Script_NativeNext:
 	subq.w	#1,d2
 NativeCheck:
 	tst.w	d2
-	beq	NativeSuccess
+	beq	NativeCursorSuccess
 	tst.b	d3
 	beq	NativeCursorFetch
 	tst.w	(a2)
-	bne	NativeSuccess
+	bne	NativeCursorSuccess
 NativeCursorFetch:
 	tst.l	2(a2)
 	beq	NativeFailure
 	cmpa.l	a5,a6
-	bcc	NativeBounds
+	bcc	NativeCursorBounds
 	jmp	(a6)
 
 NativeNextOneWord:
-	moveq	#16,d7
 	bra	_Script_NativeNext
 NativeNextTwoWords:
-	moveq	#32,d7
 	bra	_Script_NativeNext
 
-NativeResolveNext:
+NativeBranchNext:
 	subq.w	#1,d2
-	tst.w	d2
-	beq	NativeSuccess
-	tst.b	d3
-	beq	NativeFetch
-	tst.w	(a2)
-	bne	NativeSuccess
+	bra	NativeCheck
 NativeFetch:
 	move.l	2(a2),a0
 	cmpa.w	#0,a0
@@ -161,10 +178,17 @@ NativeFallback:
 NativeBounds:
 	moveq	#32,d0
 	moveq	#0,d1
-	bra	NativeInvalid
+	bra	NativeInvalidPublished
+NativeCursorBounds:
+	PUBLISH_PC
+	bra	NativeBounds
 NativeTruncated:
 	moveq	#33,d0
 	bra	NativeInvalid
+NativeCursorSuccess:
+	tst.l	2(a2)
+	beq	NativeSuccess
+	PUBLISH_PC
 NativeSuccess:
 	moveq	#1,d0
 	bra	NativeExit
@@ -175,6 +199,10 @@ NativeExit:
 	rts
 
 NativeInvalid:
+	move.l	d0,-(sp)
+	PUBLISH_NEXT_PC
+	move.l	(sp)+,d0
+NativeInvalidPublished:
 	and.l	#$ffff,d1
 	move.l	d1,-(sp)
 	move.l	d0,-(sp)
@@ -184,11 +212,8 @@ NativeInvalid:
 	bra	NativeExit
 
 NativeJump:
-	and.l	#$ffff,d1
-	add.l	d1,d1
-	add.l	4(a3),d1
-	move.l	d1,2(a2)
-	bra	NativeResolveNext
+	move.l	a0,a6
+	bra	NativeBranchNext
 NativeSetReturn:
 	move.w	d1,10(a2)
 	bra	_Script_NativeNext
@@ -197,9 +222,10 @@ NativePushReturn:
 	beq	.pushReturn
 	cmp.w	#1,d1
 	bne	.invalid
-	move.l	2(a2),d4
-	sub.l	4(a3),d4
-	lsr.l	#1,d4
+	move.l	a6,d4
+	add.l	d7,d4
+	sub.l	a4,d4
+	lsr.l	#4,d4
 	addq.l	#1,d4
 	PUSH	d4
 	moveq	#0,d4
@@ -259,6 +285,7 @@ NativePushParameter:
 	bra	_Script_NativeNext
 NativeStackBounds:
 	; Use the existing peek diagnostic without changing the stack pointer.
+	PUBLISH_NEXT_PC
 	move.l	#16,-(sp)
 	move.l	a2,-(sp)
 	jsr	_Script_NativePeek
@@ -274,10 +301,9 @@ NativePopReturn:
 	move.b	d4,12(a2)
 	POP	d4
 	and.l	#$ffff,d4
-	add.l	d4,d4
-	add.l	4(a3),d4
-	move.l	d4,2(a2)
-	bra	NativeResolveNext
+	lsl.l	#4,d4
+	lea	(a4,d4.l),a6
+	bra	NativeBranchNext
 .popReturn:
 	POP	d4
 	move.w	d4,10(a2)
@@ -310,30 +336,36 @@ NativeStackRewind:
 NativeStackForward:
 	sub.b	d1,13(a2)
 	bra	_Script_NativeNext
-NativeFunction:
+CALL_FUNCTION macro
+	PUBLISH_NEXT_PC
 	and.l	#$ff,d1
 	cmp.w	#64,d1
-	bcc	.invalid
+	bcc	.invalid\@
 	move.l	d1,d4
 	lsl.l	#2,d4
 	move.l	16(a3),a1
 	move.l	(a1,d4.l),a1
 	cmpa.w	#0,a1
-	beq	.invalid
+	beq	.invalid\@
 	move.l	a2,-(sp)
 	jsr	(a1)
 	addq.l	#4,sp
 	move.w	d0,10(a2)
-	bra	NativeReenter
-.invalid:
+	bra	\1
+.invalid\@:
 	moveq	#14,d0
 	bra	NativeInvalid
+	endm
+
+NativeFunction:
+	CALL_FUNCTION	NativeReenter
+NativeFunctionFast:
+	CALL_FUNCTION	_Script_NativeNext
 NativeJumpNE:
 	PEEK	1
 	POP	d4
 	tst.w	d4
 	bne	_Script_NativeNext
-	and.w	#$7fff,d1
 	bra	NativeJump
 NativeReturn:
 	PEEK	2
@@ -341,11 +373,10 @@ NativeReturn:
 	move.w	d4,10(a2)
 	POP	d4
 	and.l	#$ffff,d4
-	add.l	d4,d4
-	add.l	4(a3),d4
-	move.l	d4,2(a2)
+	lsl.l	#4,d4
+	lea	(a4,d4.l),a6
 	clr.b	54(a2)
-	bra	NativeResolveNext
+	bra	NativeBranchNext
 
 UNARY macro
 	POP	d4
@@ -456,6 +487,96 @@ NativeBinaryInvalid:
 	moveq	#17,d0
 	bra	NativeInvalid
 
+NativeFuseRewindReturn:
+	cmp.w	#2,d2
+	bcs	NativeStackRewind
+	moveq	#0,d0
+	move.b	13(a2),d0
+	cmp.b	#15,d0
+	bcc	NativeStackRewind
+	add.w	d0,d0
+	move.w	10(a2),24(a2,d0.w)
+	bra	NativeFusedNext
+
+NativeFuseReturnImmediate:
+	cmp.w	#2,d2
+	bcs	NativePushReturn
+	moveq	#0,d0
+	move.b	13(a2),d0
+	cmp.b	#2,d0
+	bcs	NativePushReturn
+	cmp.b	#15,d0
+	bhi	NativePushReturn
+	subq.b	#2,13(a2)
+	subq.w	#1,d0
+	add.w	d0,d0
+	move.w	10(a2),24(a2,d0.w)
+	lea	(a6,d7.w),a0
+	move.w	4(a0),22(a2,d0.w)
+	bra	NativeFusedNext
+
+NativeFuseReturnJump:
+	cmp.w	#2,d2
+	bcs	NativePushReturn
+	moveq	#0,d0
+	move.b	13(a2),d0
+	beq	NativePushReturn
+	cmp.b	#15,d0
+	bhi	NativePushReturn
+	subq.w	#1,d0
+	add.w	d0,d0
+	move.w	10(a2),d4
+	move.w	d4,24(a2,d0.w)
+	tst.w	d4
+	beq	NativeFusedJump
+	bra	NativeFusedNext
+
+FUSED_COMPARISON macro
+	cmp.w	#2,d2
+	bcs	\2
+	moveq	#0,d0
+	move.b	13(a2),d0
+	cmp.b	#13,d0
+	bhi	\2
+	addq.b	#2,13(a2)
+	add.w	d0,d0
+	move.w	24(a2,d0.w),d5
+	move.w	26(a2,d0.w),d4
+	cmp.w	d5,d4
+	\1	d4
+	and.w	#1,d4
+	; The comparison's push remains visible in the persistent VM stack.
+	move.w	d4,26(a2,d0.w)
+	tst.w	d4
+	beq	NativeFusedJump
+	bra	NativeFusedNext
+	endm
+
+NativeFuseEqualJump:
+	FUSED_COMPARISON	seq,NativeEqual
+NativeFuseNotEqualJump:
+	FUSED_COMPARISON	sne,NativeNotEqual
+NativeFuseLessJump:
+	FUSED_COMPARISON	slt,NativeLess
+NativeFuseLessEqualJump:
+	FUSED_COMPARISON	sle,NativeLessEqual
+NativeFuseGreaterJump:
+	FUSED_COMPARISON	sgt,NativeGreater
+NativeFuseGreaterEqualJump:
+	FUSED_COMPARISON	sge,NativeGreaterEqual
+
+NativeFusedNext:
+	adda.w	d7,a6
+	moveq	#0,d7
+	move.b	1(a6),d7
+	subq.w	#1,d2
+	bra	_Script_NativeNext
+NativeFusedJump:
+	adda.w	d7,a6
+	move.l	4(a6),a6
+	subq.w	#1,d2
+	bra	NativeBranchNext
+
 	data
 	even
 _Script_NativeHandlers:
@@ -471,3 +592,7 @@ _Script_NativeHandlers:
 	dc.l	NativeModulo,NativeBitXor,NativeInvalid,NativeTruncated,NativeNextOneWord
 	dc.l	NativeBinaryInvalid
 	dc.l	NativeNextTwoWords
+	dc.l	NativeFunctionFast
+	dc.l	NativeFuseRewindReturn,NativeFuseReturnImmediate,NativeFuseReturnJump
+	dc.l	NativeFuseEqualJump,NativeFuseNotEqualJump,NativeFuseLessJump
+	dc.l	NativeFuseLessEqualJump,NativeFuseGreaterJump,NativeFuseGreaterEqualJump

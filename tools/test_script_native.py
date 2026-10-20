@@ -22,7 +22,8 @@ class ScriptNativeTest(unittest.TestCase):
         try:
             from unicorn import Uc, UC_ARCH_M68K, UC_MODE_BIG_ENDIAN, UC_HOOK_CODE
             from unicorn.m68k_const import (UC_CPU_M68K_M68000, UC_M68K_REG_PC,
-                                            UC_M68K_REG_A7, UC_M68K_REG_D0)
+                                            UC_M68K_REG_A7, UC_M68K_REG_D0,
+                                            UC_M68K_REG_A2)
         except ImportError:
             self.skipTest("Native execution requires the optional unicorn package")
         tools = ("m68k-atari-mint-gcc", "vasmm68k_mot", "m68k-atari-mint-nm")
@@ -91,7 +92,9 @@ extern void test_fail(unsigned line);
                     released = {}
                     heap = 0x200000
                     last_comparison = None
-                    path_counts = {case: [0, 0] for case in range(1, 9)}
+                    path_counts = {case: [0, 0] for case in range(1, 22)}
+                    fusion_counts = {case: 0 for case in range(13, 22)}
+                    fallthrough_pcs = []
 
                     def integer(address):
                         return struct.unpack(">I", cpu.mem_read(address, 4))[0]
@@ -142,14 +145,26 @@ extern void test_fail(unsigned line);
                         case = integer(addresses["_nativeCursorCase"])
                         if case:
                             path_counts[case][address == addresses["NativeFetch"]] += 1
+                        if case == 1 and address == addresses["NativeCursorFetch"]:
+                            engine = cpu.reg_read(UC_M68K_REG_A2)
+                            fallthrough_pcs.append(integer(engine + 2))
 
                     for name in ("NativeCursorFetch", "NativeFetch"):
                         cpu.hook_add(UC_HOOK_CODE, cursor_hook,
                                      begin=addresses[name], end=addresses[name])
+
+                    def fusion_hook(cpu, address, size, user_data):
+                        case = integer(addresses["_nativeCursorCase"])
+                        if case in fusion_counts:
+                            fusion_counts[case] += 1
+
+                    for name in ("NativeFusedNext", "NativeFusedJump"):
+                        cpu.hook_add(UC_HOOK_CODE, fusion_hook,
+                                     begin=addresses[name], end=addresses[name])
                     stop = 0x7f0000
                     cpu.reg_write(UC_M68K_REG_A7, 0x7ff000)
                     cpu.mem_write(0x7ff000, struct.pack(">I", stop))
-                    cpu.emu_start(addresses["_main"], stop, count=200_000_000)
+                    cpu.emu_start(addresses["_main"], stop, count=500_000_000)
                     pc = cpu.reg_read(UC_M68K_REG_PC)
                     owner = max((item for item in addresses.items()
                                  if item[1] <= pc and not item[0].startswith(".")),
@@ -160,15 +175,23 @@ extern void test_fail(unsigned line);
                                      f"bytecode={words}; last comparison={last_comparison}")
                     self.assertEqual(cpu.reg_read(UC_M68K_REG_D0), 0)
                     self.assertFalse(allocations, "Native code allocation leaked")
+                    self.assertEqual(fusion_counts, {case: 1 for case in range(13, 22)})
+                    self.assertEqual(fallthrough_pcs, [addresses["_words"]] * 16,
+                                     "Ordinary native opcodes must not publish bytecode PCs")
                     self.assertEqual(path_counts, {
                         1: [16, 1],  # Mixed one/two-word fall-through.
-                        2: [0, 5],   # Jump to the same original PC.
+                        2: [4, 1],   # Prelinked jump to the same original PC.
                         3: [0, 4],   # Callback rebind after every opcode.
-                        4: [2, 2],   # Operand word is also a jump destination.
-                        5: [1, 2],   # Taken conditional branch.
+                        4: [3, 1],   # Operand word is also a jump destination.
+                        5: [2, 1],   # Taken prelinked conditional branch.
                         6: [2, 1],   # Untaken conditional branch.
-                        7: [1, 2],   # Return through the VM stack.
-                        8: [1, 2],   # Restore frame and return location.
+                        7: [2, 1],   # Return through the VM stack.
+                        8: [2, 1],   # Restore frame and return location.
+                        9: [3, 1],   # Audited callbacks bypass rebinding.
+                        10: [2, 1],  # One/two-word audited callbacks.
+                        11: [0, 1],  # Audited delay yields before advancing.
+                        12: [1, 2],  # Stack-error unload, final/nonfinal budget.
+                        **{case: [1, 1] for case in range(13, 22)},  # All fused pairs.
                     })
 
 

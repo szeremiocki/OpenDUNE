@@ -60,8 +60,8 @@ mode after one Super(0L); it does not pass the game loop to Supexec.
 ST/STE script loading experimentally compiles EMC scripts to plain 68000
 code. Unit, structure and team scripts each share one compiled image.
 Every original DATA word has a sixteen-byte native entry, including words
-also used as operands. Entries advance the original bytecode PC and enter
-the corresponding native handler without opcode decoding or switch dispatch.
+also used as operands. Entries enter the corresponding native handler without
+opcode decoding or switch dispatch; they do not update the bytecode PC.
 Binary/unary operation selection is resolved during compilation; return-value
 stores and stack-pointer adjustments are emitted directly into entries.
 The original bytecode remains resident: DATA plus compiled storage is
@@ -71,14 +71,39 @@ Original PCs, saved-game offsets, VM stacks and callback interfaces remain
 unchanged. A shared native boundary enforces instruction budgets and delays;
 budget one provides single stepping, retaining Script_Run's existing ability
 to execute despite a nonzero delay. Ordinary fall-through advances a
-register-held native cursor by sixteen or thirty-two bytes instead of
-resolving the original PC again. Jumps, stack returns and callback reentry
-still resolve the original PC; operand words remain valid jump destinations.
+register-held native cursor by sixteen or thirty-two bytes. This cursor is
+authoritative until the advanced bytecode PC is published before C callbacks,
+opcode diagnostics and stack-error helpers, or on return to the scheduler.
+Constant jumps contain prelinked native destinations; stack returns convert
+their saved bytecode locations directly to native cursors. General callback
+reentry still resolves the callback's PC; operand words remain valid jump
+destinations. Taken jumps defer destination validation until another opcode
+may execute, including out-of-range destinations on the last budgeted opcode.
 Cursor bounds and unload checks occur only when the next opcode may execute,
 preserving final-budget-opcode and delay behavior. Entry size is unchanged.
-Metadata and compiled pointers are rebound after every native callback,
-including rewinds, replacement, unloading or recompilation. Replacement by
-an uncached script resumes the original interpreter with the remaining budget.
+Compilation selects a fast cursor return for audited callbacks by function
+identity, using the loader-installed immutable callback tables: Delay,
+DelayRandom, GetDistanceToTile, GetDistanceToObject, NoOperation, Unit_GetInfo,
+Unit_Rotate and Unit_FindStructure. Their callees must preserve the PC, script
+context and native-code lifetime, except for existing stack-error unloading.
+They retain the same budget, delay, unload and next-entry bounds checks.
+All other callbacks rebind metadata and compiled pointers, including rewinds,
+replacement, unloading or recompilation. Replacement by an uncached script
+resumes the original interpreter with the remaining budget. Changes to audited
+callbacks or their callees must preserve this contract or remove the fast return.
+C script argument peeks inline the checked stack read; invalid accesses retain
+the original helper's error reporting, script unloading and debug call-site data.
+
+Compilation also selects guarded two-opcode handlers for discard-one-argument
+followed by push-return-value, push-return-value followed by push-immediate
+(including PUSH2), the six signed/equality comparisons followed by jump-if-zero,
+and push-return-value followed by jump-if-zero. They require at least two
+remaining opcodes and valid stack bounds; otherwise the original first opcode
+executes normally. Both original entries remain independently executable,
+including operand-word entry points. Stack-slot writes, bytecode PCs, deferred
+jump-target validation and per-opcode budgets are unchanged. Overlapping pairs
+execute left-to-right rather than consuming a third opcode implicitly.
+Fusion does not cross C callbacks or alter scheduling and delays.
 
 Compilation is enabled only on ST/STE in 68000/68010 builds. The emitted
 instructions are 68000-compatible; these CPUs have no instruction cache to
@@ -94,15 +119,18 @@ tools/test_script_native.py runs the real compiler, emitted entries and
 assembly runner on a simulated 68000 against the C interpreter, in release
 and debug configurations. It requires the Atari cross toolchain and optional
 Python unicorn package. Compiler/loader ownership tests run with host
-sanitizers. Simulation also checks fast-cursor versus PC-resolution dispatch
-counts. This establishes tested behavior, not cycle-accurate performance.
+sanitizers. Simulation also checks fast-cursor versus PC-resolution dispatch counts,
+deferred PC publication and callback-visible PCs. This establishes tested
+behavior, not cycle-accurate performance.
 The first native backend measured 372.44 VM-own cycles/opcode in battle12
 versus 483.67 for the raw interpreter in battle9 (about 23% less); these
 were different playthroughs, not a controlled FPS comparison. The subsequent
 cursor optimization measured 360.83 cycles/opcode in battle13 (about 3% less
 than battle12), again with a different workload. Hatari profiles must include
 both the native runner/handlers and generated entries in heap ST_RAM, not
-only Script_RunInternal or PROGRAM_TEXT.
+only Script_RunInternal or PROGRAM_TEXT. With fusion, logical opcode counts are
+generated-entry executions plus NativeFusedNext/NativeFusedJump executions;
+each of those shared completion paths accounts for one skipped second entry.
 
 Ground-unit pathfinding keeps both obstacle-following walks inside one
 connection search, alternating one candidate step per active walk, clockwise

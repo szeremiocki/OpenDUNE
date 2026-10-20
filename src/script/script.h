@@ -77,11 +77,11 @@ extern bool Script_NativeError(ScriptEngine *script, uint16 opcode, uint16 param
 #ifdef _DEBUG
 #define STACK_PUSH(value) Script_Stack_Push(script, value, __FILE__, __LINE__)
 #define STACK_POP() Script_Stack_Pop(script, __FILE__, __LINE__)
-#define STACK_PEEK(position) Script_Stack_Peek(script, position, __FILE__, __LINE__)
+#define STACK_PEEK(position) Script_Stack_PeekInline(script, position, __FILE__, __LINE__)
 #else
 #define STACK_PUSH(value) Script_Stack_Push(script, value)
 #define STACK_POP() Script_Stack_Pop(script)
-#define STACK_PEEK(position) Script_Stack_Peek(script, position)
+#define STACK_PEEK(position) Script_Stack_PeekInline(script, position)
 #endif
 
 extern struct Object *g_scriptCurrentObject;
@@ -118,6 +118,24 @@ extern void Script_Stack_Push(ScriptEngine *script, uint16 value);
 extern uint16 Script_Stack_Pop(ScriptEngine *script);
 extern uint16 Script_Stack_Peek(ScriptEngine *script, int position);
 #endif
+
+#ifdef _DEBUG
+static inline uint16 Script_Stack_PeekInline(ScriptEngine *script, int position, const char *filename, int lineno)
+#else
+static inline uint16 Script_Stack_PeekInline(ScriptEngine *script, int position)
+#endif
+{
+	if (position > 0 && script->stackPointer < 16 - position) {
+		return script->stack[script->stackPointer + position - 1];
+	}
+
+	/* Keep invalid accesses and their diagnostics in the original helper. */
+#ifdef _DEBUG
+	return Script_Stack_Peek(script, position, filename, lineno);
+#else
+	return Script_Stack_Peek(script, position);
+#endif
+}
 
 /* General Script Functions */
 extern uint16 Script_General_Delay(ScriptEngine *script);

@@ -14,7 +14,8 @@ class ScriptNativeLoaderTest(unittest.TestCase):
     def test_decode_and_lifetime(self):
         source = (ROOT / "src/script/script.c").read_text()
         native = (ROOT / "src/script/script_native.c").read_text()
-        production = function(native, "Script_CompileNative") + "\n"
+        production = "\n".join(function(native, name) for name in
+                               ("Script_NativePreservesContext", "Script_CompileNative")) + "\n"
         production += "\n".join(function(source, name) for name in
                                 ("Script_ClearInfo", "Script_LoadFromFile"))
         harness = r"""
@@ -32,6 +33,19 @@ typedef int16_t int16;
 #include "/* ENDIAN */"
 #include "/* FOURCC */"
 const uint32 Script_NativeHandlers[] = {/* HANDLERS */};
+#define CONTEXT_CALLBACK(name, value) \
+    uint16 name(ScriptEngine *script) { (void)script; return value; }
+CONTEXT_CALLBACK(Script_General_Delay, 1)
+CONTEXT_CALLBACK(Script_General_DelayRandom, 2)
+CONTEXT_CALLBACK(Script_General_GetDistanceToTile, 3)
+CONTEXT_CALLBACK(Script_General_GetDistanceToObject, 4)
+CONTEXT_CALLBACK(Script_General_NoOperation, 5)
+CONTEXT_CALLBACK(Script_Unit_GetInfo, 6)
+CONTEXT_CALLBACK(Script_Unit_Rotate, 7)
+CONTEXT_CALLBACK(Script_Unit_FindStructure, 8)
+CONTEXT_CALLBACK(Script_Unit_Fire, 9)
+CONTEXT_CALLBACK(Script_Unit_MoveToTarget, 10)
+#undef CONTEXT_CALLBACK
 uint16 endian_bswap16(uint16 value) {
     return (uint16)((value << 8) | (value >> 8));
 }
@@ -86,6 +100,12 @@ static void *test_calloc(size_t count, size_t size) {
 /* PRODUCTION */
 #undef calloc
 static const ScriptFunction callbacks[SCRIPT_FUNCTIONS_COUNT] = {0};
+static uint32 entry_target(const uint16 *entry) {
+    unsigned jump = BETOH16(entry[1]) == 0x323c &&
+                    BETOH16(entry[3]) == 0x4ef9 ? 3 : 4;
+    assert(BETOH16(entry[jump]) == 0x4ef9);
+    return ((uint32)BETOH16(entry[jump + 1]) << 16) | BETOH16(entry[jump + 2]);
+}
 static void check_loaded(const ScriptInfo *info, bool cached) {
     assert(info->functions == callbacks);
     assert(info->startCount == 4 && info->offsetsCount == 2);
@@ -93,19 +113,21 @@ static void check_loaded(const ScriptInfo *info, bool cached) {
     assert(!memcmp(info->start, data, sizeof(data)));
     assert((info->nativeCode != NULL) == cached);
     if (cached) {
-        assert(BETOH16(info->nativeCode[0]) == 0x58aa);
-        assert(BETOH16(info->nativeCode[2]) == 0x357c);
-        assert(BETOH16(info->nativeCode[3]) == 0xf123);
-        assert(BETOH16(info->nativeCode[2 * 8 + 3]) == 0xffff);
-        assert(BETOH16(info->nativeCode[3 * 8 + 4]) == 0x7e10);
-        assert(BETOH16(info->nativeCode[3 * 8 + 3]) == 2);
+        assert(BETOH16(info->nativeCode[0]) == 0x7e20);
+        assert(BETOH16(info->nativeCode[1]) == 0x357c);
+        assert(BETOH16(info->nativeCode[2]) == 0xf123);
+        assert(BETOH16(info->nativeCode[2 * 8 + 2]) == 0xffff);
+        assert(BETOH16(info->nativeCode[3 * 8]) == 0x7e10);
+        uint32 destination = ((uint32)BETOH16(info->nativeCode[3 * 8 + 2]) << 16) |
+                             BETOH16(info->nativeCode[3 * 8 + 3]);
+        assert(destination == (uint32)((uintptr_t)info->nativeCode + 2 * 16));
     }
 }
 int main(void) {
     ScriptInfo info = {0};
     assert(!Script_CompileNative(&info) && info.nativeCode == NULL);
     /* All flag combinations, opcode bits and signed inline parameters. */
-    uint16 words[2];
+    uint16 words[8];
     info.start = words;
     info.startCount = 2;
     for (unsigned encoding = 0; encoding <= 0xffff; encoding++) {
@@ -130,24 +152,138 @@ int main(void) {
         if (opcode == SCRIPT_UNARY) handler = parameter < 3 ? 19 + parameter : 40;
         if (opcode == SCRIPT_BINARY) handler = parameter < 18 ? 22 + parameter : 43;
         uint16 operation = 0x323c;
-        uint16 argument = handler < 40 ? 0x7e00 | length * 16 : opcode | 0x7000;
+        unsigned jump = 3;
         if (opcode == SCRIPT_SETRETURNVALUE || opcode == SCRIPT_STACK_REWIND ||
             opcode == SCRIPT_STACK_FORWARD) {
-            handler = length == 1 ? 42 : 44;
+            handler = 42;
             operation = opcode == SCRIPT_SETRETURNVALUE ? 0x357c :
                         opcode == SCRIPT_STACK_REWIND ? 0x062a : 0x042a;
-            argument = opcode == SCRIPT_SETRETURNVALUE ? 10 : 13;
             if (opcode != SCRIPT_SETRETURNVALUE) parameter &= 255;
+            jump = 4;
+            assert(BETOH16(info.nativeCode[3]) ==
+                   (opcode == SCRIPT_SETRETURNVALUE ? 10 : 13));
+        } else if (opcode == SCRIPT_JUMP || opcode == SCRIPT_JUMP_NE) {
+            uint16 destination = opcode == SCRIPT_JUMP ? parameter : parameter & 0x7fff;
+            uint32 address = ((uint32)BETOH16(info.nativeCode[2]) << 16) |
+                             BETOH16(info.nativeCode[3]);
+            assert(address == (uint32)((uintptr_t)info.nativeCode + destination * 16u));
+            operation = 0x207c;
+            jump = 4;
+        } else if (handler == 40 || handler == 41 || handler == 43) {
+            assert(BETOH16(info.nativeCode[3]) == (0x7000 | opcode));
+            jump = 4;
         }
-        uint32 target = ((uint32)BETOH16(info.nativeCode[6]) << 16) |
-                        BETOH16(info.nativeCode[7]);
-        assert(BETOH16(info.nativeCode[0]) == (length == 1 ? 0x54aa : 0x58aa));
-        assert(BETOH16(info.nativeCode[1]) == 2);
-        assert(BETOH16(info.nativeCode[2]) == operation);
-        assert(BETOH16(info.nativeCode[3]) == parameter);
-        assert(BETOH16(info.nativeCode[4]) == argument);
-        assert(BETOH16(info.nativeCode[5]) == 0x4ef9);
+        uint32 target = ((uint32)BETOH16(info.nativeCode[jump + 1]) << 16) |
+                        BETOH16(info.nativeCode[jump + 2]);
+        assert(BETOH16(info.nativeCode[0]) == (0x7e00 | length * 16));
+        assert(BETOH16(info.nativeCode[1]) == operation);
+        if (operation != 0x207c) assert(BETOH16(info.nativeCode[2]) == parameter);
+        assert(BETOH16(info.nativeCode[jump]) == 0x4ef9);
         assert(target == Script_NativeHandlers[handler]);
+        Script_ClearInfo(&info);
+        info.start = words;
+    }
+    /* Classification follows actual function identity, not category or ID. */
+    const ScriptFunction audited[] = {
+        Script_General_Delay, Script_General_DelayRandom,
+        Script_General_GetDistanceToTile, Script_General_GetDistanceToObject,
+        Script_General_NoOperation, Script_Unit_GetInfo, Script_Unit_Rotate,
+        Script_Unit_FindStructure, Script_Unit_Fire, Script_Unit_MoveToTarget, NULL
+    };
+    ScriptFunction testCallbacks[SCRIPT_FUNCTIONS_COUNT] = {0};
+    info.functions = testCallbacks;
+    for (unsigned callback = 0; callback < sizeof(audited) / sizeof(audited[0]); callback++) {
+        for (unsigned id = 0; id < SCRIPT_FUNCTIONS_COUNT; id++) {
+            testCallbacks[id] = audited[callback];
+            for (unsigned extended = 0; extended < 2; extended++) {
+                words[0] = HTOBE16((SCRIPT_FUNCTION << 8) |
+                                  (extended ? 0x2000 : 0x4000 | id));
+                words[1] = HTOBE16(0xab00 | id);
+                assert(Script_CompileNative(&info));
+                uint32 target = ((uint32)BETOH16(info.nativeCode[4]) << 16) |
+                                BETOH16(info.nativeCode[5]);
+                assert(target == Script_NativeHandlers[callback < 8 ? 45 : SCRIPT_FUNCTION]);
+                assert(BETOH16(info.nativeCode[0]) == (extended ? 0x7e20 : 0x7e10));
+                Script_ClearInfo(&info);
+                info.start = words;
+            }
+            testCallbacks[id] = NULL;
+        }
+    }
+    for (unsigned id = SCRIPT_FUNCTIONS_COUNT; id <= 255; id++) {
+        words[0] = HTOBE16(0x2000 | (SCRIPT_FUNCTION << 8));
+        words[1] = HTOBE16(0xab00 | id);
+        assert(Script_CompileNative(&info));
+        uint32 target = ((uint32)BETOH16(info.nativeCode[4]) << 16) |
+                        BETOH16(info.nativeCode[5]);
+        assert(target == Script_NativeHandlers[SCRIPT_FUNCTION]);
+        Script_ClearInfo(&info);
+        info.start = words;
+    }
+    info.functions = NULL;
+    /* Each family against every following-word encoding, including flag
+     * precedence, sign extension, PUSH2 and non-matching operations. */
+    info.startCount = 6;
+    for (unsigned family = 0; family < 9; family++) {
+        unsigned opcode = family == 0 ? SCRIPT_STACK_REWIND :
+                          family < 3 ? SCRIPT_PUSH_RETURN_OR_LOCATION : SCRIPT_BINARY;
+        unsigned parameter = family == 0 ? 1 : family < 3 ? 0 : family - 1;
+        for (unsigned format = 0; format < 3; format++) {
+            unsigned length = format == 1 ? 2 : 1;
+            unsigned firstParameter = format == 2 ? 0 : parameter;
+            for (unsigned encoding = 0; encoding <= 0xffff; encoding++) {
+                for (unsigned i = 0; i < 8; i++) words[i] = HTOBE16(0x4100);
+                words[0] = HTOBE16((opcode << 8) |
+                           (format == 0 ? 0x4000 | parameter : format == 1 ? 0x2000 : 0));
+                if (format == 1) words[1] = HTOBE16(parameter);
+                words[length] = HTOBE16(encoding);
+                words[length + 1] = HTOBE16(0xffff);
+                unsigned secondOpcode = (encoding >> 8) & 31;
+                uint16 secondParameter = 0;
+                if (encoding & 0x8000) {
+                    secondOpcode = SCRIPT_JUMP;
+                    secondParameter = encoding & 0x7fff;
+                } else if (encoding & 0x4000) {
+                    secondParameter = (int16)(int8)(encoding & 255);
+                } else if (encoding & 0x2000) {
+                    secondParameter = 0xffff;
+                }
+                unsigned expected = family == 0 ? 42 :
+                                    family < 3 ? 2 : 22 + firstParameter;
+                if (family == 0 && firstParameter == 1 &&
+                    secondOpcode == SCRIPT_PUSH_RETURN_OR_LOCATION && secondParameter == 0) {
+                    expected = 46;
+                } else if (family < 3 && family != 0 &&
+                           (secondOpcode == SCRIPT_PUSH || secondOpcode == SCRIPT_PUSH2)) {
+                    expected = 47;
+                } else if (family < 3 && family != 0 && secondOpcode == SCRIPT_JUMP_NE) {
+                    expected = 48;
+                } else if (family >= 3 && firstParameter >= 2 &&
+                           secondOpcode == SCRIPT_JUMP_NE) {
+                    expected = 49 + firstParameter - 2;
+                }
+                assert(Script_CompileNative(&info));
+                assert(entry_target(info.nativeCode) == Script_NativeHandlers[expected]);
+                assert(BETOH16(info.nativeCode[0]) == (0x7e00 | length * 16));
+                Script_ClearInfo(&info);
+                info.start = words;
+            }
+        }
+    }
+    /* A matching second opcode with a missing parameter is not fusible. */
+    for (unsigned family = 0; family < 9; family++) {
+        unsigned firstOpcode = family == 0 ? SCRIPT_STACK_REWIND :
+                               family < 3 ? SCRIPT_PUSH_RETURN_OR_LOCATION : SCRIPT_BINARY;
+        unsigned firstParameter = family == 0 ? 1 : family < 3 ? 0 : family - 1;
+        unsigned secondOpcode = family == 0 ? SCRIPT_PUSH_RETURN_OR_LOCATION :
+                                family == 1 ? SCRIPT_PUSH : SCRIPT_JUMP_NE;
+        words[0] = HTOBE16(0x4000 | (firstOpcode << 8) | firstParameter);
+        words[1] = HTOBE16(0x2000 | (secondOpcode << 8));
+        info.startCount = 2;
+        assert(Script_CompileNative(&info));
+        assert(entry_target(info.nativeCode) ==
+               Script_NativeHandlers[family == 0 ? 42 : family < 3 ? 2 : 22 + firstParameter]);
+        assert(entry_target(info.nativeCode + 8) == Script_NativeHandlers[41]);
         Script_ClearInfo(&info);
         info.start = words;
     }
@@ -159,8 +295,8 @@ int main(void) {
     assert(info.start != NULL);
     info.start[0xfffe] = HTOBE16(0x2100);
     assert(Script_CompileNative(&info));
-    assert(BETOH16(info.nativeCode[0xfffe * 8]) == 0x4e71);
-    assert(BETOH16(info.nativeCode[0xfffe * 8 + 4]) == 0x7021);
+    assert(BETOH16(info.nativeCode[0xfffe * 8]) == 0x7e00);
+    assert(BETOH16(info.nativeCode[0xfffe * 8 + 3]) == 0x7021);
     Script_ClearInfo(&info);
 
     offsets[0] = HTOBE16(0); offsets[1] = HTOBE16(2);
@@ -220,7 +356,7 @@ int main(void) {
         harness = harness.replace("/* ENDIAN */", str(ROOT / "src/os/endian.h"))
         harness = harness.replace("/* FOURCC */", str(ROOT / "include/multichar.h"))
         harness = harness.replace("/* HANDLERS */",
-                                  ",".join(hex(0x100000 + i * 16) for i in range(45)))
+                                  ",".join(hex(0x100000 + i * 16) for i in range(55)))
         harness = harness.replace("/* PRODUCTION */", production)
         with tempfile.TemporaryDirectory(prefix="script-native-loader-") as directory:
             c_file = Path(directory) / "test.c"

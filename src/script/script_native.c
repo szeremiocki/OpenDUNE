@@ -1,6 +1,7 @@
 /** @file src/script/script_native.c Load-time 68000 EMC compilation. */
 
 #include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include "types.h"
 #include "../os/endian.h"
@@ -17,6 +18,20 @@ typedef char NativeEngineLayout[
 typedef char NativeInfoLayout[
 	(offsetof(ScriptInfo, start) == 4 && offsetof(ScriptInfo, startCount) == 14 &&
 	 offsetof(ScriptInfo, functions) == 16 && offsetof(ScriptInfo, nativeCode) == 22) ? 1 : -1];
+
+static bool Script_NativePreservesContext(ScriptFunction callback)
+{
+	/* Audit callees too: no PC changes (except stack-error unloading), script
+	 * replacement or native-code lifetime changes. Unknown callbacks rebind. */
+	return callback == Script_General_Delay ||
+	       callback == Script_General_DelayRandom ||
+	       callback == Script_General_GetDistanceToTile ||
+	       callback == Script_General_GetDistanceToObject ||
+	       callback == Script_General_NoOperation ||
+	       callback == Script_Unit_GetInfo ||
+	       callback == Script_Unit_Rotate ||
+	       callback == Script_Unit_FindStructure;
+}
 
 bool Script_CompileNative(ScriptInfo *scriptInfo)
 {
@@ -59,25 +74,93 @@ bool Script_CompileNative(ScriptInfo *scriptInfo)
 		if (opcode == SCRIPT_BINARY) handler = parameter < 18 ? 22 + parameter : 43;
 		if (opcode == 33) handler = 41;
 		target = Script_NativeHandlers[handler];
+		if (opcode == SCRIPT_FUNCTION && scriptInfo->functions != NULL &&
+		    (parameter & 0xFF) < SCRIPT_FUNCTIONS_COUNT &&
+		    Script_NativePreservesContext(scriptInfo->functions[parameter & 0xFF])) {
+			target = Script_NativeHandlers[45];
+		}
 
-		entry[0] = HTOBE16(words == 0 ? 0x4E71 : words == 1 ? 0x54AA : 0x58AA);
-		entry[1] = HTOBE16(words == 0 ? 0x4E71 : 2);
-		entry[2] = HTOBE16(0x323C);          /* move.w #parameter,d1 */
-		entry[3] = HTOBE16(parameter);
-		entry[4] = HTOBE16(handler < 40 ? 0x7E00 | words * 16 : 0x7000 | opcode);
-		entry[5] = HTOBE16(0x4EF9);          /* jmp handler */
-		entry[6] = HTOBE16(target >> 16);
-		entry[7] = HTOBE16(target);
-
+		entry[0] = HTOBE16(0x7E00 | words * 16); /* moveq #step,d7 */
+		entry[7] = HTOBE16(0x4E71);
 		if (opcode == SCRIPT_SETRETURNVALUE ||
 		    opcode == SCRIPT_STACK_REWIND || opcode == SCRIPT_STACK_FORWARD) {
-			target = Script_NativeHandlers[words == 1 ? 42 : 44];
-			entry[2] = HTOBE16(opcode == SCRIPT_SETRETURNVALUE ? 0x357C :
+			target = Script_NativeHandlers[42];
+			entry[1] = HTOBE16(opcode == SCRIPT_SETRETURNVALUE ? 0x357C :
 			                  opcode == SCRIPT_STACK_REWIND ? 0x062A : 0x042A);
-			entry[3] = HTOBE16(opcode == SCRIPT_SETRETURNVALUE ? parameter : parameter & 0xFF);
-			entry[4] = HTOBE16(opcode == SCRIPT_SETRETURNVALUE ? 10 : 13);
-			entry[6] = HTOBE16(target >> 16);
-			entry[7] = HTOBE16(target);
+			entry[2] = HTOBE16(opcode == SCRIPT_SETRETURNVALUE ? parameter : parameter & 0xFF);
+			entry[3] = HTOBE16(opcode == SCRIPT_SETRETURNVALUE ? 10 : 13);
+		} else if (opcode == SCRIPT_JUMP || opcode == SCRIPT_JUMP_NE) {
+			uint16 destination = opcode == SCRIPT_JUMP ? parameter : parameter & 0x7FFF;
+			uint32 address = (uint32)((uintptr_t)code + (uint32)destination * 16);
+
+			/* The address is not dereferenced until the next-opcode check. */
+			entry[1] = HTOBE16(0x207C); /* movea.l #destination,a0 */
+			entry[2] = HTOBE16(address >> 16);
+			entry[3] = HTOBE16(address);
+		} else {
+			entry[1] = HTOBE16(0x323C); /* move.w #parameter,d1 */
+			entry[2] = HTOBE16(parameter);
+			if (handler == 40 || handler == 41 || handler == 43) {
+				entry[3] = HTOBE16(0x7000 | opcode);
+			} else {
+				entry[3] = HTOBE16(0x4EF9);
+				entry[4] = HTOBE16(target >> 16);
+				entry[5] = HTOBE16(target);
+				entry[6] = HTOBE16(0x4E71);
+				continue;
+			}
+		}
+		entry[4] = HTOBE16(0x4EF9); /* jmp handler */
+		entry[5] = HTOBE16(target >> 16);
+		entry[6] = HTOBE16(target);
+	}
+
+	/* Match emitted entries so operand words and all parameter encodings
+	 * retain exactly the same decoding as ordinary execution. */
+	for (i = 0; i < scriptInfo->startCount; i++) {
+		uint16 *entry = code + (size_t)i * 8;
+		uint16 words = (BETOH16(entry[0]) & 0xFF) / 16;
+		uint16 *next;
+		uint16 fusion = 0;
+		uint32 firstTarget;
+		uint32 nextTarget;
+		bool rewind = BETOH16(entry[1]) == 0x062A && BETOH16(entry[2]) == 1;
+		bool normal = BETOH16(entry[1]) == 0x323C && BETOH16(entry[3]) == 0x4EF9;
+
+		if ((!rewind && !normal) || words == 0 || i + words >= scriptInfo->startCount) continue;
+		next = code + (size_t)(i + words) * 8;
+		firstTarget = normal ? ((uint32)BETOH16(entry[4]) << 16) | BETOH16(entry[5]) : 0;
+		if (BETOH16(next[1]) == 0x323C && BETOH16(next[3]) == 0x4EF9) {
+			nextTarget = ((uint32)BETOH16(next[4]) << 16) | BETOH16(next[5]);
+			if (rewind && nextTarget == Script_NativeHandlers[2] && BETOH16(next[2]) == 0) {
+				fusion = 46;
+			} else if (normal && firstTarget == Script_NativeHandlers[2] &&
+			           BETOH16(entry[2]) == 0 &&
+			           (nextTarget == Script_NativeHandlers[SCRIPT_PUSH] ||
+			            nextTarget == Script_NativeHandlers[SCRIPT_PUSH2])) {
+				fusion = 47;
+			}
+		} else if (normal && BETOH16(next[1]) == 0x207C) {
+			nextTarget = ((uint32)BETOH16(next[5]) << 16) | BETOH16(next[6]);
+			if (nextTarget == Script_NativeHandlers[SCRIPT_JUMP_NE]) {
+				uint16 parameter = BETOH16(entry[2]);
+
+				if (firstTarget == Script_NativeHandlers[2] && parameter == 0) {
+					fusion = 48;
+				} else if (parameter >= 2 && parameter <= 7 &&
+				           firstTarget == Script_NativeHandlers[22 + parameter]) {
+					fusion = 49 + parameter - 2;
+				}
+			}
+		}
+		if (fusion != 0) {
+			uint32 target = Script_NativeHandlers[fusion];
+
+			entry[1] = HTOBE16(0x323C);
+			entry[3] = HTOBE16(0x4EF9);
+			entry[4] = HTOBE16(target >> 16);
+			entry[5] = HTOBE16(target);
+			entry[6] = HTOBE16(0x4E71);
 		}
 	}
 	scriptInfo->nativeCode = code;
