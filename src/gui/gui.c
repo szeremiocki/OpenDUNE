@@ -1218,7 +1218,7 @@ static void GUI_DrawSpriteInternal(Screen screenID, const uint8 *sprite, int16 p
                                   uint8 *target, uint16 targetWidth, uint16 targetHeight);
 
 #ifdef TOS
-static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8 colourHouse,
+static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8 colourHouse,
                                     int16 x, int16 y, int flags, va_list *ap,
                                     const GUI_SpriteLayers *layers, ViewportCompositeKey *key);
 #endif
@@ -1236,7 +1236,7 @@ void GUI_DrawSprite(Screen screenID, const uint8 *sprite, uint16 spriteID, uint8
 	va_start(ap, flags);
 	if (flags & DRAWSPRITE_FLAG_LAYERS) {
 		layers = va_arg(ap, const GUI_SpriteLayers *);
-		assert(layers != NULL && layers->count <= 4);
+		assert(layers != NULL);
 		flags &= ~DRAWSPRITE_FLAG_LAYERS;
 	}
 #ifdef TOS
@@ -1244,17 +1244,11 @@ void GUI_DrawSprite(Screen screenID, const uint8 *sprite, uint16 spriteID, uint8
 		key = va_arg(ap, ViewportCompositeKey *);
 		flags &= ~DRAWSPRITE_FLAG_VIEWPORT_KEY;
 	}
-	if (windowID == 2 && GFX_Screen_Get_ByIndex(screenID) == GFX_Screen_Get_ByIndex(SCREEN_0)) {
-		va_list cached;
-		bool drawn;
-		va_copy(cached, ap);
-		drawn = GUI_ViewportPlanarSprite(sprite, spriteID, colourHouse, posX, posY, flags, &cached, layers, key);
-		va_end(cached);
-		if (drawn) {
-			va_end(ap);
-			return;
-		}
-		GUI_Widget_Viewport_InvalidateSpriteDamage();
+	if (windowID == 2 && Video_Atari_CursorDirect()) {
+		assert(GFX_Screen_Get_ByIndex(screenID) == GFX_Screen_Get_ByIndex(SCREEN_0));
+		GUI_ViewportPlanarSprite(sprite, spriteID, colourHouse, posX, posY, flags, &ap, layers, key);
+		va_end(ap);
+		return;
 	}
 #endif
 #ifndef TOS
@@ -1380,7 +1374,7 @@ typedef struct ViewportSpriteMask {
 	uint16 width, height;
 } ViewportSpriteMask;
 
-static ViewportSpriteMask s_viewportSpriteCache[512];
+static ViewportSpriteMask s_viewportSpriteCache[355];
 static uint16 *s_viewportSpriteMasks;
 static bool s_viewportSpriteReady, s_viewportPlanar;
 
@@ -1449,13 +1443,9 @@ void GUI_SetViewportPlanar(bool active)
 	s_viewportPlanar = active;
 }
 
-static ViewportSpriteMask *GUI_ViewportSpriteMaskSlot(const uint8 *sprite)
+static inline ViewportSpriteMask *GUI_ViewportSpriteMaskSlot(uint16 spriteID)
 {
-	unsigned slot = ((size_t)sprite >> 2) & 511;
-	while (s_viewportSpriteCache[slot].sprite != NULL && s_viewportSpriteCache[slot].sprite != sprite) {
-		slot = (slot + 1) & 511;
-	}
-	return &s_viewportSpriteCache[slot];
+	return &s_viewportSpriteCache[spriteID];
 }
 
 static void GUI_DrawSpriteMask(uint8 *buffer, uint16 width, uint16 height,
@@ -1492,15 +1482,15 @@ void GUI_InitViewportSpriteCache(void)
 		width = READ_LE_UINT16(sprite + 3);
 		height = sprite[2];
 		if (width == 0 || width > 32 || height == 0 || height > 32) {
-			Warning("Planar viewport disabled: unsupported sprite %u (%ux%u)\n", id, width, height);
-			return;
+			Error("Unsupported planar viewport sprite %u (%ux%u)\n", id, width, height);
+			exit(1);
 		}
 		words += ((width + 15) >> 4) * height * 2;
 	}
 	s_viewportSpriteMasks = malloc(words * sizeof(*s_viewportSpriteMasks));
 	if (s_viewportSpriteMasks == NULL) {
-		Warning("Planar viewport disabled: out of memory for sprite masks\n");
-		return;
+		Error("Out of memory for mandatory planar viewport sprite masks\n");
+		exit(1);
 	}
 	memset(opaque, 1, sizeof(opaque));
 	next = s_viewportSpriteMasks;
@@ -1509,7 +1499,7 @@ void GUI_InitViewportSpriteCache(void)
 		ViewportSpriteMask *entry;
 		uint16 stride, line, x;
 		if (sprite == NULL) continue;
-		entry = GUI_ViewportSpriteMaskSlot(sprite);
+		entry = GUI_ViewportSpriteMaskSlot(id);
 		entry->sprite = sprite;
 		entry->width = READ_LE_UINT16(sprite + 3);
 		entry->height = sprite[2];
@@ -1530,19 +1520,13 @@ void GUI_InitViewportSpriteCache(void)
 			next += stride * entry->height;
 		}
 	}
-	s_viewportSpriteReady = true;
 	s_viewportPlanarSprites = calloc(VIEWPORT_PLANAR_SPRITES, sizeof(*s_viewportPlanarSprites));
 	s_viewportPlanarMasks = calloc(VIEWPORT_PLANAR_SPRITES * 5 * 64 *
 	    (Video_Atari_ViewportBlitter() ? 4 : 1), sizeof(*s_viewportPlanarMasks));
 	s_viewportPlanarComponents = calloc(VIEWPORT_PLANAR_COMPONENTS, sizeof(*s_viewportPlanarComponents));
 	if (s_viewportPlanarSprites == NULL || s_viewportPlanarMasks == NULL || s_viewportPlanarComponents == NULL) {
-		Warning("Planar sprite image caches disabled: out of memory\n");
-		free(s_viewportPlanarSprites);
-		s_viewportPlanarSprites = NULL;
-		free(s_viewportPlanarMasks);
-		s_viewportPlanarMasks = NULL;
-		free(s_viewportPlanarComponents);
-		s_viewportPlanarComponents = NULL;
+		Error("Out of memory for mandatory planar viewport sprite images\n");
+		exit(1);
 	} else {
 		uint16 maskWords = 5 * 64 * (Video_Atari_ViewportBlitter() ? 4 : 1);
 		for (id = 0; id < VIEWPORT_PLANAR_SPRITES; id++) {
@@ -1550,16 +1534,7 @@ void GUI_InitViewportSpriteCache(void)
 			s_viewportPlanarKeys[id].sprite = &s_viewportPlanarSprites[id];
 		}
 	}
-}
-
-static uint16 GUI_ViewportMaskWord(const uint16 *row, uint16 words, int16 col)
-{
-	int16 index = col < 0 ? -((15 - col) >> 4) : col >> 4;
-	uint16 shift = col & 15;
-	uint16 a = index >= 0 && index < words ? row[index] : 0;
-	uint16 b = index + 1 >= 0 && index + 1 < words ? row[index + 1] : 0;
-	if (shift == 0) return a;
-	return (uint16)((a << shift) | (b >> (16 - shift)));
+	s_viewportSpriteReady = true;
 }
 
 static void GUI_ViewportDecodeLayer(uint8 *chunky, uint16 width, uint16 height,
@@ -1590,7 +1565,7 @@ static ViewportPlanarComponent *GUI_ViewportPlanarComponent(ViewportSpriteMask *
 	ViewportPlanarComponent *entry = NULL;
 	uint16 i;
 
-	if (spriteID == 0) return NULL;
+	assert(spriteID != 0);
 	if (++s_viewportComponentClock == 0) {
 		s_viewportComponentClock = 1;
 		for (i = 0; i < VIEWPORT_PLANAR_COMPONENTS; i++) s_viewportPlanarComponents[i].used = 0;
@@ -1642,32 +1617,41 @@ static void GUI_ViewportBuildCompositeKey(ViewportCompositeKey *out,
 {
 	uint16 phase = blitter ? 0 : (uint16)x & 15;
 	uint16 count = layers != NULL ? layers->count : 0;
+	bool selected = count != 0 && layers->layer[count - 1].spriteID == 6;
 
 	uint32 main = spriteID |
 	    ((uint32)(colourHouse == GUI_SPRITE_COLOUR_EMBEDDED ? 6 : colourHouse) << 9) |
 	    ((uint32)(flags & 3) << 12) | ((uint32)highlighted << 14) |
-	    ((uint32)phase << 15) | ((uint32)((flags & DRAWSPRITE_FLAG_CENTER) != 0) << 19);
+	    ((uint32)phase << 15) | ((uint32)((flags & DRAWSPRITE_FLAG_CENTER) != 0) << 19) |
+	    ((uint32)selected << 20);
+	if (selected) {
+		const GUI_SpriteLayer *selection = &layers->layer[count - 1];
+		assert(selection->colourHouse == GUI_SPRITE_COLOUR_EMBEDDED &&
+		       selection->flags == 0 && selection->offsetX == 0 && selection->offsetY == 0);
+		VARIABLE_NOT_USED(selection);
+	}
+	count -= selected;
 	if (count == 0) {
 		out->main = main;
 		return;
 	}
 
-	uint32 layer[4] = {0, 0, 0, 0};
+	uint32 layer[2] = {0, 0};
 	uint16 i;
 
 	for (i = 0; i < count; i++) {
 		const GUI_SpriteLayer *src = &layers->layer[i];
 		uint32 colour = src->colourHouse == GUI_SPRITE_COLOUR_EMBEDDED ? 6 : src->colourHouse;
 
+		assert(src->spriteID != 6);
 		layer[i] = (uint32)src->spriteID | (colour << 9) |
 		    ((uint32)(src->flags & 3) << 12) |
 		    ((uint32)(src->offsetX & 63) << 14) | ((uint32)(src->offsetY & 63) << 20);
 	}
-	/* Concatenate 20 body bits and four 26-bit layers, low bits first. */
-	out->tail[0] = (layer[0] >> 12) | (layer[1] << 14);
-	out->tail[1] = (layer[1] >> 18) | (layer[2] << 8);
-	out->tail[2] = (layer[2] >> 24) | (layer[3] << 2);
-	out->main = main | (layer[0] << 20);
+	/* 20 body bits, selection, then two ordered 26-bit variable layers. */
+	out->tail[0] = (layer[0] >> 11) | (layer[1] << 15);
+	out->tail[1] = layer[1] >> 17;
+	out->main = main | (layer[0] << 21);
 }
 
 static void GUI_ViewportBuildCompositeKeyBlitter(ViewportCompositeKey *key,
@@ -1693,11 +1677,11 @@ static void GUI_ViewportBuildCompositeKeyCPU(ViewportCompositeKey *key,
 }
 
 static int __attribute__((noinline, noclone)) GUI_ViewportCompareLayerKeys(
-    const uint32 candidate[3], const uint32 requested[3])
+    const uint32 candidate[2], const uint32 requested[2])
 {
 	uint16 i;
 
-	for (i = 0; i < 3; i++) {
+	for (i = 0; i < 2; i++) {
 		if (candidate[i] < requested[i]) return -1;
 		if (candidate[i] > requested[i]) return 1;
 	}
@@ -1705,14 +1689,13 @@ static int __attribute__((noinline, noclone)) GUI_ViewportCompareLayerKeys(
 }
 
 static ViewportPlanarSprite *GUI_ViewportFindPlanarSprite(uint32 key,
-                                                        const uint32 layerKeys[3],
+                                                        const uint32 layerKeys[2],
                                                         uint16 *position)
 {
 	if (s_viewportPlanarLastHitPosition < VIEWPORT_PLANAR_SPRITES) {
 		const ViewportPlanarSpriteKey *candidate = &s_viewportPlanarKeys[s_viewportPlanarLastHitPosition];
-		if (candidate->key.main == key && ((key & 0xfff00000UL) == 0 ||
-		    (candidate->key.tail[0] == layerKeys[0] && candidate->key.tail[1] == layerKeys[1] &&
-		     candidate->key.tail[2] == layerKeys[2]))) {
+		if (candidate->key.main == key && ((key & 0xffe00000UL) == 0 ||
+		    (candidate->key.tail[0] == layerKeys[0] && candidate->key.tail[1] == layerKeys[1]))) {
 			*position = s_viewportPlanarLastHitPosition;
 			return candidate->sprite;
 		}
@@ -1726,7 +1709,7 @@ static ViewportPlanarSprite *GUI_ViewportFindPlanarSprite(uint32 key,
 	search_##slot: { \
 		const ViewportPlanarSpriteKey *candidate = &s_viewportPlanarKeys[slot]; \
 		VIEWPORT_SEARCH_COMPARE(candidate->key.main, key, lower, higher) \
-		if (key & 0xfff00000UL) { \
+		if (key & 0xffe00000UL) { \
 			int order = GUI_ViewportCompareLayerKeys(candidate->key.tail, layerKeys); \
 			if (order < 0) { higher; } \
 			if (order > 0) { lower; } \
@@ -1834,7 +1817,7 @@ static void GUI_ViewportIndexPlanarSprite(ViewportPlanarSprite *entry, uint16 po
 		s_viewportPlanarLastHitPosition++;
 }
 
-static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8 colourHouse,
+static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8 colourHouse,
                                     int16 x, int16 y, int flags, va_list *ap,
                                     const GUI_SpriteLayers *layers, ViewportCompositeKey *key)
 {
@@ -1848,16 +1831,17 @@ static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 	int16 remapCount = 0;
 	bool blitter = Video_Atari_ViewportBlitter();
 
-	if (!s_viewportPlanar || s_viewportPlanarSprites == NULL || s_viewportPlanarComponents == NULL || sprite == NULL ||
-	    spriteID == 0 || spriteID > 354 || g_sprites[spriteID] != sprite ||
-	    (flags & ~(DRAWSPRITE_FLAG_RTL | DRAWSPRITE_FLAG_BOTTOMUP | DRAWSPRITE_FLAG_PAL |
-	               DRAWSPRITE_FLAG_REMAP | DRAWSPRITE_FLAG_SPRITEPAL |
-	               DRAWSPRITE_FLAG_CENTER | DRAWSPRITE_FLAG_WIDGETPOS)) != 0) return false;
-	if (flags & DRAWSPRITE_FLAG_PAL) {
-		if (colourHouse >= HOUSE_MAX || (READ_LE_UINT16(sprite) & 1) == 0) return false;
-	} else if (colourHouse != GUI_SPRITE_COLOUR_EMBEDDED) return false;
-	mask = GUI_ViewportSpriteMaskSlot(sprite);
-	if (mask->sprite != sprite) return false;
+	assert(s_viewportPlanar && s_viewportPlanarSprites != NULL && s_viewportPlanarComponents != NULL);
+	assert(sprite != NULL && spriteID != 0 && spriteID <= 354 && g_sprites[spriteID] == sprite);
+	assert((flags & ~(DRAWSPRITE_FLAG_RTL | DRAWSPRITE_FLAG_BOTTOMUP | DRAWSPRITE_FLAG_PAL |
+	                 DRAWSPRITE_FLAG_REMAP | DRAWSPRITE_FLAG_SPRITEPAL |
+	                 DRAWSPRITE_FLAG_CENTER | DRAWSPRITE_FLAG_WIDGETPOS)) == 0);
+	assert((flags & DRAWSPRITE_FLAG_PAL) ?
+	       colourHouse < HOUSE_MAX && (READ_LE_UINT16(sprite) & 1) != 0 :
+	       colourHouse == GUI_SPRITE_COLOUR_EMBEDDED);
+	VARIABLE_NOT_USED(sprite);
+	mask = GUI_ViewportSpriteMaskSlot(spriteID);
+	assert(mask->sprite == sprite);
 	if (flags & DRAWSPRITE_FLAG_WIDGETPOS) {
 		x += g_widgetProperties[2].xBase << 3;
 		y += g_widgetProperties[2].yBase;
@@ -1872,18 +1856,19 @@ static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 	if (flags & DRAWSPRITE_FLAG_REMAP) {
 		remap = va_arg(*ap, uint8 *);
 		remapCount = (int16)va_arg(*ap, int);
-		if (remapCount != 0 && (remapCount != 1 || remap != g_paletteMapping2)) return false;
+		assert(remapCount == 0 || (remapCount == 1 && remap == g_paletteMapping2));
 	}
-	if (count > 4) return false;
+#ifndef NDEBUG
 	for (i = 0; i < count; i++) {
 		const GUI_SpriteLayer *layer = &layers->layer[i];
-		if (layer->spriteID == 0 || layer->spriteID > 354 || g_sprites[layer->spriteID] == NULL ||
-		    (layer->flags & ~(DRAWSPRITE_FLAG_RTL | DRAWSPRITE_FLAG_BOTTOMUP | DRAWSPRITE_FLAG_PAL)) != 0 ||
-		    layer->offsetX < -32 || layer->offsetX > 31 || layer->offsetY < -32 || layer->offsetY > 31) return false;
-		if (layer->flags & DRAWSPRITE_FLAG_PAL) {
-			if (layer->colourHouse >= HOUSE_MAX || (READ_LE_UINT16(g_sprites[layer->spriteID]) & 1) == 0) return false;
-		} else if (layer->colourHouse != GUI_SPRITE_COLOUR_EMBEDDED) return false;
+		assert(layer->spriteID != 0 && layer->spriteID <= 354 && g_sprites[layer->spriteID] != NULL);
+		assert((layer->flags & ~(DRAWSPRITE_FLAG_RTL | DRAWSPRITE_FLAG_BOTTOMUP | DRAWSPRITE_FLAG_PAL)) == 0);
+		assert(layer->offsetX >= -32 && layer->offsetX <= 31 && layer->offsetY >= -32 && layer->offsetY <= 31);
+		assert((layer->flags & DRAWSPRITE_FLAG_PAL) ?
+		       layer->colourHouse < HOUSE_MAX && (READ_LE_UINT16(g_sprites[layer->spriteID]) & 1) != 0 :
+		       layer->colourHouse == GUI_SPRITE_COLOUR_EMBEDDED);
 	}
+#endif
 	if (key == NULL) {
 		temporary.main = 0;
 		key = &temporary;
@@ -1900,16 +1885,16 @@ static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 	entry = GUI_ViewportFindPlanarSprite(key->main, key->tail, &position);
 	if (entry == NULL) {
 		ViewportPlanarSprite *victim = NULL;
-		ViewportSpriteMask *masks[5];
-		int16 left[5], top[5], minX = 0, minY = 0, boundsOffsetX;
+		ViewportSpriteMask *masks[4];
+		int16 left[4], top[4], minX = 0, minY = 0, boundsOffsetX;
 		int16 maxX = mask->width, maxY = mask->height;
 		uint16 stride, height, groups, boundsWidth;
 		masks[0] = mask;
 		left[0] = top[0] = 0;
 		for (i = 0; i < count; i++) {
 			const GUI_SpriteLayer *layer = &layers->layer[i];
-			ViewportSpriteMask *m = GUI_ViewportSpriteMaskSlot(g_sprites[layer->spriteID]);
-			if (m->sprite != g_sprites[layer->spriteID]) return false;
+			ViewportSpriteMask *m = GUI_ViewportSpriteMaskSlot(layer->spriteID);
+			assert(m->sprite == g_sprites[layer->spriteID]);
 			masks[i + 1] = m;
 			left[i + 1] = centreX + layer->offsetX - m->width / 2;
 			top[i + 1] = centreY + layer->offsetY - m->height / 2;
@@ -1923,11 +1908,8 @@ static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 		if (!blitter) minX -= (uint16)(x + minX) & 15;
 		stride = (maxX - minX + 15) & ~15;
 		height = maxY - minY;
-		if (stride > 80 || height > 64) {
-			Warning("Planar layered sprite exceeds cache bounds (%ux%u)\n", stride, height);
-			return false;
-		}
-		if (x + minX >= 240 || x + maxX <= 0 || y + minY >= 200 || y + maxY <= 40) return true;
+		assert(stride <= 80 && height <= 64);
+		if (x + minX >= 240 || x + maxX <= 0 || y + minY >= 200 || y + maxY <= 40) return;
 		groups = stride >> 4;
 		for (i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) {
 			ViewportPlanarSprite *candidate = &s_viewportPlanarSprites[i];
@@ -1966,7 +1948,7 @@ static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 		entry->extentWidth = maxX - minX;
 		entry->boundsOffsetX = boundsOffsetX;
 		entry->boundsWidth = boundsWidth;
-		if (key->main & 0xfff00000UL) memcpy(entry->key.tail, key->tail, sizeof(key->tail));
+		if (key->main & 0xffe00000UL) memcpy(entry->key.tail, key->tail, sizeof(key->tail));
 		else memset(entry->key.tail, 0, sizeof(entry->key.tail));
 		entry->key.main = key->main;
 		GUI_ViewportIndexPlanarSprite(entry, position);
@@ -1978,7 +1960,7 @@ static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 		uint16 groups = entry->width >> 4;
 		int16 boundsLeft = x + entry->boundsOffsetX;
 		if (!GUI_Widget_Viewport_ShouldDrawSprite(boundsLeft, top,
-		    boundsLeft + entry->boundsWidth, top + entry->height)) return true;
+		    boundsLeft + entry->boundsWidth, top + entry->height)) return;
 		if (blitter) {
 			int16 start = max(0, left), right = min(240, left + entry->extentWidth);
 			if (start < right && firstRow < bottom) {
@@ -1991,7 +1973,7 @@ static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 				    start == left && right - start == entry->extentWidth ?
 				    &entry->blitPlans[start & 15] : NULL);
 			}
-			return true;
+			return;
 		}
 		for (i = 0; i < entry->width; i += 16) {
 			int16 column = left + i, row;
@@ -2007,7 +1989,6 @@ static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 			}
 		}
 	}
-	return true;
 }
 #endif
 
@@ -2046,9 +2027,8 @@ static void GUI_DrawSpriteInternal(Screen screenID, const uint8 *sprite, int16 p
 	uint8 spriteBuffer[20000];	/* for sprites encoded with Format80 : maximum size for credits images is 19841, elsewere it is 3456 */
 	uint16 rowStride = SCREEN_WIDTH;	/* per-row pointer advance; overridden below when writing into a tightly packed scratch buffer */
 #ifdef TOS
-	/* Private scratch rendering for direct planar UI and battlefield
-	 * sprites. The battlefield uses cached opacity masks and row c2p;
-	 * other small sprites retain transparent presentation.
+	/* Private scratch rendering for direct planar UI sprites.
+	 * Battlefield presentation uses the mandatory cached renderer.
 	 * DRAWSPRITE_FLAG_BLUR is excluded: that mode
 	 * reads already-drawn neighbouring pixels back out of the destination
 	 * buffer (the sandworm blur effect), which only makes sense against
@@ -2061,9 +2041,6 @@ static void GUI_DrawSpriteInternal(Screen screenID, const uint8 *sprite, int16 p
 		uint8 bytes[96 * 48];
 	} spriteScratchStorage;
 	uint8 *spriteScratch = spriteScratchStorage.bytes;
-	ViewportSpriteMask *viewportMask = NULL;
-	uint16 viewportMasks[32 * 3];
-	int16 firstSpriteRow = 0;
 	bool toPlanar = false;
 	bool batched = false;
 	int16 screenX = 0, screenY = 0;
@@ -2082,11 +2059,7 @@ static void GUI_DrawSpriteInternal(Screen screenID, const uint8 *sprite, int16 p
 	if (sprite == NULL) return;
 
 #ifdef TOS
-	if (target == NULL && s_viewportPlanar && windowID == 2 &&
-	    GFX_Screen_Get_ByIndex(screenID) == GFX_Screen_Get_ByIndex(SCREEN_0)) {
-		viewportMask = GUI_ViewportSpriteMaskSlot(sprite);
-		assert(viewportMask->sprite == sprite);
-	}
+	assert(target != NULL || windowID != 2 || !Video_Atari_CursorDirect());
 #endif
 #ifdef GUI_SPRITE_PREDECODE_STATS
 	spriteOrigin = sprite;
@@ -2191,9 +2164,6 @@ static void GUI_DrawSpriteInternal(Screen screenID, const uint8 *sprite, int16 p
 		if (spriteHeight <= 0) return;
 
 		distY = -distY;
-#ifdef TOS
-		firstSpriteRow = distY;
-#endif
 
 		while (distY > 0) {
 			/* skip a row */
@@ -2296,12 +2266,7 @@ static void GUI_DrawSpriteInternal(Screen screenID, const uint8 *sprite, int16 p
 		screenY = posY;
 		spriteHeightDraw = spriteHeight;
 
-		if (viewportMask != NULL) {
-			uint16 pad = screenX & 15;
-			rowStride = (pad + pixelCountPerRow + 15) & ~15;
-			memset(spriteScratch, 0, (size_t)rowStride * spriteHeight);
-			buf = spriteScratch + pad;
-		} else if (s_spriteBatchBuf != NULL &&
+		if (s_spriteBatchBuf != NULL &&
 		    screenX >= s_spriteBatchOriginX && screenY >= s_spriteBatchOriginY &&
 		    screenX + pixelCountPerRow <= s_spriteBatchOriginX + s_spriteBatchW &&
 		    screenY + spriteHeight <= s_spriteBatchOriginY + s_spriteBatchH) {
@@ -2747,33 +2712,8 @@ static void GUI_DrawSpriteInternal(Screen screenID, const uint8 *sprite, int16 p
 	} while (--spriteHeight > 0);
 #ifdef TOS
 	if (toPlanar && !batched) {
-		if (viewportMask != NULL) {
-			uint16 line, group, groups = rowStride >> 4;
-			uint16 maskStride = (viewportMask->width + 15) >> 4;
-			uint16 pad = screenX & 15;
-			int16 col = (flags & DRAWSPRITE_FLAG_RTL)
-				? viewportMask->width - pixelSkipStart - pixelCountPerRow : pixelSkipStart;
-			const uint16 *maskBase = viewportMask->rows;
-			if (flags & DRAWSPRITE_FLAG_RTL) maskBase += maskStride * viewportMask->height;
-			assert(firstSpriteRow + spriteHeightDraw <= viewportMask->height);
-			for (line = 0; line < spriteHeightDraw; line++) {
-				uint16 row = firstSpriteRow + ((flags & DRAWSPRITE_FLAG_BOTTOMUP) ? spriteHeightDraw - 1 - line : line);
-				for (group = 0; group < groups; group++) {
-					uint16 begin = group == 0 ? pad : 0;
-					uint16 end = min(16, pad + pixelCountPerRow - group * 16);
-					uint16 edge = (0xffffu >> begin) & (0xffffu << (16 - end));
-					viewportMasks[line * groups + group] =
-						GUI_ViewportMaskWord(maskBase + row * maskStride, maskStride, col + group * 16 - pad) & edge;
-				}
-			}
-			GUI_Widget_Viewport_RepairTiles(screenX, screenY,
-			    screenX + pixelCountPerRow, screenY + spriteHeightDraw);
-			Video_Atari_PresentSprite(spriteScratch, rowStride, screenX & ~15, screenY,
-			                          rowStride, spriteHeightDraw, viewportMasks);
-		} else {
-			Video_Atari_PresentChunkyTransparent(spriteScratch, rowStride,
-			                                     screenX, screenY, rowStride, spriteHeightDraw);
-		}
+		Video_Atari_PresentChunkyTransparent(spriteScratch, rowStride,
+		                                     screenX, screenY, rowStride, spriteHeightDraw);
 	}
 #endif
 }
@@ -3446,6 +3386,10 @@ void GUI_DrawInterfaceAndRadar(Screen screenID)
 	PoolFindStruct find;
 	Screen oldScreenID;
 	Widget *w;
+#ifdef TOS
+	bool directViewport = Video_Atari_CursorDirect();
+	assert(!directViewport || screenID == SCREEN_0);
+#endif
 
 	oldScreenID = GFX_Screen_SetActive((screenID == SCREEN_0) ? SCREEN_1 : screenID);
 
@@ -3461,6 +3405,9 @@ void GUI_DrawInterfaceAndRadar(Screen screenID)
 
 	GUI_Widget_Viewport_RedrawMap(SCREEN_ACTIVE);
 
+#ifdef TOS
+	if (!directViewport)
+#endif
 	GUI_DrawScreen(SCREEN_ACTIVE);
 
 	GUI_Widget_ActionPanel_Draw(true);
@@ -3507,6 +3454,10 @@ void GUI_DrawInterfaceAndRadar(Screen screenID)
 		GUI_DrawCredits(g_playerHouseID, (g_playerCredits == 0xFFFF) ? 2 : 1);
 		GUI_SetPaletteAnimated(g_palette1, 15);
 
+#ifdef TOS
+		/* SCREEN_1 owns only the interface; publish it before the native battlefield. */
+		if (directViewport) GUI_DrawScreen(SCREEN_0);
+#endif
 		GUI_Mouse_Show_Safe();
 	}
 

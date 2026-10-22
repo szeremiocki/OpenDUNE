@@ -33,6 +33,9 @@
 #include "tile.h"
 #include "timer.h"
 #include "tools.h"
+#ifdef TOS
+#include "video/video.h"
+#endif
 
 
 static uint32 s_tickUnitMovement  = 0; /*!< Indicates next time the Movement function is executed. */
@@ -130,8 +133,17 @@ void GameLoop_Unit(void)
 	bool tickScript    = false;
 	bool tickUnknown5  = false;
 	bool tickDeviation = false;
+	int scriptBudget = SCRIPT_UNIT_OPCODES_PER_TICK + 2;
+	int offscreenScriptBudget = 3;
 
 	if (g_debugScenario) return;
+
+#ifdef TOS
+	if (Video_Atari_CursorDirect()) {
+		scriptBudget = SCRIPT_UNIT_OPCODES_PER_TICK + 1;
+		offscreenScriptBudget = 2;
+	}
+#endif
 
 	if (s_tickUnitMovement <= g_timerGame) {
 		tickMovement = true;
@@ -289,9 +301,9 @@ void GameLoop_Unit(void)
 		if (tickScript) {
 			if (u->o.script.delay == 0) {
 				if (Script_IsLoaded(&u->o.script)) {
-					int opcodesLeft = SCRIPT_UNIT_OPCODES_PER_TICK + 2;
+					int opcodesLeft = scriptBudget;
 					if (!ui->o.flags.scriptNoSlowdown && !Map_IsPositionInViewport(u->o.position, NULL, NULL)) {
-						opcodesLeft = 3;
+						opcodesLeft = offscreenScriptBudget;
 					}
 
 					u->o.script.variables[3] = g_playerHouseID;
@@ -581,16 +593,13 @@ Team *Unit_GetTeam(Unit *u)
 }
 
 /**
- * ?? Sorts unit array and count enemy/allied units.
+ * Incrementally sort units; reconcile allied/enemy counts every ten calls.
  */
 void Unit_Sort(void)
 {
+	static uint16 recountCountdown = 1;
 	House *h;
 	uint16 i;
-
-	h = g_playerHouse;
-	h->unitCountEnemy = 0;
-	h->unitCountAllied = 0;
 
 	for (i = 0; i < g_unitFindCount - 1; i++) {
 		Unit *u1;
@@ -610,6 +619,13 @@ void Unit_Sort(void)
 			g_unitFindArray[i + 1] = u1;
 		}
 	}
+
+	if (--recountCountdown != 0) return;
+	recountCountdown = 10;
+
+	h = g_playerHouse;
+	h->unitCountEnemy = 0;
+	h->unitCountAllied = 0;
 
 	for (i = 0; i < g_unitFindCount; i++) {
 		Unit *u;

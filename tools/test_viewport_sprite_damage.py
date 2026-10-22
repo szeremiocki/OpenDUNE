@@ -142,7 +142,10 @@ int main(void) {
         cached = function(gui, "GUI_ViewportPlanarSprite")
         self.assertLess(cached.index("GUI_Widget_Viewport_ShouldDrawSprite"),
                         cached.index("GUI_Widget_Viewport_RepairTiles"))
-        self.assertIn("GUI_Widget_Viewport_InvalidateSpriteDamage", function(gui, "GUI_DrawSprite"))
+        dispatch = function(gui, "GUI_DrawSprite")
+        self.assertNotIn("GUI_Widget_Viewport_InvalidateSpriteDamage", dispatch)
+        self.assertNotIn("va_copy", dispatch)
+        self.assertNotIn("return false", cached)
 
 
 if __name__ == "__main__":

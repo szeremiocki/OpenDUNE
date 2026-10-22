@@ -5,7 +5,7 @@
 
 typedef struct ViewportCompositeKey {
 	uint32 main;
-	uint32 tail[3]; /* Defined only when the main word's layer prefix is nonzero. */
+	uint32 tail[2]; /* Defined only when the main word's variable-layer prefix is nonzero. */
 } ViewportCompositeKey;
 
 static inline void ViewportCompositeKey_Clear(ViewportCompositeKey *key)

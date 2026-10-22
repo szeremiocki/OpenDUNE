@@ -1178,7 +1178,11 @@ static bool OpenDune_Init(int screen_magnification, VideoScaleFilter filter, int
 	Mouse_Init();
 
 	/* Add the general tickers */
+#ifdef TOS
+	Timer_Add(Timer_Tick, 1000000 / (Video_Atari_CursorDirect() ? 50 : 60), false);
+#else
 	Timer_Add(Timer_Tick, 1000000 / 60, false);
+#endif
 	Timer_Add(Video_Tick, 1000000 / frame_rate, true);
 
 	g_mouseDisabled = -1;

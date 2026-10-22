@@ -82,11 +82,6 @@ static bool GUI_Widget_Viewport_MinimapUpdateDue(void)
 	return true;
 }
 
-static bool GUI_Widget_Viewport_CanDrawPlanar(void)
-{
-	return Video_Atari_CursorDirect() && GFX_PlanarTilesReady() && GUI_ViewportSpriteCacheReady();
-}
-
 static inline uint16 GUI_Widget_Viewport_ReadRow(const uint8 *bits, uint16 shift)
 {
 	uint32 word = (uint32)bits[0] | ((uint32)bits[1] << 8);
@@ -655,7 +650,6 @@ static void GUI_Widget_Viewport_AddSpriteLayer(GUI_SpriteLayers *layers, uint16 
                                                uint8 house, int16 x, int16 y, int flags)
 {
 	GUI_SpriteLayer *layer;
-	assert(layers->count < 4);
 	layer = &layers->layer[layers->count++];
 	layer->spriteID = spriteID;
 	layer->colourHouse = GUI_SPRITE_COLOUR_EMBEDDED;
@@ -751,7 +745,8 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 #ifdef GFX_STORE_DIRTY_AREA_BLOCKS
 	static uint16 dirtyColumns[10];
 	bool directViewport = Video_Atari_CursorDirect();
-	bool planarViewport = !drawToMainScreen && GUI_Widget_Viewport_CanDrawPlanar();
+	bool planarViewport = directViewport;
+	assert(!planarViewport || (!drawToMainScreen && GFX_PlanarTilesReady() && GUI_ViewportSpriteCacheReady()));
 	trackCopyDamage = !planarViewport;
 	if (planarViewport != s_viewportWasPlanar || (planarViewport && hasScrolled && !planarShifted)) {
 		forceRedraw = true;
@@ -1050,6 +1045,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 			}
 
 			if (u->o.type == UNIT_HARVESTER && u->actionID == ACTION_HARVEST && u->spriteOffset >= 0 && (u->actionID == ACTION_HARVEST || u->actionID == ACTION_MOVE)) {
+				assert(ui->turretSpriteID == 0xFFFF);
 				uint16 type = Map_GetLandscapeType(packed);
 				if (type == LST_SPICE || type == LST_THICK_SPICE) {
 					uint16 harvestSpriteID = (u->spriteOffset % 3) + 0xDF + (values_32A4[orientation][0] * 3);

@@ -135,6 +135,129 @@ static bool Video_Atari_CursorRectOverlap(uint8 *base, uint16 first, uint16 end,
 
 
 class ViewportSpriteCacheTest(unittest.TestCase):
+    def test_canonical_layer_order(self):
+        viewport = (ROOT / "src/gui/viewport.c").read_text()
+        draw = function(viewport, "GUI_Widget_Viewport_Draw")
+        additions = re.findall(r"GUI_Widget_Viewport_AddSpriteLayer\(&layers,\s*([^,]+)", draw)
+        self.assertEqual(additions, ["harvestSpriteID", "spriteID", "spriteID", "6"])
+        self.assertLess(draw.index("harvestSpriteID ="), draw.index("ui->turretSpriteID != 0xFFFF"))
+        self.assertLess(draw.index("ui->turretSpriteID != 0xFFFF"), draw.index("u->o.flags.s.isSmoking"))
+        self.assertLess(draw.index("u->o.flags.s.isSmoking"),
+                        draw.index("GUI_Widget_Viewport_AddSpriteLayer(&layers, 6"))
+        self.assertNotRegex(function(viewport, "GUI_Widget_Viewport_AddSpriteLayer"),
+                            r"count\s*[<>]")
+        self.assertNotRegex(function((ROOT / "src/gui/gui.c").read_text(), "GUI_ViewportPlanarSprite"),
+                            r"count\s*[<>]")
+        units = (ROOT / "src/table/unitinfo.c").read_text()
+        harvester = units[units.index('/* name                 */ "Harvester"'):]
+        harvester = harvester[:harvester.index("/* name", 10)]
+        self.assertIn("/* turretSpriteID       */ -1", harvester)
+
+    def test_mandatory_cache_initialization(self):
+        gui = (ROOT / "src/gui/gui.c").read_text()
+        cache = gui[gui.index("enum { VIEWPORT_PLANAR_SPRITES"):gui.index("\nvoid GUI_FreeViewportSpriteCache")]
+        flags = "\n".join(line for line in (ROOT / "src/gui/gui.h").read_text().splitlines()
+                          if line.startswith("#define DRAWSPRITE_FLAG_"))
+        harness = r"""
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+typedef uint8_t uint8;
+typedef uint16_t uint16;
+typedef int16_t int16;
+typedef uint32_t uint32;
+#define READ_LE_UINT16(p) ((uint16)((p)[0] | ((uint16)(p)[1] << 8)))
+/* TYPES */
+typedef struct ViewportSpriteMask {
+    const uint8 *sprite;
+    uint16 *rows;
+    uint16 width, height;
+} ViewportSpriteMask;
+static ViewportSpriteMask s_viewportSpriteCache[355];
+static uint16 *s_viewportSpriteMasks;
+static bool s_viewportSpriteReady, s_viewportPlanar, direct = true;
+static uint8 *g_sprites[355];
+static unsigned allocations, failAt;
+/* CACHE */
+static void GUI_FreeViewportSpriteCache(void) {
+    free(s_viewportSpriteMasks); s_viewportSpriteMasks = NULL;
+    free(s_viewportPlanarSprites); s_viewportPlanarSprites = NULL;
+    free(s_viewportPlanarMasks); s_viewportPlanarMasks = NULL;
+    free(s_viewportPlanarComponents); s_viewportPlanarComponents = NULL;
+    memset(s_viewportSpriteCache, 0, sizeof(s_viewportSpriteCache));
+    memset(s_viewportPlanarKeys, 0, sizeof(s_viewportPlanarKeys));
+    s_viewportPlanarLastHitPosition = VIEWPORT_PLANAR_SPRITES;
+    s_viewportPlanarClock = s_viewportComponentClock = 0;
+    s_viewportSpriteReady = s_viewportPlanar = false;
+}
+static bool Video_Atari_CursorDirect(void) { return direct; }
+static bool Video_Atari_ViewportBlitter(void) { return false; }
+static void Error(const char *format, ...) {
+    va_list ap; va_start(ap, format); vfprintf(stderr, format, ap); va_end(ap);
+}
+static void *test_malloc(size_t size) {
+    assert(!s_viewportSpriteReady);
+    return ++allocations == failAt ? NULL : malloc(size);
+}
+static void *test_calloc(size_t count, size_t size) {
+    assert(!s_viewportSpriteReady);
+    return ++allocations == failAt ? NULL : calloc(count, size);
+}
+#define malloc test_malloc
+#define calloc test_calloc
+static void GUI_DrawSpriteMask(uint8 *pixels, uint16 width, uint16 height,
+                               const uint8 *sprite, int16 x, int16 y, int flags, ...) {
+    (void)sprite; (void)x; (void)y; (void)flags;
+    memset(pixels, 1, width * height);
+}
+/* PRODUCTION */
+int main(int argc, char **argv) {
+    uint8 selection[10] = {2, 0, 1, 1}, unit[10] = {2, 0, 1, 1};
+    g_sprites[6] = selection; g_sprites[111] = unit;
+    if (argc > 1) {
+        if (!strcmp(argv[1], "width")) unit[3] = 33;
+        else if (!strcmp(argv[1], "height")) unit[2] = 65;
+        else if (!strcmp(argv[1], "other-machine")) direct = false;
+        else failAt = atoi(argv[1]);
+    }
+    GUI_InitViewportSpriteCache();
+    if (!direct) {
+        assert(!s_viewportSpriteReady && !allocations);
+        return 0;
+    }
+    assert(!failAt && s_viewportSpriteReady && allocations == 4);
+    assert(GUI_ViewportSpriteMaskSlot(6)->sprite == selection);
+    assert(GUI_ViewportSpriteMaskSlot(111)->sprite == unit);
+    assert(GUI_ViewportSpriteMaskSlot(6) != GUI_ViewportSpriteMaskSlot(111));
+    assert(s_viewportPlanarSprites && s_viewportPlanarMasks && s_viewportPlanarComponents);
+    GUI_FreeViewportSpriteCache();
+    return 0;
+}
+"""
+        types = (ROOT / "src/gui/viewport_key.h").read_text() + "\n" + blit_plan_type()
+        harness = harness.replace("/* TYPES */", types + "\n" + flags)
+        harness = harness.replace("/* CACHE */", cache)
+        harness = harness.replace("/* PRODUCTION */",
+                                  function(gui, "GUI_ViewportSpriteMaskSlot") + "\n" +
+                                  function(gui, "GUI_InitViewportSpriteCache"))
+        with tempfile.TemporaryDirectory(prefix="viewport-cache-init-") as directory:
+            source = Path(directory) / "test.c"
+            binary = Path(directory) / "test"
+            source.write_text(harness)
+            compiler = shlex.split(os.environ.get("CC", "cc"))
+            subprocess.run([*compiler, "-std=c99", "-O2", "-Wall", "-Wextra", "-Werror",
+                            str(source), "-o", str(binary)], check=True)
+            subprocess.run([str(binary)], check=True)
+            subprocess.run([str(binary), "other-machine"], check=True)
+            for mode in ["width", "height", "1", "2", "3", "4"]:
+                result = subprocess.run([str(binary), mode], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 1, mode)
+                self.assertIn("planar viewport", result.stderr)
+
     def test_unit_identity_mutation_and_lifecycle(self):
         gui = (ROOT / "src/gui/gui.c").read_text()
         unit = (ROOT / "src/unit.c").read_text()
@@ -245,6 +368,8 @@ int main(void) {
     assert(!valid(u) && u->orientation[1].current == 16);
     warm(u);
     g_scriptCurrentUnit = u;
+    u->o.script.stackPointer = 14;
+    u->o.script.stack[14] = 7;
     Script_Unit_SetSprite(&u->o.script);
     assert(!valid(u) && u->spriteOffset == -7);
     warm(u);
@@ -465,6 +590,7 @@ int main(void) {
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdlib.h>
+#include <signal.h>
 #include <string.h>
 typedef uint8_t uint8;
 typedef int8_t int8;
@@ -526,8 +652,8 @@ static int16 repairLeft, repairTop, repairRight, repairBottom;
 static int compare_directory_keys(const void *left, const void *right) {
     const ViewportPlanarSpriteKey *a = left, *b = right;
     if (a->key.main != b->key.main) return a->key.main < b->key.main ? -1 : 1;
-    if (!(a->key.main >> 20)) return 0;
-    for (unsigned i = 0; i < 3; i++)
+    if (!(a->key.main >> 21)) return 0;
+    for (unsigned i = 0; i < 2; i++)
         if (a->key.tail[i] != b->key.tail[i])
             return a->key.tail[i] < b->key.tail[i] ? -1 : 1;
     return 0;
@@ -545,11 +671,11 @@ static void assert_directory(void) {
             live++;
             assert(i >= VIEWPORT_PLANAR_SPRITES - count);
             assert(!memcmp(key->key.tail, key->sprite->key.tail, sizeof(key->key.tail)));
-            if (!(key->key.main >> 20))
-                assert(!key->key.tail[0] && !key->key.tail[1] && !key->key.tail[2]);
+            if (!(key->key.main >> 21))
+                assert(!key->key.tail[0] && !key->key.tail[1]);
         } else {
             assert(i < VIEWPORT_PLANAR_SPRITES - count);
-            const uint32 zeros[3] = {0};
+            const uint32 zeros[2] = {0};
             assert(!memcmp(key->key.tail, zeros, sizeof(zeros)));
         }
         assert(key->sprite->masks == s_viewportPlanarMasks +
@@ -596,9 +722,8 @@ static ViewportPlanarComponent *expected_component_victim(void) {
 /* FREE */
 static void GFX_Screen_SetViewportPlanar(bool active) { (void)active; }
 /* PLANAR SCOPE */
-static ViewportSpriteMask *GUI_ViewportSpriteMaskSlot(const uint8 *sprite) {
-    for (unsigned i = 0; i < 70; i++) if (slots[i].sprite == sprite) return slots + i;
-    assert(false); return NULL;
+static ViewportSpriteMask *GUI_ViewportSpriteMaskSlot(uint16 id) {
+    return slots + (id == 111 ? 0 : id);
 }
 static void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 bottom) {
     assert(!pendingRepair && !(left & 15) && !(right & 15) && right > left);
@@ -684,25 +809,23 @@ static ViewportCompositeKey *draw_key(void) {
     return viewportKey;
 }
 static bool draw(const uint8 *sprite, int16 x, int16 y, int flags, ...) {
-    bool result;
     va_list ap;
     uint16 id = (sprite - sprites[0]) / sizeof(sprites[0]);
     if (id == 0) id = 111;
     va_start(ap, flags);
-    result = GUI_ViewportPlanarSprite(sprite, id,
+    GUI_ViewportPlanarSprite(sprite, id,
         flags & DRAWSPRITE_FLAG_PAL ? 0 : GUI_SPRITE_COLOUR_EMBEDDED, x, y, flags, &ap, NULL,
         draw_key());
     va_end(ap);
-    return result;
+    return true;
 }
 static bool draw_identity(uint16 id, uint8 house, int flags, ...) {
-    bool result;
     va_list ap;
     va_start(ap, flags);
-    result = GUI_ViewportPlanarSprite(sprites[0], id, house, 64, 60, flags, &ap, NULL,
+    GUI_ViewportPlanarSprite(sprites[0], id, house, 64, 60, flags, &ap, NULL,
                                     draw_key());
     va_end(ap);
-    return result;
+    return true;
 }
 static unsigned tile_count(int left, int top, int right, int bottom) {
     left = max(0, left & ~15); right = min(240, (right + 15) & ~15);
@@ -751,12 +874,11 @@ static void check(unsigned id, int x, int y, int flags, bool recolour) {
 }
 static bool draw_layers(const GUI_SpriteLayers *layers, int16 x, int16 y, int flags, ...) {
     va_list ap;
-    bool result;
     va_start(ap, flags);
-    result = GUI_ViewportPlanarSprite(sprites[0], 111, 0, x, y, flags, &ap, layers,
+    GUI_ViewportPlanarSprite(sprites[0], 111, 0, x, y, flags, &ap, layers,
                                     draw_key());
     va_end(ap);
-    return result;
+    return true;
 }
 static void reference_layer(unsigned id, int x, int y, int flags,
                             const uint8 *colours, const uint8 *mapping) {
@@ -809,7 +931,7 @@ static void check_layers(const GUI_SpriteLayers *layers, int x, int y, int flags
     assert(blitterSetups == setups + (s_viewportBlitter && portions && !overlays ? 1 : 0));
     assert(!memcmp(visible, expected, sizeof(visible)));
 }
-static void append_key_field(uint32 words[4], unsigned *position,
+static void append_key_field(uint32 words[3], unsigned *position,
                              uint32 value, unsigned width) {
     for (unsigned bit = 0; bit < width; bit++, (*position)++)
         if ((value >> bit) & 1)
@@ -819,7 +941,7 @@ static void check_compact_key_inputs(uint16 spriteID, uint8 colourHouse, int fla
                                      bool highlighted, int16 x, bool blitter,
                                      const GUI_SpriteLayers *layers) {
     ViewportCompositeKey actual;
-    uint32 reference[4] = {0};
+    uint32 reference[3] = {0};
     unsigned position = 0;
     memset(&actual, 0xa5, sizeof(actual));
     GUI_ViewportBuildCompositeKey(&actual, spriteID, colourHouse, flags,
@@ -831,8 +953,12 @@ static void check_compact_key_inputs(uint16 spriteID, uint8 colourHouse, int fla
     append_key_field(reference, &position, highlighted, 1);
     append_key_field(reference, &position, blitter ? 0 : (uint16)x % 16, 4);
     append_key_field(reference, &position, !!(flags & DRAWSPRITE_FLAG_CENTER), 1);
-    for (unsigned i = 0; i < 4; i++) {
-        if (!layers || i >= layers->count) {
+    unsigned count = layers ? layers->count : 0;
+    bool selected = count && layers->layer[count - 1].spriteID == 6;
+    append_key_field(reference, &position, selected, 1);
+    count -= selected;
+    for (unsigned i = 0; i < 2; i++) {
+        if (i >= count) {
             append_key_field(reference, &position, 0, 26);
             continue;
         }
@@ -844,12 +970,12 @@ static void check_compact_key_inputs(uint16 spriteID, uint8 colourHouse, int fla
         append_key_field(reference, &position, layer->offsetX & 63, 6);
         append_key_field(reference, &position, layer->offsetY & 63, 6);
     }
-    assert(position == 124 && actual.main == reference[0] && actual.main);
-    if (layers && layers->count) {
+    assert(position == 73 && actual.main == reference[0] && actual.main);
+    if (count) {
         assert(!memcmp(actual.tail, reference + 1, sizeof(actual.tail)));
-        assert((actual.tail[2] & 0xf0000000UL) == 0);
+        assert((actual.tail[1] & 0xfffffe00UL) == 0);
     } else {
-        for (unsigned i = 0; i < 3; i++) assert(actual.tail[i] == 0xa5a5a5a5UL);
+        for (unsigned i = 0; i < 2; i++) assert(actual.tail[i] == 0xa5a5a5a5UL);
     }
 }
 static void check_compact_key(uint32 base, const GUI_SpriteLayers *layers) {
@@ -866,15 +992,15 @@ static uint32 next_key_random(uint32 *state) {
     return *state;
 }
 static void check_compact_keys(void) {
-    assert(sizeof(ViewportCompositeKey) == 16);
-    assert(sizeof(s_viewportPlanarSprites[0].key.tail) == 12);
-    assert(sizeof(s_viewportPlanarKeys[0].key.tail) == 12);
+    assert(sizeof(ViewportCompositeKey) == 12);
+    assert(sizeof(s_viewportPlanarSprites[0].key.tail) == 8);
+    assert(sizeof(s_viewportPlanarKeys[0].key.tail) == 8);
     assert(offsetof(ViewportPlanarSprite, key) == 0);
-    assert(offsetof(ViewportPlanarSprite, used) == 16);
-    assert(offsetof(ViewportPlanarSpriteKey, sprite) == 16);
+    assert(offsetof(ViewportPlanarSprite, used) == 12);
+    assert(offsetof(ViewportPlanarSpriteKey, sprite) == 16); /* Host pointer alignment. */
     GUI_SpriteLayers full = {0}, empty = {0};
     ViewportCompositeKey reused;
-    full.count = 4;
+    full.count = 2;
     for (unsigned i = 0; i < full.count; i++) {
         full.layer[i].spriteID = 354;
         full.layer[i].colourHouse = GUI_SPRITE_COLOUR_EMBEDDED;
@@ -884,9 +1010,9 @@ static void check_compact_keys(void) {
     }
     for (unsigned i = 0; i < 2; i++) {
         GUI_ViewportBuildCompositeKey(&reused, 354, 0, 0, false, 0, true, &full);
-        assert(reused.main >> 20);
-        assert(reused.tail[0] && reused.tail[1] && reused.tail[2]);
-        uint32 tails[3];
+        assert(reused.main >> 21);
+        assert(reused.tail[0] && reused.tail[1]);
+        uint32 tails[2];
         memcpy(tails, reused.tail, sizeof(tails));
         GUI_ViewportBuildCompositeKey(&reused, 354, 0, 0, false, 0, true, i ? &empty : NULL);
         assert(reused.main == 354);
@@ -910,7 +1036,7 @@ static void check_compact_keys(void) {
                                 colour == 6 ? GUI_SPRITE_COLOUR_EMBEDDED : colour,
                                 flags, highlighted, x, blitter, NULL);
                         }
-    for (unsigned count = 0; count <= 4; count++) {
+    for (unsigned count = 0; count <= 2; count++) {
         GUI_SpriteLayers layers = {0};
         layers.count = count;
         for (unsigned i = 0; i < count; i++) {
@@ -925,6 +1051,7 @@ static void check_compact_keys(void) {
             GUI_SpriteLayer saved = layers.layer[i];
             GUI_SpriteLayer *layer = &layers.layer[i];
             for (unsigned id = 1; id <= 354; id++) {
+                if (id == 6) continue;
                 layer->spriteID = id;
                 check_compact_key(0xffd62u, &layers);
             }
@@ -948,23 +1075,29 @@ static void check_compact_keys(void) {
                 layer->offsetY = saved.offsetY;
             }
         }
+        layers.layer[count] = (GUI_SpriteLayer){6, GUI_SPRITE_COLOUR_EMBEDDED, 0, 0, 0, {0}};
+        layers.count++;
+        check_compact_key(0xffd62u, &layers);
     }
     uint32 state = 0x98765432u;
     for (unsigned trial = 0; trial < 4096; trial++) {
         GUI_SpriteLayers layers = {0};
-        layers.count = next_key_random(&state) % 5;
+        layers.count = next_key_random(&state) % 3;
         uint32 base = (next_key_random(&state) & 0xff000u) |
                       ((next_key_random(&state) % 7) << 9) |
                       (next_key_random(&state) % 354 + 1);
         for (unsigned i = 0; i < layers.count; i++) {
             GUI_SpriteLayer *layer = &layers.layer[i];
             layer->spriteID = next_key_random(&state) % 354 + 1;
+            if (layer->spriteID == 6) layer->spriteID = 7;
             unsigned colour = next_key_random(&state) % 7;
             layer->colourHouse = colour == 6 ? GUI_SPRITE_COLOUR_EMBEDDED : colour;
             layer->flags = next_key_random(&state) & 3;
             layer->offsetX = (int)(next_key_random(&state) & 63) - 32;
             layer->offsetY = (int)(next_key_random(&state) & 63) - 32;
         }
+        if (trial & 1)
+            layers.layer[layers.count++] = (GUI_SpriteLayer){6, GUI_SPRITE_COLOUR_EMBEDDED, 0, 0, 0, {0}};
         check_compact_key(base, &layers);
     }
 }
@@ -974,14 +1107,14 @@ static void check_unit_key(Unit *unit, uint16 id, uint8 house, int flags,
     ViewportCompositeKey reference;
     ViewportCompositeKey *actual = &unit->viewportKey;
     GUI_ViewportBuildCompositeKey(&reference, id, house, flags, highlighted, x, blitter, layers);
-    uint32 oldTail[3];
+    uint32 oldTail[2];
     memcpy(oldTail, actual->tail, sizeof(oldTail));
     unsigned before = keyBuilds;
     if (blitter) GUI_ViewportBuildCompositeKeyBlitter(actual, id, house, flags, highlighted, layers);
     else GUI_ViewportBuildCompositeKeyCPU(actual, id, house, flags, highlighted, x, layers);
     assert(keyBuilds == before + rebuilds);
     assert(actual->main == reference.main);
-    if (actual->main >> 20) assert(!memcmp(actual->tail, reference.tail, sizeof(actual->tail)));
+    if (actual->main >> 21) assert(!memcmp(actual->tail, reference.tail, sizeof(actual->tail)));
     else assert(!memcmp(actual->tail, oldTail, sizeof(oldTail)));
 }
 static void check_unit_keys(void) {
@@ -997,8 +1130,8 @@ static void check_unit_keys(void) {
             check_unit_key(&unit, 111, 0, flags, false, x, blitter, NULL, 0);
         }
     GUI_SpriteLayers layers = {0};
-    layers.count = 4;
-    for (unsigned i = 0; i < 4; i++) {
+    layers.count = 2;
+    for (unsigned i = 0; i < 2; i++) {
         layers.layer[i].spriteID = i + 1;
         layers.layer[i].colourHouse = i;
         layers.layer[i].flags = i & 3;
@@ -1010,7 +1143,7 @@ static void check_unit_keys(void) {
     for (unsigned blitter = 0; blitter < 2; blitter++)
         for (int x = -32; x < 32; x++)
             check_unit_key(&unit, 112, 2, flags | 3, true, x, blitter, &layers, 0);
-    for (unsigned i = 0; i < 4; i++) {
+    for (unsigned i = 0; i < 2; i++) {
         layers.layer[i].spriteID++;
         layers.layer[i].colourHouse = GUI_SPRITE_COLOUR_EMBEDDED;
         layers.layer[i].flags ^= 3;
@@ -1025,6 +1158,8 @@ static void check_unit_keys(void) {
     check_unit_key(&unit, 111, 0, flags, false, 1, false, &layers, 1);
     layers.count = 1;
     layers.layer[0].spriteID = 6;
+    layers.layer[0].colourHouse = GUI_SPRITE_COLOUR_EMBEDDED;
+    layers.layer[0].flags = 0;
     layers.layer[0].offsetX = layers.layer[0].offsetY = 0;
     g_unitSelected = &unit;
     Unit_ClearViewportKey(&unit);
@@ -1066,10 +1201,9 @@ static void check_unit_keys(void) {
         check_unit_key(&unit, 111, 0, flags, false, i, true, &layers, 0);
     }
 }
+static void assertion_failed(int signum) { _Exit(signum == SIGABRT ? 90 : 91); }
 int main(int argc, char **argv) {
     unsigned before;
-    ViewportPlanarSprite *saved;
-    (void)argv;
     check_compact_keys();
     check_unit_keys();
     s_viewportBlitter = argc > 1;
@@ -1098,15 +1232,52 @@ int main(int argc, char **argv) {
                                   sizeof(*s_viewportPlanarMasks));
     s_viewportPlanarComponents = calloc(VIEWPORT_PLANAR_COMPONENTS, sizeof(*s_viewportPlanarComponents));
     assert(s_viewportPlanarSprites && s_viewportPlanarMasks && s_viewportPlanarComponents);
+    assert(g_paletteMapping2 == remap);
+    assert(expected_sprite_victim() == s_viewportPlanarSprites);
+    assert(expected_component_victim() == s_viewportPlanarComponents);
     for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++)
         s_viewportPlanarSprites[i].masks = s_viewportPlanarMasks + i * 320 * (s_viewportBlitter ? 4 : 1);
     rebuild_directory();
     uint16 emptyPosition = 99;
-    const uint32 emptyLayers[3] = {0};
-    assert(!draw_identity(0, GUI_SPRITE_COLOUR_EMBEDDED, 0));
-    assert(!GUI_ViewportPlanarComponent(slots, 0, GUI_SPRITE_COLOUR_EMBEDDED, 0, NULL, NULL));
-    GUI_SpriteLayers mouseLayer = {1, {{0, GUI_SPRITE_COLOUR_EMBEDDED, 0, 0, 0, {0}}}};
-    assert(!draw_layers(&mouseLayer, 64, 60, DRAWSPRITE_FLAG_PAL, palette));
+    const uint32 emptyLayers[2] = {0};
+    if (argc > 2) {
+        signal(SIGABRT, assertion_failed);
+        GUI_SpriteLayers invalid = {1, {{0, GUI_SPRITE_COLOUR_EMBEDDED, 0, 0, 0, {0}}}};
+        switch (atoi(argv[2])) {
+            case 0: draw_identity(0, GUI_SPRITE_COLOUR_EMBEDDED, 0); break;
+            case 1: draw_identity(GUI_SPRITE_ID_UNKNOWN, GUI_SPRITE_COLOUR_EMBEDDED, 0); break;
+            case 2: draw_identity(1, GUI_SPRITE_COLOUR_EMBEDDED, 0); break;
+            case 3: draw_identity(111, GUI_SPRITE_COLOUR_UNKNOWN, DRAWSPRITE_FLAG_PAL, palette); break;
+            case 4: draw_identity(111, 0, 0); break;
+            case 5: draw(sprites[0], 64, 60, DRAWSPRITE_FLAG_ZOOM); break;
+            case 6: draw(sprites[0], 64, 60, DRAWSPRITE_FLAG_BLUR); break;
+            case 7: draw(sprites[0], 64, 60, DRAWSPRITE_FLAG_PAL | DRAWSPRITE_FLAG_REMAP,
+                         palette, remap, 2); break;
+            case 8: draw_layers(&invalid, 64, 60, DRAWSPRITE_FLAG_PAL, palette); break;
+            case 9:
+                invalid.layer[0] = (GUI_SpriteLayer){6, GUI_SPRITE_COLOUR_EMBEDDED, 1, 0, 0, {0}};
+                draw_layers(&invalid, 64, 60, DRAWSPRITE_FLAG_PAL, palette);
+                break;
+            case 10:
+                invalid.count = 2;
+                invalid.layer[0] = (GUI_SpriteLayer){6, GUI_SPRITE_COLOUR_EMBEDDED, 0, 0, 0, {0}};
+                invalid.layer[1] = (GUI_SpriteLayer){3, GUI_SPRITE_COLOUR_EMBEDDED, 0, 0, 0, {0}};
+                draw_layers(&invalid, 64, 60, DRAWSPRITE_FLAG_PAL, palette);
+                break;
+            case 11:
+                s_viewportPlanar = false;
+                draw(sprites[0], 64, 60, 0);
+                break;
+            case 12:
+                invalid.count = 2;
+                invalid.layer[0] = (GUI_SpriteLayer){2, GUI_SPRITE_COLOUR_EMBEDDED, 0, -32, 0, {0}};
+                invalid.layer[1] = (GUI_SpriteLayer){3, GUI_SPRITE_COLOUR_EMBEDDED, 0, 31, 0, {0}};
+                draw_layers(&invalid, 64, 60, DRAWSPRITE_FLAG_PAL, palette);
+                break;
+            default: return 3;
+        }
+        return 2;
+    }
     assert(!s_viewportPlanarClock && !s_viewportComponentClock && !decodes && !encodes);
     assert_directory();
     assert(!GUI_ViewportFindPlanarSprite(0x80000000UL, emptyLayers, &emptyPosition));
@@ -1149,11 +1320,6 @@ int main(int argc, char **argv) {
     before = decodes;
     check(0, 64, 60, DRAWSPRITE_FLAG_PAL | DRAWSPRITE_FLAG_REMAP, true);
     assert(decodes == before);
-    assert(!draw(sprites[0], 64, 60, DRAWSPRITE_FLAG_PAL | DRAWSPRITE_FLAG_REMAP, palette, remap, 2));
-    assert(!draw_identity(GUI_SPRITE_ID_UNKNOWN, GUI_SPRITE_COLOUR_EMBEDDED, 0));
-    assert(!draw_identity(1, GUI_SPRITE_COLOUR_EMBEDDED, 0));
-    assert(!draw_identity(111, GUI_SPRITE_COLOUR_UNKNOWN, DRAWSPRITE_FLAG_PAL, palette));
-    assert(!draw_identity(111, 0, 0));
     assert(decodes == before);
     /* Explicit house 0, embedded palette, and another house are separate keys. */
     assert(draw_identity(111, 0, DRAWSPRITE_FLAG_PAL, palette));
@@ -1176,30 +1342,21 @@ int main(int argc, char **argv) {
     memcpy(savedDirectory, s_viewportPlanarKeys, sizeof(savedDirectory));
     assert(draw(sprites[0], -100, -100, 0) && decodes == before);
     assert(!memcmp(savedDirectory, s_viewportPlanarKeys, sizeof(savedDirectory)));
-    assert(!draw(sprites[0], 64, 60, DRAWSPRITE_FLAG_ZOOM));
-    saved = s_viewportPlanarSprites; s_viewportPlanarSprites = NULL;
-    assert(!draw(sprites[0], 64, 60, 0));
-    s_viewportPlanarSprites = saved;
-    ViewportPlanarComponent *savedComponents = s_viewportPlanarComponents;
-    s_viewportPlanarComponents = NULL;
-    assert(!draw(sprites[0], 64, 60, 0));
-    s_viewportPlanarComponents = savedComponents;
     for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) s_viewportPlanarSprites[i].key.main = 0;
     rebuild_directory();
     memset(s_viewportPlanarComponents, 0, VIEWPORT_PLANAR_COMPONENTS * sizeof(*s_viewportPlanarComponents));
-    /* Complete unit: attachment, independent turret, smoke, direct-index selection.
+    /* Complete unit: turret/attachment, smoke, fixed selection.
      * Overlap, opaque colour 0, wide negative offsets and taller bounds matter. */
-    GUI_SpriteLayers layers = {4, {
-        {1, GUI_SPRITE_COLOUR_EMBEDDED, -14, 7, DRAWSPRITE_FLAG_RTL, {0}},
+    GUI_SpriteLayers layers = {3, {
         {2, 2, 2, -5, DRAWSPRITE_FLAG_BOTTOMUP | DRAWSPRITE_FLAG_PAL, {0}},
         {3, GUI_SPRITE_COLOUR_EMBEDDED, 0, -14, 0, {0}},
         {6, GUI_SPRITE_COLOUR_EMBEDDED, 0, 0, 0, {0}}
     }};
-    for (unsigned i = 0; i < 16; i++) layers.layer[1].palette[i] = i == 1 ? 0 : i + 32;
+    for (unsigned i = 0; i < 16; i++) layers.layer[0].palette[i] = i == 1 ? 0 : i + 32;
     before = decodes;
     unsigned encoded = encodes;
     check_layers(&layers, 65, 50, DRAWSPRITE_FLAG_RTL);
-    assert(decodes == before + 5 && encodes == encoded + 5);
+    assert(decodes == before + 4 && encodes == encoded + 4);
     before = decodes;
     encoded = encodes;
     unsigned composed = compositions;
@@ -1207,23 +1364,23 @@ int main(int argc, char **argv) {
     check_layers(&layers, 81, 66, DRAWSPRITE_FLAG_RTL);
     assert(decodes == before && encodes == encoded && compositions == composed);
     overlays = false;
+    layers.count = 2;
+    check_layers(&layers, 65, 50, DRAWSPRITE_FLAG_RTL);
+    assert(decodes == before && encodes == encoded && compositions == composed + 3);
+    before = decodes;
     layers.count = 3;
     check_layers(&layers, 65, 50, DRAWSPRITE_FLAG_RTL);
-    assert(decodes == before && encodes == encoded && compositions == composed + 4);
-    before = decodes;
-    layers.count = 4;
-    check_layers(&layers, 65, 50, DRAWSPRITE_FLAG_RTL);
     assert(decodes == before);
-    layers.layer[1].offsetX--;
+    layers.layer[0].offsetX--;
     check_layers(&layers, 65, 50, DRAWSPRITE_FLAG_RTL);
     assert(decodes == before && encodes == encoded);
     before = decodes;
-    layers.layer[1].colourHouse++;
-    layers.layer[1].palette[1] = 7;
+    layers.layer[0].colourHouse++;
+    layers.layer[0].palette[1] = 7;
     check_layers(&layers, 65, 50, DRAWSPRITE_FLAG_RTL);
     assert(decodes == before + 1 && encodes == encoded + 1);
-    layers.layer[1].spriteID++;
-    layers.layer[1].flags ^= DRAWSPRITE_FLAG_RTL;
+    layers.layer[0].spriteID++;
+    layers.layer[0].flags ^= DRAWSPRITE_FLAG_RTL;
     check_layers(&layers, -5, 0, DRAWSPRITE_FLAG_BOTTOMUP);
     check_layers(&layers, 239, 159, DRAWSPRITE_FLAG_BOTTOMUP);
     before = decodes;
@@ -1235,7 +1392,7 @@ int main(int argc, char **argv) {
     encoded = encodes;
     composed = compositions;
     check_layers(&layers, 65, 50, DRAWSPRITE_FLAG_RTL);
-    assert(decodes == before && encodes == encoded && compositions == composed + 5);
+    assert(decodes == before && encodes == encoded && compositions == composed + 4);
     /* Composite alignment is determined by the union, not just the body.
      * Exercise every phase/flip at both viewport edges and on cache hits. */
     for (unsigned flags = 0; flags < 4; flags++) {
@@ -1257,12 +1414,12 @@ int main(int argc, char **argv) {
     assert(decodes == before && encodes == encoded);
     if (s_viewportBlitter) assert(compositions == composed);
     /* A new smoke frame decodes only itself, not the body/turret/selection. */
-    layers.layer[2].spriteID = 4;
+    layers.layer[1].spriteID = 4;
     check_layers(&layers, 79, 50, 0);
     assert(decodes == before + 1 && encodes == encoded + 1);
     before = decodes;
     encoded = encodes;
-    layers.layer[2].spriteID = 3;
+    layers.layer[1].spriteID = 3;
     check_layers(&layers, 79, 50, 0);
     assert(decodes == before && encodes == encoded);
     s_viewportComponentClock = 65535;
@@ -1462,12 +1619,12 @@ int main(int argc, char **argv) {
     }
     /* Exercise insertion at both ends and every packed word comparison, including
      * unsigned values and absent layers, independently of sprite decoding. */
-    for (unsigned differing = 0; differing < 4; differing++) {
+    for (unsigned differing = 0; differing < 3; differing++) {
         for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) s_viewportPlanarSprites[i].key.main = 0;
         rebuild_directory();
         for (unsigned n = 0; n < 64; n++) {
             unsigned slot = (n * 37) & 63;
-            uint32 words[4] = {0x80000001UL, 0, 0, 0};
+            uint32 words[3] = {0x80000001UL, 0, 0};
             words[differing] = 0x80000000UL + slot * 2;
             uint16 position;
             probes = lookupCandidates;
@@ -1516,7 +1673,7 @@ int main(int argc, char **argv) {
             assert(position == slot && lookupCandidates == probes + 1);
             assert(lastHitMatches == matches + 1);
             assert(layerComparisons == comparisons);
-            uint32 words[4];
+            uint32 words[3];
             words[0] = entry->key.main;
             memcpy(words + 1, entry->key.tail, sizeof(entry->key.tail));
             words[differing]++;
@@ -1530,7 +1687,7 @@ int main(int argc, char **argv) {
          * key: removal must adjust the saved insertion position correctly. */
         for (unsigned pass = 0; pass < 4; pass++) {
             ViewportPlanarSprite *entry = s_viewportPlanarSprites + (pass ? 0 : 63);
-            uint32 words[4] = {0x80000001UL, 0, 0, 0};
+            uint32 words[3] = {0x80000001UL, 0, 0};
             words[differing] = pass & 1 ? 0xffffffffUL : pass == 0 ? 1 : 2;
             uint16 position;
             if (pass >= 2) {
@@ -1540,7 +1697,7 @@ int main(int argc, char **argv) {
             assert(!GUI_ViewportFindPlanarSprite(words[0], words + 1, &position));
             ViewportPlanarSprite *previousHit =
                 s_viewportPlanarKeys[s_viewportPlanarLastHitPosition].sprite;
-            uint32 oldKey = entry->key.main, oldLayers[3];
+            uint32 oldKey = entry->key.main, oldLayers[2];
             memcpy(oldLayers, entry->key.tail, sizeof(oldLayers));
             entry->key.main = words[0];
             memcpy(entry->key.tail, words + 1, sizeof(entry->key.tail));
@@ -1665,10 +1822,9 @@ int main(int argc, char **argv) {
     assert(!s_viewportPlanarMasks && !blitterLocks);
     for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) {
         assert(!s_viewportPlanarKeys[i].key.main && !s_viewportPlanarKeys[i].sprite);
-        for (unsigned word = 0; word < 3; word++) assert(!s_viewportPlanarKeys[i].key.tail[word]);
+        for (unsigned word = 0; word < 2; word++) assert(!s_viewportPlanarKeys[i].key.tail[word]);
     }
     assert(s_viewportPlanarLastHitPosition == VIEWPORT_PLANAR_SPRITES);
-    assert(!draw(sprites[0], 64, 60, 0));
     return 0;
 }
 """
@@ -1738,8 +1894,20 @@ int main(int argc, char **argv) {
                             str(source), "-o", str(binary)], check=True)
             subprocess.run([str(binary)], check=True)
             subprocess.run([str(binary), "blitter"], check=True)
+            for invalid in range(13):
+                result = subprocess.run([str(binary), "blitter", str(invalid)],
+                                        stderr=subprocess.DEVNULL)
+                self.assertEqual(result.returncode, 90, invalid)
+            release = harness.replace(lookup,
+                "#define NDEBUG\n#include <assert.h>\n" + lookup +
+                "\n#undef NDEBUG\n#include <assert.h>\n")
+            source.write_text(release)
+            subprocess.run([*compiler, "-std=c99", "-O2", "-Wall", "-Wextra", "-Werror",
+                            str(source), "-o", str(binary)], check=True)
+            subprocess.run([str(binary)], check=True)
+            subprocess.run([str(binary), "blitter"], check=True)
 
-    def test_layered_dispatch_and_fallback(self):
+    def test_layered_dispatch_and_mandatory_planar(self):
         gui = (ROOT / "src/gui/gui.c").read_text()
         viewport = (ROOT / "src/gui/viewport.c").read_text()
         viewport_flags = re.search(r"(?:int|uint16) spriteFlags = 0;", viewport).group()
@@ -1764,7 +1932,7 @@ typedef struct { uint16 index; ViewportCompositeKey viewportKey; } Unit;
 #define VARIABLE_NOT_USED(x) ((void)(x))
 /* FLAGS */
 /* LAYER TYPES */
-static uint8 assets[5], *g_sprites[5], screen[2], bodyPalette[16], remap[256];
+static uint8 assets[4], *g_sprites[4], screen[2], bodyPalette[16], remap[256];
 static GUI_SpriteLayers layers;
 static bool cached;
 static unsigned attempts, draws;
@@ -1772,14 +1940,11 @@ static Unit unit;
 static bool withUnit, withKeyArg;
 static void GUI_Widget_Viewport_InvalidateSpriteDamage(void) {}
 static uint8 *GFX_Screen_Get_ByIndex(Screen id) { return screen + id; }
-static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 id, uint8 house,
+static bool Video_Atari_CursorDirect(void) { return cached; }
+static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 id, uint8 house,
                                     int16 x, int16 y, int flags, va_list *ap,
                                     const GUI_SpriteLayers *composition, ViewportCompositeKey *key) {
     attempts++;
-    if (sprite != g_sprites[0]) {
-        assert(composition == NULL && key == NULL);
-        return false;
-    }
     assert(sprite == g_sprites[0] && id == 0 && house == 1);
     assert(x == 50 && y == 60 && !(flags & DRAWSPRITE_FLAG_LAYERS));
     assert(composition == &layers);
@@ -1787,13 +1952,12 @@ static bool GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 id, uint8 house
     assert(!(flags & DRAWSPRITE_FLAG_VIEWPORT_KEY));
     assert(va_arg(*ap, uint8 *) == bodyPalette);
     assert(va_arg(*ap, uint8 *) == remap && va_arg(*ap, int) == 1);
-    return cached;
 }
 static void GUI_DrawSpriteInternal(Screen screenID, const uint8 *sprite, int16 x, int16 y,
                                   uint16 windowID, int flags, va_list *ap,
                                   uint8 *target, uint16 width, uint16 height) {
     unsigned id = draws++;
-    assert(id < 5 && sprite == g_sprites[id] && windowID == 2);
+    assert(id < 4 && sprite == g_sprites[id] && windowID == 2);
     assert(screenID == 0 || screenID == 1);
     assert(!target && !width && !height &&
            !(flags & (DRAWSPRITE_FLAG_LAYERS | DRAWSPRITE_FLAG_VIEWPORT_KEY)));
@@ -1823,9 +1987,9 @@ static void draw_body(Screen screenID, int flags) {
                    flags, &layers, bodyPalette, remap, 1);
 }
 int main(void) {
-    for (unsigned i = 0; i < 5; i++) g_sprites[i] = assets + i;
-    layers.count = 4;
-    for (unsigned i = 0; i < 4; i++) {
+    for (unsigned i = 0; i < 4; i++) g_sprites[i] = assets + i;
+    layers.count = 3;
+    for (unsigned i = 0; i < 3; i++) {
         layers.layer[i].spriteID = i + 1;
         layers.layer[i].colourHouse = GUI_SPRITE_COLOUR_EMBEDDED;
         layers.layer[i].offsetX = (int)i - 2;
@@ -1847,15 +2011,15 @@ int main(void) {
 #ifdef TOS
         assert(attempts == 1 && draws == 0);
 #else
-        assert(attempts == 0 && draws == 5);
+        assert(attempts == 0 && draws == 4);
 #endif
         draws = attempts = 0;
         cached = false;
         draw_body(0, flags);
-        assert(draws == 5);
+        assert(draws == 4);
         draws = attempts = 0;
         draw_body(1, flags);
-        assert(attempts == 0 && draws == 5);
+        assert(attempts == 0 && draws == 4);
     }
     return 0;
 }

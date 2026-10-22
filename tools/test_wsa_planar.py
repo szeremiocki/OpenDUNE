@@ -952,21 +952,9 @@ int main(void) {
 WidgetProperties g_widgetProperties[22] = {{0, 0, 40, 200, 0, 0, 0}};
 static uint8 screen[64000];
 static unsigned presents, dirty;
-static bool s_viewportPlanar;
 static uint8 *s_spriteBatchBuf;
 static uint16 s_spriteBatchStride;
 static int16 s_spriteBatchOriginX, s_spriteBatchOriginY, s_spriteBatchW, s_spriteBatchH;
-typedef struct ViewportSpriteMask {
-    const uint8 *sprite;
-    uint16 *rows;
-    uint16 width, height;
-} ViewportSpriteMask;
-static ViewportSpriteMask *GUI_ViewportSpriteMaskSlot(const uint8 *sprite) {
-    (void)sprite; assert(false); return NULL;
-}
-static uint16 GUI_ViewportMaskWord(const uint16 *row, uint16 words, int16 col) {
-    (void)row; (void)words; (void)col; assert(false); return 0;
-}
 void *GFX_Screen_Get_ByIndex(Screen screenID) { assert(screenID == SCREEN_0); return screen; }
 #undef GFX_Screen_SetDirty
 void GFX_Screen_SetDirty(Screen screenID, uint16 left, uint16 top, uint16 right, uint16 bottom) {
@@ -979,11 +967,6 @@ static uint16 Format80_Decode(uint8 *dst, const uint8 *src, uint16 size) {
 }
 void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 bottom) {
     (void)left; (void)top; (void)right; (void)bottom; assert(false);
-}
-static bool Video_Atari_PresentSprite(const uint8 *src, uint16 stride, uint16 x, uint16 y,
-                                      uint16 width, uint16 height, const uint16 *mask) {
-    (void)src; (void)stride; (void)x; (void)y; (void)width; (void)height; (void)mask;
-    assert(false); return false;
 }
 static bool Video_Atari_PresentChunkyTransparent(const void *pixels, uint16 stride,
                                                  int16 x, int16 y, uint16 width, uint16 height) {

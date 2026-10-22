@@ -160,7 +160,7 @@ typedef struct GUI_SpriteLayer {
 
 typedef struct GUI_SpriteLayers {
 	uint16 count;
-	GUI_SpriteLayer layer[4];
+	GUI_SpriteLayer layer[3];
 } GUI_SpriteLayers;
 
 /* colourHouse identifies the canonical viewport house palette when PAL is

@@ -57,6 +57,24 @@ mode after one Super(0L); it does not pass the game loop to Supexec.
 
 * Performance
 
+ST/STE currently uses an experimental Amiga-style timing policy: the shared
+game/UI/input tick runs at 50 Hz instead of 60 Hz, and unit scripts receive
+51 logical opcodes per batch on screen (or with scriptNoSlowdown), and 2
+offscreen, instead of 52 and 3. Script batches remain five game ticks apart;
+structure/team budgets and explicit script delays are unchanged. All other
+tick-based waits and gameplay deadlines consequently take 20% longer in real
+time. This is a behavior experiment, not a VM optimization or VBlank interrupt
+implementation. Video publication retains the configured framerate, and audio
+timer registrations are unchanged. TT/Falcon and non-Atari retain their
+previous clock and budgets. Keep the PC UNIT.EMC for the initial comparison,
+and use the STE machine at 8 MHz (not Mega STE), matching scenario and game
+speed, when comparing with a 50 Hz Amiga baseline.
+
+Unit sorting still runs every viewport pass, but the accompanying Outpost
+allied/enemy recount runs on the first call and then once every ten calls.
+A decrementing countdown avoids division and clock reads. Unit discovery and
+removal continue updating the counts between recounts.
+
 ST/STE script loading experimentally compiles EMC scripts to plain 68000
 code. Unit, structure and team scripts each share one compiled image.
 Every original DATA word has a sixteen-byte native entry, including words
@@ -248,36 +266,47 @@ bitmaps as 15-column row masks. Pending background repairs propagate to
 foreground damage in bulk; only viewport-dirty tiles without pending
 background repair are inspected for fully fogged/veiled neighbours that
 must be restored. Clean rows skip tile inspection, and fully terrain-dirty
-rows need none either. Forced redraw and chunky fallback retain the original
+rows need none either. Forced redraw and non-ST-family viewports retain the original
 tile traversal. Repair-on-first-touch still consumes the same pending bits;
 sprite filtering retains a snapshot of that damage before repairs begin.
 
-Ordinary battlefield sprites are decoded into small private buffers and
+ST-family battlefield rendering is obligatorily planar, not an optional
+capability or per-sprite eligibility decision. Unsupported sprite requests
+assert in assertion-enabled builds; release builds trust the viewport contract
+and do not fall back to the generic sprite renderer. Sprite-cache allocation
+or unsupported source dimensions are fatal initialization errors. TT/Falcon
+and non-viewport UI retain their existing renderers. The viewport currently
+requires SCREEN_0; offscreen viewport requests assert rather than select chunky
+rendering. Planned planar blur remains unimplemented and asserts when requested
+in assertion-enabled builds; it is not a supported release-build effect yet.
+
+Battlefield sprites are decoded into small private buffers and
 converted with explicit silhouette masks; no final background c2p sweep is
 needed for these scenes. This experimental branch adds two 64-entry planar
 sprite image caches, roughly 243 KiB together, to the planarcredits milestone.
-Eligible frames are decoded and converted through the shared c2p encoder
+Frames are decoded and converted through the shared c2p encoder
 on first use, then drawn directly from cached plane words and opacity masks.
 GUI_DrawSprite takes the final sprite/frame ID and colour-house identity
 alongside its existing arguments. Embedded palettes have a separate identity;
-unknown assets or arbitrary palettes retain the general renderer. Internally,
-a packed four-word prescription includes the body's frame, colour-house
+unknown assets or arbitrary viewport palettes violate the drawing contract.
+Mask metadata is indexed directly by sprite ID, without a pointer-hash search.
+Internally, a packed three-word prescription includes the body's frame, colour-house
 variant, both flips, canonical highlight and resolved X phase (x & 15),
-plus up to four ordered layers, each with its frame, colour-house variant,
-flips and signed offsets. An absent selection layer distinguishes unselected
-variants. Embedded-palette and direct palette-index sprites are supported.
-The identity uses 124 bits: 20 body bits followed by four 26-bit layers.
-The main word contains the body and the first layer's frame/colour variant;
-three tail words hold the remaining layer bits, with four spare bits kept zero.
+plus up to two variable layers, each with its frame, colour-house variant,
+flips and signed offsets. Selection is one bit: sprite 6 with embedded colours,
+no flips and zero offset. Embedded-palette and direct palette-index sprites
+are supported. The identity uses 73 bits: 20 body bits, one selection bit and
+two 26-bit layers. The main word contains the body, selection and the first
+variable layer's prefix; two tail words hold the remaining layer bits.
 One shared builder encodes the complete body/layer identity into a caller-owned
-16-byte key struct (main word and three tail words), without hashing or collisions.
+12-byte key struct (main word and two tail words), without hashing or collisions.
 Units, composite image entries and directory records use that same key type.
-For sprites without layers (NULL or a count-zero list), it writes only the body
+For sprites without variable layers (including selection-only), it writes only the main
 identity, skipping tail writes, temporary layer initialization and cross-word
 packing. A zero layer prefix in the main word makes the caller's tails undefined
 and irrelevant: lookup accepts a matching main word without reading the tails.
 Stored cache tails are cleared only on a layerless miss.
-Ground units embed an opaque 16-byte composite key on TOS. Unit code only clears
+Ground units embed an opaque 12-byte composite key on TOS. Unit code only clears
 it through an inline helper: animation, orientation, highlight, smoke, colour,
 type and harvesting-action mutations invalidate it. Map updates around a unit
 also invalidate conservatively, including ordinary movement and selection
@@ -286,19 +315,20 @@ a temporary key because their harvesting attachment also depends on terrain
 outside the unit's state. They rebuild the key on each draw but still reuse the
 shared component and composite image caches; map dirty notifications need no
 unit-key invalidation hook.
-The next eligible planar draw constructs an empty key in place. CPU-specialized
+The next planar draw constructs an empty key in place. CPU-specialized
 key preparation updates only the final screen-X phase on reuse; BLiTTER-specialized
 preparation clears those bits, including when switching from CPU drawing.
 Lookup uses the embedded main and tail words directly, without sidecar indexing,
 dependency checks or tail copying. Generic draws also use a temporary key.
-Only keys are retained: body/layer resolution and validation still run normally.
+Only keys are retained: body/layer resolution still runs normally, but defensive
+asset, palette, flag and layer checks compile out with assertions disabled.
 Keys own no image slots and contain no unit index, so identical units share images
 and every draw still searches the shared cache after possible eviction.
 Pool reset/allocation, free, save loading and sprite-cache teardown invalidate
-embedded keys. The TOS Unit structure grows by 16 bytes; non-TOS units and the
+embedded keys. The TOS Unit structure grows by 12 bytes; non-TOS units and the
 explicitly serialized save format are unchanged.
-Sprite 0 (the separately cached mouse) is rejected as a base or layer by the
-viewport image-cache path and by the component cache; selection sprite 6
+Sprite 0 (the separately cached mouse) is invalid as a viewport base or layer;
+assertions diagnose it rather than selecting a different renderer. Selection sprite 6
 remains supported. Nonzero sprite IDs make zero an absent layer or unused key,
 without validity bits in the composite identity.
 Ground units submit body, harvesting attachment, turret, smoke and selection
@@ -306,13 +336,16 @@ to one GUI_DrawSprite call. Individual components are cached independently
 by frame, house, flips and highlight, without position or X phase. Only a
 component miss decodes into private chunky memory and uses the shared c2p
 encoder. Composite misses merge cached planar components and opacity masks
-in the original layer order, aligning them in private planar memory.
+in the fixed order: body, harvesting attachment, turret, smoke, selection.
+Harvesting and turret are mutually exclusive with the current unit definitions,
+so there are at most three additional layers. No runtime layer-count guard is
+needed. Key packing and image composition use this same producer order.
 Adding selection or smoke, moving a turret, or changing X phase reuses the
 other components without decoding or c2p. Composite eviction does not evict
 components; component eviction does not invalidate completed composites.
 Only misses scan for an eviction slot, preferring the first empty slot, then
 the least recently used entry. Composite lookup binary-searches a sorted
-directory of full four-word keys and image pointers, comparing unsigned main
+directory of full three-word keys and image pointers, comparing unsigned main
 keys first and then packed tail words only for layered keys. A last-hit-first
 experiment checks the complete previous hit key before searching. If it differs,
 a full binary search starts at the directory midpoint, without narrowing its bounds.
@@ -321,10 +354,10 @@ sort before live keys. The fallback is a fully unrolled 64-slot decision tree,
 starting at slot 32 even for a cold/partial cache. Every node uses a constant
 directory position; there is no runtime midpoint or fallback index arithmetic.
 Each node compares the unsigned main key inline. Matching main keys call one
-shared, non-inlined/non-cloned three-word tail comparator, reducing code duplication
+shared, non-inlined/non-cloned two-word tail comparator, reducing code duplication
 while preserving lexicographic unsigned ordering. The last-hit shortcut still
 compares the complete key inline. Layer-presence predicates mask the upper
-12 bits instead of shifting by 20, allowing a single upper-word comparison on
+11 bits instead of shifting by 21, allowing a single upper-word comparison on
 68000. This trades layer-comparison call overhead
 for a smaller executable than duplicating the full comparison at every node.
 Each record retains its image-slot pointer, including while its key is zero.
@@ -364,8 +397,8 @@ Cursor-overlap publication is kept out of line. The ordinary cached-sprite
 copy loop is isolated from cursor repair state to avoid 68000 register spills.
 Placement-preview overlaps and outside-viewport/UI writes retain the existing
 protected merge path. Cursor movement still restores the saved background.
-Unsupported effects and non-planar destinations retain separate layer draws
-in their original order. Terrain and units still write visibly in painter order:
+Other platforms retain separate layer draws in their original order.
+Terrain and units still write visibly in painter order:
 this may shorten sprite invisibility, but does not eliminate the exposed
 erase/redraw interval or guarantee tear-free output.
 
@@ -380,12 +413,14 @@ final sweep, so old traces disappear without erasing current sprites.
 Unchanged hidden cells are not redrawn. The fog tile adds 160 bytes of
 pixels/masks and is encoded once per tile-cache load through the shared
 fixed gameplay palette mapping; subsequent repairs need no c2p conversion.
-Aircraft shadows are omitted on ST/STE, including its
-chunky fallbacks, so a flyover no longer disables cached planar rendering
-for the whole viewport. Aircraft bodies retain their normal colours and
-painter order; other platforms retain their shadows. For the current ST/STE
-profiling experiment, viewport backend selection checks only hardware and
-tile/sprite-cache readiness; it no longer scans units or explosions.
+Aircraft shadows are omitted on ST/STE. Aircraft bodies retain their normal
+colours and painter order; other platforms retain their shadows. ST-family
+hardware always uses the planar viewport; tile/sprite-cache readiness and
+destination constraints are debug assertions, not backend eligibility tests.
+Interface startup and return from Options/Mentat prepare the chrome in SCREEN_1,
+publish it first, then force the complete native battlefield redraw on SCREEN_0.
+The interface copy must never follow native viewport rendering: SCREEN_1 has no
+current battlefield image and would erase it until later tile repairs.
 Native planar drawing skips chunky row-copy extent and column-mask bookkeeping.
 Pending terrain repairs, foreground damage and message blink/erasure remain
 unchanged. Legacy copy extents use static scratch storage, not the viewport
@@ -394,7 +429,7 @@ The native draw scope also excludes the battlefield from per-scanline chunky
 publication masks. Pending battlefield publication is retired at scope entry;
 tile, sprite and glyph publishers then skip redundant dirty-rectangle clears.
 Marks crossing the battlefield boundary retain their topbar/sidebar portions.
-The scope ends after composition, so dialogs, other screens and chunky fallbacks
+The scope ends after composition, so dialogs and other screens
 keep their existing publication. Minimap SCREEN_1 publication is unchanged.
 The Atari sandworm drawing pass checks its reserved unit slots (16 and 17)
 in slot order instead of searching the active unit list. It retains the
@@ -405,8 +440,8 @@ Stock battlefield sprite ranges are covered by the cache. Sandworm and
 Sonic Blast distortion do not yet have native planar implementations and
 no longer trigger a chunky fallback: scenes containing them are not supported
 by this experiment yet. Profile scenes without these effects until the planned
-planar replacements are implemented. Off-screen composition retains its
-existing path; backend changes reconstruct the scene.
+planar replacements are implemented. ST-family offscreen viewport composition
+is likewise outside the current drawing contract.
 ST/STE unit-to-target and target-to-unit selection changes reset widget state
 without redrawing unchanged base widgets or running the second full widget
 draw pass. Changed widget visibility/selection still triggers drawing, and

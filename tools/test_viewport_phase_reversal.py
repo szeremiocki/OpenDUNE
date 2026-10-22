@@ -15,6 +15,139 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ViewportPhaseReversalTest(unittest.TestCase):
+    def test_interface_publication_precedes_native_full_redraw(self):
+        gui = (ROOT / "src/gui/gui.c").read_text()
+        harness = r"""
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <string.h>
+typedef uint8_t uint8;
+typedef uint16_t uint16;
+typedef int Screen;
+enum { SCREEN_ACTIVE = -1, SCREEN_0, SCREEN_1, SCREEN_2,
+       SCREEN_WIDTH = 320, SCREEN_HEIGHT = 200, HOUSE_INVALID = 255,
+       STRUCTURE_SLAB_1x1 = 1, STRUCTURE_SLAB_2x2, STRUCTURE_WALL,
+       GUI_SPRITE_COLOUR_EMBEDDED = 254 };
+typedef struct { uint16 houseID, index, type; } PoolFindStruct;
+typedef struct { int unused; } Widget;
+typedef struct { struct { uint16 type; } o; } Structure;
+typedef struct { int unused; } Unit;
+static Screen active;
+static bool direct, g_viewport_forceRedraw, g_textDisplayNeedsUpdate;
+static uint8 front[152], back[152], sprite, *g_sprites[12], g_remap[256], g_palette1[768];
+static uint16 g_playerHouseID, g_playerCredits = 123;
+static Widget widgets[2], *g_widgetLinkedListHead = widgets;
+static unsigned draws, copies, hidden;
+static Screen GFX_Screen_SetActive(Screen screen) {
+    Screen old = active; active = screen; return old;
+}
+#ifdef TOS
+static bool Video_Atari_CursorDirect(void) { return direct; }
+#endif
+static void Sprites_LoadImage(const char *name, Screen screen, uint8 *palette) {
+    assert(!strcmp(name, "SCREEN.CPS") && screen == SCREEN_1 && palette == NULL);
+    memset(back, 0, sizeof(back)); back[150] = 42; back[151] = 43;
+}
+static void GUI_DrawSprite(Screen screen, const uint8 *asset, uint16 id, uint8 house,
+                           int x, int y, uint16 window, int flags) {
+    assert(screen == SCREEN_1 && asset == &sprite && id == 11);
+    assert(house == GUI_SPRITE_COLOUR_EMBEDDED && x == 192 && !y && !window && !flags);
+}
+static void GUI_Palette_RemapScreen(int x, int y, int width, int height,
+                                    Screen screen, const uint8 *mapping) {
+    assert(!x && !y && width == 320 && height == 200 && screen == SCREEN_1 && mapping == g_remap);
+}
+static void GUI_Widget_Viewport_RedrawMap(Screen screen) {
+    assert(screen == SCREEN_ACTIVE && active == SCREEN_1);
+}
+static void GUI_DrawScreen(Screen screen) {
+    assert(g_viewport_forceRedraw);
+    Screen target = screen == SCREEN_ACTIVE ? active : screen;
+    assert(target == (direct ? SCREEN_0 : SCREEN_1));
+    if (direct) assert(copies == 1 && hidden == 1);
+    for (unsigned i = 0; i < 150; i++) (direct ? front : back)[i] = i % 15 + 1;
+    g_viewport_forceRedraw = false;
+    draws++;
+}
+static void GUI_Widget_ActionPanel_Draw(bool force) { assert(force && active == SCREEN_1); }
+static Widget *GUI_Widget_Get_ByIndex(Widget *head, uint16 index) {
+    assert(head == widgets && (index == 1 || index == 2)); return widgets + index - 1;
+}
+static void GUI_Widget_Draw(Widget *widget) {
+    assert((widget == widgets || widget == widgets + 1) && active == SCREEN_1);
+}
+static Structure *Structure_Find(PoolFindStruct *find) {
+    assert(find->houseID == HOUSE_INVALID); return NULL;
+}
+static void Structure_UpdateMap(Structure *structure) { (void)structure; assert(false); }
+static Unit *Unit_Find(PoolFindStruct *find) {
+    assert(find->houseID == HOUSE_INVALID); return NULL;
+}
+static void Unit_UpdateMap(uint16 type, Unit *unit) { (void)type; (void)unit; assert(false); }
+static void GUI_Mouse_Hide_Safe(void) { assert(active == SCREEN_0 && !hidden); hidden++; }
+static void GUI_Screen_Copy(int xs, int ys, int xd, int yd, int width, int height,
+                            Screen source, Screen target) {
+    assert(!xs && !ys && !xd && !yd && width == 40 && height == 200);
+    assert(source == SCREEN_1 && target == SCREEN_0 && hidden == 1);
+    assert(draws == (direct ? 0 : 1));
+    memcpy(front, back, sizeof(front)); copies++;
+}
+static void GUI_DrawCredits(uint16 house, uint16 mode) {
+    assert(!house && (mode == 1 || mode == 2));
+}
+static void GUI_SetPaletteAnimated(uint8 *palette, int ticks) {
+    assert(palette == g_palette1 && ticks == 15 && copies == 1);
+}
+static void GUI_Mouse_Show_Safe(void) {
+    assert(hidden == 1 && draws == 1);
+    for (unsigned i = 0; i < 150; i++) assert(front[i] == i % 15 + 1);
+    assert(front[150] == 42 && front[151] == 43);
+    hidden--;
+}
+static void Input_History_Clear(void) {}
+/* PRODUCTION */
+int main(void) {
+    g_sprites[11] = &sprite;
+    for (unsigned machine = 0; machine < 2; machine++) {
+#ifdef TOS
+        direct = machine != 0;
+#else
+        (void)machine;
+        direct = false;
+#endif
+        /* Both initial entry and return from a screen that replaced the battlefield.
+         * No units exist to repair missing terrain after this function returns. */
+        for (unsigned entry = 0; entry < 2; entry++) {
+            memset(front, 99, sizeof(front));
+            draws = copies = hidden = 0; active = SCREEN_2;
+            GUI_DrawInterfaceAndRadar(SCREEN_0);
+            assert(draws == 1 && copies == 1 && !hidden && active == SCREEN_2);
+            assert(!g_viewport_forceRedraw && g_textDisplayNeedsUpdate);
+        }
+        if (!direct) {
+            memset(front, 99, sizeof(front));
+            draws = copies = hidden = 0; active = SCREEN_2;
+            GUI_DrawInterfaceAndRadar(SCREEN_1);
+            assert(draws == 1 && !copies && !hidden && active == SCREEN_2);
+            for (unsigned i = 0; i < 150; i++) assert(back[i] == i % 15 + 1 && front[i] == 99);
+        }
+    }
+    return 0;
+}
+"""
+        harness = harness.replace("/* PRODUCTION */", function(gui, "GUI_DrawInterfaceAndRadar"))
+        with tempfile.TemporaryDirectory(prefix="viewport-interface-redraw-") as directory:
+            source = Path(directory) / "test.c"
+            binary = Path(directory) / "test"
+            source.write_text(harness)
+            compiler = shlex.split(os.environ.get("CC", "cc"))
+            for platform in ([], ["-DTOS"]):
+                subprocess.run([*compiler, "-std=c99", "-O2", "-Wall", "-Wextra", "-Werror",
+                                *platform, str(source), "-o", str(binary)], check=True)
+                subprocess.run([str(binary)], check=True)
+
     def test_row_preparation_matches_tile_scan(self):
         viewport = (ROOT / "src/gui/viewport.c").read_text()
         production = "\n".join(function(viewport, name) for name in (
@@ -177,8 +310,9 @@ static bool g_viewport_fadein, ready, s_viewportWasPlanar;
 static bool g_selectionRectangleNeedRepaint;
 static unsigned draws;
 #ifdef TOS
-static bool Video_Atari_CursorDirect(void) { return true; }
-static bool GUI_Widget_Viewport_CanDrawPlanar(void) { return ready; }
+static bool Video_Atari_CursorDirect(void) { return ready; }
+static bool GFX_PlanarTilesReady(void) { return true; }
+static bool GUI_ViewportSpriteCacheReady(void) { return true; }
 #endif
 static void GUI_DrawText_Wrapper(const char *text, int x, int y, int fg, int bg, int flags) {
     assert(text == g_viewportMessageText && x == 112 && y == 139);
@@ -189,7 +323,7 @@ static void check(bool drawToMainScreen, bool forceRedraw, bool hasScrolled, boo
     bool expectedPlanar = false;
     (void)hasScrolled; (void)planarShifted;
 #ifdef TOS
-    expectedPlanar = !drawToMainScreen && ready;
+    expectedPlanar = ready;
     s_viewportWasPlanar = expectedPlanar;
 #endif
     /* SETUP */
@@ -222,6 +356,9 @@ static void check(bool drawToMainScreen, bool forceRedraw, bool hasScrolled, boo
 int main(void) {
     for (unsigned state = 0; state < 64; state++) {
         ready = (state & 1) != 0;
+#ifdef TOS
+        if (ready && (state & 4)) continue;
+#endif
         g_viewport_fadein = (state & 2) != 0;
         for (unsigned counter = 0; counter <= 4; counter++)
             for (unsigned text = 0; text < 2; text++) {
@@ -603,9 +740,12 @@ int main(void) {
                             str(source), "-o", str(binary)], check=True)
             subprocess.run([str(binary)], check=True)
 
-    def test_aircraft_shadow_and_readiness_policy(self):
+    def test_aircraft_shadow_and_mandatory_planar_policy(self):
         viewport = (ROOT / "src/gui/viewport.c").read_text()
-        eligibility = function(viewport, "GUI_Widget_Viewport_CanDrawPlanar")
+        self.assertNotIn("CanDrawPlanar", viewport)
+        draw = function(viewport, "GUI_Widget_Viewport_Draw")
+        self.assertIn("bool planarViewport = directViewport;", draw)
+        self.assertIn("assert(!planarViewport ||", draw)
         shadow_gate = re.search(r"if \(ui->o.flags.hasShadow.*?\) \{", viewport, re.S).group()
         harness = r"""
 #include <assert.h>
@@ -627,26 +767,12 @@ static bool draws_shadow(bool shadow, bool directViewport) {
     }
     return false;
 }
-#ifdef TOS
-static bool direct, tilesReady, spritesReady;
-static bool Video_Atari_CursorDirect(void) { return direct; }
-static bool GFX_PlanarTilesReady(void) { return tilesReady; }
-static bool GUI_ViewportSpriteCacheReady(void) { return spritesReady; }
-/* ELIGIBILITY */
-#endif
 int main(void) {
     assert(!draws_shadow(false, false));
     assert(!draws_shadow(false, true));
     assert(draws_shadow(true, false));
 #ifdef TOS
     assert(!draws_shadow(true, true));
-    /* No actor APIs are supplied: eligibility must only inspect readiness. */
-    for (unsigned state = 0; state < 8; state++) {
-        direct = (state & 1) != 0;
-        tilesReady = (state & 2) != 0;
-        spritesReady = (state & 4) != 0;
-        assert(GUI_Widget_Viewport_CanDrawPlanar() == (state == 7));
-    }
 #else
     assert(draws_shadow(true, true));
 #endif
@@ -654,7 +780,6 @@ int main(void) {
 }
 """
         harness = harness.replace("/* SHADOW GATE */", shadow_gate)
-        harness = harness.replace("/* ELIGIBILITY */", eligibility)
         with tempfile.TemporaryDirectory(prefix="viewport-aircraft-") as directory:
             source = Path(directory) / "test.c"
             binary = Path(directory) / "test"
@@ -929,12 +1054,9 @@ int main(void) {
         self.assertLess(repair, cached.index("Video_Atari_PresentPlanarSpriteStrided"))
         self.assertIn("entry->masks + offset, 16, end - row, column, row, entry->width", cached)
         fallback = function(gui, "GUI_DrawSpriteInternal")
-        hook = "GUI_Widget_Viewport_RepairTiles(screenX, screenY,"
-        self.assertEqual(fallback.count(hook), 1)
-        repair = fallback.index(hook)
-        self.assertLess(fallback.index("viewportMasks[line * groups + group] ="), repair)
-        self.assertIn("screenY + spriteHeightDraw", fallback[repair:repair + 170])
-        self.assertLess(repair, fallback.index("Video_Atari_PresentSprite("))
+        self.assertNotIn("GUI_Widget_Viewport_RepairTiles", fallback)
+        self.assertNotIn("Video_Atari_PresentSprite(", fallback)
+        self.assertIn("assert(target != NULL || windowID != 2 || !Video_Atari_CursorDirect())", fallback)
 
 
 if __name__ == "__main__":
