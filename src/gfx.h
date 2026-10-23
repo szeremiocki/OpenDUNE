@@ -41,8 +41,15 @@ extern void GFX_InitPlanarTiles(uint32 tilesDataLength, const uint8 *palette);
 extern void GFX_FreePlanarTiles(void);
 extern bool GFX_PlanarTilesReady(void);
 extern void GFX_DrawPlanarTile(uint16 tileID, uint16 x, uint16 y, uint8 houseID);
+/* Cached ground + overlay composition, for partial fog and ordinary overlays. */
 extern void GFX_DrawPlanarTileFogged(uint16 tileID, uint16 fogTileID, uint16 x, uint16 y, uint8 houseID);
 extern void GFX_DrawPlanarFogTile(uint16 x, uint16 y);
+enum {
+	GFX_SELECTION_TOP = 0x10, GFX_SELECTION_BOTTOM = 0x20,
+	GFX_SELECTION_LEFT = 0x40, GFX_SELECTION_RIGHT = 0x80
+};
+/* selection packs edge flags and a 0..8 footprint slot; overlayID 0xffff is flat fog. */
+extern void GFX_DrawPlanarSelectionTile(uint16 tileID, uint16 overlayID, uint16 x, uint16 y, uint8 houseID, uint8 selection, uint8 pen);
 #endif
 
 /* One-shot measurement of the tile count and the RAM cost of pre-decoding

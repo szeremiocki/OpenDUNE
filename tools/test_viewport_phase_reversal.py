@@ -45,6 +45,7 @@ static Screen GFX_Screen_SetActive(Screen screen) {
 }
 #ifdef TOS
 static bool Video_Atari_CursorDirect(void) { return direct; }
+static void GUI_Sidebar_Invalidate(void) {}
 #endif
 static void Sprites_LoadImage(const char *name, Screen screen, uint8 *palette) {
     assert(!strcmp(name, "SCREEN.CPS") && screen == SCREEN_1 && palette == NULL);
@@ -71,7 +72,13 @@ static void GUI_DrawScreen(Screen screen) {
     g_viewport_forceRedraw = false;
     draws++;
 }
-static void GUI_Widget_ActionPanel_Draw(bool force) { assert(force && active == SCREEN_1); }
+static void GUI_Widget_ActionPanel_Draw(bool force) {
+    assert(force && active == (direct ? SCREEN_0 : SCREEN_1));
+    if (direct) {
+        assert(copies == 1 && hidden == 1);
+        front[151] = 44;
+    }
+}
 static Widget *GUI_Widget_Get_ByIndex(Widget *head, uint16 index) {
     assert(head == widgets && (index == 1 || index == 2)); return widgets + index - 1;
 }
@@ -103,7 +110,7 @@ static void GUI_SetPaletteAnimated(uint8 *palette, int ticks) {
 static void GUI_Mouse_Show_Safe(void) {
     assert(hidden == 1 && draws == 1);
     for (unsigned i = 0; i < 150; i++) assert(front[i] == i % 15 + 1);
-    assert(front[150] == 42 && front[151] == 43);
+    assert(front[150] == 42 && front[151] == (direct ? 44 : 43));
     hidden--;
 }
 static void Input_History_Clear(void) {}
@@ -436,10 +443,6 @@ static uint16 g_unitFindCount;
 /* FIND */
 #endif
 static uint16 Tile_PackTile(uint16 position) { return position; }
-static void GUI_Widget_Viewport_GetSprite_HousePalette(uint16 id, uint16 house, uint8 *palette) {
-    assert(id == 111 && house == 0);
-    (void)palette;
-}
 static bool Map_IsPositionInViewport(uint16 position, uint16 *x, uint16 *y) {
     assert(checks < 8);
     checked[checks++] = position;
@@ -456,7 +459,6 @@ static void GUI_DrawSprite(int screen, uint8 *sprite, uint16 id, int colour,
 static void draw(bool forceRedraw) {
     uint16 i = 0, x, y;
     PoolFindStruct find = {0};
-    uint8 paletteHouse[16] = {0};
     (void)i; (void)find;
     /* WORM */
 }
@@ -586,12 +588,17 @@ static uint8 g_dirtyViewport[512], g_dirtyMinimap[512], screen[200][320];
 static uint16 g_dirtyViewportCount, g_viewportPosition, g_veiledTileID = 98;
 static uint16 g_iconMap[32] = {[1] = 16, [31] = 99};
 static bool g_debugScenario, s_viewportRepairActive;
+static uint8 s_viewportSelectionTiles[10][15], s_viewportSelectionPen;
+static void GFX_DrawPlanarSelectionTile(uint16 id, uint16 overlay, uint16 x, uint16 y,
+                                        uint8 house, uint8 selection, uint8 pen) {
+    (void)id; (void)overlay; (void)x; (void)y; (void)house; (void)selection; (void)pen;
+    assert(false);
+}
 static unsigned fogDraws, groundDraws, partialDraws, filledDraws;
 static bool BitArray_Test(const uint8 *a, uint16 i) { return (a[i >> 3] >> (i & 7)) & 1; }
 static void BitArray_Set(uint8 *a, uint16 i) { a[i >> 3] |= 1u << (i & 7); }
 static void BitArray_Clear(uint8 *a, uint16 i) { a[i >> 3] &= ~(1u << (i & 7)); }
 static uint16 Tile_PackXY(uint16 x, uint16 y) { return y * 64 + x; }
-static bool Tile_IsUnveiled(uint16 tile) { return tile != 97; }
 static void paint(uint16 x, uint16 y, uint8 c) {
     for (unsigned row = y; row < y + 16; row++) memset(screen[row] + x, c, 16);
 }
@@ -857,6 +864,12 @@ typedef struct { uint16 groundTileID, overlayTileID; uint8 houseID; } Tile;
 #define max(a,b) ((a) > (b) ? (a) : (b))
 #define ICM_ICONGROUP_FOG_OF_WAR 1
 static bool s_viewportRepairActive, g_debugScenario;
+static uint8 s_viewportSelectionTiles[10][15], s_viewportSelectionPen;
+static void GFX_DrawPlanarSelectionTile(uint16 id, uint16 overlay, uint16 x, uint16 y,
+                                        uint8 house, uint8 selection, uint8 pen) {
+    (void)id; (void)overlay; (void)x; (void)y; (void)house; (void)selection; (void)pen;
+    assert(false);
+}
 static uint16 g_viewportPosition, g_veiledTileID = 98, g_iconMap[32];
 static uint8 g_dirtyMinimap[512], g_dirtyViewport[512];
 static Tile g_map[4096];
@@ -866,7 +879,6 @@ static bool BitArray_Test(const uint8 *bits, uint16 p) { return (bits[p >> 3] >>
 static void BitArray_Set(uint8 *bits, uint16 p) { bits[p >> 3] |= 1u << (p & 7); }
 static void BitArray_Clear(uint8 *bits, uint16 p) { bits[p >> 3] &= ~(1u << (p & 7)); }
 static uint16 Tile_PackXY(uint16 x, uint16 y) { return x + 64 * y; }
-static bool Tile_IsUnveiled(uint16 tile) { return tile != 97; }
 static void tile(uint16 x, uint16 y, uint8 colour) {
     assert(!(x & 15) && x < 240 && y >= 40 && !((y - 40) & 15) && y < 200);
     uint16 packed = g_viewportPosition + Tile_PackXY(x >> 4, (y - 40) >> 4);
@@ -880,7 +892,7 @@ static void GFX_DrawPlanarTile(uint16 id, uint16 x, uint16 y, uint8 house) {
     tile(x, y, id);
 }
 static void GFX_DrawPlanarTileFogged(uint16 id, uint16 overlay, uint16 x, uint16 y, uint8 house) {
-    assert(id == 7 && overlay == 97 && house == 0);
+    assert(id == 7 && (overlay == 97 || overlay == 9) && house == 0);
     fogged++;
     tile(x, y, overlay);
 }
@@ -973,7 +985,7 @@ int main(void) {
     BitArray_Set(g_dirtyMinimap, g_viewportPosition);
     g_map[g_viewportPosition].overlayTileID = 9;
     GUI_Widget_Viewport_RepairTiles(0, 40, 16, 56);
-    assert(draws == 2 && screen[40][0] == 9);
+    assert(draws == 1 && fogged == 1 && screen[40][0] == 9);
     reset();
     g_debugScenario = true;
     g_map[g_viewportPosition].overlayTileID = 98;

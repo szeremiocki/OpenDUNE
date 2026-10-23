@@ -12,6 +12,7 @@
 #include "opendune.h"
 #include "sprites.h"
 #include "video/video.h"
+#include "os/common.h"
 #include "os/error.h"
 
 /* ENHANCEMENT -- Atari ST/STE "present mode": while a planar presentation
@@ -77,6 +78,17 @@ static uint8 *s_planarTileReady;	/* zero = cold; otherwise cached mask classific
 static uint16 s_planarTileCount;
 static uint16 s_viewportFogPixels[64], s_viewportFogMasks[16];
 static bool s_viewportFogReady;
+enum { PLANAR_COMPOSITE_SLOTS = 64 };
+static uint32 s_planarCompositeKeys[PLANAR_COMPOSITE_SLOTS];
+static uint8 s_planarCompositeReady[PLANAR_COMPOSITE_SLOTS];
+static uint16 s_planarComposites[PLANAR_COMPOSITE_SLOTS][64];
+static uint16 s_planarCompositeMasks[PLANAR_COMPOSITE_SLOTS][16];
+static struct {
+	uint32 tiles;
+	uint16 style;
+	bool opaque;
+	uint16 pixels[64], masks[16];
+} s_selectionTiles[9];
 
 enum { PLANAR_TILE_MIXED = 1, PLANAR_TILE_EMPTY, PLANAR_TILE_OPAQUE };
 
@@ -92,6 +104,8 @@ static const uint16 *GFX_PlanarTileCopySource(const uint16 *pixels, uint8 opacit
 void GFX_FreePlanarTiles(void)
 {
 	s_viewportFogReady = false;
+	memset(s_selectionTiles, 0, sizeof(s_selectionTiles));
+	memset(s_planarCompositeReady, 0, sizeof(s_planarCompositeReady));
 	free(s_planarTiles);
 	free(s_planarTileMasks);
 	free(s_planarTileIndex);
@@ -155,21 +169,51 @@ void GFX_DrawPlanarTile(uint16 tileID, uint16 x, uint16 y, uint8 houseID)
 	        s_planarTileReady[index], NULL, PLANAR_TILE_EMPTY));
 }
 
-void GFX_DrawPlanarTileFogged(uint16 tileID, uint16 fogTileID, uint16 x, uint16 y, uint8 houseID)
+static uint8 GFX_ComposePlanarTile(const uint16 *pixels, const uint16 *masks,
+                                  const uint16 *overlay, const uint16 *overlayMasks,
+                                  uint16 *result, uint16 *resultMasks)
 {
-	uint16 index, fogIndex;
-	assert(s_planarTiles != NULL && tileID < s_planarTileCount && fogTileID < s_planarTileCount && houseID < HOUSE_MAX);
-	index = GFX_GetPlanarTile(tileID, houseID);
-	fogIndex = GFX_GetPlanarTile(fogTileID, houseID);
-	Video_Atari_DrawPlanarTileFogged(s_planarTiles + (uint32)index * 64,
-	    s_planarTileMasks + (uint32)tileID * 16,
-	    s_planarTiles + (uint32)fogIndex * 64,
-	    s_planarTileMasks + (uint32)fogTileID * 16, x, y,
-	    GFX_PlanarTileCopySource(s_planarTiles + (uint32)index * 64, s_planarTileReady[index],
-	        s_planarTiles + (uint32)fogIndex * 64, s_planarTileReady[fogIndex]));
+	uint16 row, plane, allMask = 0xffff, anyMask = 0;
+
+	for (row = 0; row < 16; row++) {
+		uint16 mask = masks[row], overlayMask = overlayMasks == NULL ? 0 : overlayMasks[row];
+		resultMasks[row] = mask | overlayMask;
+		allMask &= resultMasks[row];
+		anyMask |= resultMasks[row];
+		for (plane = 0; plane < 4; plane++) {
+			uint16 value = pixels[row * 4 + plane] & mask;
+			if (overlay != NULL) value = (value & ~overlayMask) | (overlay[row * 4 + plane] & overlayMask);
+			result[row * 4 + plane] = value;
+		}
+	}
+	return allMask == 0xffff ? PLANAR_TILE_OPAQUE :
+	       anyMask == 0 ? PLANAR_TILE_EMPTY : PLANAR_TILE_MIXED;
 }
 
-void GFX_DrawPlanarFogTile(uint16 x, uint16 y)
+void GFX_DrawPlanarTileFogged(uint16 tileID, uint16 fogTileID, uint16 x, uint16 y, uint8 houseID)
+{
+	uint16 index, fogIndex, slot;
+	uint32 key;
+
+	assert(s_planarTiles != NULL && tileID < s_planarTileCount && fogTileID < s_planarTileCount && houseID < HOUSE_MAX);
+	index = s_planarTileIndex[(uint32)houseID * s_planarTileCount + tileID];
+	fogIndex = s_planarTileIndex[(uint32)houseID * s_planarTileCount + fogTileID];
+	key = index | ((uint32)fogIndex << 16);
+	slot = (index ^ (index >> 6) ^ fogIndex ^ (fogIndex << 3)) & (PLANAR_COMPOSITE_SLOTS - 1);
+	if (s_planarCompositeReady[slot] == 0 || s_planarCompositeKeys[slot] != key) {
+		if (s_planarTileReady[index] == 0) GFX_FillPlanarTile(tileID, houseID, index);
+		if (s_planarTileReady[fogIndex] == 0) GFX_FillPlanarTile(fogTileID, houseID, fogIndex);
+		s_planarCompositeReady[slot] = GFX_ComposePlanarTile(
+		    s_planarTiles + (uint32)index * 64, s_planarTileMasks + (uint32)tileID * 16,
+		    s_planarTiles + (uint32)fogIndex * 64, s_planarTileMasks + (uint32)fogTileID * 16,
+		    s_planarComposites[slot], s_planarCompositeMasks[slot]);
+		s_planarCompositeKeys[slot] = key;
+	}
+	Video_Atari_DrawPlanarTile(s_planarComposites[slot], s_planarCompositeMasks[slot], x, y,
+	    s_planarCompositeReady[slot] == PLANAR_TILE_OPAQUE ? s_planarComposites[slot] : NULL);
+}
+
+static void GFX_PreparePlanarFogTile(void)
 {
 	assert(s_planarTiles != NULL);
 	if (!s_viewportFogReady) {
@@ -179,7 +223,62 @@ void GFX_DrawPlanarFogTile(uint16 x, uint16 y)
 		memset(s_viewportFogMasks, 0xff, sizeof(s_viewportFogMasks));
 		s_viewportFogReady = true;
 	}
+}
+
+void GFX_DrawPlanarFogTile(uint16 x, uint16 y)
+{
+	GFX_PreparePlanarFogTile();
 	Video_Atari_DrawPlanarTile(s_viewportFogPixels, s_viewportFogMasks, x, y, s_viewportFogPixels);
+}
+
+void GFX_DrawPlanarSelectionTile(uint16 tileID, uint16 overlayID, uint16 x, uint16 y, uint8 houseID, uint8 selection, uint8 pen)
+{
+	const uint16 slot = selection & 15;
+	const uint32 tiles = tileID | ((uint32)overlayID << 16);
+	const uint16 style = 0x8000 | (pen << 8) | (selection & 0xf0) | houseID;
+	assert(slot < lengthof(s_selectionTiles) && (selection & 0xf0) != 0 && pen < 16);
+	assert(s_planarTiles != NULL && tileID < s_planarTileCount && houseID < HOUSE_MAX);
+	assert(overlayID == 0xffff || overlayID < s_planarTileCount);
+	if (s_selectionTiles[slot].tiles != tiles || s_selectionTiles[slot].style != style) {
+		const uint16 *pixels, *masks, *overlay = NULL, *overlayMasks = NULL;
+		uint16 row, plane, allMask = 0xffff;
+		if (overlayID == 0xffff) {
+			GFX_PreparePlanarFogTile();
+			pixels = s_viewportFogPixels;
+			masks = s_viewportFogMasks;
+		} else {
+			uint16 index = GFX_GetPlanarTile(tileID, houseID);
+			pixels = s_planarTiles + (uint32)index * 64;
+			masks = s_planarTileMasks + (uint32)tileID * 16;
+			if (overlayID != 0) {
+				index = GFX_GetPlanarTile(overlayID, houseID);
+				overlay = s_planarTiles + (uint32)index * 64;
+				overlayMasks = s_planarTileMasks + (uint32)overlayID * 16;
+			}
+		}
+		GFX_ComposePlanarTile(pixels, masks, overlay, overlayMasks,
+		    s_selectionTiles[slot].pixels, s_selectionTiles[slot].masks);
+		for (row = 0; row < 16; row++) {
+			uint16 edge = 0;
+			if (selection & GFX_SELECTION_LEFT) edge |= 0x8000;
+			if (selection & GFX_SELECTION_RIGHT) edge |= 1;
+			if ((row == 0 && (selection & GFX_SELECTION_TOP)) ||
+			    (row == 15 && (selection & GFX_SELECTION_BOTTOM))) edge = 0xffff;
+			s_selectionTiles[slot].masks[row] |= edge;
+			allMask &= s_selectionTiles[slot].masks[row];
+			if (edge == 0) continue;
+			for (plane = 0; plane < 4; plane++) {
+				uint16 value = s_selectionTiles[slot].pixels[row * 4 + plane];
+				s_selectionTiles[slot].pixels[row * 4 + plane] =
+				    (value & ~edge) | ((pen & (1 << plane)) ? edge : 0);
+			}
+		}
+		s_selectionTiles[slot].tiles = tiles;
+		s_selectionTiles[slot].style = style;
+		s_selectionTiles[slot].opaque = allMask == 0xffff;
+	}
+	Video_Atari_DrawPlanarTile(s_selectionTiles[slot].pixels, s_selectionTiles[slot].masks, x, y,
+	    s_selectionTiles[slot].opaque ? s_selectionTiles[slot].pixels : NULL);
 }
 
 void GFX_InitPlanarTiles(uint32 tilesDataLength, const uint8 *palette)

@@ -193,6 +193,56 @@ void GUI_Widget_Viewport_InvalidateSpriteDamage(void)
 	for (y = 0; y < 10; y++) s_viewportSpriteDamage[y] = 0x7fff;
 }
 
+static uint8 s_viewportSelectionTiles[10][15];
+static uint8 s_viewportSelectionPen;
+static bool s_viewportSelectionActive;
+
+static void GUI_Widget_Viewport_PrepareSelection(void)
+{
+	static uint16 position = 0xffff, viewport = 0xffff, width, height;
+	uint16 next = g_unitSelected == NULL && g_selectionType != SELECTIONTYPE_PLACE &&
+	    Structure_Get_ByPackedTile(g_selectionRectanglePosition) != NULL ? g_selectionRectanglePosition : 0xffff;
+	uint8 pen = Video_Atari_GetPalettePen(0xff);
+	uint16 pass, x, y;
+
+	s_viewportSelectionActive = next != 0xffff;
+	if (next == position && viewport == g_viewportPosition &&
+	    width == g_selectionWidth && height == g_selectionHeight && pen == s_viewportSelectionPen) return;
+	for (pass = 0; pass < 2; pass++) {
+		uint16 origin = pass == 0 ? position : next;
+		uint16 w = pass == 0 ? width : g_selectionWidth;
+		uint16 h = pass == 0 ? height : g_selectionHeight;
+		if (origin == 0xffff) continue;
+		assert(w >= 1 && w <= 3 && h >= 1 && h <= 3);
+		for (y = 0; y < h; y++) {
+			for (x = 0; x < w; x++) {
+				if (x == 0 || x + 1 == w || y == 0 || y + 1 == h)
+					Map_Update(origin + (y << 6) + x, 0, false);
+			}
+		}
+	}
+	memset(s_viewportSelectionTiles, 0, sizeof(s_viewportSelectionTiles));
+	position = next;
+	viewport = g_viewportPosition;
+	width = g_selectionWidth;
+	height = g_selectionHeight;
+	s_viewportSelectionPen = pen;
+	if (position == 0xffff) return;
+	for (y = 0; y < height; y++) {
+		int16 row = Tile_GetPackedY(position) - Tile_GetPackedY(viewport) + y;
+		if (row < 0 || row >= 10) continue;
+		for (x = 0; x < width; x++) {
+			int16 col = Tile_GetPackedX(position) - Tile_GetPackedX(viewport) + x;
+			uint8 edges = (y == 0 ? GFX_SELECTION_TOP : 0) |
+			    (y + 1 == height ? GFX_SELECTION_BOTTOM : 0) |
+			    (x == 0 ? GFX_SELECTION_LEFT : 0) |
+			    (x + 1 == width ? GFX_SELECTION_RIGHT : 0);
+			if (col >= 0 && col < 15 && edges != 0)
+				s_viewportSelectionTiles[row][col] = edges | (y * 3 + x);
+		}
+	}
+}
+
 void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 bottom)
 {
 	uint16 x, y, first, end;
@@ -228,16 +278,18 @@ void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 b
 			 * this tile again and erase an earlier foreground draw. */
 			BitArray_Clear(g_dirtyMinimap, packed);
 			t = &g_map[packed];
-			if (!g_debugScenario &&
+			if (s_viewportSelectionTiles[y][x] != 0) {
+				uint16 overlay = g_debugScenario ? 0 : t->overlayTileID;
+				if (!g_debugScenario && (overlay == g_veiledTileID || overlay == fullyFoggedTileID)) overlay = 0xffff;
+				GFX_DrawPlanarSelectionTile(t->groundTileID, overlay, tileLeft, tileTop,
+				    t->houseID, s_viewportSelectionTiles[y][x], s_viewportSelectionPen);
+			} else if (!g_debugScenario &&
 			    (t->overlayTileID == g_veiledTileID || t->overlayTileID == fullyFoggedTileID)) {
 				GFX_DrawPlanarFogTile(tileLeft, tileTop);
-			} else if (t->overlayTileID != 0 && !g_debugScenario && !Tile_IsUnveiled(t->overlayTileID)) {
+			} else if (t->overlayTileID != 0 && !g_debugScenario) {
 				GFX_DrawPlanarTileFogged(t->groundTileID, t->overlayTileID, tileLeft, tileTop, t->houseID);
 			} else {
 				GFX_DrawPlanarTile(t->groundTileID, tileLeft, tileTop, t->houseID);
-				if (t->overlayTileID != 0 && !g_debugScenario) {
-					GFX_DrawPlanarTile(t->overlayTileID, tileLeft, tileTop, t->houseID);
-				}
 			}
 		}
 	}
@@ -514,11 +566,11 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 }
 
 /* ENHANCEMENT -- cache of the per-(spriteID, houseID) house-colour
- * remap table computed by GUI_Widget_Viewport_GetSprite_HousePalette().
+ * remap table computed by GUI_GetSpriteHousePalette().
  * That function is pure (its result depends only on the sprite's own
- * static data plus houseID) and is called repeatedly -- often every
- * tick, for every visible/dirty unit, structure, turret and sandworm --
- * yet a given (spriteID, houseID) pair almost always yields the exact
+ * static data plus houseID). Native planar draws call it only on
+ * component cache misses; legacy draws still prepare the table each draw.
+ * A given (spriteID, houseID) pair almost always yields the exact
  * same 16-byte table it did last time. `g_sprites[]` is populated once
  * by Sprites_Init() at startup and never reallocated/freed until
  * process exit (Sprites_Uninit()), so this cache never needs
@@ -586,7 +638,7 @@ static void PaletteHouseCache_Copy16(uint8 *dst, const uint8 *src)
  * @param houseID The House to recolour it with.
  * @param paletteHouse the palette to set
  */
-static bool GUI_Widget_Viewport_GetSprite_HousePalette(uint16 spriteID, uint8 houseID, uint8 *paletteHouse)
+bool GUI_GetSpriteHousePalette(uint16 spriteID, uint8 houseID, uint8 *paletteHouse)
 {
 	const uint8 *sprite;
 	int i;
@@ -646,6 +698,18 @@ static bool GUI_Widget_Viewport_GetSprite_HousePalette(uint16 spriteID, uint8 ho
 	return true;
 }
 
+static int GUI_Widget_Viewport_HousePaletteFlags(uint16 spriteID, uint8 houseID, uint8 *palette)
+{
+#ifdef TOS
+	if (Video_Atari_CursorDirect()) {
+		const uint8 *sprite = g_sprites[spriteID];
+		return sprite != NULL && (sprite[0] & 1) != 0 ?
+		    DRAWSPRITE_FLAG_PAL | DRAWSPRITE_FLAG_PAL_DEFERRED : 0;
+	}
+#endif
+	return GUI_GetSpriteHousePalette(spriteID, houseID, palette) ? DRAWSPRITE_FLAG_PAL : 0;
+}
+
 static void GUI_Widget_Viewport_AddSpriteLayer(GUI_SpriteLayers *layers, uint16 spriteID,
                                                uint8 house, int16 x, int16 y, int flags)
 {
@@ -656,10 +720,12 @@ static void GUI_Widget_Viewport_AddSpriteLayer(GUI_SpriteLayers *layers, uint16 
 	layer->offsetX = x;
 	layer->offsetY = y;
 	layer->flags = flags;
-	if (house != GUI_SPRITE_COLOUR_EMBEDDED &&
-	    GUI_Widget_Viewport_GetSprite_HousePalette(spriteID, house, layer->palette)) {
-		layer->colourHouse = house;
-		layer->flags |= DRAWSPRITE_FLAG_PAL;
+	if (house != GUI_SPRITE_COLOUR_EMBEDDED) {
+		int paletteFlags = GUI_Widget_Viewport_HousePaletteFlags(spriteID, house, layer->palette);
+		if (paletteFlags != 0) {
+			layer->colourHouse = house;
+			layer->flags |= paletteFlags;
+		}
 	}
 }
 
@@ -777,6 +843,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 
 #ifdef TOS
 	s_viewportRepairActive = planarViewport;
+	if (planarViewport) GUI_Widget_Viewport_PrepareSelection();
 #endif
 	if (g_dirtyViewportCount != 0 || forceRedraw) {
 #ifdef TOS
@@ -850,7 +917,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 				}
 
 #ifdef TOS
-				if (planarViewport && t->overlayTileID != 0 && !g_debugScenario && !Tile_IsUnveiled(t->overlayTileID)) {
+				if (planarViewport && t->overlayTileID != 0 && !g_debugScenario) {
 					GFX_DrawPlanarTileFogged(t->groundTileID, t->overlayTileID, left, top, t->houseID);
 					continue;
 				}
@@ -860,10 +927,6 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 				GFX_DrawTile(t->groundTileID, left, top, t->houseID);
 
 				if (t->overlayTileID != 0 && !g_debugScenario) {
-#ifdef TOS
-					if (planarViewport) GFX_DrawPlanarTile(t->overlayTileID, left, top, t->houseID);
-					else
-#endif
 					GFX_DrawTile(t->overlayTileID, left, top, t->houseID);
 				}
 			}
@@ -904,7 +967,6 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 		if (!g_map[Tile_PackTile(u->o.position)].isUnveiled && !g_debugScenario) continue;
 
 		sprite = g_sprites[g_table_unitInfo[u->o.type].groundSpriteID];
-		GUI_Widget_Viewport_GetSprite_HousePalette(g_table_unitInfo[u->o.type].groundSpriteID, Unit_GetHouseID(u), paletteHouse);
 
 		if (Map_IsPositionInViewport(u->o.position, &x, &y)) {
 			GUI_DrawSprite(SCREEN_ACTIVE, sprite, g_table_unitInfo[u->o.type].groundSpriteID, GUI_SPRITE_COLOUR_EMBEDDED, x, y, 2, DRAWSPRITE_FLAG_BLUR | DRAWSPRITE_FLAG_WIDGETPOS | DRAWSPRITE_FLAG_CENTER);
@@ -920,10 +982,11 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 		}
 	}
 
-	if (g_unitSelected == NULL && (g_selectionRectangleNeedRepaint || hasScrolled) && (Structure_Get_ByPackedTile(g_selectionRectanglePosition) != NULL || g_selectionType == SELECTIONTYPE_PLACE || g_debugScenario)
+	if (g_unitSelected == NULL && (g_selectionRectangleNeedRepaint || hasScrolled)
 #ifdef TOS
-	    && !(Video_Atari_CursorDirect() && g_selectionType == SELECTIONTYPE_PLACE)
+	    && !(planarViewport && (g_selectionType == SELECTIONTYPE_PLACE || s_viewportSelectionActive))
 #endif
+	    && (Structure_Get_ByPackedTile(g_selectionRectanglePosition) != NULL || g_selectionType == SELECTIONTYPE_PLACE || g_debugScenario)
 	   ) {
 		uint16 x1 = (Tile_GetPackedX(g_selectionRectanglePosition) - Tile_GetPackedX(g_minimapPosition)) << 4;
 		uint16 y1 = ((Tile_GetPackedY(g_selectionRectanglePosition) - Tile_GetPackedY(g_minimapPosition)) << 4) + 0x28;
@@ -1038,8 +1101,9 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 			spriteFlags |= DRAWSPRITE_FLAG_WIDGETPOS | DRAWSPRITE_FLAG_CENTER;
 
 			bodyHouse = (u->deviated != 0) ? u->deviatedHouse : Unit_GetHouseID(u);
-			if (GUI_Widget_Viewport_GetSprite_HousePalette(index, bodyHouse, paletteHouse)) {
-				spriteFlags |= DRAWSPRITE_FLAG_PAL;
+			int paletteFlags = GUI_Widget_Viewport_HousePaletteFlags(index, bodyHouse, paletteHouse);
+			if (paletteFlags != 0) {
+				spriteFlags |= paletteFlags;
 			} else {
 				bodyHouse = GUI_SPRITE_COLOUR_EMBEDDED;
 			}
@@ -1172,8 +1236,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 		if (!g_map[curPos].isUnveiled && !g_debugScenario) continue;
 		if (!Map_IsPositionInViewport(e->position, &x, &y)) continue;
 
-		/*GUI_Widget_Viewport_GetSprite_HousePalette(g_sprites[e->spriteID], e->houseID, paletteHouse);*/
-		GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[e->spriteID], e->spriteID, GUI_SPRITE_COLOUR_EMBEDDED, x, y, 2, DRAWSPRITE_FLAG_WIDGETPOS | DRAWSPRITE_FLAG_CENTER/*, paletteHouse*/);
+		GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[e->spriteID], e->spriteID, GUI_SPRITE_COLOUR_EMBEDDED, x, y, 2, DRAWSPRITE_FLAG_WIDGETPOS | DRAWSPRITE_FLAG_CENTER);
 	}
 	}
 
@@ -1198,7 +1261,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 			uint8 orientation;
 			uint8 *sprite;
 			uint16 index;
-			uint16 spriteFlags;
+			int spriteFlags;
 
 			u = Unit_Find(&find);
 
@@ -1278,8 +1341,9 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 			}
 			if (ui->o.flags.blurTile) spriteFlags |= DRAWSPRITE_FLAG_BLUR;
 
-			if (GUI_Widget_Viewport_GetSprite_HousePalette(index, Unit_GetHouseID(u), paletteHouse)) {
-				GUI_DrawSprite(SCREEN_ACTIVE, sprite, index, Unit_GetHouseID(u), x, y, 2, spriteFlags | DRAWSPRITE_FLAG_PAL, paletteHouse);
+			int paletteFlags = GUI_Widget_Viewport_HousePaletteFlags(index, Unit_GetHouseID(u), paletteHouse);
+			if (paletteFlags != 0) {
+				GUI_DrawSprite(SCREEN_ACTIVE, sprite, index, Unit_GetHouseID(u), x, y, 2, spriteFlags | paletteFlags, paletteHouse);
 			} else {
 				GUI_DrawSprite(SCREEN_ACTIVE, sprite, index, GUI_SPRITE_COLOUR_EMBEDDED, x, y, 2, spriteFlags);
 			}

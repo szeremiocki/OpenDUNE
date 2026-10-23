@@ -10,6 +10,7 @@
 #include "widget.h"
 
 #include "gui.h"
+#include "sidebar.h"
 #include "../input/input.h"
 #include "../input/mouse.h"
 #include "../gfx.h"
@@ -148,13 +149,20 @@ void GUI_Widget_Draw(Widget *w)
 	uint16 drawMode;
 	uint8 fgColour, bgColour;
 	WidgetDrawParameter drawParam;
+#ifdef TOS
+	bool sidebar;
+#endif
 
 	if (w == NULL) return;
 
+#ifdef TOS
+	sidebar = GUI_Sidebar_WidgetBegin(w);
+#endif
 	if (w->flags.invisible) {
-		if (!w->flags.greyWhenInvisible) return;
-
-		GUI_Widget_DrawBlocked(w, 12);
+		if (w->flags.greyWhenInvisible) GUI_Widget_DrawBlocked(w, 12);
+#ifdef TOS
+		if (sidebar) GUI_Sidebar_End();
+#endif
 		return;
 	}
 
@@ -213,8 +221,7 @@ void GUI_Widget_Draw(Widget *w)
 		} break;
 
 		case DRAW_MODE_CUSTOM_PROC: {
-			if (drawParam.proc == NULL) return;
-			drawParam.proc(w);
+			if (drawParam.proc != NULL) drawParam.proc(w);
 		} break;
 
 		case DRAW_MODE_WIRED_RECTANGLE: {
@@ -229,6 +236,9 @@ void GUI_Widget_Draw(Widget *w)
 	if (drawMode != DRAW_MODE_NONE && drawMode != DRAW_MODE_CUSTOM_PROC && GFX_Screen_IsActive(SCREEN_0)) {
 		GUI_Mouse_Show_InRegion();
 	}
+#ifdef TOS
+	if (sidebar) GUI_Sidebar_End();
+#endif
 }
 
 /**

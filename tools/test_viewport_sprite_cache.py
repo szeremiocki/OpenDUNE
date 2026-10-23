@@ -575,8 +575,84 @@ int main(void) {
                                 *defines, str(source), "-o", str(binary)], check=True)
                 subprocess.run([str(binary)], check=True)
 
+    def test_house_palette_preparation(self):
+        viewport = (ROOT / "src/gui/viewport.c").read_text()
+        header = (ROOT / "src/gui/gui.h").read_text()
+        flags = "\n".join(line for line in header.splitlines()
+                          if line.startswith(("#define DRAWSPRITE_FLAG_", "#define GUI_SPRITE_")))
+        layer_types = header[header.index("typedef struct GUI_SpriteLayer"):header.index("/* colourHouse identifies")]
+        harness = r"""
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <string.h>
+typedef uint8_t uint8;
+typedef uint16_t uint16;
+typedef int16_t int16;
+/* FLAGS */
+/* LAYERS */
+static uint8 assets[2]={0,1}, *g_sprites[3]={assets,assets+1,NULL};
+static bool direct;
+static unsigned lookups;
+#ifdef TOS
+static bool Video_Atari_CursorDirect(void) { return direct; }
+#endif
+static bool GUI_GetSpriteHousePalette(uint16 id,uint8 house,uint8 *palette) {
+    lookups++;
+    if(g_sprites[id]==NULL || !(g_sprites[id][0]&1)) return false;
+    for(unsigned i=0;i<16;i++) palette[i]=house*16+i;
+    return true;
+}
+/* PRODUCTION */
+int main(void) {
+    for(unsigned mode=0;mode<2;mode++) {
+        direct=mode!=0;
+        uint8 palette[16]; memset(palette,0xa5,sizeof(palette));
+        unsigned before=lookups;
+        int flags=GUI_Widget_Viewport_HousePaletteFlags(1,5,palette);
+        bool deferred=false;
+#ifdef TOS
+        deferred=direct;
+#endif
+        assert(flags==(DRAWSPRITE_FLAG_PAL | (deferred?DRAWSPRITE_FLAG_PAL_DEFERRED:0)));
+        assert(lookups==before+!deferred);
+        for(unsigned i=0;i<16;i++) assert(palette[i]==(deferred?0xa5:80+i));
+        assert(!GUI_Widget_Viewport_HousePaletteFlags(0,5,palette));
+        assert(!GUI_Widget_Viewport_HousePaletteFlags(2,5,palette));
+        GUI_SpriteLayers layers; memset(&layers,0xa5,sizeof(layers)); layers.count=0;
+        before=lookups;
+        GUI_Widget_Viewport_AddSpriteLayer(&layers,1,5,-4,3,DRAWSPRITE_FLAG_RTL);
+        assert(layers.count==1 && layers.layer[0].colourHouse==5);
+        assert(layers.layer[0].flags==(flags|DRAWSPRITE_FLAG_RTL));
+        assert(layers.layer[0].offsetX==-4 && layers.layer[0].offsetY==3);
+        assert(lookups==before+!deferred);
+        for(unsigned i=0;i<16;i++) assert(layers.layer[0].palette[i]==(deferred?0xa5:80+i));
+        before=lookups;
+        GUI_Widget_Viewport_AddSpriteLayer(&layers,1,GUI_SPRITE_COLOUR_EMBEDDED,0,0,0);
+        assert(lookups==before && layers.layer[1].colourHouse==GUI_SPRITE_COLOUR_EMBEDDED);
+        assert(layers.layer[1].flags==0);
+    }
+    return 0;
+}
+"""
+        harness = harness.replace("/* FLAGS */", flags).replace("/* LAYERS */", layer_types)
+        harness = harness.replace("/* PRODUCTION */",
+            function(viewport, "GUI_Widget_Viewport_HousePaletteFlags") + "\n" +
+            function(viewport, "GUI_Widget_Viewport_AddSpriteLayer"))
+        with tempfile.TemporaryDirectory(prefix="viewport-house-palettes-") as directory:
+            source = Path(directory) / "test.c"
+            binary = Path(directory) / "test"
+            source.write_text(harness)
+            compiler = shlex.split(os.environ.get("CC", "cc"))
+            for defines in ([], ["-DTOS"]):
+                subprocess.run([*compiler, "-std=c99", "-O2", "-Wall", "-Wextra", "-Werror",
+                                *defines, str(source), "-o", str(binary)], check=True)
+                subprocess.run([str(binary)], check=True)
+
     def test_cache_and_direct_blits(self):
         gui = (ROOT / "src/gui/gui.c").read_text()
+        viewport = (ROOT / "src/gui/viewport.c").read_text()
         video = (ROOT / "src/video/video_atari.c").read_text()
         cache = gui[gui.index("enum { VIEWPORT_PLANAR_SPRITES"):gui.index("\nvoid GUI_FreeViewportSpriteCache")]
         flags = "\n".join(line for line in (ROOT / "src/gui/gui.h").read_text().splitlines()
@@ -637,6 +713,7 @@ static ViewportSpriteMask s_viewportSpriteCache[512];
 static uint16 *s_viewportSpriteMasks;
 static unsigned decodes, encodes, overlayWrites, dirtyClears;
 static unsigned compositions;
+static unsigned houseLookups;
 static unsigned evictionCandidates;
 static unsigned lookupCandidates;
 static unsigned lastHitMatches;
@@ -648,6 +725,9 @@ static int16 boundsLeft, boundsTop, boundsRight, boundsBottom;
 static bool pendingRepair;
 static int16 repairLeft, repairTop, repairRight, repairBottom;
 #define Warning(...) assert(false)
+#define Error(...) assert(false)
+static void GUI_Sidebar_Free(void) {}
+/* HOUSE PALETTE */
 /* CACHE */
 static int compare_directory_keys(const void *left, const void *right) {
     const ViewportPlanarSpriteKey *a = left, *b = right;
@@ -826,6 +906,13 @@ static bool draw_identity(uint16 id, uint8 house, int flags, ...) {
                                     draw_key());
     va_end(ap);
     return true;
+}
+static void draw_house(uint16 id, uint8 house, const GUI_SpriteLayers *layers,
+                       int16 x, int16 y, int flags, ...) {
+    va_list ap;
+    va_start(ap, flags);
+    GUI_ViewportPlanarSprite(g_sprites[id], id, house, x, y, flags, &ap, layers, NULL);
+    va_end(ap);
 }
 static unsigned tile_count(int left, int top, int right, int bottom) {
     left = max(0, left & ~15); right = min(240, (right + 15) & ~15);
@@ -1213,6 +1300,10 @@ int main(int argc, char **argv) {
         g_sprites[id] = sprite;
         sprite[0] = id == 6 ? 2 : 3; sprite[2] = 27; sprite[3] = 23;
         for (unsigned x = 0; x < 16; x++) sprite[10 + x] = x;
+        if(id>=68) {
+            sprite[11]=0;
+            for(unsigned x=2;x<=10;x++) sprite[10+x]=0x90+x-2;
+        }
         for (unsigned y = 0; y < 27; y++) for (unsigned x = 0; x < 23; x++)
             sprite[(id == 6 ? 10 : 26) + y * 23 + x] =
                 (x + y) % 5 == 0 ? 0 : (id == 6 ? 200 : 1) + (x + y) % 15;
@@ -1226,6 +1317,7 @@ int main(int argc, char **argv) {
     g_sprites[111] = sprites[0];
     for (unsigned x = 0; x < 16; x++) palette[x] = x + 16;
     for (unsigned x = 0; x < 256; x++) remap[x] = x;
+    for (unsigned x = 0x90; x <= 0xe8; x++) remap[x] = (x >> 4) ^ (x & 15);
     remap[17] = 0; remap[0] = 2;
     s_viewportPlanarSprites = calloc(VIEWPORT_PLANAR_SPRITES, sizeof(*s_viewportPlanarSprites));
     s_viewportPlanarMasks = calloc(VIEWPORT_PLANAR_SPRITES * 320 * (s_viewportBlitter ? 4 : 1),
@@ -1272,6 +1364,14 @@ int main(int argc, char **argv) {
                 invalid.count = 2;
                 invalid.layer[0] = (GUI_SpriteLayer){2, GUI_SPRITE_COLOUR_EMBEDDED, 0, -32, 0, {0}};
                 invalid.layer[1] = (GUI_SpriteLayer){3, GUI_SPRITE_COLOUR_EMBEDDED, 0, 31, 0, {0}};
+                draw_layers(&invalid, 64, 60, DRAWSPRITE_FLAG_PAL, palette);
+                break;
+            case 13:
+                draw_identity(111, GUI_SPRITE_COLOUR_EMBEDDED, DRAWSPRITE_FLAG_PAL_DEFERRED);
+                break;
+            case 14:
+                invalid.layer[0] = (GUI_SpriteLayer){2, GUI_SPRITE_COLOUR_EMBEDDED, 0, 0,
+                    DRAWSPRITE_FLAG_PAL_DEFERRED, {0}};
                 draw_layers(&invalid, 64, 60, DRAWSPRITE_FLAG_PAL, palette);
                 break;
             default: return 3;
@@ -1342,6 +1442,39 @@ int main(int argc, char **argv) {
     memcpy(savedDirectory, s_viewportPlanarKeys, sizeof(savedDirectory));
     assert(draw(sprites[0], -100, -100, 0) && decodes == before);
     assert(!memcmp(savedDirectory, s_viewportPlanarKeys, sizeof(savedDirectory)));
+    for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) s_viewportPlanarSprites[i].key.main = 0;
+    rebuild_directory();
+    memset(s_viewportPlanarComponents, 0, VIEWPORT_PLANAR_COMPONENTS * sizeof(*s_viewportPlanarComponents));
+    /* Native body and attachment palettes are resolved only on component misses. */
+    for(unsigned house=0;house<HOUSE_MAX;house++) {
+        GUI_SpriteLayers lazy={1,{{69,house,2,-5,
+            DRAWSPRITE_FLAG_PAL | DRAWSPRITE_FLAG_PAL_DEFERRED | DRAWSPRITE_FLAG_BOTTOMUP,{0}}}};
+        uint8 bodyColours[16], turretColours[16];
+        memset(lazy.layer[0].palette,0xa5,sizeof(lazy.layer[0].palette));
+        for(unsigned i=0;i<16;i++) {
+            uint8 b=sprites[68][10+i], t=sprites[69][10+i];
+            bodyColours[i]=b>=0x90 && b<=0x98 ? b+(house<<4) : b;
+            turretColours[i]=t>=0x90 && t<=0x98 ? t+(house<<4) : t;
+        }
+        for(unsigned pass=0;pass<3;pass++) {
+            if(pass==2) {
+                for(unsigned i=0;i<VIEWPORT_PLANAR_SPRITES;i++) s_viewportPlanarSprites[i].key.main=0;
+                rebuild_directory();
+            }
+            unsigned lookups=houseLookups, decoded=decodes, encoded=encodes;
+            int x=80+pass, y=80;
+            for(unsigned i=0;i<16000;i++) visible[i]=expected[i]=i*137+41;
+            reference_layer(68,x,y,0,bodyColours,remap);
+            reference_layer(69,x+2,y-5,DRAWSPRITE_FLAG_BOTTOMUP,turretColours,NULL);
+            draw_house(68,house,&lazy,x,y,
+                DRAWSPRITE_FLAG_PAL | DRAWSPRITE_FLAG_PAL_DEFERRED |
+                DRAWSPRITE_FLAG_REMAP | DRAWSPRITE_FLAG_CENTER,
+                (uint8 *)NULL,remap,1);
+            assert(houseLookups==lookups+(pass==0?2:0));
+            assert(decodes==decoded+(pass==0?2:0) && encodes==encoded+(pass==0?2:0));
+            assert(!memcmp(visible,expected,sizeof(visible)) && !pendingRepair);
+        }
+    }
     for (unsigned i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) s_viewportPlanarSprites[i].key.main = 0;
     rebuild_directory();
     memset(s_viewportPlanarComponents, 0, VIEWPORT_PLANAR_COMPONENTS * sizeof(*s_viewportPlanarComponents));
@@ -1837,6 +1970,12 @@ int main(int argc, char **argv) {
         harness = harness.replace("/* FREE */", function(gui, "GUI_FreeViewportSpriteCache"))
         harness = harness.replace("/* PLANAR SCOPE */", function(gui, "GUI_SetViewportPlanar"))
         harness = harness.replace("/* MERGE */", function(video, "Video_Atari_PlanarMergePlain"))
+        house_cache = viewport[viewport.index("#define PALETTE_HOUSE_CACHE_SIZE"):
+                               viewport.index("/* ENHANCEMENT -- newlib")]
+        house_getter = function(viewport, "GUI_GetSpriteHousePalette")
+        house_getter = house_getter.replace("\n{\n", "\n{\n    houseLookups++;\n", 1)
+        harness = harness.replace("/* HOUSE PALETTE */", house_cache + "\n" +
+                                  function(viewport, "PaletteHouseCache_Copy16") + "\n" + house_getter)
         composer = function(video, "Video_Atari_ComposePlanarSprite")
         composer = composer.replace("\n{\n", "\n{\n    compositions++;\n", 1)
         harness = harness.replace("/* BLITTER */", composer + "\n" +
@@ -1894,7 +2033,7 @@ int main(int argc, char **argv) {
                             str(source), "-o", str(binary)], check=True)
             subprocess.run([str(binary)], check=True)
             subprocess.run([str(binary), "blitter"], check=True)
-            for invalid in range(13):
+            for invalid in range(15):
                 result = subprocess.run([str(binary), "blitter", str(invalid)],
                                         stderr=subprocess.DEVNULL)
                 self.assertEqual(result.returncode, 90, invalid)
@@ -1941,6 +2080,15 @@ static bool withUnit, withKeyArg;
 static void GUI_Widget_Viewport_InvalidateSpriteDamage(void) {}
 static uint8 *GFX_Screen_Get_ByIndex(Screen id) { return screen + id; }
 static bool Video_Atari_CursorDirect(void) { return cached; }
+#ifdef TOS
+static bool GUI_Sidebar_Active(void) { return false; }
+static void GUI_Sidebar_Sprite(const uint8 *sprite, uint16 id, int16 x, int16 y,
+                                int flags, const uint8 *mapping, uint16 count) {
+    (void)sprite; (void)id; (void)x; (void)y;
+    (void)flags; (void)mapping; (void)count;
+    assert(false);
+}
+#endif
 static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 id, uint8 house,
                                     int16 x, int16 y, int flags, va_list *ap,
                                     const GUI_SpriteLayers *composition, ViewportCompositeKey *key) {

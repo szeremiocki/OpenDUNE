@@ -84,6 +84,9 @@ gui/font.c
 gui/gui.c
 gui/mentat.c
 gui/security.c
+#if TOS
+gui/sidebar.c
+#endif
 gui/viewport.c
 gui/widget.c
 gui/widget_click.c
@@ -234,6 +237,7 @@ gui/font.h
 gui/gui.h
 gui/mentat.h
 gui/security.h
+gui/sidebar.h
 gui/widget.h
 house.h
 ini.h

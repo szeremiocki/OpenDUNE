@@ -143,6 +143,9 @@ extern bool g_var_37B8;
 #ifdef TOS
 /* Mutable ViewportCompositeKey * (NULL for temporary) after layers, before palette/remap. */
 #define DRAWSPRITE_FLAG_VIEWPORT_KEY 0x40000
+/* Native viewport PAL: defer its canonical house table until a component miss.
+ * The usual PAL argument is present but unused. */
+#define DRAWSPRITE_FLAG_PAL_DEFERRED 0x80000
 #endif
 
 #define GUI_ClearScreen(screenID) GFX_ClearScreen(screenID)
@@ -167,6 +170,7 @@ typedef struct GUI_SpriteLayers {
  * set, otherwise EMBEDDED. Arbitrary palettes must use UNKNOWN. */
 extern void GUI_DrawSprite(Screen screenID, const uint8 *sprite, uint16 spriteID, uint8 colourHouse,
                            int16 posX, int16 posY, uint16 windowID, int flags, ...);
+extern bool GUI_GetSpriteHousePalette(uint16 spriteID, uint8 houseID, uint8 *paletteHouse);
 #ifdef TOS
 /* Plain sprite draw, clipped to a tightly packed private buffer. No present
  * or screen-buffer access; transparent pixels leave the buffer unchanged. */

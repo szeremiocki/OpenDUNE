@@ -18,6 +18,7 @@
 #include "font.h"
 #include "mentat.h"
 #include "widget.h"
+#include "sidebar.h"
 #include "../animation.h"
 #include "../audio/driver.h"
 #include "../audio/sound.h"
@@ -216,6 +217,12 @@ void GUI_DrawFilledRectangle(int16 left, int16 top, int16 right, int16 bottom, u
 
 	uint8 *screen = GFX_Screen_GetActive();
 
+#ifdef TOS
+	if (GUI_Sidebar_Active()) {
+		GUI_Sidebar_Fill(left, top, right, bottom, colour);
+		return;
+	}
+#endif
 	if (left >= SCREEN_WIDTH) return;
 	if (left < 0) left = 0;
 
@@ -472,6 +479,10 @@ static void GUI_DrawChar(unsigned char c, uint16 x, uint16 y)
 	if (y >= SCREEN_HEIGHT || (y + g_fontCurrent->height) > SCREEN_HEIGHT) return;
 
 #ifdef TOS
+	if (GUI_Sidebar_Active()) {
+		GUI_Sidebar_Char(c, x, y, g_colours);
+		return;
+	}
 	toPlanar = GFX_Screen_IsActive(SCREEN_0) && Video_Atari_CursorDirect() &&
 	           fc->width <= 32 && g_fontCurrent->height <= 32;
 
@@ -563,6 +574,9 @@ void GUI_DrawText(const char *string, int16 left, int16 top, uint8 fgColour, uin
 	uint16 x;
 	uint16 y;
 	const char *s;
+#ifdef TOS
+	bool sidebarText;
+#endif
 
 	if (g_fontCurrent == NULL) return;
 
@@ -575,7 +589,13 @@ void GUI_DrawText(const char *string, int16 left, int16 top, uint8 fgColour, uin
 	colours[1] = fgColour;
 
 	GUI_InitColors(colours, 0, 1);
+	if (*string == '\0') return;
 
+#ifdef TOS
+	sidebarText = GUI_Sidebar_Active() && strlen(string) < 240;
+	if (sidebarText && GUI_Sidebar_FragmentBegin(SIDEBAR_FRAGMENT_TEXT, string, left, top,
+	    0, 0, 0, g_colours)) return;
+#endif
 	s = string;
 	x = left;
 	y = top;
@@ -602,6 +622,9 @@ void GUI_DrawText(const char *string, int16 left, int16 top, uint8 fgColour, uin
 		x += width;
 		s++;
 	}
+#ifdef TOS
+	if (sidebarText) GUI_Sidebar_FragmentEnd();
+#endif
 }
 
 /**
@@ -704,6 +727,16 @@ void GUI_DrawText_Wrapper(const char *string, int16 left, int16 top, uint8 fgCol
 
 	GUI_DrawText(textBuffer, left, top, fgColour, bgColour);
 }
+
+#ifdef TOS
+bool GUI_Sidebar_ButtonBegin(const Widget *w, uint8 colour)
+{
+	GUI_DrawText_Wrapper("", 0, 0, colour, 0, 0x121);
+	return GUI_Sidebar_FragmentBegin(SIDEBAR_FRAGMENT_BUTTON, String_Get_ByIndex(w->stringID),
+	    w->offsetX, w->offsetY, w->width, w->height,
+	    colour * 4 + w->state.selected * 2 + w->state.hover2, g_colours);
+}
+#endif
 
 /**
  * Shift the given colour toward the reference color.
@@ -1234,6 +1267,20 @@ void GUI_DrawSprite(Screen screenID, const uint8 *sprite, uint16 spriteID, uint8
 #endif
 
 	va_start(ap, flags);
+#ifdef TOS
+	if (GUI_Sidebar_Active()) {
+		const uint8 *remap = NULL;
+		uint16 count = 0;
+		assert(windowID == 0);
+		if (flags & DRAWSPRITE_FLAG_REMAP) {
+			remap = va_arg(ap, uint8 *);
+			count = (uint16)va_arg(ap, int);
+		}
+		GUI_Sidebar_Sprite(sprite, spriteID, posX, posY, flags, remap, count);
+		va_end(ap);
+		return;
+	}
+#endif
 	if (flags & DRAWSPRITE_FLAG_LAYERS) {
 		layers = va_arg(ap, const GUI_SpriteLayers *);
 		assert(layers != NULL);
@@ -1250,6 +1297,9 @@ void GUI_DrawSprite(Screen screenID, const uint8 *sprite, uint16 spriteID, uint8
 		va_end(ap);
 		return;
 	}
+#endif
+#ifdef TOS
+	assert((flags & DRAWSPRITE_FLAG_PAL_DEFERRED) == 0);
 #endif
 #ifndef TOS
 	VARIABLE_NOT_USED(spriteID);
@@ -1415,6 +1465,7 @@ void GUI_FreeViewportSpriteCache(void)
 {
 	uint16 i;
 
+	GUI_Sidebar_Free();
 	for (i = 0; i < UNIT_INDEX_MAX; i++) Unit_ClearViewportKey(Unit_Get_ByIndex(i));
 	free(s_viewportPlanarSprites);
 	s_viewportPlanarSprites = NULL;
@@ -1580,6 +1631,7 @@ static ViewportPlanarComponent *GUI_ViewportPlanarComponent(ViewportSpriteMask *
 	if (entry == NULL) {
 		ViewportPlanarComponent *victim = NULL;
 		union { uint32 aligned; uint8 bytes[32 * 32]; } scratch;
+		uint8 housePalette[16];
 		uint16 stride = (mask->width + 15) & ~15;
 		uint16 groups = stride >> 4, row;
 		const uint16 *rows = mask->rows + ((flags & DRAWSPRITE_FLAG_RTL) ? groups * mask->height : 0);
@@ -1590,6 +1642,13 @@ static ViewportPlanarComponent *GUI_ViewportPlanarComponent(ViewportSpriteMask *
 			    (candidate->key == 0 || candidate->used < victim->used))) victim = candidate;
 		}
 		entry = victim;
+		if (palette == NULL && colourHouse != GUI_SPRITE_COLOUR_EMBEDDED) {
+			if (!GUI_GetSpriteHousePalette(spriteID, colourHouse, housePalette)) {
+				Error("Missing house palette for planar sprite %u\n", spriteID);
+				exit(1);
+			}
+			palette = housePalette;
+		}
 		memset(scratch.bytes, 0, stride * mask->height);
 		GUI_ViewportDecodeLayer(scratch.bytes, stride, mask->height, mask->sprite, 0, 0,
 		                        flags, palette, remap);
@@ -1835,7 +1894,9 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 	assert(sprite != NULL && spriteID != 0 && spriteID <= 354 && g_sprites[spriteID] == sprite);
 	assert((flags & ~(DRAWSPRITE_FLAG_RTL | DRAWSPRITE_FLAG_BOTTOMUP | DRAWSPRITE_FLAG_PAL |
 	                 DRAWSPRITE_FLAG_REMAP | DRAWSPRITE_FLAG_SPRITEPAL |
-	                 DRAWSPRITE_FLAG_CENTER | DRAWSPRITE_FLAG_WIDGETPOS)) == 0);
+	                 DRAWSPRITE_FLAG_CENTER | DRAWSPRITE_FLAG_WIDGETPOS |
+	                 DRAWSPRITE_FLAG_PAL_DEFERRED)) == 0);
+	assert(!(flags & DRAWSPRITE_FLAG_PAL_DEFERRED) || (flags & DRAWSPRITE_FLAG_PAL));
 	assert((flags & DRAWSPRITE_FLAG_PAL) ?
 	       colourHouse < HOUSE_MAX && (READ_LE_UINT16(sprite) & 1) != 0 :
 	       colourHouse == GUI_SPRITE_COLOUR_EMBEDDED);
@@ -1852,7 +1913,10 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 		x -= centreX;
 		y -= centreY;
 	}
-	if (flags & DRAWSPRITE_FLAG_PAL) palette = va_arg(*ap, uint8 *);
+	if (flags & DRAWSPRITE_FLAG_PAL) {
+		palette = va_arg(*ap, uint8 *);
+		if (flags & DRAWSPRITE_FLAG_PAL_DEFERRED) palette = NULL;
+	}
 	if (flags & DRAWSPRITE_FLAG_REMAP) {
 		remap = va_arg(*ap, uint8 *);
 		remapCount = (int16)va_arg(*ap, int);
@@ -1862,7 +1926,9 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 	for (i = 0; i < count; i++) {
 		const GUI_SpriteLayer *layer = &layers->layer[i];
 		assert(layer->spriteID != 0 && layer->spriteID <= 354 && g_sprites[layer->spriteID] != NULL);
-		assert((layer->flags & ~(DRAWSPRITE_FLAG_RTL | DRAWSPRITE_FLAG_BOTTOMUP | DRAWSPRITE_FLAG_PAL)) == 0);
+		assert((layer->flags & ~(DRAWSPRITE_FLAG_RTL | DRAWSPRITE_FLAG_BOTTOMUP | DRAWSPRITE_FLAG_PAL |
+		                        DRAWSPRITE_FLAG_PAL_DEFERRED)) == 0);
+		assert(!(layer->flags & DRAWSPRITE_FLAG_PAL_DEFERRED) || (layer->flags & DRAWSPRITE_FLAG_PAL));
 		assert(layer->offsetX >= -32 && layer->offsetX <= 31 && layer->offsetY >= -32 && layer->offsetY <= 31);
 		assert((layer->flags & DRAWSPRITE_FLAG_PAL) ?
 		       layer->colourHouse < HOUSE_MAX && (READ_LE_UINT16(g_sprites[layer->spriteID]) & 1) != 0 :
@@ -1923,7 +1989,8 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 			ViewportSpriteMask *m = masks[i];
 			int layerFlags = i == 0 ? flags : layers->layer[i - 1].flags;
 			const uint8 *layerPalette = i == 0 ? palette :
-			    (layerFlags & DRAWSPRITE_FLAG_PAL ? layers->layer[i - 1].palette : NULL);
+			    ((layerFlags & DRAWSPRITE_FLAG_PAL) && !(layerFlags & DRAWSPRITE_FLAG_PAL_DEFERRED) ?
+			    layers->layer[i - 1].palette : NULL);
 			ViewportPlanarComponent *component = GUI_ViewportPlanarComponent(m,
 			    i == 0 ? spriteID : layers->layer[i - 1].spriteID,
 			    i == 0 ? colourHouse : layers->layer[i - 1].colourHouse,
@@ -3281,7 +3348,11 @@ void GUI_DrawBorder(uint16 left, uint16 top, uint16 width, uint16 height, uint16
 	 * reprocessed by the old c2p sweep from SCREEN_1 and overwriting the
 	 * just-drawn planar content (e.g. a menu box border+text). Skip it
 	 * for the direct-planar case, same as those two functions do. */
-	if (!fill && !(GFX_Screen_IsActive(SCREEN_0) && Video_Atari_CursorDirect())) {
+	if (!fill && !(GFX_Screen_IsActive(SCREEN_0) && Video_Atari_CursorDirect())
+#ifdef TOS
+	    && !GUI_Sidebar_Active()
+#endif
+	) {
 		GFX_Screen_SetDirtySource(DIRTY_SRC_RECT);
 		GFX_Screen_SetDirty(SCREEN_ACTIVE, left, top, left + width, top + height);
 	}
@@ -3298,6 +3369,13 @@ void GUI_DrawBorder(uint16 left, uint16 top, uint16 width, uint16 height, uint16
 	GUI_DrawLine(left, top, left + width, top, colourSchema[2] & 0xFF);
 	GUI_DrawLine(left, top, left, top + height, colourSchema[2] & 0xFF);
 
+#ifdef TOS
+	if (GUI_Sidebar_Active()) {
+		GUI_Sidebar_Fill(left, top + height, left, top + height, colourSchema[3] & 0xFF);
+		GUI_Sidebar_Fill(left + width, top, left + width, top, colourSchema[3] & 0xFF);
+		return;
+	}
+#endif
 	GFX_PutPixel(left, top + height, colourSchema[3] & 0xFF);
 	GFX_PutPixel(left + width, top, colourSchema[3] & 0xFF);
 }
@@ -3389,6 +3467,7 @@ void GUI_DrawInterfaceAndRadar(Screen screenID)
 #ifdef TOS
 	bool directViewport = Video_Atari_CursorDirect();
 	assert(!directViewport || screenID == SCREEN_0);
+	if (directViewport) GUI_Sidebar_Invalidate();
 #endif
 
 	oldScreenID = GFX_Screen_SetActive((screenID == SCREEN_0) ? SCREEN_1 : screenID);
@@ -3410,6 +3489,9 @@ void GUI_DrawInterfaceAndRadar(Screen screenID)
 #endif
 	GUI_DrawScreen(SCREEN_ACTIVE);
 
+#ifdef TOS
+	if (!directViewport)
+#endif
 	GUI_Widget_ActionPanel_Draw(true);
 
 	w = GUI_Widget_Get_ByIndex(g_widgetLinkedListHead, 1);
@@ -3455,8 +3537,11 @@ void GUI_DrawInterfaceAndRadar(Screen screenID)
 		GUI_SetPaletteAnimated(g_palette1, 15);
 
 #ifdef TOS
-		/* SCREEN_1 owns only the interface; publish it before the native battlefield. */
-		if (directViewport) GUI_DrawScreen(SCREEN_0);
+		/* SCREEN_1 has neither the native sidebar nor the battlefield. */
+		if (directViewport) {
+			GUI_Widget_ActionPanel_Draw(true);
+			GUI_DrawScreen(SCREEN_0);
+		}
 #endif
 		GUI_Mouse_Show_Safe();
 	}
@@ -4263,6 +4348,13 @@ void GUI_DrawLine(int16 x1, int16 y1, int16 x2, int16 y2, uint8 colour)
 		}
 	}
 
+#ifdef TOS
+	if (GUI_Sidebar_Active()) {
+		assert(x1 == x2 || y1 == y2);
+		GUI_Sidebar_Fill(min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2), colour);
+		return;
+	}
+#endif
 	y2 -= y1;
 
 	if (y2 == 0) {
@@ -6029,6 +6121,16 @@ void GUI_DrawBlockedRectangle(int16 left, int16 top, int16 width, int16 height, 
 {
 	uint8 *screen;
 
+#ifdef TOS
+	if (GUI_Sidebar_Active()) {
+		int16 row, column;
+		for (row = 0; row < height; row++) {
+			for (column = ((height - row) ^ width) & 1; column < width; column += 2)
+				GUI_Sidebar_Fill(left + column, top + row, left + column, top + row, colour);
+		}
+		return;
+	}
+#endif
 	if (width <= 0) return;
 	if (height <= 0) return;
 	if (left >= SCREEN_WIDTH) return;

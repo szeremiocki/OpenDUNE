@@ -59,6 +59,11 @@ typedef uint32_t uint32;
 #define HOUSE_MAX 6
 #define SCREEN_WIDTH 320
 #define SCREEN_HEIGHT 200
+#define lengthof(a) (sizeof(a) / sizeof(*(a)))
+#define GFX_SELECTION_TOP 0x10
+#define GFX_SELECTION_BOTTOM 0x20
+#define GFX_SELECTION_LEFT 0x40
+#define GFX_SELECTION_RIGHT 0x80
 #define TILES 389
 static uint8 source[TILES * 128], palettes[32 * 16], table[TILES], rgb[256 * 3];
 static uint8 sourceBefore[sizeof(source)], palettesBefore[sizeof(palettes)];
@@ -71,6 +76,7 @@ static uint16 s_tilePenPairMap[16 * 256], s_palette4BitPairMap[65536];
 static unsigned allocations, failAllocation, warnings, mappings, conversions, publishes;
 static unsigned slots, stridedCalls;
 static const uint16 *lastPixels;
+static const uint16 *lastMasks;
 /* STATE */
 static void *allocate(size_t n, bool zero) {
     if (++allocations == failAllocation) return NULL;
@@ -140,14 +146,7 @@ static void Video_Atari_DrawPlanarTile(const uint16 *p, const uint16 *m, uint16 
     assert(p && m && x < 240 && y >= 40);
     assert(copyPixels == copy_source(p, m, NULL, NULL));
     lastPixels = p;
-    publishes++;
-}
-static void Video_Atari_DrawPlanarTileFogged(const uint16 *p, const uint16 *m,
-                                           const uint16 *f, const uint16 *fm, uint16 x, uint16 y,
-                                           const uint16 *copyPixels) {
-    assert(f && fm);
-    assert(copyPixels == copy_source(p, m, f, fm) && x < 240 && y >= 40);
-    lastPixels = p;
+    lastMasks = m;
     publishes++;
 }
 /* VIDEO */
@@ -195,6 +194,40 @@ static void check(unsigned tile, unsigned house) {
     assert(!memcmp(source, sourceBefore, sizeof(source)));
     assert(!memcmp(palettes, palettesBefore, sizeof(palettes)));
 }
+static unsigned compositeCollisions;
+static void check_composite(unsigned tile, unsigned overlay, unsigned house) {
+    unsigned index = s_planarTileIndex[house * TILES + tile];
+    unsigned fogIndex = s_planarTileIndex[house * TILES + overlay];
+    uint32 key = index | ((uint32)fogIndex << 16);
+    unsigned slot = (index ^ (index >> 6) ^ fogIndex ^ (fogIndex << 3)) & 63;
+    if (s_planarCompositeReady[slot] && s_planarCompositeKeys[slot] != key) compositeCollisions++;
+    unsigned before = publishes, a = allocations;
+    GFX_DrawPlanarTileFogged(tile, overlay, 0, 40, house);
+    assert(publishes == before + 1 && allocations == a);
+    assert(lastPixels == s_planarComposites[slot] && lastMasks == s_planarCompositeMasks[slot]);
+    assert(s_planarCompositeKeys[slot] == key && s_planarCompositeReady[slot]);
+    uint16 allMask = 0xffff, anyMask = 0;
+    for (unsigned row = 0; row < 16; row++) {
+        uint16 ground = s_planarTileMasks[tile * 16 + row];
+        uint16 fog = s_planarTileMasks[overlay * 16 + row];
+        assert(lastMasks[row] == (ground | fog));
+        allMask &= lastMasks[row]; anyMask |= lastMasks[row];
+        for (unsigned plane = 0; plane < 4; plane++) {
+            uint16 value = s_planarTiles[index * 64 + row * 4 + plane] & ground;
+            value = (value & ~fog) | (s_planarTiles[fogIndex * 64 + row * 4 + plane] & fog);
+            assert(lastPixels[row * 4 + plane] == value);
+        }
+    }
+    assert(s_planarCompositeReady[slot] == (allMask == 0xffff ? PLANAR_TILE_OPAQUE :
+                                           anyMask == 0 ? PLANAR_TILE_EMPTY : PLANAR_TILE_MIXED));
+    uint16 saved = s_planarComposites[slot][0];
+    s_planarComposites[slot][0] ^= 0x1234;
+    unsigned c = conversions;
+    GFX_DrawPlanarTileFogged(tile, overlay, 16, 56, house);
+    assert(lastPixels[0] == (saved ^ 0x1234)); /* Warm hits do not recompose. */
+    assert(publishes == before + 2 && allocations == a && conversions == c);
+    s_planarComposites[slot][0] = saved;
+}
 int main(void) {
     for (unsigned i = 0; i < sizeof(source); i++) source[i] = (i * 53 + i / 7) & 255;
     for (unsigned tile = 0; tile < TILES; tile++) table[tile] = tile % 32;
@@ -207,6 +240,9 @@ int main(void) {
     memset(source + 33 * 128, 0x11, 128); /* Opaque despite transparency-enabled palette. */
     memset(source + 65 * 128, 0x11, 128);
     memset(source + 65 * 128, 0, 8); /* Mixed, with one completely empty row. */
+    table[66] = 1;
+    memset(source + 66 * 128, 0, 128);
+    memset(source + 66 * 128, 0x11, 8); /* Complements tile 65 into an opaque composite. */
     for (unsigned i = 0; i < sizeof(rgb); i++) rgb[i] = (i * 11 + i / 13) & 255;
     rgb[0] = rgb[1] = rgb[2] = 0;
     memcpy(sourceBefore, source, sizeof(source));
@@ -228,6 +264,15 @@ int main(void) {
             assert(s_planarTileIndex[house * TILES] == s_planarTileIndex[0]);
         for (unsigned house = 1; house < 6; house++)
             assert(s_planarTileIndex[house * TILES + 2] != s_planarTileIndex[2]);
+        check_composite(65, 66, 0);
+        for (unsigned ground = 0; ground < 3; ground++)
+            for (unsigned overlay = 0; overlay < 3; overlay++)
+                check_composite(classes[ground], classes[overlay], 0);
+        for (unsigned ground = 0; ground < TILES; ground += 7)
+            for (unsigned overlay = 0; overlay < TILES; overlay += 13)
+                for (unsigned house = 0; house < 6; house++)
+                    check_composite(ground, overlay, house);
+        assert(compositeCollisions > 1000);
         /* Cache fills must ignore a currently displayed loading/fade palette. */
         memset(s_palette4BitPairMap, 0xff, sizeof(s_palette4BitPairMap));
         unsigned beforeFogConversions = conversions, beforeFogPublishes = publishes;
@@ -272,6 +317,60 @@ int main(void) {
             assert(!memcmp(savedMasks[cell], cachedMasks[cell][0], 32));
             assert(!memcmp(savedMasks[cell] + 16, cachedMasks[cell][1], 32));
         }
+        /* Private selected tiles compose ground, overlays and edges in one publication. */
+        for (unsigned w = 1; w <= 3; w++) for (unsigned h = 1; h <= 3; h++)
+            for (unsigned y = 0; y < h; y++) for (unsigned x = 0; x < w; x++) {
+                unsigned edges = (y == 0 ? GFX_SELECTION_TOP : 0) |
+                    (y + 1 == h ? GFX_SELECTION_BOTTOM : 0) |
+                    (x == 0 ? GFX_SELECTION_LEFT : 0) |
+                    (x + 1 == w ? GFX_SELECTION_RIGHT : 0);
+                if (!edges) continue;
+                unsigned slot = y * 3 + x, token = edges | slot;
+                const unsigned overlays[] = {0, 3, 33, 65, 0xffff};
+                for (unsigned ground = 0; ground < 3; ground++)
+                    for (unsigned o = 0; o < 5; o++)
+                        for (unsigned house = 0; house < 6; house++)
+                            for (unsigned outline = 0; outline < 16; outline++) {
+                    unsigned id = classes[ground], overlay = overlays[o];
+                    unsigned before = publishes;
+                    GFX_DrawPlanarSelectionTile(id, overlay, x * 16, 40 + y * 16, house, token, outline);
+                    assert(publishes == before + 1 && lastPixels == s_selectionTiles[slot].pixels);
+                    const uint16 *base = overlay == 0xffff ? s_viewportFogPixels :
+                        s_planarTiles + s_planarTileIndex[house * TILES + id] * 64;
+                    const uint16 *mask = overlay == 0xffff ? s_viewportFogMasks :
+                        s_planarTileMasks + id * 16;
+                    const uint16 *op = overlay && overlay != 0xffff ?
+                        s_planarTiles + s_planarTileIndex[house * TILES + overlay] * 64 : NULL;
+                    const uint16 *om = op ? s_planarTileMasks + overlay * 16 : NULL;
+                    for (unsigned row = 0; row < 16; row++) {
+                        uint16 edge = (edges & GFX_SELECTION_LEFT ? 0x8000 : 0) |
+                            (edges & GFX_SELECTION_RIGHT ? 1 : 0);
+                        if ((!row && (edges & GFX_SELECTION_TOP)) ||
+                            (row == 15 && (edges & GFX_SELECTION_BOTTOM))) edge = 0xffff;
+                        uint16 fog = om ? om[row] : 0;
+                        assert(s_selectionTiles[slot].masks[row] == (mask[row] | fog | edge));
+                        for (unsigned p = 0; p < 4; p++) {
+                            uint16 value = (base[row * 4 + p] & mask[row]) & ~fog;
+                            if (op) value |= op[row * 4 + p] & fog;
+                            value = (value & ~edge) | (outline & (1u << p) ? edge : 0);
+                            assert(lastPixels[row * 4 + p] == value);
+                        }
+                    }
+                    /* Poison pixels: a warm hit must publish without recomposing. */
+                    uint16 savedWord = s_selectionTiles[slot].pixels[0];
+                    s_selectionTiles[slot].pixels[0] ^= 0x1234;
+                    unsigned c = conversions, a = allocations;
+                    GFX_DrawPlanarSelectionTile(id, overlay, x * 16, 40 + y * 16, house, token, outline);
+                    assert(s_selectionTiles[slot].pixels[0] == (savedWord ^ 0x1234));
+                    assert(conversions == c && allocations == a && publishes == before + 2);
+                    s_selectionTiles[slot].pixels[0] = savedWord;
+                }
+            }
+        /* Selection variants never write into shared terrain assets. */
+        for (unsigned cell = 0; cell < 150; cell++) {
+            assert(!memcmp(saved[cell], cached[cell][0], 128));
+            assert(!memcmp(saved[cell] + 64, cached[cell][1], 128));
+        }
         unsigned beforeConversions = conversions;
         GFX_DrawPlanarTile(2, 0, 40, 5);
         assert(conversions == beforeConversions);
@@ -283,6 +382,8 @@ int main(void) {
         for (unsigned i = 0; i < 8; i++) assert(pixels[i] == 0xffff);
         GFX_FreePlanarTiles();
         assert(!s_planarTileReady && !s_viewportFogReady && !GFX_PlanarTilesReady());
+        for (unsigned slot = 0; slot < PLANAR_COMPOSITE_SLOTS; slot++)
+            assert(!s_planarCompositeReady[slot]);
     }
     for (unsigned failure = 1; failure <= 4; failure++) {
         allocations = 0; failAllocation = failure;
@@ -351,7 +452,8 @@ int main(void) {
         harness = harness.replace("/* GFX */", "\n".join(function(gfx, name) for name in (
             "GFX_TileHouseColor", "GFX_FreePlanarTiles", "GFX_PlanarTilesReady",
             "GFX_FillPlanarTile", "GFX_GetPlanarTile",
-            "GFX_DrawPlanarTile", "GFX_DrawPlanarTileFogged", "GFX_DrawPlanarFogTile",
+            "GFX_DrawPlanarTile", "GFX_ComposePlanarTile", "GFX_DrawPlanarTileFogged", "GFX_PreparePlanarFogTile",
+            "GFX_DrawPlanarFogTile", "GFX_DrawPlanarSelectionTile",
             "GFX_InitPlanarTiles")))
         harness = harness.replace("((uint32)src & 1)", "((uintptr_t)src & 1)")
         with tempfile.TemporaryDirectory(prefix="planar-tile-lazy-") as directory:

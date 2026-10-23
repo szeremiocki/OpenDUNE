@@ -235,18 +235,43 @@ On ST/STE, the building-placement preview is drawn directly in planar
 memory, above the scene and below the mouse cursor. Moving it does not
 invalidate terrain or trigger chunky-to-planar conversion by itself.
 The footprint stays tile-aligned (up to 3x3 tiles), with an X for invalid
-locations, and is clipped to the battlefield. Ordinary selected-building
-outlines retain their original rendering. Options and modal messages
+locations, and is clipped to the battlefield. Options and modal messages
 hide the preview until gameplay drawing resumes.
+
+Ordinary selected-building outlines on ST/STE are baked into private planar
+edge-tile variants, after ground and overlay/fog composition. Each damaged
+boundary tile, including its one-pixel outline, is published once through
+the normal cursor/placement-safe tile writer. Warm hits do no conversion,
+composition or allocation. Nine direct footprint slots reserve 1,440 bytes
+of pixels/masks (the 3x3 centre is unused), plus small keys and a 150-byte
+viewport lookup rebuilt only when selection geometry, viewport or outline pen changes.
+Selection changes, removal, scrolling and outline-pen changes invalidate
+old/new edges; changing structure graphics replaces only the affected variants.
+The separate native structure rectangle pass and its full-footprint foreground
+damage are removed. Placement, legacy renderers and non-structure debug
+rectangles retain their separate paths. This removes the outline's separate
+erase/repaint interval, not all sprite flicker or raster tearing. STE6 reported
+that outline flicker was eliminated; its throughput gain also includes the
+sidebar and deferred house-remap changes.
 
 ST/STE battlefield terrain and structure tiles use permanent planar cache
 slots, decoded on first use and restored directly to visible screen memory.
-Tile mask opacity (empty/mixed/opaque) is cached in the existing planar
-slot status byte during lazy decoding. CPU publication selects a proven
-opaque ground or overlay/fog source without rescanning static masks,
-skipping mask reads and ground/fog composition for that source.
-Mixed images retain their mask-based composition, and cursor/placement
-backup maintenance remains unchanged.
+Tile mask opacity (empty/mixed/opaque) is cached during lazy decoding.
+Ground plus partial fog or an ordinary overlay uses a fixed 64-entry,
+direct-mapped composite cache (10,560 bytes including keys and opacity).
+Keys are pairs of stable tile/house slot indices, so unaffected house variants
+share composites too. Misses combine existing planar components without
+allocation or c2p; hits perform two slot-index lookups, a small hash/key check
+and one publication. Pixel/mask arrays have power-of-two strides rather than
+requiring a general multiply for each cache-entry address.
+Ordinary overlays no longer publish ground and overlay separately.
+Cached opacity includes complementary mixed masks that form a fully opaque
+tile, allowing direct copies and the existing BLiTTER tile path. Mixed images
+retain their masks. Flat fog and bare ground retain their existing paths;
+selected edges remain private variants using the same composition helper.
+Tile-cache teardown also invalidates composites. Cursor/placement backup
+maintenance remains unchanged. Runtime savings and collision rates require
+a new gameplay profile.
 Aligned 15x10 viewport tile writes test independent cursor and placement
 overlap masks (ten words each), updated only when their actual planar
 backups are drawn or erased. Cursor marking includes all saved 16-pixel
@@ -386,6 +411,13 @@ Sprite reloads release the cache. IBM.PAL, the 16 hardware pens and
 quantization are static throughout sprite life; house ID is the only
 palette variant in the prescription. Cache lookup does not inspect palette
 contents or poll palette generations.
+ST-family viewport bodies, aircraft and attachments carry only house identity
+and palette-presence/deferred flags while looking up planar images. The
+16-byte house remap is fetched through the shared palette helper only when a
+planar component misses and needs decoding. Composite hits and phase-only
+rebuilds from resident components perform no house-palette lookup or copy.
+Legacy/TT/Falcon draws retain their existing prepared-palette arguments.
+The sandworm pass no longer prepares an unused house-remap table.
 Allocation failure logs a warning and retains the original sprite path.
 Viewport tile and sprite writes that overlap only the mouse cursor use normal
 copy/transparency loops, then immediately refresh the cursor backup and redraw
@@ -447,16 +479,57 @@ without redrawing unchanged base widgets or running the second full widget
 draw pass. Changed widget visibility/selection still triggers drawing, and
 the action panel is rebuilt normally for command text, Cancel, and unit
 controls. Other selection transitions and TT/Falcon keep the original path.
-Attack, Move and Harvest panels also share six small planar cache slots
-(about 15.4 KiB). A miss renders in SCREEN_1, then the shared c2p encoder
-reads its 320-byte-stride rows straight into the packed slot. Hits restore
-the slot with cursor-safe planar publication, without rendering, c2p or
-a chunky SCREEN_0 write. Keys include command, Cancel selection/hover,
-language and palette mapping generation. Widget state and font setup
-still update on hits; SCREEN_1 is scratch, not a maintained panel mirror.
-Normal Cancel hover/press redraws retain their existing small-button path.
-Other panels and unsupported layouts keep their original renderer.
-Off-screen composition and viewport fades also retain the original path.
+The ST-family action panel now composes directly into a private 64x82 planar
+canvas. The existing action-panel layout, widget callbacks and drawing APIs
+are retained; a sidebar scope redirects their drawing primitives. A cached
+clean frame provides the reconstruction background;
+portraits, production icons and coloured font glyphs are converted once per
+resident variant through the shared c2p encoder. Glyphs retain explicit
+opacity, including logical colours quantized to pen zero. Four bounded glyph
+variants per character cover text styles, selected commands and button presses;
+portrait variants cover normal and remapped button states. These assets are
+resident RAM caches, not additional files or a chunky SCREEN_0 mirror.
+
+Attack, Move and Harvest each retain a complete native planar command panel
+(7,872 bytes of pixel data altogether). Re-entering targeting restores that
+template and replays the current Cancel button state rather than reconstructing
+the prompt, title and icon. Language, prompt colour and font changes select a
+fresh template. Forced redraws still republish the panel and update widget
+visibility, shortcuts and font/style state.
+
+A bounded 128-entry, four-way fragment cache also retains complete text-button
+states, portraits, positioned icons, production-button frames and formatted labels. Text keys
+include the actual text, font, spacing and full glyph-colour table; keys also
+distinguish geometry and widget clipping. Fragments record explicit write
+masks rather than differences against their original background, preserving
+transparent pixels and opaque pen zero when reused over a different canvas.
+Nested label captures remain part of their enclosing button. Warm text-button
+draws bypass glyph placement and border fills; positioned icons replay aligned
+planar words rather than repeating sprite shifting/composition. Production callbacks
+retain their live percentage and shortcut updates.
+
+The visible-state key uses health-bar width/colour, displayed production/repair
+percentages, action/ownership, repair/upgrade availability and the actual
+windtrap, storage, Outpost, Starport and missile numbers. Unchanged raw HP or
+countdown values no longer rebuild the panel. Production-string and upgrade
+initialization side effects still run before this early return. Buttons with
+selection states draw only once, after their final state is established;
+hover, press and keyboard redraws use the same planar canvas immediately.
+
+Changed non-command panels reconstruct from the clean frame and cached fragments, never
+from live display pixels. Publication compares with the previous clean canvas
+and restores only changed 16-pixel-group/row spans through the cursor-safe
+planar restore path. Unchanged spans cause no screen writes; a number change
+does not copy the whole panel. Warm updates perform no sidebar c2p and no
+SCREEN_1-to-SCREEN_0 copy. Interface startup/return publishes SCREEN_1 chrome
+before rebuilding both the native sidebar and battlefield; forced redraws
+republish even if cached pixels are unchanged. Sprite reloads and mapping
+changes invalidate assets. TT/Falcon and other platforms retain the old panel.
+STE5 measured the initial primitive-cache backend at 6.46% inclusive sidebar
+CPU, down from STE4's 10.23%, but exposed slower target-panel entry after the
+old whole-panel cache was removed. The command templates and whole-fragment
+caches above address that repeated composition; their CPU cost still needs
+a new gameplay profile. The 1-2% sidebar target is not yet measured.
 Factory-list scrolling rebuilds its SCREEN_1 animation strip from the item
 sprites and a retained background colour, including the preceding/following
 items. It never reads chunky SCREEN_0 back. ST/STE scrolling advances two

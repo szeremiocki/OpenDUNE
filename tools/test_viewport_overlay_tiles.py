@@ -32,6 +32,7 @@ class ViewportOverlayTilesTest(unittest.TestCase):
         generic = function(video, "Video_Atari_PlanarOverlaysOverlap").replace(
             "Video_Atari_PlanarOverlaysOverlap(", "rectangle_overlap(")
         functions = "\n".join(function(video, name) for name in names)
+        functions += "\n" + function((ROOT / "src/gfx.c").read_text(), "GFX_ComposePlanarTile")
         legacy = "\n".join(
             function(video, name).replace(name + "(", "legacy_" + name + "(").replace(
                 "Video_Atari_TileOverlaysOverlap(base, x, y)",
@@ -52,6 +53,7 @@ typedef uint32_t uint32;
 #define SCREEN_HEIGHT 200
 #define min(a,b) ((a) < (b) ? (a) : (b))
 #define max(a,b) ((a) > (b) ? (a) : (b))
+enum { PLANAR_TILE_MIXED = 1, PLANAR_TILE_EMPTY, PLANAR_TILE_OPAQUE };
 static uint16 screen[16000], expected[16000], expectedClean[16000];
 static uint16 cursorPixels[64 * 6 * 4], cursorMasks[64 * 6];
 static uint16 s_curSave[64][24], s_curDrawnData[64][24], s_curDrawnMask[64][6];
@@ -78,8 +80,12 @@ static uint8 s_placePen, s_palette4BitMap[256];
 static unsigned clears, rectangleChecks;
 static uint8 *Video_Atari_PlanarBase(void) { return (uint8 *)screen; }
 static bool s_viewportBlitter;
+static unsigned tileBlits;
 static void Video_Atari_BlitTile(const uint16 *pixels, uint8 *base, uint16 x, uint16 y) {
-    (void)pixels; (void)base; (void)x; (void)y; assert(false);
+    assert(s_viewportBlitter && base == (uint8 *)screen && !s_curDrawn && !s_placeBlockCount);
+    for (unsigned row = 0; row < 16; row++)
+        memcpy(base + (y + row) * 160 + x / 2, pixels + row * 4, 8);
+    tileBlits++;
 }
 static void GFX_Screen_ClearDirtyRect(uint16 x, uint16 y, uint16 r, uint16 b) {
     assert(x < r && y < b && r <= 320 && b <= 200); clears++;
@@ -262,9 +268,52 @@ static void fallback(void) {
     assert(s_curDrawn); check_zero(s_placeViewportTiles); check_all_tiles();
     Video_Atari_CursorEraseFull(); check_all_tiles();
 }
+static void composite_publication(void) {
+    uint16 pixels[64], fog[64], masks[16], fogMasks[16], combined[64], written[16];
+    for (unsigned blitter = 0; blitter < 2; blitter++)
+        for (unsigned mode = 0; mode < 5; mode++) for (unsigned overlays = 0; overlays < 4; overlays++)
+        for (unsigned separate = 0; separate < 2; separate++) {
+            scene(overlays);
+            s_viewportBlitter = blitter != 0;
+            tileBlits = 0;
+            for (unsigned row = 0; row < 16; row++) {
+                masks[row] = mode < 2 ? 0xffff : mode == 2 ? 0x5555 : mode == 3 ? 0xff : 0;
+                fogMasks[row] = mode < 2 ? 0x31e7 : mode == 2 ? 0xaaaa : mode == 3 ? 0xff0 : 0;
+                for (unsigned p = 0; p < 4; p++) {
+                    pixels[row * 4 + p] = mode == 1 ? 0 : row * 317 + p * 137;
+                    fog[row * 4 + p] = mode == 1 ? 0 : row * 937 + p * 71;
+                }
+            }
+            clears = 0;
+            if (separate) {
+                Video_Atari_DrawPlanarTile(pixels, masks, 64, 72, NULL);
+                Video_Atari_DrawPlanarTile(fog, fogMasks, 64, 72, NULL);
+                assert(clears == 2);
+                assert(!memcmp(expected, screen, sizeof(expected)));
+                assert(!memcmp(expectedSave, s_curSave, sizeof(expectedSave)));
+                assert(!memcmp(expectedBlocks, s_placeBlocks, sizeof(expectedBlocks)));
+            } else {
+                uint8 opacity = GFX_ComposePlanarTile(pixels, masks, fog, fogMasks, combined, written);
+                assert(opacity == (mode < 3 ? PLANAR_TILE_OPAQUE :
+                                    mode == 3 ? PLANAR_TILE_MIXED : PLANAR_TILE_EMPTY));
+                Video_Atari_DrawPlanarTile(combined, written, 64, 72,
+                    opacity == PLANAR_TILE_OPAQUE ? combined : NULL);
+                assert(clears == 1);
+                memcpy(expected, screen, sizeof(expected));
+                memcpy(expectedSave, s_curSave, sizeof(expectedSave));
+                memcpy(expectedBlocks, s_placeBlocks, sizeof(expectedBlocks));
+            }
+            Video_Atari_CursorEraseFull();
+            Video_Atari_PlacementHide();
+            if (separate) assert(!memcmp(expectedClean, screen, sizeof(expectedClean)));
+            else memcpy(expectedClean, screen, sizeof(expectedClean));
+            assert(tileBlits == (blitter && mode < 3 && !overlays && !separate));
+        }
+    s_viewportBlitter = false;
+}
 int main(void) {
     s_palette4BitMap[255] = 3;
-    geometry(); cursor_lifecycle(); placement_lifecycle(); cpu_publication(); fallback();
+    geometry(); cursor_lifecycle(); placement_lifecycle(); cpu_publication(); composite_publication(); fallback();
     return 0;
 }
 """

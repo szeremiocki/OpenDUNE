@@ -138,6 +138,7 @@ extern bool Video_Atari_PresentRestoreStrided(int16 x, int16 y, uint16 width, ui
  * Width must be a multiple of 16. The full-width window API below retains
  * screen x coordinates, with masked edges and cursor-aware presentation. */
 extern uint16 Video_Atari_GetPaletteGeneration(void);
+extern uint8 Video_Atari_GetPalettePen(uint8 colour);
 extern void Video_Atari_EncodePlanar(const uint8 *src, uint16 *pixels, uint16 width, uint16 height);
 /* Encode a rectangle from even-strided chunky rows into tightly packed planar rows. */
 extern void Video_Atari_EncodePlanarStrided(const uint8 *src, uint16 srcStride,

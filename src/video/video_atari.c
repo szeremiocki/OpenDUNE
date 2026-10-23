@@ -2649,6 +2649,11 @@ uint16 Video_Atari_GetPaletteGeneration(void)
 	return s_paletteGeneration;
 }
 
+uint8 Video_Atari_GetPalettePen(uint8 colour)
+{
+	return s_palette4BitMap[colour];
+}
+
 static void Video_Atari_EncodePlanarWithLookup(const uint8 *src, uint16 *pixels,
                                               uint16 width, uint16 height, const uint16 *lookup,
                                               uint16 srcStride)

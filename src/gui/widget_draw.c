@@ -1,12 +1,15 @@
 /** @file src/gui/widget_draw.c %Widget drawing routines. */
 
 #include <stdio.h>
+#include <string.h>
 #include "types.h"
 
 #include "font.h"
 #include "gui.h"
 #include "widget.h"
+#include "sidebar.h"
 #include "../os/error.h"
+#include "../os/math.h"
 #include "../config.h"
 #include "../gfx.h"
 #include "../opendune.h"
@@ -21,6 +24,28 @@
 #include "../tile.h"
 #include "../unit.h"
 #include "../video/video.h"
+
+#ifdef TOS
+static uint16 GUI_Widget_ActionPanel_GetPlanarActionType(bool forceDraw);
+#endif
+
+static uint16 GUI_Widget_ProductionPercent(const Structure *s)
+{
+	uint16 buildTime, timeLeft;
+
+	if (g_productionStringID == STR_UPGRADINGD_DONE) return 100 - s->upgradeTimeLeft;
+	if (g_productionStringID != STR_D_DONE) return 0;
+	if (s->o.type == STRUCTURE_CONSTRUCTION_YARD) {
+		buildTime = g_table_structureInfo[s->objectType].o.buildTime;
+	} else if (s->o.type == STRUCTURE_REPAIR) {
+		if (s->o.linkedID == 0xFF) return 0;
+		buildTime = g_table_unitInfo[Unit_Get_ByIndex(s->o.linkedID)->o.type].o.buildTime;
+	} else {
+		buildTime = g_table_unitInfo[s->objectType].o.buildTime;
+	}
+	timeLeft = buildTime - (s->countDown + 255) / 256;
+	return 100 * timeLeft / buildTime;
+}
 
 
 /**
@@ -82,6 +107,9 @@ void GUI_Widget_SpriteButton_Draw(Widget *w)
 	uint16 width, height;
 	uint16 spriteID;
 	bool buttonDown;
+#ifdef TOS
+	bool cached = false;
+#endif
 
 	if (w == NULL) return;
 
@@ -115,12 +143,25 @@ void GUI_Widget_SpriteButton_Draw(Widget *w)
 	width     = w->width;
 	height    = w->height;
 
-	GUI_DrawWiredRectangle(positionX - 1, positionY - 1, positionX + width, positionY + height, 12);
+#ifdef TOS
+	if (GUI_Sidebar_Active()) cached = GUI_Sidebar_FragmentBegin(SIDEBAR_FRAGMENT_PORTRAIT, "",
+	    positionX, positionY, width, height, spriteID * 2 + buttonDown, NULL);
+	if (!cached) {
+#endif
+		GUI_DrawWiredRectangle(positionX - 1, positionY - 1, positionX + width, positionY + height, 12);
+		GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[spriteID], spriteID, GUI_SPRITE_COLOUR_EMBEDDED, positionX, positionY, 0, DRAWSPRITE_FLAG_REMAP, g_paletteMapping1, buttonDown ? 1 : 0);
+		GUI_DrawBorder(positionX, positionY, width, height, buttonDown ? 0 : 1, false);
+#ifdef TOS
+		if (GUI_Sidebar_Active()) GUI_Sidebar_FragmentEnd();
+	}
+#endif
 
-	GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[spriteID], spriteID, GUI_SPRITE_COLOUR_EMBEDDED, positionX, positionY, 0, DRAWSPRITE_FLAG_REMAP, g_paletteMapping1, buttonDown ? 1 : 0);
-
-	GUI_DrawBorder(positionX, positionY, width, height, buttonDown ? 0 : 1, false);
-
+#ifdef TOS
+	if (GUI_Sidebar_Active()) {
+		if (oldScreenID == SCREEN_0) GFX_Screen_SetActive(SCREEN_0);
+		return;
+	}
+#endif
 	if (oldScreenID != SCREEN_0) return;
 
 	GUI_Mouse_Hide_InRegion(positionX - 1, positionY - 1, positionX + width + 1, positionY + height + 1);
@@ -144,6 +185,9 @@ void GUI_Widget_SpriteTextButton_Draw(Widget *w)
 	uint16 spriteID;
 	uint16 percentDone;
 	bool buttonDown;
+#ifdef TOS
+	bool cachedFrame = false;
+#endif
 
 	if (w == NULL) return;
 
@@ -167,8 +211,17 @@ void GUI_Widget_SpriteTextButton_Draw(Widget *w)
 	width     = w->width;
 	height    = w->height;
 
-	GUI_DrawWiredRectangle(positionX - 1, positionY - 1, positionX + width, positionY + height, 12);
-	GUI_DrawBorder(positionX, positionY, width, height, buttonDown ? 0 : 1, true);
+#ifdef TOS
+	if (GUI_Sidebar_Active()) cachedFrame = GUI_Sidebar_FragmentBegin(SIDEBAR_FRAGMENT_FRAME, "",
+	    positionX, positionY, width, height, buttonDown, NULL);
+	if (!cachedFrame) {
+#endif
+		GUI_DrawWiredRectangle(positionX - 1, positionY - 1, positionX + width, positionY + height, 12);
+		GUI_DrawBorder(positionX, positionY, width, height, buttonDown ? 0 : 1, true);
+#ifdef TOS
+		if (GUI_Sidebar_Active()) GUI_Sidebar_FragmentEnd();
+	}
+#endif
 
 	switch (g_productionStringID) {
 		case STR_LAUNCH:
@@ -208,7 +261,7 @@ void GUI_Widget_SpriteTextButton_Draw(Widget *w)
 
 				for (y = 0; y < g_table_structure_layoutSize[si->layout].height; y++) {
 					for (x = 0; x < g_table_structure_layoutSize[si->layout].width; x++) {
-						GUI_DrawSprite(SCREEN_ACTIVE, sprite, GUI_SPRITE_ID_UNKNOWN, GUI_SPRITE_COLOUR_EMBEDDED, positionX + x * spriteWidth + 38, positionY + y * spriteWidth + 6, 0, 0);
+						GUI_DrawSprite(SCREEN_ACTIVE, sprite, 24, GUI_SPRITE_COLOUR_EMBEDDED, positionX + x * spriteWidth + 38, positionY + y * spriteWidth + 6, 0, 0);
 					}
 				}
 
@@ -224,36 +277,9 @@ void GUI_Widget_SpriteTextButton_Draw(Widget *w)
 
 	if (spriteID != 0) GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[spriteID], spriteID, GUI_SPRITE_COLOUR_EMBEDDED, positionX + 2, positionY + 2, 0, DRAWSPRITE_FLAG_REMAP, g_paletteMapping1, buttonDown ? 1 : 0);
 
-	if (g_productionStringID == STR_D_DONE) {
-		uint16 buildTime;
-		uint16 timeLeft;
-
-		if (s->o.type == STRUCTURE_CONSTRUCTION_YARD) {
-			const StructureInfo *si;
-
-			si = &g_table_structureInfo[s->objectType];
-			buildTime = si->o.buildTime;
-		} else if (s->o.type == STRUCTURE_REPAIR) {
-			const UnitInfo *ui;
-
-			if (s->o.linkedID == 0xFF) return;
-
-			ui = &g_table_unitInfo[Unit_Get_ByIndex(s->o.linkedID)->o.type];
-			buildTime = ui->o.buildTime;
-		} else {
-			const UnitInfo *ui;
-
-			ui = &g_table_unitInfo[s->objectType];
-			buildTime = ui->o.buildTime;
-		}
-
-		timeLeft = buildTime - (s->countDown + 255) / 256;
-		percentDone = 100 * timeLeft / buildTime;
-	}
+	percentDone = GUI_Widget_ProductionPercent(s);
 
 	if (g_productionStringID == STR_UPGRADINGD_DONE) {
-		percentDone = 100 - s->upgradeTimeLeft;
-
 		GUI_DrawText_Wrapper(
 			String_Get_ByIndex(g_productionStringID),
 			positionX + 1,
@@ -281,6 +307,12 @@ void GUI_Widget_SpriteTextButton_Draw(Widget *w)
 		w->shortcut = GUI_Widget_GetShortcut(*String_Get_ByIndex(g_productionStringID));
 	}
 
+#ifdef TOS
+	if (GUI_Sidebar_Active()) {
+		if (oldScreenID == SCREEN_0) GFX_Screen_SetActive(SCREEN_0);
+		return;
+	}
+#endif
 	if (oldScreenID != SCREEN_0) return;
 
 	GUI_Mouse_Hide_InRegion(positionX - 1, positionY - 1, positionX + width + 1, positionY + height + 1);
@@ -304,6 +336,9 @@ void GUI_Widget_TextButton2_Draw(Widget *w)
 	uint8 colour;
 	bool buttonSelected;
 	bool buttonDown;
+#ifdef TOS
+	bool cached = false;
+#endif
 
 	if (w == NULL) return;
 
@@ -322,9 +357,6 @@ void GUI_Widget_TextButton2_Draw(Widget *w)
 	width     = w->width;
 	height    = w->height;
 
-	GUI_DrawWiredRectangle(positionX - 1, positionY - 1, positionX + width, positionY + height, 12);
-	GUI_DrawBorder(positionX, positionY, width, height, buttonDown ? 0 : 1, true);
-
 	colour = 0xF;
 	if (buttonSelected) {
 		colour = 0x6;
@@ -336,17 +368,29 @@ void GUI_Widget_TextButton2_Draw(Widget *w)
 		colour = 0xEF;
 	}
 
-	GUI_DrawText_Wrapper(
-		String_Get_ByIndex(stringID),
-		positionX + width / 2,
-		positionY + 1,
-		colour,
-		0,
-		0x121
-	);
+#ifdef TOS
+	if (GUI_Sidebar_Active()) {
+		/* Cached buttons must leave the same font/style state as a real draw. */
+		cached = GUI_Sidebar_ButtonBegin(w, colour);
+	}
+	if (!cached) {
+#endif
+		GUI_DrawWiredRectangle(positionX - 1, positionY - 1, positionX + width, positionY + height, 12);
+		GUI_DrawBorder(positionX, positionY, width, height, buttonDown ? 0 : 1, true);
+		GUI_DrawText_Wrapper(String_Get_ByIndex(stringID), positionX + width / 2, positionY + 1, colour, 0, 0x121);
+#ifdef TOS
+		if (GUI_Sidebar_Active()) GUI_Sidebar_FragmentEnd();
+	}
+#endif
 
 	w->shortcut = GUI_Widget_GetShortcut(*String_Get_ByIndex(stringID));
 
+#ifdef TOS
+	if (GUI_Sidebar_Active()) {
+		if (oldScreenID == SCREEN_0) GFX_Screen_SetActive(SCREEN_0);
+		return;
+	}
+#endif
 	if (oldScreenID != SCREEN_0) return;
 
 	GUI_Mouse_Hide_InRegion(positionX - 1, positionY - 1, positionX + width + 1, positionY + height + 1);
@@ -441,6 +485,9 @@ static uint16 GUI_Widget_ActionPanel_GetActionType(bool forceDraw)
 	Structure *s = NULL;
 	Unit *u = NULL;
 
+#ifdef TOS
+	if (Video_Atari_CursorDirect()) return GUI_Widget_ActionPanel_GetPlanarActionType(forceDraw);
+#endif
 	if (g_selectionType == SELECTIONTYPE_PLACE) {
 		if (displayedActionType != 7 || forceDraw) actionType = 7; /* Placement */
 	} else if (g_unitHouseMissile != NULL) {
@@ -541,67 +588,111 @@ static uint16 GUI_Widget_ActionPanel_GetActionType(bool forceDraw)
 }
 
 #ifdef TOS
-enum {
-	COMMAND_PANEL_WIDTH = 64,
-	COMMAND_PANEL_HEIGHT = 82,
-	COMMAND_PANEL_CACHE_SLOTS = 6
-};
+typedef struct SidebarVisibleState {
+	uint16 actionType, type, index, house, owner, player, language, debug;
+	uint16 healthWidth, healthColour, action, repair, upgrade;
+	uint16 production, percent, objectType, linkedType;
+	uint16 value1, value2, value3;
+} SidebarVisibleState;
 
-typedef struct CommandPanelCache {
-	uint16 pixels[COMMAND_PANEL_WIDTH * COMMAND_PANEL_HEIGHT / 4];
-	uint16 actionType, paletteGeneration, language;
-	uint8 cancelState;
-	bool valid;
-} CommandPanelCache;
-
-static CommandPanelCache s_commandPanels[COMMAND_PANEL_CACHE_SLOTS];
-static uint16 s_commandPanelNext;
-
-static CommandPanelCache *GUI_Widget_CommandPanelCache(uint16 actionType, const Widget *cancel, bool *hit)
+static uint16 GUI_Widget_ActionPanel_GetPlanarActionType(bool forceDraw)
 {
-	uint16 generation, i;
-	uint8 state;
-	CommandPanelCache *slot;
+	static SidebarVisibleState displayed;
+	SidebarVisibleState state;
+	const Object *o = NULL;
+	const ObjectInfo *oi = NULL;
+	Structure *s = NULL;
+	Unit *u = NULL;
 
-	*hit = false;
-	if (!Video_Atari_CursorDirect() || actionType < 4 || actionType > 6) return NULL;
-	if (g_curWidgetXBase != 32 || g_curWidgetYBase != 42
-		|| g_curWidgetWidth * 8 != COMMAND_PANEL_WIDTH || g_curWidgetHeight != COMMAND_PANEL_HEIGHT) return NULL;
+	memset(&state, 0, sizeof(state));
+	state.actionType = 1;
+	state.player = g_playerHouseID;
+	state.language = g_config.language;
+	state.debug = g_debugGame;
+	if (g_selectionType == SELECTIONTYPE_PLACE) {
+		state.actionType = 7;
+		state.type = g_structureActiveType;
+	} else if (g_unitHouseMissile != NULL) {
+		state.actionType = 8;
+		state.value1 = g_houseMissileCountdown > 1 ? g_houseMissileCountdown - 1 : 0;
+	} else if (g_unitSelected != NULL) {
+		if (g_selectionType == SELECTIONTYPE_TARGET) {
+			state.actionType = g_activeAction == ACTION_ATTACK ? 4 : g_activeAction == ACTION_MOVE ? 5 : 6;
+		} else {
+			state.actionType = 2;
+			u = g_unitSelected;
+			o = &u->o;
+			oi = &g_table_unitInfo[o->type].o;
+			state.owner = Unit_GetHouseID(u);
+			state.action = u->nextActionID != ACTION_INVALID ? u->nextActionID : u->actionID;
+		}
+	} else if (!Tile_IsOutOfMap(g_selectionPosition) &&
+	           (g_map[g_selectionPosition].isUnveiled || g_debugScenario) &&
+	           Map_GetLandscapeType(g_selectionPosition) == LST_STRUCTURE) {
+		s = Structure_Get_ByPackedTile(g_selectionPosition);
+		state.actionType = 3;
+		o = &s->o;
+		oi = &g_table_structureInfo[o->type].o;
+		state.owner = o->houseID;
+		if (s->upgradeTimeLeft == 0 && Structure_IsUpgradable(s)) s->upgradeTimeLeft = 100;
+		GUI_UpdateProductionStringID();
+	}
+	if (o != NULL) {
+		uint16 current = min(o->hitpoints, oi->hitpoints), maximum = max(1, oi->hitpoints);
+		state.type = o->type;
+		state.index = o->index;
+		state.house = o->houseID;
+		state.healthWidth = max(1, current * 24 / maximum);
+		state.healthColour = current <= maximum / 4 ? 8 : current <= maximum / 2 ? 5 : 4;
+	}
+	if (s != NULL && (state.owner == g_playerHouseID || g_debugGame)) {
+		House *h = House_Get_ByIndex(o->houseID);
+		const StructureInfo *si = &g_table_structureInfo[o->type];
+		Unit *linked;
 
-	generation = Video_Atari_GetPaletteGeneration();
-	state = (cancel->state.selected ? 1 : 0) | (cancel->state.hover2 ? 2 : 0);
-	for (i = 0; i < COMMAND_PANEL_CACHE_SLOTS; i++) {
-		slot = &s_commandPanels[i];
-		if (slot->valid && slot->actionType == actionType && slot->paletteGeneration == generation
-			&& slot->language == g_config.language && slot->cancelState == state) {
-			*hit = true;
-			return slot;
+		g_structureHighHealth = o->hitpoints > oi->hitpoints / 2;
+		state.repair = o->flags.s.upgrading ? 3 : o->hitpoints != oi->hitpoints ?
+		               (o->flags.s.repairing ? 2 : 1) : 0;
+		state.upgrade = s->upgradeTimeLeft != 0;
+		if (oi->flags.factory || o->type == STRUCTURE_PALACE) {
+			state.production = g_productionStringID;
+			state.percent = GUI_Widget_ProductionPercent(s);
+			state.objectType = s->objectType;
+			state.value3 = s->countDown == 0;
+		}
+		switch (o->type) {
+			case STRUCTURE_REPAIR:
+				linked = Structure_GetLinkedUnit(s);
+				state.linkedType = linked == NULL ? 0 : linked->o.type + 1;
+				if (linked != NULL) {
+					uint16 steps = g_table_unitInfo[linked->o.type].o.buildTime / 4;
+					state.value1 = (steps - (s->countDown >> 8)) * 100 / steps;
+				}
+				break;
+			case STRUCTURE_WINDTRAP:
+				state.value1 = o->hitpoints * -si->powerUsage / oi->hitpoints;
+				state.value2 = h->windtrapCount == 0 ? 0 : h->powerUsage / h->windtrapCount;
+				break;
+			case STRUCTURE_STARPORT:
+				state.value1 = h->starportLinkedID != 0xFFFF;
+				state.value2 = state.value1 ? h->starportTimeLeft : 0;
+				break;
+			case STRUCTURE_REFINERY:
+			case STRUCTURE_SILO:
+				state.value1 = h->credits > h->creditsStorage ? si->creditsStorage :
+				               h->credits * si->creditsStorage / h->creditsStorage;
+				break;
+			case STRUCTURE_OUTPOST:
+				state.value1 = h->unitCountAllied;
+				state.value2 = h->unitCountEnemy;
+				break;
+			default:
+				break;
 		}
 	}
-
-	slot = &s_commandPanels[s_commandPanelNext];
-	s_commandPanelNext = (s_commandPanelNext + 1) % COMMAND_PANEL_CACHE_SLOTS;
-	slot->valid = false;
-	slot->actionType = actionType;
-	slot->paletteGeneration = generation;
-	slot->language = g_config.language;
-	slot->cancelState = state;
-	return slot;
-}
-
-static bool GUI_Widget_CommandPanelPresent(CommandPanelCache *slot)
-{
-	bool result;
-
-	GUI_Mouse_Hide_InWidget(6);
-	result = Video_Atari_PresentRestore(256, 42, COMMAND_PANEL_WIDTH, COMMAND_PANEL_HEIGHT,
-	                                  (const uint8 *)slot->pixels);
-	GUI_Mouse_Show_InWidget();
-	if (!result) {
-		slot->valid = false;
-		Warning("Unable to present cached command panel\n");
-	}
-	return result;
+	if (!forceDraw && GUI_Sidebar_Valid() && memcmp(&state, &displayed, sizeof(state)) == 0) return 0;
+	displayed = state;
+	return state.actionType;
 }
 #endif
 
@@ -627,7 +718,8 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 	Widget *buttons[4];
 	Widget *widget24, *widget28, *widget2C, *widget30, *widget34;
 #ifdef TOS
-	CommandPanelCache *commandPanel = NULL;
+	bool native = Video_Atari_CursorDirect();
+	bool cachedCommand = false;
 #endif
 
 	o  = NULL;
@@ -710,6 +802,9 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 
 		oldScreenID = GFX_Screen_SetActive(SCREEN_1);
 		oldWidgetID = Widget_SetCurrentWidget(6);
+#ifdef TOS
+		if (native) GUI_Sidebar_Begin(forceDraw);
+#endif
 
 		widget30 = GUI_Widget_Get_ByIndex(w, 7);
 		GUI_Widget_MakeInvisible(widget30);
@@ -733,23 +828,22 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 		}
 
 #ifdef TOS
-		{
-			bool hit;
-			commandPanel = GUI_Widget_CommandPanelCache(actionType, widget30, &hit);
-			if (hit && GUI_Widget_CommandPanelPresent(commandPanel)) {
-				widget30->flags.invisible = false;
-				/* Preserve the font/style left by the final command prompt, without drawing. */
-				GUI_DrawText_Wrapper(NULL, 0, 0, g_curWidgetFGColourBlink, 0, 0x11);
-				Widget_SetCurrentWidget(oldWidgetID);
-				GFX_Screen_SetActive(oldScreenID);
-				return;
-			}
+		if (native && actionType >= 4 && actionType <= 6)
+			cachedCommand = GUI_Sidebar_CommandRestore(actionType);
+		if (!cachedCommand && (!native || !GUI_Sidebar_Background())) {
+#endif
+			GUI_Widget_DrawBorder(g_curWidgetIndex, 0, 0);
+#ifdef TOS
+			if (native) GUI_Sidebar_CacheBackground();
 		}
 #endif
-		GUI_Widget_DrawBorder(g_curWidgetIndex, 0, 0);
 	}
 
-	if (actionType > 1) {
+	if (actionType > 1
+#ifdef TOS
+	    && !cachedCommand
+#endif
+	) {
 		uint16 stringID = STR_NULL;
 		uint16 spriteID = 0xFFFF;
 
@@ -837,6 +931,10 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 							if (buttons[i]->stringID == STR_GUARD) buttons[i]->shortcut2 = 0x17;	/* U key */
 						}
 
+#ifdef TOS
+						if (native) buttons[i]->flags.invisible = false;
+						else
+#endif
 						GUI_Widget_MakeVisible(buttons[i]);
 
 						if (actions[i] == actionCurrent) {
@@ -854,29 +952,49 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 					if (o->flags.s.upgrading) {
 						widget24->stringID = STR_UPGRADING;
 
+#ifdef TOS
+						if (native) widget24->flags.invisible = false;
+						else
+#endif
 						GUI_Widget_MakeVisible(widget24);
 						GUI_Widget_MakeSelected(widget24, false);
 					} else if (o->hitpoints != oi->hitpoints) {
 						if (o->flags.s.repairing) {
 							widget24->stringID = STR_REPAIRING;
 
+#ifdef TOS
+							if (native) widget24->flags.invisible = false;
+							else
+#endif
 							GUI_Widget_MakeVisible(widget24);
 							GUI_Widget_MakeSelected(widget24, false);
 						} else {
 							widget24->stringID = STR_REPAIR;
 
+#ifdef TOS
+							if (native) widget24->flags.invisible = false;
+							else
+#endif
 							GUI_Widget_MakeVisible(widget24);
 							GUI_Widget_MakeNormal(widget24, false);
 						}
 					} else if (s->upgradeTimeLeft != 0) {
 						widget24->stringID = STR_UPGRADE;
 
+#ifdef TOS
+						if (native) widget24->flags.invisible = false;
+						else
+#endif
 						GUI_Widget_MakeVisible(widget24);
 						GUI_Widget_MakeNormal(widget24, false);
 					}
 
 					if (o->type != STRUCTURE_STARPORT) {
 						if (oi->flags.factory || (o->type == STRUCTURE_PALACE && s->countDown == 0)) {
+#ifdef TOS
+							if (native) widget2C->flags.invisible = false;
+							else
+#endif
 							GUI_Widget_MakeVisible(widget2C);
 							GUI_Widget_Draw(widget2C);
 						}
@@ -986,13 +1104,17 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 	if (actionType != 0) {
 		bool presented = false;
 #ifdef TOS
-		if (commandPanel != NULL) {
-			const uint8 *src = GFX_Screen_Get_ByIndex(SCREEN_1);
-			src += g_curWidgetYBase * SCREEN_WIDTH + g_curWidgetXBase * 8;
-			Video_Atari_EncodePlanarStrided(src, SCREEN_WIDTH, commandPanel->pixels,
-			                              COMMAND_PANEL_WIDTH, COMMAND_PANEL_HEIGHT);
-			commandPanel->valid = true;
-			presented = GUI_Widget_CommandPanelPresent(commandPanel);
+		if (native) {
+			if (actionType >= 4 && actionType <= 6) {
+				if (cachedCommand) {
+					GUI_Widget_MakeVisible(widget30);
+					GUI_DrawText_Wrapper("", 0, 0, g_curWidgetFGColourBlink, 0, 0x11);
+				} else {
+					GUI_Sidebar_CommandCache(actionType);
+				}
+			}
+			GUI_Sidebar_End();
+			presented = true;
 		}
 #endif
 		if (!presented) {
@@ -1002,7 +1124,11 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 		}
 	}
 
-	if (actionType > 1) {
+	if (actionType > 1
+#ifdef TOS
+	    || (native && actionType != 0)
+#endif
+	) {
 		Widget_SetCurrentWidget(oldWidgetID);
 		GFX_Screen_SetActive(oldScreenID);
 	}
