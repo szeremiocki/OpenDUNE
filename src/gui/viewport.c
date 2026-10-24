@@ -729,6 +729,173 @@ static void GUI_Widget_Viewport_AddSpriteLayer(GUI_SpriteLayers *layers, uint16 
 	}
 }
 
+static uint16 GUI_Widget_Viewport_GroundSprites(Unit *u, int *flags, GUI_SpriteLayers *layers, uint16 parts)
+{
+	static const uint16 directions[8][2] = {
+		{0, 0}, {1, 0}, {2, 0}, {3, 0},
+		{4, 0}, {3, 1}, {2, 1}, {1, 1}
+	};
+	static const uint16 infantry[8][2] = {
+		{0, 0}, {1, 0}, {1, 0}, {1, 0},
+		{2, 0}, {1, 1}, {1, 1}, {1, 1}
+	};
+	const UnitInfo *ui = &g_table_unitInfo[u->o.type];
+	uint8 orientation = Orientation_Orientation256ToOrientation8(u->orientation[0].current);
+	uint16 index = ui->groundSpriteID;
+
+	layers->count = 0;
+	*flags = 0;
+	if (u->spriteOffset < 0 && ui->destroyedSpriteID != 0) {
+		index = ui->destroyedSpriteID - u->spriteOffset - 1;
+	} else {
+		switch (ui->displayMode) {
+			case DISPLAYMODE_UNIT:
+			case DISPLAYMODE_ROCKET:
+				if (ui->movementType == MOVEMENT_SLITHER) break;
+				index += directions[orientation][0];
+				*flags = directions[orientation][1];
+				break;
+			case DISPLAYMODE_INFANTRY_3_FRAMES: {
+				static const uint16 frames[4] = {0, 1, 0, 2};
+				index += infantry[orientation][0] * 3 + frames[u->spriteOffset & 3];
+				*flags = infantry[orientation][1];
+			} break;
+			case DISPLAYMODE_INFANTRY_4_FRAMES:
+				index += infantry[orientation][0] * 4 + (u->spriteOffset & 3);
+				*flags = infantry[orientation][1];
+				break;
+			default: break;
+		}
+	}
+	if (u->o.type != UNIT_SANDWORM && u->o.flags.s.isHighlighted) *flags |= DRAWSPRITE_FLAG_REMAP;
+	if (ui->o.flags.blurTile) *flags |= DRAWSPRITE_FLAG_BLUR;
+	*flags |= DRAWSPRITE_FLAG_WIDGETPOS | DRAWSPRITE_FLAG_CENTER;
+
+	if ((parts & UNIT_SPRITE_HARVEST) && u->o.type == UNIT_HARVESTER &&
+	    u->actionID == ACTION_HARVEST && u->spriteOffset >= 0) {
+		uint16 type = Map_GetLandscapeType(Tile_PackTile(u->o.position));
+		assert(ui->turretSpriteID == 0xFFFF);
+		if (type == LST_SPICE || type == LST_THICK_SPICE) {
+			static const int16 offsets[8][2] = {
+				{0, 7}, {-7, 6}, {-14, 1}, {-9, -6},
+				{0, -9}, {9, -6}, {14, 1}, {7, 6}
+			};
+			uint16 spriteID = (u->spriteOffset % 3) + 0xDF + directions[orientation][0] * 3;
+			GUI_Widget_Viewport_AddSpriteLayer(layers, spriteID, GUI_SPRITE_COLOUR_EMBEDDED,
+			                                  offsets[orientation][0], offsets[orientation][1], directions[orientation][1]);
+		}
+	}
+	if ((parts & UNIT_SPRITE_TURRET) && u->spriteOffset >= 0 && ui->turretSpriteID != 0xFFFF) {
+		int16 offsetX = 0, offsetY = 0;
+		orientation = Orientation_Orientation256ToOrientation8(u->orientation[ui->o.flags.hasTurret ? 1 : 0].current);
+		switch (ui->turretSpriteID) {
+			case 0x8D: offsetY = -2; break;
+			case 0x92: offsetY = -3; break;
+			case 0x7E: {
+				static const int16 offsets[8][2] = {
+					{0, -5}, {0, -5}, {2, -3}, {2, -1},
+					{-1, -3}, {-2, -1}, {-2, -3}, {-1, -5}
+				};
+				offsetX = offsets[orientation][0];
+				offsetY = offsets[orientation][1];
+			} break;
+			case 0x88: {
+				static const int16 offsets[8][2] = {
+					{0, -4}, {-1, -3}, {2, -4}, {0, -3},
+					{-1, -3}, {0, -3}, {-2, -4}, {1, -3}
+				};
+				offsetX = offsets[orientation][0];
+				offsetY = offsets[orientation][1];
+			} break;
+			default: break;
+		}
+		GUI_Widget_Viewport_AddSpriteLayer(layers, ui->turretSpriteID + directions[orientation][0],
+		                                  Unit_GetHouseID(u), offsetX, offsetY, directions[orientation][1]);
+	}
+	if ((parts & UNIT_SPRITE_SMOKE) && u->o.flags.s.isSmoking) {
+		uint16 spriteID = 180 + (u->spriteOffset & 3);
+		if (spriteID == 183) spriteID = 181;
+		GUI_Widget_Viewport_AddSpriteLayer(layers, spriteID, GUI_SPRITE_COLOUR_EMBEDDED, 0, -14, 0);
+	}
+	if ((parts & UNIT_SPRITE_SELECTION) && u == g_unitSelected) {
+		GUI_Widget_Viewport_AddSpriteLayer(layers, 6, GUI_SPRITE_COLOUR_EMBEDDED, 0, 0, 0);
+	}
+	return index;
+}
+
+static uint16 GUI_Widget_Viewport_AirSprite(Unit *u, int *flags)
+{
+	static const uint16 directions[8][2] = {
+		{0, 0}, {1, 0}, {2, 0}, {1, 2},
+		{0, 2}, {1, 3}, {2, 1}, {1, 1}
+	};
+	const UnitInfo *ui = &g_table_unitInfo[u->o.type];
+	uint16 index = ui->groundSpriteID;
+	uint8 orientation = u->orientation[0].current;
+	*flags = DRAWSPRITE_FLAG_WIDGETPOS | DRAWSPRITE_FLAG_CENTER;
+	switch (ui->displayMode) {
+		case DISPLAYMODE_SINGLE_FRAME:
+			if (u->o.flags.s.bulletIsBig) index++;
+			break;
+		case DISPLAYMODE_UNIT:
+			orientation = Orientation_Orientation256ToOrientation8(orientation);
+			index += directions[orientation][0];
+			*flags |= directions[orientation][1];
+			break;
+		case DISPLAYMODE_ROCKET: {
+			static const uint16 rockets[16][2] = {
+				{0, 0}, {1, 0}, {2, 0}, {3, 0},
+				{4, 0}, {3, 2}, {2, 2}, {1, 2},
+				{0, 2}, {3, 3}, {2, 3}, {3, 3},
+				{4, 1}, {3, 1}, {2, 1}, {1, 1}
+			};
+			orientation = Orientation_Orientation256ToOrientation16(orientation);
+			index += rockets[orientation][0];
+			*flags |= rockets[orientation][1];
+		} break;
+		case DISPLAYMODE_ORNITHOPTER: {
+			static const uint16 frames[4] = {2, 1, 0, 1};
+			orientation = Orientation_Orientation256ToOrientation8(orientation);
+			index += directions[orientation][0] * 3 + frames[u->spriteOffset & 3];
+			*flags |= directions[orientation][1];
+		} break;
+		default: *flags = 0; break;
+	}
+	if (ui->flags.hasAnimationSet && u->o.flags.s.animationFlip) index += 5;
+	if (u->o.type == UNIT_CARRYALL && u->o.flags.s.inTransport) index += 3;
+	return index;
+}
+
+#ifdef TOS
+void GUI_Widget_Viewport_DamageUnit(Unit *unit, uint16 parts)
+{
+	GUI_SpriteLayers layers;
+	int flags;
+	uint16 index, i;
+	int16 wobbleX = 0, wobbleY = 0;
+
+	if (g_table_unitInfo[unit->o.type].movementType == MOVEMENT_WINGER) {
+		index = GUI_Widget_Viewport_AirSprite(unit, &flags);
+		layers.count = 0;
+	} else {
+		index = GUI_Widget_Viewport_GroundSprites(unit, &flags, &layers, parts);
+		wobbleX = g_table_tilediff[0][unit->wobbleIndex].x;
+		wobbleY = g_table_tilediff[0][unit->wobbleIndex].y;
+	}
+	if (parts & UNIT_SPRITE_BODY) {
+		Map_UpdateSprite(index, unit->o.position, wobbleX, wobbleY);
+		if (unit->o.type == UNIT_SANDWORM) {
+			Map_UpdateSprite(index, unit->targetLast, 0, 0);
+			Map_UpdateSprite(index, unit->targetPreLast, 0, 0);
+		}
+	}
+	for (i = 0; i < layers.count; i++) {
+		const GUI_SpriteLayer *layer = &layers.layer[i];
+		Map_UpdateSprite(layer->spriteID, unit->o.position, wobbleX + layer->offsetX, wobbleY + layer->offsetY);
+	}
+}
+#endif
+
 #if defined(GFX_DIRTY_SOURCE_STATS)
 static uint32 s_eagerRows;
 static uint32 s_eagerTiles;
@@ -791,11 +958,6 @@ static void GUI_Widget_Viewport_SetDirtyColumns(uint16 columns, uint16 y)
  */
 void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShifted, bool drawToMainScreen)
 {
-	static const uint16 values_32A4[8][2] = {	/* index, flag passed to GUI_DrawSprite() */
-		{0, 0}, {1, 0}, {2, 0}, {3, 0},
-		{4, 0}, {3, 1}, {2, 1}, {1, 1}
-	};
-
 	uint8 paletteHouse[16] = {0};    /*!< Used for palette manipulation to get housed coloured units etc. */
 	const uint16 fullyFoggedTileID = g_iconMap[g_iconMap[ICM_ICONGROUP_FOG_OF_WAR] + 15];
 	uint16 x;
@@ -1022,9 +1184,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 
 		while (true) {
 			Unit *u;
-			UnitInfo *ui;
 			uint16 packed;
-			uint8 orientation;
 			uint16 index;
 			int spriteFlags = 0;
 			GUI_SpriteLayers layers;
@@ -1047,58 +1207,12 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 
 			if (!g_map[packed].isUnveiled && !g_debugScenario) continue;
 
-			ui = &g_table_unitInfo[u->o.type];
-
 			if (!Map_IsPositionInViewport(u->o.position, &x, &y)) continue;
 
 			x += g_table_tilediff[0][u->wobbleIndex].x;
 			y += g_table_tilediff[0][u->wobbleIndex].y;
 
-			orientation = Orientation_Orientation256ToOrientation8(u->orientation[0].current);
-
-			if (u->spriteOffset >= 0 || ui->destroyedSpriteID == 0) {
-				static const uint16 values_32C4[8][2] = {	/* index, flag */
-					{0, 0}, {1, 0}, {1, 0}, {1, 0},
-					{2, 0}, {1, 1}, {1, 1}, {1, 1}
-				};
-
-				index = ui->groundSpriteID;
-
-				switch (ui->displayMode) {
-					case DISPLAYMODE_UNIT:
-					case DISPLAYMODE_ROCKET:
-						if (ui->movementType == MOVEMENT_SLITHER) break;
-						index += values_32A4[orientation][0];
-						spriteFlags = values_32A4[orientation][1];
-						break;
-
-					case DISPLAYMODE_INFANTRY_3_FRAMES: {
-						static const uint16 values_334A[4] = {0, 1, 0, 2};
-
-						index += values_32C4[orientation][0] * 3;
-						index += values_334A[u->spriteOffset & 3];
-						spriteFlags = values_32C4[orientation][1];
-					} break;
-
-					case DISPLAYMODE_INFANTRY_4_FRAMES:
-						index += values_32C4[orientation][0] * 4;
-						index += u->spriteOffset & 3;
-						spriteFlags = values_32C4[orientation][1];
-						break;
-
-					default:
-						spriteFlags = 0;
-						break;
-				}
-			} else {
-				index = ui->destroyedSpriteID - u->spriteOffset - 1;
-				spriteFlags = 0;
-			}
-
-			if (u->o.type != UNIT_SANDWORM && u->o.flags.s.isHighlighted) spriteFlags |= DRAWSPRITE_FLAG_REMAP;
-			if (ui->o.flags.blurTile) spriteFlags |= DRAWSPRITE_FLAG_BLUR;
-
-			spriteFlags |= DRAWSPRITE_FLAG_WIDGETPOS | DRAWSPRITE_FLAG_CENTER;
+			index = GUI_Widget_Viewport_GroundSprites(u, &spriteFlags, &layers, UNIT_SPRITE_ALL);
 
 			bodyHouse = (u->deviated != 0) ? u->deviatedHouse : Unit_GetHouseID(u);
 			int paletteFlags = GUI_Widget_Viewport_HousePaletteFlags(index, bodyHouse, paletteHouse);
@@ -1106,79 +1220,6 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 				spriteFlags |= paletteFlags;
 			} else {
 				bodyHouse = GUI_SPRITE_COLOUR_EMBEDDED;
-			}
-
-			if (u->o.type == UNIT_HARVESTER && u->actionID == ACTION_HARVEST && u->spriteOffset >= 0 && (u->actionID == ACTION_HARVEST || u->actionID == ACTION_MOVE)) {
-				assert(ui->turretSpriteID == 0xFFFF);
-				uint16 type = Map_GetLandscapeType(packed);
-				if (type == LST_SPICE || type == LST_THICK_SPICE) {
-					uint16 harvestSpriteID = (u->spriteOffset % 3) + 0xDF + (values_32A4[orientation][0] * 3);
-					static const int16 values_334E[8][2] = {
-						{0, 7},  {-7,  6}, {-14, 1}, {-9, -6},
-						{0, -9}, { 9, -6}, { 14, 1}, { 7,  6}
-					};
-
-					GUI_Widget_Viewport_AddSpriteLayer(&layers, harvestSpriteID, GUI_SPRITE_COLOUR_EMBEDDED,
-					                                  values_334E[orientation][0], values_334E[orientation][1],
-					                                  values_32A4[orientation][1]);
-				}
-			}
-
-			if (u->spriteOffset >= 0 && ui->turretSpriteID != 0xFFFF) {
-				int16 offsetX = 0;
-				int16 offsetY = 0;
-				uint16 spriteID = ui->turretSpriteID;
-
-				orientation = Orientation_Orientation256ToOrientation8(u->orientation[ui->o.flags.hasTurret ? 1 : 0].current);
-
-				switch (ui->turretSpriteID) {
-					case 0x8D: /* sonic tank */
-						offsetY = -2;
-						break;
-
-					case 0x92: /* rocket launcher */
-						offsetY = -3;
-						break;
-
-					case 0x7E: { /* siege tank */
-						static const int16 values_336E[8][2] = {
-							{ 0, -5}, { 0, -5}, { 2, -3}, { 2, -1},
-							{-1, -3}, {-2, -1}, {-2, -3}, {-1, -5}
-						};
-
-						offsetX = values_336E[orientation][0];
-						offsetY = values_336E[orientation][1];
-					} break;
-
-					case 0x88: { /* devastator */
-						static const int16 values_338E[8][2] = {
-							{ 0, -4}, {-1, -3}, { 2, -4}, {0, -3},
-							{-1, -3}, { 0, -3}, {-2, -4}, {1, -3}
-						};
-
-						offsetX = values_338E[orientation][0];
-						offsetY = values_338E[orientation][1];
-					} break;
-
-					default:
-						break;
-				}
-
-				spriteID += values_32A4[orientation][0];
-
-				GUI_Widget_Viewport_AddSpriteLayer(&layers, spriteID, Unit_GetHouseID(u),
-				                                  offsetX, offsetY, values_32A4[orientation][1]);
-			}
-
-			if (u->o.flags.s.isSmoking) {
-				uint16 spriteID = 180 + (u->spriteOffset & 3);
-				if (spriteID == 183) spriteID = 181;
-
-				GUI_Widget_Viewport_AddSpriteLayer(&layers, spriteID, GUI_SPRITE_COLOUR_EMBEDDED, 0, -14, 0);
-			}
-
-			if (u == g_unitSelected) {
-				GUI_Widget_Viewport_AddSpriteLayer(&layers, 6, GUI_SPRITE_COLOUR_EMBEDDED, 0, 0, 0);
 			}
 
 			spriteFlags |= DRAWSPRITE_FLAG_LAYERS;
@@ -1251,14 +1292,8 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 		find.houseID = HOUSE_INVALID;
 
 		while (true) {
-			static const uint16 values_32E4[8][2] = {
-				{0, 0}, {1, 0}, {2, 0}, {1, 2},
-				{0, 2}, {1, 3}, {2, 1}, {1, 1}
-			};
-
 			Unit *u;
 			UnitInfo *ui;
-			uint8 orientation;
 			uint8 *sprite;
 			uint16 index;
 			int spriteFlags;
@@ -1283,52 +1318,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 
 			if (!Map_IsPositionInViewport(u->o.position, &x, &y)) continue;
 
-			index = ui->groundSpriteID;
-			orientation = u->orientation[0].current;
-			spriteFlags = DRAWSPRITE_FLAG_WIDGETPOS | DRAWSPRITE_FLAG_CENTER;
-
-			switch (ui->displayMode) {
-				case DISPLAYMODE_SINGLE_FRAME:
-					if (u->o.flags.s.bulletIsBig) index++;
-					break;
-
-				case DISPLAYMODE_UNIT:
-					orientation = Orientation_Orientation256ToOrientation8(orientation);
-
-					index += values_32E4[orientation][0];
-					spriteFlags |= values_32E4[orientation][1];
-					break;
-
-				case DISPLAYMODE_ROCKET: {
-					static const uint16 values_3304[16][2] = {
-						{0, 0}, {1, 0}, {2, 0}, {3, 0},
-						{4, 0}, {3, 2}, {2, 2}, {1, 2},
-						{0, 2}, {3, 3}, {2, 3}, {3, 3},
-						{4, 1}, {3, 1}, {2, 1}, {1, 1}
-					};
-
-					orientation = Orientation_Orientation256ToOrientation16(orientation);
-
-					index += values_3304[orientation][0];
-					spriteFlags |= values_3304[orientation][1];
-				} break;
-
-				case DISPLAYMODE_ORNITHOPTER: {
-					static const uint16 values_33AE[4] = {2, 1, 0, 1};
-
-					orientation = Orientation_Orientation256ToOrientation8(orientation);
-
-					index += (values_32E4[orientation][0] * 3) + values_33AE[u->spriteOffset & 3];
-					spriteFlags |= values_32E4[orientation][1];
-				} break;
-
-				default:
-					spriteFlags = 0x0;
-					break;
-			}
-
-			if (ui->flags.hasAnimationSet && u->o.flags.s.animationFlip) index += 5;
-			if (u->o.type == UNIT_CARRYALL && u->o.flags.s.inTransport) index += 3;
+			index = GUI_Widget_Viewport_AirSprite(u, &spriteFlags);
 
 			sprite = g_sprites[index];
 

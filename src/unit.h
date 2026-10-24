@@ -238,6 +238,34 @@ typedef struct ActionInfo {
 struct Team;
 struct Structure;
 
+typedef enum UnitMapUpdateType {
+	UNIT_UPDATE_MAP_REMOVE = 0,
+	UNIT_UPDATE_MAP_ADD = 1,
+	UNIT_UPDATE_MAP_REDRAW = 2,
+	UNIT_UPDATE_MAP_REPAINT = 3, /*!< Queue redraw; caller prepares any old-image repair. */
+	UNIT_UPDATE_MAP_STATE = 4,   /*!< Bookkeeping only; legacy backends retain a redraw. */
+	UNIT_UPDATE_MAP_REMOVE_PREPARED = 5 /*!< Old graphics marked before removal-only flags change. */
+} UnitMapUpdateType;
+
+typedef enum UnitSpriteParts {
+	UNIT_SPRITE_BODY = 1,
+	UNIT_SPRITE_TURRET = 2,
+	UNIT_SPRITE_HARVEST = 4,
+	UNIT_SPRITE_SMOKE = 8,
+	UNIT_SPRITE_SELECTION = 16,
+	UNIT_SPRITE_ALL = 31
+} UnitSpriteParts;
+
+#ifdef TOS
+extern void Unit_PrepareSpriteChange(Unit *unit, uint16 parts);
+#else
+static inline void Unit_PrepareSpriteChange(Unit *unit, uint16 parts)
+{
+	(void)unit;
+	(void)parts;
+}
+#endif
+
 extern const char * const g_table_movementTypeName[MOVEMENT_MAX];
 
 extern const uint16 g_table_actionsAI[4];

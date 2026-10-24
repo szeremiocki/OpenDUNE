@@ -71,6 +71,7 @@ static void Unit_Rotate(Unit *unit, uint16 level)
 	int8 current;
 	int8 newCurrent;
 	int16 diff;
+	bool changed8, redraw;
 
 	assert(level == 0 || level == 1);
 
@@ -91,11 +92,18 @@ static void Unit_Rotate(Unit *unit, uint16 level)
 		newCurrent = target;
 	}
 
+	changed8 = Orientation_Orientation256ToOrientation8(newCurrent) != Orientation_Orientation256ToOrientation8(current);
+	redraw = changed8 || Orientation_Orientation256ToOrientation16(newCurrent) != Orientation_Orientation256ToOrientation16(current);
+#ifdef TOS
+	if (redraw && !changed8 && g_table_unitInfo[unit->o.type].movementType != MOVEMENT_WINGER && Video_Atari_CursorDirect()) redraw = false;
+#endif
+	if (redraw) {
+		uint16 parts = level == 1 ? UNIT_SPRITE_TURRET : UNIT_SPRITE_BODY | UNIT_SPRITE_HARVEST;
+		if (level == 0 && !g_table_unitInfo[unit->o.type].o.flags.hasTurret) parts |= UNIT_SPRITE_TURRET;
+		Unit_PrepareSpriteChange(unit, parts);
+	}
 	unit->orientation[level].current = newCurrent;
-
-	if (Orientation_Orientation256ToOrientation16(newCurrent) == Orientation_Orientation256ToOrientation16(current) && Orientation_Orientation256ToOrientation8(newCurrent) == Orientation_Orientation256ToOrientation8(current)) return;
-
-	Unit_UpdateMap(2, unit);
+	if (redraw) Unit_UpdateMap(UNIT_UPDATE_MAP_REPAINT, unit);
 }
 
 static void Unit_MovementTick(Unit *unit)
@@ -118,6 +126,60 @@ static void Unit_MovementTick(Unit *unit)
 	}
 
 	unit->speedRemainder = speed & 0xFF;
+}
+
+#ifdef TOS
+void Unit_PrepareSpriteChange(Unit *unit, uint16 parts)
+{
+	if (unit == NULL || !unit->o.flags.s.used || unit->o.flags.s.isNotOnMap) return;
+	if (unit->o.position.x == 0 && unit->o.position.y == 0) return;
+	if (Video_Atari_CursorDirect()) GUI_Widget_Viewport_DamageUnit(unit, parts);
+}
+#endif
+
+static void Unit_UpdateSmokeDamage(Unit *unit)
+{
+#ifdef TOS
+	if (Video_Atari_CursorDirect()) {
+		uint16 packed, width = 0, height = 0, spriteID;
+		int16 x, y, left, top, right, bottom, column, row;
+
+		Unit_ClearViewportKey(unit);
+		if (unit->o.flags.s.isNotOnMap || !unit->o.flags.s.used) return;
+
+		packed = Tile_PackTile(unit->o.position);
+		if (g_map[packed].isUnveiled || unit->o.houseID == g_playerHouseID) {
+			Unit_HouseUnitCount_Add(unit, g_playerHouseID);
+		} else {
+			Unit_HouseUnitCount_Remove(unit);
+		}
+		unit->o.flags.s.isDirty = true;
+		g_dirtyUnitCount++;
+		if (unit->o.position.x == 0 && unit->o.position.y == 0) return;
+
+		/* All smoke phases cover the previous frame too, including expiration. */
+		for (spriteID = 180; spriteID <= 182; spriteID++) {
+			assert(g_sprites[spriteID] != NULL);
+			width = max(width, Sprite_GetWidth(g_sprites[spriteID]));
+			height = max(height, Sprite_GetHeight(g_sprites[spriteID]));
+		}
+		assert(width != 0 && height != 0);
+		x = (unit->o.position.x >> 4) + g_table_tilediff[0][unit->wobbleIndex].x;
+		y = (unit->o.position.y >> 4) + g_table_tilediff[0][unit->wobbleIndex].y - 14;
+		left = max(0, x - width / 2);
+		top = max(0, y - height / 2);
+		right = min(1024, x - width / 2 + width);
+		bottom = min(1024, y - height / 2 + height);
+		if (left >= right || top >= bottom) return;
+		for (row = top >> 4; row <= (bottom - 1) >> 4; row++) {
+			for (column = left >> 4; column <= (right - 1) >> 4; column++) {
+				Map_Update(Tile_PackXY(column, row), 4, false);
+			}
+		}
+		return;
+	}
+#endif
+	Unit_UpdateMap(2, unit);
 }
 
 /**
@@ -241,7 +303,7 @@ void GameLoop_Unit(void)
 				u->o.flags.s.isHighlighted = false;
 			}
 
-			Unit_UpdateMap(2, u);
+			Unit_UpdateMap(UNIT_UPDATE_MAP_REPAINT, u);
 		}
 
 		if (tickDeviation) Unit_Deviation_Decrease(u, 1);
@@ -250,44 +312,60 @@ void GameLoop_Unit(void)
 
 		if (tickUnknown5) {
 			if (u->timer == 0) {
-				if ((ui->movementType == MOVEMENT_FOOT && u->speed != 0) || u->o.flags.s.isSmoking) {
+				if (u->o.flags.s.isSmoking) {
 					if (u->spriteOffset >= 0) {
 						u->spriteOffset &= 0x3F;
 						u->spriteOffset++;
 
-						Unit_UpdateMap(2, u);
+						Unit_UpdateSmokeDamage(u);
+
+						u->timer = 3;
+						if (u->spriteOffset > 32) {
+							u->o.flags.s.isSmoking = false;
+							u->spriteOffset = 0;
+						}
+					}
+				} else if (ui->movementType == MOVEMENT_FOOT && u->speed != 0) {
+					if (u->spriteOffset >= 0) {
+						Unit_PrepareSpriteChange(u, UNIT_SPRITE_BODY);
+						u->spriteOffset &= 0x3F;
+						u->spriteOffset++;
+
+						Unit_UpdateMap(UNIT_UPDATE_MAP_REPAINT, u);
 
 						u->timer = ui->animationSpeed / 5;
-						if (u->o.flags.s.isSmoking) {
-							u->timer = 3;
-							if (u->spriteOffset > 32) {
-								u->o.flags.s.isSmoking = false;
-								u->spriteOffset = 0;
-							}
-						}
 					}
 				}
 
 				if (u->o.type == UNIT_ORNITHOPTER && u->o.flags.s.allocated && u->spriteOffset >= 0) {
+					Unit_PrepareSpriteChange(u, UNIT_SPRITE_BODY);
 					u->spriteOffset &= 0x3F;
 					u->spriteOffset++;
 
-					Unit_UpdateMap(2, u);
+					Unit_UpdateMap(UNIT_UPDATE_MAP_REPAINT, u);
 
 					u->timer = 1;
 				}
 
 				if (u->o.type == UNIT_HARVESTER) {
 					if (u->actionID == ACTION_HARVEST || u->o.flags.s.isSmoking) {
+						if (u->actionID == ACTION_HARVEST) {
+							Unit_PrepareSpriteChange(u, u->spriteOffset < 0 ? UNIT_SPRITE_ALL : UNIT_SPRITE_HARVEST | UNIT_SPRITE_SMOKE);
+						}
 						u->spriteOffset &= 0x3F;
 						u->spriteOffset++;
 
-						Unit_UpdateMap(2, u);
+						if (u->actionID == ACTION_HARVEST) {
+							Unit_UpdateMap(UNIT_UPDATE_MAP_REPAINT, u);
+						} else {
+							Unit_UpdateSmokeDamage(u);
+						}
 
 						u->timer = 4;
 					} else {
 						if (u->spriteOffset != 0) {
-							Unit_UpdateMap(2, u);
+							Unit_PrepareSpriteChange(u, UNIT_SPRITE_ALL);
+							Unit_UpdateMap(UNIT_UPDATE_MAP_REPAINT, u);
 
 							u->spriteOffset = 0;
 						}
@@ -522,6 +600,12 @@ void Unit_SetAction(Unit *u, ActionType action)
 			}
 			/* FALL-THROUGH */
 		case 1:
+			if (u->actionID == ACTION_HARVEST && action != ACTION_HARVEST) {
+				Unit_PrepareSpriteChange(u, UNIT_SPRITE_HARVEST);
+#ifdef TOS
+				if (Video_Atari_CursorDirect()) Unit_UpdateMap(UNIT_UPDATE_MAP_REPAINT, u);
+#endif
+			}
 			u->actionID = action;
 			u->nextActionID = ACTION_INVALID;
 			u->currentDestination.x = 0;
@@ -864,6 +948,7 @@ bool Unit_SetPosition(Unit *u, tile32 position)
 
 	if (u == NULL) return false;
 
+	Unit_PrepareSpriteChange(u, UNIT_SPRITE_ALL);
 	ui = &g_table_unitInfo[u->o.type];
 	u->o.flags.s.isNotOnMap = false;
 
@@ -918,8 +1003,9 @@ void Unit_Remove(Unit *u)
 
 	if (u == g_unitSelected) Unit_Select(NULL);
 
+	Unit_PrepareSpriteChange(u, UNIT_SPRITE_ALL);
 	u->o.flags.s.bulletIsBig = true;
-	Unit_UpdateMap(0, u);
+	Unit_UpdateMap(UNIT_UPDATE_MAP_REMOVE_PREPARED, u);
 
 	Unit_HouseUnitCount_Remove(u);
 
@@ -1106,6 +1192,7 @@ bool Unit_StartMovement(Unit *unit)
 	speed = g_table_landscapeInfo[type].movementSpeed[ui->movementType];
 
 	if (unit->o.type == UNIT_SABOTEUR && type == LST_WALL) speed = 255;
+	if (unit->o.flags.s.isSmoking) Unit_PrepareSpriteChange(unit, UNIT_SPRITE_SMOKE);
 	unit->o.flags.s.isSmoking = false;
 
 	/* ENHANCEMENT -- the flag is never set to false in original Dune2; in result, once the wobbling starts, it never stops. */
@@ -1208,7 +1295,9 @@ bool Unit_Deviation_Decrease(Unit *unit, uint16 amount)
 	unit->deviated = 0;
 
 	unit->o.flags.s.bulletIsBig = true;
-	Unit_UpdateMap(2, unit);
+	/* Changing action can remove a harvester's current harvesting layer. */
+	Unit_UpdateMap(unit->o.type == UNIT_HARVESTER && unit->actionID == ACTION_HARVEST ?
+	               UNIT_UPDATE_MAP_REDRAW : UNIT_UPDATE_MAP_REPAINT, unit);
 	unit->o.flags.s.bulletIsBig = false;
 
 	if (unit->o.houseID == g_playerHouseID) {
@@ -1276,7 +1365,8 @@ bool Unit_Deviate(Unit *unit, uint16 probability, uint8 houseID)
 	unit->deviated = 120;
 	unit->deviatedHouse = houseID;
 
-	Unit_UpdateMap(2, unit);
+	Unit_UpdateMap(unit->o.type == UNIT_HARVESTER && unit->actionID == ACTION_HARVEST ?
+	               UNIT_UPDATE_MAP_REDRAW : UNIT_UPDATE_MAP_REPAINT, unit);
 
 	if (g_playerHouseID == unit->deviatedHouse) {
 		Unit_SetAction(unit, ui->o.actionsPlayer[3]);
@@ -1306,6 +1396,7 @@ bool Unit_Move(Unit *unit, uint16 distance)
 	tile32 newPosition;
 	bool ret;
 	tile32 currentDestination;
+	uint8 nextWobble;
 	bool isSpiceBloom = false;
 	bool isSpecialBloom = false;
 
@@ -1332,9 +1423,9 @@ bool Unit_Move(Unit *unit, uint16 distance)
 		Unit_SetOrientation(unit, unit->orientation[0].current + (Tools_Random_256() & 0xF), false, 0);
 	}
 
-	unit->wobbleIndex = 0;
+	nextWobble = 0;
 	if (ui->flags.canWobble && unit->o.flags.s.isWobbling) {
-		unit->wobbleIndex = Tools_Random_256() & 7;
+		nextWobble = Tools_Random_256() & 7;
 	}
 
 	d = Tile_GetDistance(newPosition, unit->currentDestination);
@@ -1364,6 +1455,7 @@ bool Unit_Move(Unit *unit, uint16 distance)
 	}
 
 	Unit_UpdateMap(0, unit);
+	unit->wobbleIndex = nextWobble;
 
 	if (ui->movementType == MOVEMENT_WINGER) {
 		unit->o.flags.s.animationFlip = !unit->o.flags.s.animationFlip;
@@ -1598,11 +1690,12 @@ bool Unit_Damage(Unit *unit, uint16 damage, uint16 range)
 	}
 
 	if (unit->o.type == UNIT_TROOPERS || unit->o.type == UNIT_INFANTRY) {
+		Unit_PrepareSpriteChange(unit, UNIT_SPRITE_ALL);
 		unit->o.type += 2;
 		ui = &g_table_unitInfo[unit->o.type];
 		unit->o.hitpoints = ui->o.hitpoints;
 
-		Unit_UpdateMap(2, unit);
+		Unit_UpdateMap(UNIT_UPDATE_MAP_REPAINT, unit);
 
 		if (Tools_Random_256() < g_table_houseInfo[unit->o.houseID].toughness) {
 			Unit_SetAction(unit, ACTION_RETREAT);
@@ -1611,10 +1704,14 @@ bool Unit_Damage(Unit *unit, uint16 damage, uint16 range)
 
 	if (ui->movementType != MOVEMENT_TRACKED && ui->movementType != MOVEMENT_HARVESTER && ui->movementType != MOVEMENT_WHEELED) return false;
 
+	Unit_PrepareSpriteChange(unit, unit->spriteOffset < 0 ? UNIT_SPRITE_ALL : UNIT_SPRITE_HARVEST | UNIT_SPRITE_SMOKE);
 	unit->o.flags.s.isSmoking = true;
 	unit->spriteOffset = 0;
 	unit->timer = 0;
 	Unit_ClearViewportKey(unit);
+#ifdef TOS
+	if (Video_Atari_CursorDirect()) Unit_UpdateMap(UNIT_UPDATE_MAP_REPAINT, unit);
+#endif
 
 	return false;
 }
@@ -1696,6 +1793,23 @@ void Unit_SetOrientation(Unit *unit, int8 orientation, bool rotateInstantly, uin
 	unit->orientation[level].target = orientation;
 
 	if (rotateInstantly) {
+#ifdef TOS
+		const UnitInfo *ui = &g_table_unitInfo[unit->o.type];
+		bool rocket = ui->movementType == MOVEMENT_WINGER && ui->displayMode == DISPLAYMODE_ROCKET;
+		uint8 current = unit->orientation[level].current;
+		bool changed = rocket ?
+			Orientation_Orientation256ToOrientation16(current) != Orientation_Orientation256ToOrientation16(orientation) :
+			Orientation_Orientation256ToOrientation8(current) != Orientation_Orientation256ToOrientation8(orientation);
+		if (changed && (unit->o.position.x != 0 || unit->o.position.y != 0) && Video_Atari_CursorDirect()) {
+			uint16 parts = UNIT_SPRITE_TURRET;
+			if (level == 0) {
+				parts = UNIT_SPRITE_BODY | UNIT_SPRITE_HARVEST;
+				if (!ui->o.flags.hasTurret) parts |= UNIT_SPRITE_TURRET;
+			}
+			Unit_PrepareSpriteChange(unit, parts);
+			Unit_UpdateMap(UNIT_UPDATE_MAP_REPAINT, unit);
+		}
+#endif
 		Unit_ClearViewportKey(unit);
 		unit->orientation[level].current = orientation;
 		return;
@@ -1729,7 +1843,10 @@ void Unit_Select(Unit *unit)
 		unit = NULL;
 	}
 
-	if (g_unitSelected != NULL) Unit_UpdateMap(2, g_unitSelected);
+	if (g_unitSelected != NULL) {
+		Unit_PrepareSpriteChange(g_unitSelected, UNIT_SPRITE_SELECTION);
+		Unit_UpdateMap(UNIT_UPDATE_MAP_REPAINT, g_unitSelected);
+	}
 
 	if (unit == NULL) {
 		g_unitSelected = NULL;
@@ -1762,7 +1879,7 @@ void Unit_Select(Unit *unit)
 		GUI_ChangeSelectionType(SELECTIONTYPE_UNIT);
 	}
 
-	Unit_UpdateMap(2, g_unitSelected);
+	Unit_UpdateMap(UNIT_UPDATE_MAP_REPAINT, g_unitSelected);
 
 	Map_SetSelectionObjectPosition(0xFFFF);
 }
@@ -2125,8 +2242,9 @@ void Unit_Hide(Unit *unit)
 {
 	if (unit == NULL) return;
 
+	Unit_PrepareSpriteChange(unit, UNIT_SPRITE_ALL);
 	unit->o.flags.s.bulletIsBig = true;
-	Unit_UpdateMap(0, unit);
+	Unit_UpdateMap(UNIT_UPDATE_MAP_REMOVE_PREPARED, unit);
 	unit->o.flags.s.bulletIsBig = false;
 
 	Script_Reset(&unit->o.script, g_scriptUnit);
@@ -2481,7 +2599,7 @@ void Unit_RemovePlayer(Unit *unit)
 
 /**
  * Update the map around the Unit depending on the type (entering tile, leaving, staying).
- * @param type The type of action on the map.
+ * @param type A UnitMapUpdateType action; repaint/state retain legacy redraws outside native planar video.
  * @param unit The Unit doing the action.
  */
 void Unit_UpdateMap(uint16 type, Unit *unit)
@@ -2491,20 +2609,42 @@ void Unit_UpdateMap(uint16 type, Unit *unit)
 	uint16 packed;
 	Tile *t;
 	uint16 radius;
+	bool removalPrepared;
 
 	if (unit == NULL) return;
 	Unit_ClearViewportKey(unit);
 	if (unit->o.flags.s.isNotOnMap || !unit->o.flags.s.used) return;
 
+	assert(type <= UNIT_UPDATE_MAP_REMOVE_PREPARED);
+	removalPrepared = type == UNIT_UPDATE_MAP_REMOVE_PREPARED;
+	if (removalPrepared) type = UNIT_UPDATE_MAP_REMOVE;
+	if (type >= UNIT_UPDATE_MAP_REPAINT) {
+#ifdef TOS
+		if (!Video_Atari_CursorDirect())
+#endif
+		type = UNIT_UPDATE_MAP_REDRAW;
+	}
+
 	ui = &g_table_unitInfo[unit->o.type];
 
+#ifdef TOS
+	if ((type == UNIT_UPDATE_MAP_REDRAW || (type == UNIT_UPDATE_MAP_REMOVE && !removalPrepared)) &&
+	    Video_Atari_CursorDirect()) Unit_PrepareSpriteChange(unit, UNIT_SPRITE_ALL);
+#endif
 	if (ui->movementType == MOVEMENT_WINGER) {
+		if (type == UNIT_UPDATE_MAP_STATE) return;
 		if (type != 0) {
 			unit->o.flags.s.isDirty = true;
 			g_dirtyAirUnitCount++;
 		}
 
-		Map_UpdateAround(g_table_unitInfo[unit->o.type].dimension, unit->o.position, unit, g_functions[0][type]);
+		if (type != UNIT_UPDATE_MAP_REPAINT
+#ifdef TOS
+		    && !((type == UNIT_UPDATE_MAP_REDRAW || type == UNIT_UPDATE_MAP_REMOVE) && Video_Atari_CursorDirect())
+#endif
+		   ) {
+			Map_UpdateAround(g_table_unitInfo[unit->o.type].dimension, unit->o.position, unit, g_functions[0][type]);
+		}
 		return;
 	}
 
@@ -2517,6 +2657,8 @@ void Unit_UpdateMap(uint16 type, Unit *unit)
 	} else {
 		Unit_HouseUnitCount_Remove(unit);
 	}
+
+	if (type == UNIT_UPDATE_MAP_STATE) return;
 
 	if (type == 1) {
 		if (House_AreAllied(Unit_GetHouseID(unit), g_playerHouseID) && !Map_IsPositionUnveiled(packed) && unit->o.type != UNIT_SANDWORM) {
@@ -2533,6 +2675,12 @@ void Unit_UpdateMap(uint16 type, Unit *unit)
 		unit->o.flags.s.isDirty = true;
 		g_dirtyUnitCount++;
 	}
+
+	if (type == UNIT_UPDATE_MAP_REPAINT) return;
+
+#ifdef TOS
+	if (type == UNIT_UPDATE_MAP_REDRAW && Video_Atari_CursorDirect()) return;
+#endif
 
 	radius = ui->dimension + 3;
 
@@ -2564,6 +2712,12 @@ void Unit_RemoveFromTile(Unit *unit, uint16 packed)
 
 	Map_MarkTileDirty(packed);
 
+#ifdef TOS
+	if (Video_Atari_CursorDirect()) {
+		Map_Update(packed, 1, false);
+		return;
+	}
+#endif
 	Map_Update(packed, 0, false);
 }
 

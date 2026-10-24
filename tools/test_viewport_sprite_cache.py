@@ -137,13 +137,13 @@ static bool Video_Atari_CursorRectOverlap(uint8 *base, uint16 first, uint16 end,
 class ViewportSpriteCacheTest(unittest.TestCase):
     def test_canonical_layer_order(self):
         viewport = (ROOT / "src/gui/viewport.c").read_text()
-        draw = function(viewport, "GUI_Widget_Viewport_Draw")
-        additions = re.findall(r"GUI_Widget_Viewport_AddSpriteLayer\(&layers,\s*([^,]+)", draw)
-        self.assertEqual(additions, ["harvestSpriteID", "spriteID", "spriteID", "6"])
-        self.assertLess(draw.index("harvestSpriteID ="), draw.index("ui->turretSpriteID != 0xFFFF"))
+        draw = function(viewport, "GUI_Widget_Viewport_GroundSprites")
+        additions = re.findall(r"GUI_Widget_Viewport_AddSpriteLayer\(layers,\s*([^,]+)", draw)
+        self.assertEqual(additions, ["spriteID", "ui->turretSpriteID + directions[orientation][0]", "spriteID", "6"])
+        self.assertLess(draw.index("UNIT_SPRITE_HARVEST"), draw.index("ui->turretSpriteID != 0xFFFF"))
         self.assertLess(draw.index("ui->turretSpriteID != 0xFFFF"), draw.index("u->o.flags.s.isSmoking"))
         self.assertLess(draw.index("u->o.flags.s.isSmoking"),
-                        draw.index("GUI_Widget_Viewport_AddSpriteLayer(&layers, 6"))
+                        draw.index("GUI_Widget_Viewport_AddSpriteLayer(layers, 6"))
         self.assertNotRegex(function(viewport, "GUI_Widget_Viewport_AddSpriteLayer"),
                             r"count\s*[<>]")
         self.assertNotRegex(function((ROOT / "src/gui/gui.c").read_text(), "GUI_ViewportPlanarSprite"),
@@ -273,7 +273,8 @@ int main(int argc, char **argv) {
         for name in ("Unit_Load", "UnitNew_Load"):
             self.assertIn("Unit_ClearViewportKey(u)", function(save, name))
         for name in ("Script_Unit_SetSprite", "Script_Unit_IdleAction"):
-            self.assertIn("Unit_UpdateMap(2, u)", function(script, name))
+            self.assertIn("Unit_PrepareSpriteChange(", function(script, name))
+            self.assertIn("Unit_UpdateMap(update, u)", function(script, name))
         harness = r"""
 #include <assert.h>
 #include <stdlib.h>
@@ -305,6 +306,10 @@ HouseType g_playerHouseID;
 Tile g_map[64 * 64];
 uint8 g_functions[3][3];
 uint16 g_dirtyUnitCount, g_dirtyAirUnitCount;
+bool Video_Atari_CursorDirect(void) { return true; }
+void Unit_PrepareSpriteChange(Unit *unit, uint16 parts) {
+    assert(unit && parts); mapUpdates++;
+}
 House *House_Get_ByIndex(uint8 index) { assert(index == 0); return &house; }
 uint8 Unit_GetHouseID(Unit *unit) { return unit->o.houseID; }
 void Unit_DisplayStatusText(Unit *unit) { assert(unit != NULL); }
@@ -349,12 +354,12 @@ int main(void) {
     u->orientation[0].target = 32;
     warm(u);
     Unit_Rotate(u, 0);
-    assert(!valid(u) && u->orientation[0].current == 8);
+    assert(valid(u) && u->orientation[0].current == 8 && mapUpdates == 0);
     Unit_Rotate(u, 0);
-    assert(!valid(u) && u->orientation[0].current == 16 && mapUpdates == 2);
+    assert(!valid(u) && u->orientation[0].current == 16 && mapUpdates == 1);
     warm(u);
     Unit_Rotate(u, 0);
-    assert(!valid(u) && u->orientation[0].current == 24);
+    assert(valid(u) && u->orientation[0].current == 24 && mapUpdates == 1);
     Unit_SetOrientation(u, 25, true, 0);
     assert(!valid(u));
     Unit_SetOrientation(u, 64, true, 0);
@@ -363,7 +368,7 @@ int main(void) {
     Unit_SetOrientation(u, 96, false, 1);
     assert(valid(u) && u->orientation[1].current == 0);
     Unit_Rotate(u, 1);
-    assert(!valid(u));
+    assert(valid(u));
     Unit_Rotate(u, 1);
     assert(!valid(u) && u->orientation[1].current == 16);
     warm(u);

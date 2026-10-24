@@ -5,6 +5,11 @@
 
 #include "../gfx.h"
 
+struct Unit;
+#ifdef TOS
+extern void GUI_Widget_Viewport_DamageUnit(struct Unit *unit, uint16 parts);
+#endif
+
 /**
  * Factory results.
  */

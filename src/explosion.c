@@ -38,6 +38,12 @@ static void Explosion_Update(uint16 type, Explosion *e)
 
 	e->isDirty = (type != 0);
 
+#ifdef TOS
+	if (Video_Atari_CursorDirect()) {
+		if (type != 1) Map_UpdateSprite(e->spriteID, e->position, 0, 0);
+		return;
+	}
+#endif
 	Map_UpdateAround(24, e->position, NULL, g_functions[2][type]);
 }
 
@@ -200,6 +206,15 @@ static void Explosion_Func_SetAnimation(Explosion *e, uint16 animationMapID)
  */
 static void Explosion_Func_MoveYPosition(Explosion *e, uint16 row)
 {
+#ifdef TOS
+	if (Video_Atari_CursorDirect()) {
+		if (row == 0) return;
+		Explosion_Update(0, e);
+		e->position.y += (int16)row;
+		e->isDirty = true;
+		return;
+	}
+#endif
 	e->position.y += (int16)row;
 }
 
@@ -246,6 +261,15 @@ static void Explosion_Func_SetRandomTimeout(Explosion *e, uint16 value)
  */
 static void Explosion_Func_SetSpriteID(Explosion *e, uint16 spriteID)
 {
+#ifdef TOS
+	if (Video_Atari_CursorDirect()) {
+		if (e->spriteID == spriteID) return;
+		Explosion_Update(0, e);
+		e->spriteID = spriteID;
+		e->isDirty = true;
+		return;
+	}
+#endif
 	e->spriteID = spriteID;
 
 	Explosion_Update(2, e);

@@ -4126,7 +4126,8 @@ void GUI_ChangeSelectionType(uint16 selectionType)
 
 			case SELECTIONTYPE_UNIT:
 				if (g_unitSelected != NULL && selectionType != SELECTIONTYPE_TARGET && selectionType != SELECTIONTYPE_UNIT) {
-					Unit_UpdateMap(2, g_unitSelected);
+					Unit_PrepareSpriteChange(g_unitSelected, UNIT_SPRITE_SELECTION);
+					Unit_UpdateMap(UNIT_UPDATE_MAP_REPAINT, g_unitSelected);
 					g_unitSelected = NULL;
 				}
 				break;

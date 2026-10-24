@@ -27,6 +27,9 @@
 #include "../tile.h"
 #include "../string.h"
 #include "../unit.h"
+#ifdef TOS
+#include "../video/video.h"
+#endif
 
 typedef struct Pathfinder_Data {
 	uint16 packed;                                          /*!< From where we are pathfinding. */
@@ -145,10 +148,11 @@ uint16 Script_Unit_TransportDeliver(ScriptEngine *script)
 			if (s->state == STRUCTURE_STATE_BUSY) {
 				s->o.linkedID = u->o.linkedID;
 				u->o.linkedID = 0xFF;
+				Unit_PrepareSpriteChange(u, UNIT_SPRITE_BODY);
 				u->o.flags.s.inTransport = false;
 				u->amount = 0;
 
-				Unit_UpdateMap(2, u);
+				Unit_UpdateMap(UNIT_UPDATE_MAP_REPAINT, u);
 
 				Voice_PlayAtTile(24, u->o.position);
 
@@ -172,10 +176,11 @@ uint16 Script_Unit_TransportDeliver(ScriptEngine *script)
 			u->targetMove = 0;
 
 			u->o.linkedID = 0xFF;
+			Unit_PrepareSpriteChange(u, UNIT_SPRITE_BODY);
 			u->o.flags.s.inTransport = false;
 			u->amount = 0;
 
-			Unit_UpdateMap(2, u);
+			Unit_UpdateMap(UNIT_UPDATE_MAP_REPAINT, u);
 
 			return 1;
 		}
@@ -205,7 +210,11 @@ uint16 Script_Unit_TransportDeliver(ScriptEngine *script)
 
 	if (u->o.linkedID != 0xFF) return 1;
 
+	Unit_PrepareSpriteChange(u, UNIT_SPRITE_BODY);
 	u->o.flags.s.inTransport = false;
+#ifdef TOS
+	if (Video_Atari_CursorDirect()) Unit_UpdateMap(UNIT_UPDATE_MAP_REPAINT, u);
+#endif
 
 	Object_Script_Variable4_Clear(&u->o);
 	u->targetMove = 0;
@@ -246,6 +255,7 @@ uint16 Script_Unit_Pickup(ScriptEngine *script)
 				return 0;
 			}
 
+			Unit_PrepareSpriteChange(u, UNIT_SPRITE_BODY);
 			u->o.flags.s.inTransport = true;
 
 			Object_Script_Variable4_Clear(&u->o);
@@ -267,7 +277,7 @@ uint16 Script_Unit_Pickup(ScriptEngine *script)
 				u->targetMove = Tools_Index_Encode(Map_SearchSpice(Tile_PackTile(u->o.position), 20), IT_TILE);
 			}
 
-			Unit_UpdateMap(2, u);
+			Unit_UpdateMap(UNIT_UPDATE_MAP_REPAINT, u);
 
 			return 1;
 		}
@@ -318,8 +328,12 @@ uint16 Script_Unit_Pickup(ScriptEngine *script)
 
 			/* Pickup the unit */
 			u->o.linkedID = u2->o.index & 0xFF;
+			Unit_PrepareSpriteChange(u, UNIT_SPRITE_BODY);
 			u->o.flags.s.inTransport = true;
 
+#ifdef TOS
+			if (!Video_Atari_CursorDirect())
+#endif
 			Unit_UpdateMap(0, u2);
 
 			Unit_Hide(u2);
@@ -328,7 +342,7 @@ uint16 Script_Unit_Pickup(ScriptEngine *script)
 			Object_Script_Variable4_Link(Tools_Index_Encode(u->o.index, IT_UNIT), Tools_Index_Encode(s->o.index, IT_STRUCTURE));
 			u->targetMove = u->o.script.variables[4];
 
-			Unit_UpdateMap(2, u);
+			Unit_UpdateMap(UNIT_UPDATE_MAP_REPAINT, u);
 
 			if (u2->o.type != UNIT_HARVESTER) return 0;
 
@@ -365,7 +379,7 @@ uint16 Script_Unit_Stop(ScriptEngine *script)
 
 	Unit_SetSpeed(u, 0);
 
-	Unit_UpdateMap(2, u);
+	Unit_UpdateMap(UNIT_UPDATE_MAP_STATE, u);
 
 	return 0;
 }
@@ -404,12 +418,16 @@ uint16 Script_Unit_SetSpeed(ScriptEngine *script)
 uint16 Script_Unit_SetSprite(ScriptEngine *script)
 {
 	Unit *u;
+	int16 offset;
 
 	u = g_scriptCurrentUnit;
 
-	u->spriteOffset = -(STACK_PEEK(1) & 0xFF);
+	offset = -(STACK_PEEK(1) & 0xFF);
+	if (u->spriteOffset != offset) Unit_PrepareSpriteChange(u, UNIT_SPRITE_ALL);
+	uint16 update = u->spriteOffset == offset ? UNIT_UPDATE_MAP_STATE : UNIT_UPDATE_MAP_REPAINT;
+	u->spriteOffset = offset;
 
-	Unit_UpdateMap(2, u);
+	Unit_UpdateMap(update, u);
 
 	return 0;
 }
@@ -444,10 +462,11 @@ uint16 Script_Unit_MoveToTarget(ScriptEngine *script)
 	if ((int16)distance < 128) {
 		Unit_SetSpeed(u, 0);
 
+		Unit_PrepareSpriteChange(u, UNIT_SPRITE_ALL);
 		u->o.position.x += clamp((int16)(tile.x - u->o.position.x), -16, 16);
 		u->o.position.y += clamp((int16)(tile.y - u->o.position.y), -16, 16);
 
-		Unit_UpdateMap(2, u);
+		Unit_UpdateMap(UNIT_UPDATE_MAP_REPAINT, u);
 
 		if ((int16)distance < 32) return 1;
 
@@ -468,7 +487,7 @@ uint16 Script_Unit_MoveToTarget(ScriptEngine *script)
 
 	delay = max((int16)distance / 1024, 1);
 
-	Unit_UpdateMap(2, u);
+	Unit_UpdateMap(UNIT_UPDATE_MAP_STATE, u);
 
 	if (delay != 0) {
 		script->delay = delay;
@@ -691,7 +710,7 @@ uint16 Script_Unit_Fire(ScriptEngine *script)
 
 	u->fireDelay += Tools_Random_256() & 1;
 
-	Unit_UpdateMap(2, u);
+	Unit_UpdateMap(UNIT_UPDATE_MAP_STATE, u);
 
 	return 1;
 }
@@ -1683,7 +1702,7 @@ uint16 Script_Unit_Harvest(ScriptEngine *script)
 	u->amount += Tools_Random_256() & 1;
 	u->o.flags.s.inTransport = true;
 
-	Unit_UpdateMap(2, u);
+	Unit_UpdateMap(UNIT_UPDATE_MAP_STATE, u);
 
 	if (u->amount > 100) u->amount = 100;
 
@@ -1787,8 +1806,11 @@ uint16 Script_Unit_IdleAction(ScriptEngine *script)
 	if (movementType != MOVEMENT_FOOT && movementType != MOVEMENT_TRACKED && movementType != MOVEMENT_WHEELED) return 0;
 
 	if (movementType == MOVEMENT_FOOT && random > 8) {
-		u->spriteOffset = Tools_Random_256() & 0x3F;
-		Unit_UpdateMap(2, u);
+		int16 offset = Tools_Random_256() & 0x3F;
+		uint16 update = offset == u->spriteOffset ? UNIT_UPDATE_MAP_STATE : UNIT_UPDATE_MAP_REPAINT;
+		if (offset != u->spriteOffset) Unit_PrepareSpriteChange(u, UNIT_SPRITE_BODY);
+		u->spriteOffset = offset;
+		Unit_UpdateMap(update, u);
 	}
 
 	if (random > 2) return 0;

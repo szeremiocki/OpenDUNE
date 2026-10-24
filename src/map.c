@@ -604,6 +604,31 @@ static bool Map_IsTileVisible(uint16 packed)
 	return x >= x2 && x < x2 + 15 && y >= y2 && y < y2 + 10;
 }
 
+/** Queue tile-rounded repair of a centered sprite in world coordinates. */
+void Map_UpdateSprite(uint16 spriteID, tile32 position, int16 offsetX, int16 offsetY)
+{
+	int16 left, top, right, bottom, row, column;
+	uint16 width, height;
+
+	if (spriteID == 0 || (position.x == 0 && position.y == 0)) return;
+	assert(g_sprites[spriteID] != NULL);
+	width = Sprite_GetWidth(g_sprites[spriteID]);
+	height = Sprite_GetHeight(g_sprites[spriteID]);
+	assert(width != 0 && height != 0);
+	left = (position.x >> 4) + offsetX - width / 2;
+	top = (position.y >> 4) + offsetY - height / 2;
+	right = min(1024, left + width);
+	bottom = min(1024, top + height);
+	left = max(0, left);
+	top = max(0, top);
+	if (left >= right || top >= bottom) return;
+	for (row = top >> 4; row <= (bottom - 1) >> 4; row++) {
+		for (column = left >> 4; column <= (right - 1) >> 4; column++) {
+			Map_Update(Tile_PackXY(column, row), 0, false);
+		}
+	}
+}
+
 /**
  * Updates ??.
  *
@@ -758,7 +783,7 @@ void Map_FillCircleWithSpice(uint16 packed, uint16 radius)
  * Fixes edges of spice / thick spice to show sand / normal spice for better looks.
  * @param packed Position to check and possible fix edges of.
  */
-static void Map_FixupSpiceEdges(uint16 packed)
+static void Map_FixupSpiceEdges(uint16 packed, uint16 previousTileID)
 {
 	uint16 type;
 	uint16 spriteID;
@@ -796,7 +821,7 @@ static void Map_FixupSpiceEdges(uint16 packed)
 		g_map[packed].groundTileID = spriteID;
 	}
 
-	Map_Update(packed, 0, false);
+	if (g_map[packed].groundTileID != previousTileID) Map_Update(packed, 0, false);
 }
 
 /**
@@ -808,6 +833,7 @@ void Map_ChangeSpiceAmount(uint16 packed, int16 dir)
 {
 	uint16 type;
 	uint16 spriteID;
+	uint16 previousTileID;
 
 	if (dir == 0) return;
 
@@ -823,19 +849,31 @@ void Map_ChangeSpiceAmount(uint16 packed, int16 dir)
 		type = (type == LST_THICK_SPICE) ? LST_SPICE : LST_NORMAL_SAND;
 	}
 
+#ifdef TOS
+	if (type == LST_NORMAL_SAND && Video_Atari_CursorDirect()) {
+		Unit *unit = Unit_Get_ByPackedTile(packed);
+		if (unit != NULL && unit->o.type == UNIT_HARVESTER && unit->actionID == ACTION_HARVEST &&
+		    Tile_PackTile(unit->o.position) == packed) {
+			Unit_PrepareSpriteChange(unit, UNIT_SPRITE_HARVEST);
+			Unit_UpdateMap(UNIT_UPDATE_MAP_REPAINT, unit);
+		}
+	}
+#endif
+
 	spriteID = 0;
 	if (type == LST_SPICE) spriteID = 49;
 	if (type == LST_THICK_SPICE) spriteID = 65;
 
 	spriteID = g_iconMap[g_iconMap[ICM_ICONGROUP_LANDSCAPE] + spriteID] & 0x1FF;
+	previousTileID = g_map[packed].groundTileID;
 	g_mapTileID[packed] = 0x8000 | spriteID;
 	g_map[packed].groundTileID = spriteID;
 
-	Map_FixupSpiceEdges(packed);
-	Map_FixupSpiceEdges(packed + 1);
-	Map_FixupSpiceEdges(packed - 1);
-	Map_FixupSpiceEdges(packed - 64);
-	Map_FixupSpiceEdges(packed + 64);
+	Map_FixupSpiceEdges(packed, previousTileID);
+	Map_FixupSpiceEdges(packed + 1, g_map[(packed + 1) & 0xFFF].groundTileID);
+	Map_FixupSpiceEdges(packed - 1, g_map[(packed - 1) & 0xFFF].groundTileID);
+	Map_FixupSpiceEdges(packed - 64, g_map[(packed - 64) & 0xFFF].groundTileID);
+	Map_FixupSpiceEdges(packed + 64, g_map[(packed + 64) & 0xFFF].groundTileID);
 }
 
 /**

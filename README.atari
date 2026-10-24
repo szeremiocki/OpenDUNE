@@ -295,6 +295,57 @@ rows need none either. Forced redraw and non-ST-family viewports retain the orig
 tile traversal. Repair-on-first-touch still consumes the same pending bits;
 sprite filtering retains a snapshot of that damage before repairs begin.
 
+Smoke animation on ST/STE marks terrain repair only over the tile-rounded
+union of the three smoke-frame bounds, at the rendered offset (including
+wobble). Expiration repairs the same area to erase the previous frame.
+Single-tile damage marks only those repair tiles, without the old neighbour
+candidate halo. Units anchored outside them are not recruited to repair overlap
+order; the composite itself still redraws and propagates its full bounds through
+the existing filter. This deliberately relaxes cross-tile overlap repair:
+neighbouring sprites may retain incorrect overlap order or lose pixels where
+background restoration touches them. Cached unit keys are cleared as before
+in Unit_UpdateMap; dirty flags alone do not rebuild a nonzero layer identity.
+Walking and harvesting frame changes now mark the old component's actual
+tile-rounded bounds before advancing the frame. Cadence is unchanged;
+smoke-only updates retain the smoke-union path above. Harvest attachments use
+their real directional offsets, including wobble. Drawing and damage use the
+same sprite/layer selectors. No previous-draw rectangles, extra sprite pass
+or damage-source records are stored.
+
+Native-planar harvest bookkeeping, stopping and far-target speed/orientation
+requests retain visibility accounting without requesting a redraw. Blink and
+deviation recolours mark the unit dirty and clear its composite key, but do not
+repair terrain because sprite opacity is unchanged. Leaving the harvesting
+action or depleting its spice tile first marks the disappearing attachment.
+Ground rotation skips
+16-direction bucket changes when the rendered 8-direction bucket is unchanged;
+air units retain their original incremental-rotation notifications. Real turns
+repair only the changed body/attachment/turret components. Selection changes
+repair the old marker; death/idle frames, infantry formation and carryall load
+changes likewise prepare old geometry before mutation. Successful-fire
+bookkeeping is state-only, without changing sandworm attack/removal behavior.
+
+Movement repairs old geometry before changing position or wobble. Wobble RNG
+ordering is preserved by holding the next index locally until departure repair.
+Removal/hiding capture old geometry before forcing cleanup flags; duplicate
+native pickup removal is omitted. Occupancy, fog and minimap callbacks retain
+their original registration footprints and harvester history, including the
+5x5 branch where required. Those broad candidate/registration visits no longer
+request broad terrain restoration. The general 5x5 registration policy is
+unchanged and remains a separate discussion.
+
+Native explosion frame changes, vertical moves and disappearance repair the
+old sprite's actual bounds instead of radius 24. Repeated frame requests are
+skipped. Spice-edge fixup invalidates only changed final graphics while
+preserving terrain metadata and real centre-tile grade changes.
+
+Other video backends retain their original unit/explosion invalidation.
+The checklist and remaining work are in ATARI_TODO_UNIT_DAMAGE.md. Geometric
+repairs retain the existing neighbour-candidate halo; its policy, message and
+structure-selection repair coverage remain deferred. Repaint-only
+updates add no neighbour candidates and retain the same possible cross-tile
+overlap-order artifacts described above.
+
 ST-family battlefield rendering is obligatorily planar, not an optional
 capability or per-sprite eligibility decision. Unsupported sprite requests
 assert in assertion-enabled builds; release builds trust the viewport contract
