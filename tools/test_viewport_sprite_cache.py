@@ -332,8 +332,8 @@ bool House_AreAllied(uint8 a, uint8 b) { return a == b; }
 bool Map_IsPositionUnveiled(uint16 packed) { (void)packed; return true; }
 Object *Object_GetByPackedTile(uint16 packed) { (void)packed; return NULL; }
 void Tile_RemoveFogInRadius(tile32 tile, uint16 radius) { (void)tile; (void)radius; }
-void Map_UpdateAround(uint16 radius, tile32 position, Unit *unit, uint8 operation) {
-    (void)radius; (void)position; (void)operation;
+void Map_UpdateAround(uint16 radius, tile32 position, Unit *unit, uint8 operation, bool markViewport) {
+    (void)radius; (void)position; (void)operation; (void)markViewport;
     assert(unit != NULL); mapUpdates++;
 }
 /* PRODUCTION */

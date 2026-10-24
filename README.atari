@@ -345,14 +345,30 @@ REMOVE/ADD pair is skipped, no movement-specific scan suppression is added, and
 sprite propagation is unchanged. Further removal of targetLast is deferred
 until visual/profile assessment of this build.
 
-Map_UpdateAround still marks each candidate and increments its dirty counter
-before dispatch. Its candidate-only case and ADD callbacks no longer repeat
-that bit write through Map_Update; these were no-ops on every backend. Native
-REMOVE callbacks also omit their repeated candidate-only call, while legacy
-REMOVE retains its terrain-repair call. Occupancy, unveiling and minimap
-bookkeeping remain in the retained callbacks. Registration callbacks do not
-themselves request broad terrain restoration on the native backend, although
-real fog changes still queue repairs.
+Experimental ST/STE candidate policy: ordinary native ground-unit ADD/REMOVE
+scans at the current position no longer mark viewport candidates or increment
+their counter. The same tiles and callbacks are still visited, including
+smoking units' 5x5 registration scans. Old-component repair retains its
+existing neighbour-candidate halo; the unit's dirty flag still queues its own
+redraw. Forced cleanup, retained harvester history scans (including targetLast),
+air units and other backends keep their candidate marking.
+This is not a movement-pair or equal-footprint optimization, and does not
+remove registration traversal work. New-image overlaps outside existing
+candidate coverage can retain incorrect ordering; visual/profile assessment
+is required before extending this experiment. STE16 profiling is encouraging,
+but additional visual verification remains required: overall gameplay looked
+fine to the user, with possible very minor harvester drawing regressions not
+yet confirmed or attributed to this change. Detailed unit-drawing checks are
+deferred; see ATARI_TODO_UNIT_DAMAGE.md for the diagnostics checklist.
+
+Map_UpdateAround takes an explicit markViewport policy; when enabled it marks
+each candidate and increments its dirty counter before dispatch. Callbacks run
+regardless of that policy. Its candidate-only case and ADD callbacks no longer
+repeat that bit write through Map_Update. Native REMOVE callbacks also omit
+their repeated candidate-only call, while legacy REMOVE retains its
+terrain-repair call. Occupancy, unveiling and minimap bookkeeping remain in the
+retained callbacks. Real fog changes still queue terrain repairs and candidates
+even when the outer registration scan suppresses candidate marking.
 
 Native explosion frame changes, vertical moves and disappearance repair the
 old sprite's actual bounds instead of radius 24. Repeated frame requests are

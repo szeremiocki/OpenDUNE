@@ -270,21 +270,24 @@ int main(void) {
     for (unsigned native = 0; native < 2; native++)
     for (unsigned destination = 0; destination < 2; destination++)
     for (unsigned forced = 0; forced < 2; forced++)
-    for (unsigned owned = 0; owned < 2; owned++) {
+    for (unsigned owned = 0; owned < 2; owned++)
+    for (unsigned candidates = 0; candidates < 2; candidates++) {
         direct = native; clearDamage(); marks = 0;
         u.currentDestination = (tile32){destination ? 0x1480 : 0x1580,0x1480};
         u.o.flags.s.bulletIsBig = forced;
         occupant = owned ? &u : &other;
         g_map[packed].hasUnit = true; g_map[packed].index = 17;
-        BitArray_Set(g_dirtyViewport,packed); /* Map_UpdateAround's pre-callback write. */
+        if (candidates) BitArray_Set(g_dirtyViewport,packed);
         Unit_RemoveFromTile(&u,packed);
         bool removed = owned && (!destination || forced);
         assert(g_map[packed].hasUnit == !removed);
         assert(g_map[packed].index == (removed ? 0 : 17));
-        assert(marks == 1 && BitArray_Test(g_dirtyViewport,packed));
+        assert(marks == 1);
 #ifdef TOS
+        assert(!!BitArray_Test(g_dirtyViewport,packed) == (candidates || !native));
         assert(BitArray_Test(g_dirtyMinimap,packed) == !native);
 #else
+        assert(BitArray_Test(g_dirtyViewport,packed));
         assert(BitArray_Test(g_dirtyMinimap,packed));
 #endif
     }
@@ -374,8 +377,8 @@ int main(void) {
         harness = COMMON + r"""
 uint8 g_functions[3][3] = {{0,1,0},{2,3,0},{0,1,0}};
 static unsigned legacyCalls;
-void Map_UpdateAround(uint16 radius, tile32 position, Unit *unit, uint8 fn) {
-    assert(radius == 24 && unit == NULL && fn <= 1); (void)position; legacyCalls++;
+void Map_UpdateAround(uint16 radius, tile32 position, Unit *unit, uint8 fn, bool markViewport) {
+    assert(radius == 24 && unit == NULL && fn <= 1 && markViewport); (void)position; legacyCalls++;
 }
 /* PRODUCTION */
 int main(void) {

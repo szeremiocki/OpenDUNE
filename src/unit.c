@@ -2610,6 +2610,7 @@ void Unit_UpdateMap(uint16 type, Unit *unit)
 	Tile *t;
 	uint16 radius;
 	bool removalPrepared;
+	bool markViewport;
 
 	if (unit == NULL) return;
 	Unit_ClearViewportKey(unit);
@@ -2643,7 +2644,7 @@ void Unit_UpdateMap(uint16 type, Unit *unit)
 		    && !((type == UNIT_UPDATE_MAP_REDRAW || type == UNIT_UPDATE_MAP_REMOVE) && Video_Atari_CursorDirect())
 #endif
 		   ) {
-			Map_UpdateAround(g_table_unitInfo[unit->o.type].dimension, unit->o.position, unit, g_functions[0][type]);
+			Map_UpdateAround(g_table_unitInfo[unit->o.type].dimension, unit->o.position, unit, g_functions[0][type], true);
 		}
 		return;
 	}
@@ -2694,7 +2695,12 @@ void Unit_UpdateMap(uint16 type, Unit *unit)
 		radius = 33;
 	}
 
-	Map_UpdateAround(radius, position, unit, g_functions[1][type]);
+	markViewport = true;
+#ifdef TOS
+	/* Ordinary native registration relies on component repair's candidate halo. */
+	markViewport = unit->o.flags.s.bulletIsBig || !Video_Atari_CursorDirect();
+#endif
+	Map_UpdateAround(radius, position, unit, g_functions[1][type], markViewport);
 
 	if (unit->o.type != UNIT_HARVESTER) return;
 
@@ -2702,13 +2708,13 @@ void Unit_UpdateMap(uint16 type, Unit *unit)
 #ifdef TOS
 	if (!Video_Atari_CursorDirect() || unit->o.flags.s.bulletIsBig)
 #endif
-	Map_UpdateAround(radius, unit->targetPreLast, unit, g_functions[1][type]);
-	Map_UpdateAround(radius, unit->targetLast, unit, g_functions[1][type]);
+	Map_UpdateAround(radius, unit->targetPreLast, unit, g_functions[1][type], true);
+	Map_UpdateAround(radius, unit->targetLast, unit, g_functions[1][type], true);
 }
 
 /**
  * Removes the Unit from the given packed tile.
- * Called by Map_UpdateAround(), which already marks viewport candidates.
+ * Called by Map_UpdateAround(); viewport candidate marking is traversal policy.
  *
  * @param unit The Unit to remove.
  * @param packed The packed tile.
@@ -2730,7 +2736,7 @@ void Unit_RemoveFromTile(Unit *unit, uint16 packed)
 	Map_Update(packed, 0, false);
 }
 
-/** Run ADD bookkeeping for a tile already marked by Map_UpdateAround(). */
+/** Run ADD bookkeeping independently of viewport candidate marking. */
 void Unit_AddToTile(Unit *unit, uint16 packed)
 {
 	Map_UnveilTile(packed, Unit_GetHouseID(unit));

@@ -1095,14 +1095,15 @@ uint16 Map_FindLocationTile(uint16 locationID, uint8 houseID)
  * Around a position, run a certain function for all tiles within a certain radius.
  *
  * @note Radius is in a 1/4th of a tile unit.
- * Viewport candidates are marked before callbacks; function 1 needs no callback.
+ * Optional viewport candidates are marked before callbacks; function 1 needs no callback.
  *
  * @param radius The radius of the to-update tiles.
  * @param position The position to go from.
  * @param unit The unit to update for (can be NULL if function < 2).
  * @param function The function to call.
+ * @param markViewport Mark viewport candidates without changing callback coverage.
  */
-void Map_UpdateAround(uint16 radius, tile32 position, Unit *unit, uint8 function)
+void Map_UpdateAround(uint16 radius, tile32 position, Unit *unit, uint8 function, bool markViewport)
 {
 	static const uint16 tileOffsets[] = {
 		0x0080, 0x0088, 0x0090, 0x0098,
@@ -1132,8 +1133,10 @@ void Map_UpdateAround(uint16 radius, tile32 position, Unit *unit, uint8 function
 				if (x + i < 0 || x + i >= 64 || y + j < 0 || y + j >= 64) continue;
 
 				curPacked = Tile_PackXY(x + i, y + j);
-				BitArray_Set(g_dirtyViewport, curPacked);
-				g_dirtyViewportCount++;
+				if (markViewport) {
+					BitArray_Set(g_dirtyViewport, curPacked);
+					g_dirtyViewportCount++;
+				}
 
 				switch (function) {
 					case 0: Map_Update(curPacked, 0, false); break;
@@ -1163,8 +1166,10 @@ void Map_UpdateAround(uint16 radius, tile32 position, Unit *unit, uint8 function
 			uint16 curPacked = Tile_PackTile(curTile);
 
 			if (curPacked != lastPacked) {
-				BitArray_Set(g_dirtyViewport, curPacked);
-				g_dirtyViewportCount++;
+				if (markViewport) {
+					BitArray_Set(g_dirtyViewport, curPacked);
+					g_dirtyViewportCount++;
+				}
 
 				switch (function) {
 					case 0: Map_Update(curPacked, 0, false); break;

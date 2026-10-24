@@ -44,7 +44,7 @@ static void Explosion_Update(uint16 type, Explosion *e)
 		return;
 	}
 #endif
-	Map_UpdateAround(24, e->position, NULL, g_functions[2][type]);
+	Map_UpdateAround(24, e->position, NULL, g_functions[2][type], true);
 }
 
 /**

@@ -42,9 +42,11 @@ all possible optimization is exhausted.
 - Before-mutation hooks mark old body/layer bounds through the same selectors
   used by drawing. Repaint queues new graphics; it does not itself repair
   terrain. Generic native redraw/removal also uses actual component geometry.
-- Removal callbacks retain occupancy/minimap work and viewport candidates,
-  without turning every registration tile into terrain repair. The radius-based
-  5x5 registration branch is intentionally unchanged.
+- Removal callbacks retain occupancy/minimap work without turning every
+  registration tile into terrain repair. Viewport candidate marking is now
+  traversal policy: ordinary native current-position ADD/REMOVE scans suppress
+  it; forced cleanup and retained history scans still mark candidates. Callback
+  coverage, including the radius-based 5x5 branch, is unchanged.
 - Wobble is chosen at the original RNG point but assigned after departure
   repair. Smoke start/clear and spice depletion also prepare disappearing or
   changing layers before mutating their render inputs.
@@ -736,7 +738,7 @@ fog edges or sprite ordering. The profile independently confirms execution
 and reduced registration work. No further runtime change or commit accompanies
 this assessment.
 
-## Current experiment: duplicate candidate calls and no ordinary targetPreLast
+## STE15 experiment: duplicate candidate calls and no ordinary targetPreLast
 
 The next authorized build makes exactly two further reductions:
 
@@ -780,7 +782,7 @@ positions, map edges, ownership, destination protection and forced cleanup
 in both TOS and non-TOS builds. Unit-update cases separately assert the exact
 retained regions, callback counts and unchanged other-backend policies.
 
-The current `bin/opendune.tos` SHA-256 is
+The STE15 executable SHA-256 is
 `d0364c00bbddef869299c9cdfad9b9434b468946fb573f664f16b19424bdf69f`.
 Its matching executable and complete release objects are preserved as
 `registration-prelast-opendune.tos` and `registration-prelast-objects/` in the
@@ -892,6 +894,103 @@ callbacks/counters, timing coverage and normalized STE12a/14/15 comparisons.
 **Visual assessment of STE15 remains pending. `targetLast` is unchanged;
 no further runtime reduction or commit accompanies this assessment.**
 
+## Current experiment: native current-position registration without candidates
+
+Ordinary native ST/STE ground-unit ADD/REMOVE scans now suppress only their
+outer `g_dirtyViewport` bit writes and `g_dirtyViewportCount` increments at
+the current position. `Map_UpdateAround` receives an explicit `markViewport`
+boolean; both its sampled and 5x5 branches keep exactly the same tile traversal
+and callback dispatch regardless of this policy. This applies to ordinary
+registration calls, not just movement pairs, and uses no position/footprint
+comparison, extra spatial scan, or persistent damage records.
+
+The callbacks still clear matching occupancy with destination protection,
+unveil tiles and queue minimap updates. Anchor occupancy assignment, house
+visibility accounting, composite-key clearing, dirty-unit counters and the
+REMOVE/move/ADD sequence are unchanged. A callback's real fog change can
+still queue terrain repair and candidates; suppression applies only to the
+outer registration marks.
+
+Forced cleanup (`bulletIsBig`) keeps its candidate marks and conservative
+radius/history behavior. Harvester `targetLast` retains its traversal,
+callbacks and candidates; the earlier `targetPreLast` policy is unchanged.
+Air units, non-native Atari modes and non-TOS backends explicitly keep marking
+candidates. Ordinary smoking non-harvesters still perform their full 5x5
+registration scan even though its outer candidate writes are suppressed.
+
+Old component-bound repairs still call `Map_Update(0)` and retain its 3x3
+candidate halo for every newly damaged tile. Generic terrain, fog, animation,
+structure/placement selection, scrolling and explosion invalidation are
+unchanged. The owning unit's dirty flag still submits its new image without
+requiring its anchor candidate bit. The existing cumulative sprite filter
+and sprite-cache behavior are not changed.
+
+This is a presentation-policy experiment, not a proven equivalent
+transformation or registration-traversal optimization. New-image overlaps
+outside the retained damage/history candidates can leave incorrect overlap
+ordering. Equal registration footprints would not prove such coverage.
+The matching STE16 profile is assessed below. Additional visual verification
+is still required; the user's general gameplay assessment is not confirmation
+of detailed unit-drawing correctness.
+
+Regression coverage checks both marking policies with production traversal
+and ADD/REMOVE callbacks, including small/5x5 scans, edges, zero/invalid
+positions, ownership, destination protection, forced cleanup and legacy
+terrain repair. Unit-policy cases assert the exact current/history marking
+choices and callback counts. An integration harness verifies that actual
+component repair preserves its halo and pending damage, current registration
+does not add candidates, the new unit remains dirty/registered, and callback
+fog repair can still add terrain and candidates.
+
+The candidate-suppression `bin/opendune.tos` SHA-256 is
+`2fdc3703bb107e5260ad681266156302f8fedd6d290b72b8d6fd0bddd6af8999`.
+The matching executable and full release objects are preserved as
+`registration-candidates-opendune.tos` and `registration-candidates-objects/`
+in the session files directory, with build/test logs and map/unit disassemblies.
+
+### STE16 profile and deferred visual diagnostics
+
+The matching `battleste16.txt` capture covers 332.050 seconds and 4,263 viewport
+passes. All 41,669 sampled program instructions, including relocated operands,
+match the archived executable above.
+
+| Metric | STE15 | STE16 |
+| --- | ---: | ---: |
+| Inclusive viewport drawing | 21.3948 ms/pass | 19.5026 ms/pass |
+| Inclusive registration scans, amortized per viewport pass | 2.7780 ms | 2.5639 ms |
+| Registration scans' own cost, amortized per viewport pass | 1.0781 ms | 0.9071 ms |
+| Sprite draw requests per viewport pass | 6.5770 | 5.5588 |
+| Actual sprite publications per viewport pass | 3.4446 | 3.1895 |
+
+STE16 suppresses 46,277 outer candidate-write/counter-increment pairs, 70.7%
+of its 65,493 registration visits, while retaining the callbacks. All 8,426
+traversals reconcile, including 1,222 retained `targetLast` calls and 15 forced
+current-position cleanup calls. Registration costs are whole-map work divided
+by viewport passes, not part of the viewport drawing measurement; inclusive
+and own costs must not be added together.
+
+These are different gameplay workloads, not a controlled replay or proof of
+an isolated 8.8% viewport speedup. Sprite requests per second fall only 2.8%,
+while actual sprite publications per second rise 6.5%; the faster viewport
+pass rate changes the per-pass figures.
+
+**Additional visual verification is required.** On 2026-10-24 the user reported
+that overall gameplay looked fine, but suspected very minor regressions around
+the harvester sprite. This observation is tentative: neither the defect nor
+its relationship to this candidate-policy change has been established. The
+user deferred detailed unit-drawing correctness checks because there was no
+time to investigate; committing this experiment does not close those checks.
+
+- [ ] Reproduce and identify the suspected harvester artifact: body, harvesting
+  attachment, smoke, selection marker, old-image residue or neighbour overlap.
+- [ ] Check movement, turns, harvesting-frame changes and adjacent clean units
+  for missing redraws or incorrect overlap ordering.
+- [ ] Compare matching STE15/STE16 builds or temporarily restore current-position
+  candidate marking in a diagnostic build to isolate this change from earlier
+  radius, history and component-damage work. Do not assume causation.
+- [ ] Complete detailed unit-drawing visual verification before extending
+  suppression, reducing `targetLast` or tightening the shared repair halo.
+
 ## Adjacent producers and deferred policy
 
 - [x] Explosion frame damage: actual old sprite bounds, existing candidate halo.
@@ -910,6 +1009,12 @@ no further runtime reduction or commit accompanies this assessment.**
 - [x] Assess the combined duplicate-call/`targetPreLast` build with the
   matching STE15 profile.
 - [ ] Assess STE15 visually before considering any `targetLast` reduction.
+- [x] Suppress ordinary native ground current-position registration candidates
+  only, retaining all callbacks, forced cleanup and history candidate policy.
+- [x] Assess current candidate suppression with the matching STE16 profile.
+- [ ] Complete visual verification of current candidate suppression, including
+  the suspected minor harvester artifact above, before extending its coverage
+  or changing the shared repair halo.
 - [ ] Review the shared `Map_Update(0)` neighbour-candidate halo independently
   of actual terrain repairs from structures, animation, walls, fog and spice.
 - [ ] Keep existing narrow shifted-scroll edge damage; full rebuild/message and
