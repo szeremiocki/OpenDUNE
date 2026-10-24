@@ -179,7 +179,7 @@ uint16 Map_SetSelectionSize(uint16 layout)
 	return oldLayout;
 }
 
-static void Map_InvalidateSelection(uint16 packed, bool enable)
+static void Map_InvalidateSelection(uint16 packed, bool enable, bool redraw)
 {
 	uint16 x, y;
 
@@ -191,7 +191,7 @@ static void Map_InvalidateSelection(uint16 packed, bool enable)
 
 			curPacked = packed + Tile_PackXY(x, y);
 
-			Map_Update(curPacked, 0, false);
+			if (redraw) Map_Update(curPacked, 0, false);
 
 			if (enable) {
 				BitArray_Set(g_displayedViewport, curPacked);
@@ -213,7 +213,10 @@ uint16 Map_SetSelectionObjectPosition(uint16 packed)
 	static uint16 selectionPosition = 0xFFFF;
 #ifdef TOS
 	static bool selectionPlanar = false;
-	bool planar = Video_Atari_CursorDirect() && g_selectionType == SELECTIONTYPE_PLACE;
+	static bool selectionNative = false;
+	bool native = Video_Atari_CursorDirect();
+	bool planar = native && g_selectionType == SELECTIONTYPE_PLACE;
+	bool redraw = !native || !selectionNative;
 #endif
 
 	uint16 oldPacked;
@@ -221,18 +224,19 @@ uint16 Map_SetSelectionObjectPosition(uint16 packed)
 	oldPacked = selectionPosition;
 
 #ifdef TOS
-	if (packed == oldPacked && planar == selectionPlanar) return oldPacked;
+	if (packed == oldPacked && planar == selectionPlanar && native == selectionNative) return oldPacked;
 
-	/* Clear a previous chunky outline when entering placement, but never
-	 * invalidate terrain just to move a planar placement preview. */
-	if (!selectionPlanar) Map_InvalidateSelection(oldPacked, false);
-	if (!planar) Map_InvalidateSelection(packed, true);
+	/* Native outline damage belongs to the pre-draw selection preparation.
+	 * Keep legacy transitions conservative and placement backups separate. */
+	if (!selectionPlanar) Map_InvalidateSelection(oldPacked, false, redraw);
+	if (!planar) Map_InvalidateSelection(packed, true, redraw);
 	selectionPlanar = planar;
+	selectionNative = native;
 #else
 	if (packed == oldPacked) return oldPacked;
 
-	Map_InvalidateSelection(oldPacked, false);
-	if (packed != 0xFFFF) Map_InvalidateSelection(packed, true);
+	Map_InvalidateSelection(oldPacked, false, true);
+	if (packed != 0xFFFF) Map_InvalidateSelection(packed, true, true);
 #endif
 
 	selectionPosition = packed;

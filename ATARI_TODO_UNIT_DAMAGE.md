@@ -1017,8 +1017,209 @@ time to investigate; committing this experiment does not close those checks.
   or changing the shared repair halo.
 - [ ] Review the shared `Map_Update(0)` neighbour-candidate halo independently
   of actual terrain repairs from structures, animation, walls, fog and spice.
-- [ ] Keep existing narrow shifted-scroll edge damage; full rebuild/message and
-  structure-selection repairs need separate old/new coverage analysis.
+- [x] Audit message and structure-selection old/new repair coverage; findings
+  and remaining boundaries are recorded below. Keep narrow shifted-scroll
+  edge damage unchanged.
+- [x] Implement the first native message repair reduction described below:
+  skip absent-message cleanup and replace message-only full redraws with the
+  retained fourteen-tile strip. Visual verification remains pending.
+- [x] Consolidate native outline damage scheduling as documented below.
 - [ ] Optional cleanup: fold smoke-local damage into a named Unit_UpdateMap
   mode to share bookkeeping, preserving its accepted no-neighbour-halo policy.
   This was deferred after STE10; it is not a demonstrated major speed target.
+
+### Message and structure-selection repair coverage audit
+
+Audit scope: native ST/STE rendering, including old/new coverage, disappearance,
+scrolling, structure/unit/placement transitions and return from legacy drawing.
+The findings below describe the pre-change behavior. The audit itself changed
+no runtime code and did not establish visual equivalence; the subsequent message
+implementation is recorded separately below.
+
+**Viewport feedback messages**
+
+- `GUI_DrawScreen()` (`src/gui/gui.c:6688-6713`) unconditionally schedules
+  fourteen terrain tiles at the old viewport's row 6 on every incremental
+  scroll, even with counter zero and no message text. This is message cleanup,
+  not the separately required newly exposed scroll-edge repair. A production-
+  code harness confirmed all fourteen repairs with no message present.
+- The use of the *old* viewport origin is intentional: scrolling moves the
+  already-drawn message with the map pixels. For example, moving the viewport
+  down one tile requires clearing the shifted message at new screen row 5,
+  not just drawing/clearing the fixed message position at row 6.
+- Every counter decrement, including both appearance transitions (4 to 3 and
+  2 to 1), schedules fourteen `Map_Update(0)` calls regardless of whether text
+  is present. On an initially clean interior region, the harness measured
+  fourteen terrain tiles and 48 candidate bits per transition. The candidate
+  bits are the existing conservative neighbour halo, not 48 terrain repairs.
+- Replacing or cancelling visible feedback sets `g_viewport_forceRedraw`
+  (`src/audio/sound.c:395-424`), rebuilding the whole 150-tile viewport rather
+  than just the old message coverage. Ordinary counter-driven disappearance
+  instead repairs the fourteen-tile strip.
+- Visible text is drawn last on every viewport pass
+  (`src/gui/viewport.c:1431-1441`). This is necessary with the current model:
+  terrain and foreground sprites can overwrite it. Suppressing repeated text
+  publication requires an explicit intersection/order policy, not simply
+  comparing text pointers or counter values.
+- The strip covers x=0..223, y=136..151. The locally available NEW8P font has
+  height 11, so a single line at y=139 fits vertically. However,
+  `GUI_DrawText_Wrapper()` / `GUI_DrawText()` / `GUI_DrawChar()` use screen
+  bounds, not that strip's bounds (`src/gui/gui.c:452-728`). Long, localized,
+  wrapped or multiline text therefore needs a separate exact-coverage check.
+  No language string files are available in the local three PAK archives to
+  certify the widths of all shipped messages. This is an unverified coverage
+  assumption, not a demonstrated artifact with the current game's messages.
+
+**Structure outlines**
+
+- `GUI_Widget_Viewport_PrepareSelection()` (`src/gui/viewport.c:200-244`)
+  retains old position/dimensions and invalidates old and new border tiles.
+  Stable state has an early return. Unit selection, placement mode and
+  structure destruction remove the old outline; clipping preserves the
+  actual outer border rather than inventing an edge at the screen boundary.
+  Viewport changes and pen changes also refresh the selection geometry.
+- Native outlines are composed into repaired terrain tiles, before foreground
+  sprites, rather than republished as a separate rectangle
+  (`src/gui/viewport.c:281-285,1147-1176`). Preserve this ordering.
+- There is a second damage producer: `Map_InvalidateSelection()` invalidates
+  the whole old/new footprints and maintains `g_displayedViewport`
+  (`src/map.c:182-241`). The final
+  `Map_SetSelectionObjectPosition()` in `GUI_DrawScreen()`
+  (`src/gui/gui.c:6721`) runs *after* viewport drawing has consumed its repair
+  bits. Consequently a changed selection can schedule another repair pass.
+  With two disjoint 3x3 selections, the production-code harness measured
+  sixteen border tiles from PrepareSelection, then eighteen whole-footprint
+  tiles queued again by the post-draw setter.
+- Repeated invalidation before the same draw is normally coalesced by
+  `Map_Update(0)`'s terrain-bit early return. It must not be counted as repeated
+  tile publication. The post-draw scheduling above is different because those
+  bits have already been consumed.
+- Selection-size changes preserve the old dimensions through the existing
+  remove/resize/restore sequence. Placement has separate overlay backups.
+  Neither selection bookkeeping nor placement restoration should be removed
+  merely to eliminate duplicate terrain damage.
+
+**Bounded follow-up**
+
+1. First separate actual message visibility/drawn coverage from counter state;
+   avoid the old-message scroll strip when nothing was drawn, and replace
+   message-only full redraws with repair of the retained old coverage. Preserve
+   shifted old coordinates, disappearance, replacement by shorter text, final
+   text drawing order, sprite candidate coverage and legacy behavior.
+2. Then give native structure-outline damage one scheduling owner, before
+   drawing. Keep full selection bookkeeping and genuine structure-map
+   changes, but avoid post-draw duplicate repair scheduling. For a 3x3 outline,
+   border-only damage omits its unchanged center tile.
+3. Do not tighten the shared neighbour halo as part of either change.
+
+Evidence: thirteen focused native outline, viewport phase and sprite-damage
+tests passed with address/undefined sanitizers. A separate session harness
+executed the production message scheduling, feedback, map invalidation and
+selection-preparation functions for the counts above. Broader pre-existing
+selection-transition and viewport-fade harnesses currently fail to compile
+because their stubs lack `Unit_PrepareSpriteChange`, `UNIT_SPRITE_SELECTION`
+and `UNIT_UPDATE_MAP_REPAINT`; those tests were not repaired in this audit.
+No confirmed missed cleanup was found in the exercised normal lifecycle
+paths; the long-message assumption and detailed visual checks remain open.
+
+### First message repair reduction
+
+Implemented for the native ST/STE viewport only; legacy rendering, TT and Falcon
+keep their previous conservative behavior.
+
+- Retain whether the previous viewport pass actually drew a non-NULL message,
+  independently of the current counter and text pointer. Feedback can replace
+  or clear those before the next drawing pass, so testing the current counter
+  alone would lose the old pixels.
+- Incremental scrolling skips the fourteen-tile old-message strip when no
+  message was drawn. New scroll-edge repairs are unchanged. When a message was
+  drawn, cleanup still uses the old viewport origin before updating
+  `g_minimapPosition`, following the displaced pixels.
+- Visible feedback replacement/cancellation uses
+  `GUI_InvalidateViewportMessage()` to queue fourteen `Map_Update(0)` repairs
+  at the last displayed origin, rather than forcing all 150 viewport tiles.
+  Existing unrelated full-redraw requests are never cleared.
+- Counter transitions keep their existing strip repairs for appearance and
+  disappearance, but skip them if neither an old drawn message nor a new
+  visible non-NULL message exists. Visible messages still draw last on every
+  pass; blink timing and sound/voice behavior are unchanged.
+- The fixed strip remains x=0..223, y=136..151. This deliberately does not
+  calculate text width. Long/localized/multiline coverage is still unverified;
+  replacing a full redraw with this approximation needs visual confirmation,
+  particularly for replacement by shorter text, cancellation and scrolling.
+
+`tools/test_viewport_messages.py` executes the production `GUI_DrawScreen()`,
+`Sound_Output_Feedback()`, message invalidator, `Map_Update()` and final message
+draw block. Its simulated terrain/text display checks disappearance, shorter
+replacement, same-frame replacement/appearance, horizontal/vertical/diagonal
+scrolling, short click-like jumps, large non-overlapping jumps, hidden phases,
+NULL text, legacy behavior and preservation of other full-redraw requests.
+The tests verify exact damage counts as well as absence of stale text pixels.
+They do not substitute for real-font or Atari visual verification.
+
+Fifteen focused message, outline, viewport-phase, sprite-damage and minimap tests
+passed with address/undefined sanitizers. The message harness excludes only
+`shift-base`: existing scroll arithmetic shifts negative signed offsets and
+triggers that check; that unrelated runtime arithmetic was not changed.
+The trusted `PATH=/usr/bin:/bin make -s -j2` 68000 build succeeded.
+
+Profiling binary: `bin/opendune.tos`, SHA256
+`533592329dfd6657166b274b0949f0af33c76831a0a61e32cd8d93bddd9f48b7`.
+The executable, matching object directory and disassembly are archived in the
+session files with the `message-coverage-repair-` prefix. This working build
+retains the unrelated local quiz bypass. No commit or push was made.
+
+### Native outline scheduling consolidation (implemented)
+
+The existing `GUI_Widget_Viewport_PrepareSelection()` is now the single owner
+of native structure-outline terrain damage. It already runs before terrain
+preparation and retains the old dimensions, position, viewport and pen.
+
+1. Separated selection bookkeeping from terrain invalidation in
+   `Map_InvalidateSelection()` / `Map_SetSelectionObjectPosition()`. Native
+   non-placement selection changes still update the remembered position
+   and `g_displayedViewport` bits, including the post-draw setter, without
+   independently dirtying the old/new footprints.
+2. Kept old/new border invalidation in `PrepareSelection()`, before drawing.
+   Its retained dimensions cover resize/removal even when the generic setter
+   has already switched to a different selection. Stable outlines remain free
+   of new damage. The existing candidate halo and terrain-before-sprite order
+   are unchanged.
+3. Suppressed generic terrain writes only when both the previous setter state
+   and current state use native mode. Remembering native mode separately from
+   planar placement also detects same-position renderer transitions.
+   Retained conservative legacy/mode-transition cleanup, placement overlay
+   backup/restore and the remove/resize/restore bookkeeping sequence.
+   `Structure_UpdateMap()` remains unchanged: it updates real map state,
+   not just the selection outline.
+
+For an isolated switch between two stationary, disjoint, fully visible
+structures, 2x2 -> 2x2 now schedules eight border repairs before drawing and
+zero afterward, rather than eight before and eight afterward. For 3x2 -> 3x2
+the corresponding counts are twelve before and zero afterward, instead of
+twelve plus twelve; mixed 2x2 -> 3x2 gives ten instead of ten plus ten.
+All tiles in these footprints touch the border: the saving is eliminating
+repeated scheduling, not excluding interior tiles.
+
+The synthetic 3x3 -> 3x3 example gives sixteen border repairs before drawing
+and zero afterward, instead of sixteen plus eighteen. These are isolated
+outline-damage counts, not guaranteed publication savings: existing damage
+coalesces, and actual structure-map changes can legitimately dirty footprints.
+
+The production-code harness in `tools/test_planar_selection.py` exercises
+all 1..3 tile dimensions, disjoint and mixed-size switches, resizing,
+destruction, unit/empty selection, placement entry/exit, scrolling, pen
+changes and same-position legacy/native transitions. It checks the exact
+pre-draw repair counts, retained type-0 candidate halos, post-draw absence of
+new damage, and footprint bookkeeping. Existing pixel checks cover retained
+edges, clipping and fully offscreen selections. The bookkeeping harness also
+compiles without TOS to exercise unchanged legacy invalidation.
+
+Sixteen focused selection, message, viewport-phase, sprite-damage and minimap
+tests passed with address/undefined sanitizers. The trusted
+`PATH=/usr/bin:/bin make -s -j2` 68000 build succeeded. Profiling binary:
+`bin/opendune.tos`, SHA256
+`53de32d7ef8a18d7a8ce7ea1c8a033768513ad24078f2315e9f3cb4f1660307d`.
+Matching executable, objects, disassembly and source/test artifacts are
+archived in the session files with the `selection-outline-owner-` prefix.
+The build retains the unrelated local quiz bypass. No commit or push was made.

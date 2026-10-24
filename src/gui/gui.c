@@ -148,6 +148,9 @@ bool g_var_37B8;
 
 uint16 g_viewportMessageCounter;                            /*!< Countdown counter for displaying #g_viewportMessageText, bit 0 means 'display the text'. */
 const char *g_viewportMessageText;                          /*!< If not \c NULL, message text displayed in the viewport. */
+#ifdef TOS
+static bool s_viewportMessageDrawn;
+#endif
 
 uint16 g_viewportPosition;                                  /*!< Top-left tile of the viewport. */
 uint16 g_minimapPosition;                                   /*!< Top-left tile of the border in the minimap. */
@@ -6590,6 +6593,21 @@ void GUI_Palette_CreateRemap(uint8 houseID)
 	}
 }
 
+void GUI_InvalidateViewportMessage(void)
+{
+#ifdef TOS
+	if (Video_Atari_CursorDirect()) {
+		uint16 x;
+
+		if (!s_viewportMessageDrawn) return;
+		/* The retained pixels still belong to the last displayed origin. */
+		for (x = 0; x < 14; x++) Map_Update(g_minimapPosition + x + 6 * 64, 0, true);
+		return;
+	}
+#endif
+	g_viewport_forceRedraw = true;
+}
+
 /**
  * Draw the screen.
  * This also handles animation tick and other viewport related activity.
@@ -6690,6 +6708,9 @@ void GUI_DrawScreen(Screen screenID)
 	if (hasScrolled) {
 		Map_SetSelectionObjectPosition(0xFFFF);
 
+#ifdef TOS
+		if (!Video_Atari_CursorDirect() || s_viewportMessageDrawn)
+#endif
 		for (xpos = 0; xpos < 14; xpos++) {
 			uint16 v = g_minimapPosition + xpos + 6*64;
 
@@ -6707,6 +6728,10 @@ void GUI_DrawScreen(Screen screenID)
 		g_viewportMessageCounter--;
 		s_timerViewportMessage = g_timerGUI + 60;
 
+#ifdef TOS
+		if (!Video_Atari_CursorDirect() || s_viewportMessageDrawn ||
+		    ((g_viewportMessageCounter & 1) != 0 && g_viewportMessageText != NULL))
+#endif
 		for (xpos = 0; xpos < 14; xpos++) {
 			Map_Update(g_viewportPosition + xpos + 6 * 64, 0, true);
 		}
@@ -6714,6 +6739,9 @@ void GUI_DrawScreen(Screen screenID)
 
 	GUI_Widget_Viewport_Draw(g_viewport_forceRedraw, hasScrolled, viewportPlanarShifted, !GFX_Screen_IsActive(SCREEN_0));
 
+#ifdef TOS
+	s_viewportMessageDrawn = (g_viewportMessageCounter & 1) != 0 && g_viewportMessageText != NULL;
+#endif
 	g_viewport_forceRedraw = false;
 
 	GFX_Screen_SetActive(oldScreenID);

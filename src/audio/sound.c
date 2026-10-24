@@ -404,7 +404,7 @@ void Sound_Output_Feedback(uint16 index)
 
 		g_viewportMessageText = NULL;
 		if ((g_viewportMessageCounter & 1) != 0) {
-			g_viewport_forceRedraw = true;
+			GUI_InvalidateViewportMessage();
 			g_viewportMessageCounter = 0;
 		}
 		s_currentVoicePriority = 0;
@@ -418,7 +418,7 @@ void Sound_Output_Feedback(uint16 index)
 		g_viewportMessageText = String_Get_ByIndex(g_feedback[index].messageId);
 
 		if ((g_viewportMessageCounter & 1) != 0) {
-			g_viewport_forceRedraw = true;
+			GUI_InvalidateViewportMessage();
 		}
 
 		g_viewportMessageCounter = 4;

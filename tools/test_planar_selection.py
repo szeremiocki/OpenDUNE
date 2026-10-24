@@ -14,6 +14,233 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PlanarSelectionTest(unittest.TestCase):
+    def test_outline_damage_owner_and_bookkeeping(self):
+        map_source = (ROOT / "src/map.c").read_text()
+        viewport = (ROOT / "src/gui/viewport.c").read_text()
+        state = viewport[viewport.index("static uint8 s_viewportSelectionTiles"):
+                         viewport.index("\nstatic void GUI_Widget_Viewport_PrepareSelection")]
+        harness = r"""
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <string.h>
+typedef uint8_t uint8;
+typedef uint16_t uint16;
+typedef int16_t int16;
+#define SELECTIONTYPE_PLACE 3
+#define GFX_SELECTION_TOP 0x10
+#define GFX_SELECTION_BOTTOM 0x20
+#define GFX_SELECTION_LEFT 0x40
+#define GFX_SELECTION_RIGHT 0x80
+static uint8 g_displayedViewport[512], g_dirtyViewport[512], g_dirtyMinimap[512];
+static uint16 g_selectionWidth = 1, g_selectionHeight = 1;
+static uint16 g_viewportPosition = 20 * 64 + 20;
+static unsigned g_dirtyViewportCount, requests;
+static bool g_selectionRectangleNeedRepaint;
+static bool direct;
+#ifdef TOS
+static uint16 g_selectionRectanglePosition, g_selectionType;
+static bool structure = true;
+static void *g_unitSelected;
+static uint8 pen = 15;
+#endif
+static const struct { uint16 width, height; } g_table_structure_layoutSize[] = {
+    {1, 1}, {2, 2}, {3, 2}, {3, 3}
+};
+static uint16 Tile_PackXY(uint16 x, uint16 y) { return y * 64 + x; }
+static void BitArray_Set(uint8 *bits, uint16 p) { assert(p < 4096); bits[p >> 3] |= 1u << (p & 7); }
+static void BitArray_Clear(uint8 *bits, uint16 p) { assert(p < 4096); bits[p >> 3] &= ~(1u << (p & 7)); }
+static bool BitArray_Test(const uint8 *bits, uint16 p) { assert(p < 4096); return (bits[p >> 3] >> (p & 7)) & 1; }
+static bool Map_IsTileVisible(uint16 p) { return p < 4096; }
+/* MAP_UPDATE */
+static void counted_update(uint16 p, uint16 type, bool invisible) {
+    requests++;
+    Map_Update(p, type, invisible);
+}
+#define Map_Update counted_update
+#ifdef TOS
+static bool Video_Atari_CursorDirect(void) { return direct; }
+static uint16 Tile_GetPackedX(uint16 p) { return p & 63; }
+static uint16 Tile_GetPackedY(uint16 p) { return p >> 6; }
+static void *Structure_Get_ByPackedTile(uint16 p) {
+    return structure && p != 0xffff ? &structure : NULL;
+}
+static uint8 Video_Atari_GetPalettePen(uint8 index) { assert(index == 255); return pen; }
+/* STATE */
+/* PREPARE */
+#endif
+uint16 Map_SetSelectionObjectPosition(uint16 packed);
+/* SETTERS */
+static void clear_damage(void) {
+    memset(g_dirtyViewport, 0, sizeof(g_dirtyViewport));
+    memset(g_dirtyMinimap, 0, sizeof(g_dirtyMinimap));
+    g_dirtyViewportCount = requests = 0;
+    g_selectionRectangleNeedRepaint = false;
+}
+static void footprint(uint16 origin, unsigned w, unsigned h, bool enabled) {
+    for (unsigned y = 0; y < h; y++) for (unsigned x = 0; x < w; x++)
+        assert(BitArray_Test(g_displayedViewport, origin + y * 64 + x) == enabled);
+}
+int main(void) {
+    uint16 a = g_viewportPosition + 2 * 64 + 2, b = a + 4 * 64 + 5;
+    /* Legacy setters keep their full-footprint damage. */
+    Map_SetSelectionSize(1);
+    Map_SetSelectionObjectPosition(a);
+    assert(requests == 4 && g_dirtyViewportCount == 4);
+    clear_damage();
+    Map_SetSelectionObjectPosition(b);
+    assert(requests == 8 && g_dirtyViewportCount == 8);
+    footprint(a, 2, 2, false); footprint(b, 2, 2, true);
+    clear_damage();
+    Map_SetSelectionObjectPosition(b);
+    assert(requests == 0);
+    direct = true;
+    Map_SetSelectionObjectPosition(b);
+#ifdef TOS
+    /* Same-position mode changes still take conservative transition cleanup. */
+    assert(requests == 8 && g_dirtyViewportCount == 4);
+    g_selectionRectanglePosition = b;
+    GUI_Widget_Viewport_PrepareSelection();
+    clear_damage();
+    for (unsigned w = 1; w <= 3; w++) for (unsigned h = 1; h <= 3; h++) {
+        Map_SetSelectionObjectPosition(0xffff);
+        g_selectionWidth = w; g_selectionHeight = h;
+        g_selectionRectanglePosition = a;
+        Map_SetSelectionObjectPosition(a);
+        assert(requests == 0);
+        GUI_Widget_Viewport_PrepareSelection();
+        clear_damage(); /* First outline has now been drawn. */
+        g_selectionRectanglePosition = b;
+        unsigned border = w * h - (w == 3 && h == 3 ? 1 : 0);
+        GUI_Widget_Viewport_PrepareSelection();
+        assert(requests == 2 * border && g_dirtyViewportCount == 2 * border);
+        /* The original type-0 sprite-candidate halo is preserved. */
+        assert(BitArray_Test(g_dirtyViewport, a - 65));
+        assert(BitArray_Test(g_dirtyViewport, b - 65));
+        clear_damage(); /* Terrain/sprites consume the pre-draw damage. */
+        Map_SetSelectionObjectPosition(b);
+        assert(requests == 0 && g_dirtyViewportCount == 0);
+        footprint(a, w, h, false); footprint(b, w, h, true);
+        GUI_Widget_Viewport_PrepareSelection();
+        assert(requests == 0);
+    }
+    /* Resize bookkeeping uses old dimensions, preparation retains old edges. */
+    clear_damage();
+    Map_SetSelectionSize(2);
+    assert(requests == 0);
+    footprint(b, 3, 2, true);
+    footprint(b + 2 * 64, 3, 1, false);
+    GUI_Widget_Viewport_PrepareSelection();
+    assert(requests == 14 && g_dirtyViewportCount == 9);
+    clear_damage();
+    Map_SetSelectionObjectPosition(b);
+    assert(requests == 0);
+    Map_SetSelectionSize(1);
+    GUI_Widget_Viewport_PrepareSelection();
+    assert(requests == 10 && g_dirtyViewportCount == 6);
+    clear_damage();
+    /* A mixed 2x2 -> 3x2 switch has ten repairs, none after drawing. */
+    Map_SetSelectionSize(2);
+    g_selectionRectanglePosition = a;
+    GUI_Widget_Viewport_PrepareSelection();
+    assert(requests == 10 && g_dirtyViewportCount == 10);
+    clear_damage();
+    Map_SetSelectionObjectPosition(a);
+    assert(requests == 0);
+    footprint(b, 3, 2, false); footprint(a, 3, 2, true);
+    /* Scrolling clears/reinstalls bookkeeping without generic terrain damage. */
+    Map_SetSelectionObjectPosition(0xffff);
+    footprint(a, 3, 2, false);
+    g_viewportPosition++;
+    GUI_Widget_Viewport_PrepareSelection();
+    assert(requests == 12 && g_dirtyViewportCount == 6);
+    clear_damage();
+    Map_SetSelectionObjectPosition(a);
+    assert(requests == 0);
+    footprint(a, 3, 2, true);
+    /* Unit/empty/destruction transitions remain owned by preparation. */
+    for (unsigned kind = 0; kind < 3; kind++) {
+        if (kind == 0) g_unitSelected = &structure;
+        else if (kind == 1) structure = false;
+        else g_selectionRectanglePosition = 0xffff;
+        GUI_Widget_Viewport_PrepareSelection();
+        assert(requests == 6 && g_dirtyViewportCount == 6);
+        clear_damage();
+        Map_SetSelectionObjectPosition(g_selectionRectanglePosition);
+        assert(requests == 0);
+        g_unitSelected = NULL; structure = true; g_selectionRectanglePosition = a;
+        GUI_Widget_Viewport_PrepareSelection();
+        clear_damage();
+        Map_SetSelectionObjectPosition(a);
+    }
+    /* Native placement has no footprint bits or generic damage. */
+    g_selectionType = SELECTIONTYPE_PLACE;
+    Map_SetSelectionObjectPosition(a);
+    footprint(a, 3, 2, false);
+    assert(requests == 0);
+    GUI_Widget_Viewport_PrepareSelection();
+    assert(requests == 6);
+    clear_damage();
+    Map_SetSelectionObjectPosition(b);
+    GUI_Widget_Viewport_PrepareSelection();
+    assert(requests == 0);
+    footprint(b, 3, 2, false);
+    g_selectionType = 0; g_selectionRectanglePosition = b;
+    Map_SetSelectionObjectPosition(b);
+    footprint(b, 3, 2, true);
+    assert(requests == 0);
+    GUI_Widget_Viewport_PrepareSelection();
+    assert(requests == 6);
+    clear_damage();
+    /* Pen changes still invalidate both retained borders. */
+    pen = 0;
+    GUI_Widget_Viewport_PrepareSelection();
+    assert(requests == 12 && g_dirtyViewportCount == 6);
+    clear_damage();
+    direct = false;
+    Map_SetSelectionObjectPosition(b);
+    assert(requests == 12 && g_dirtyViewportCount == 6);
+    clear_damage();
+    g_selectionType = SELECTIONTYPE_PLACE; direct = true;
+    Map_SetSelectionObjectPosition(b);
+    assert(requests == 6); /* Erase the legacy outline on entry to placement. */
+    footprint(b, 3, 2, false);
+    clear_damage();
+    direct = false;
+    Map_SetSelectionObjectPosition(b);
+    assert(requests == 6);
+    footprint(b, 3, 2, true);
+#else
+    assert(requests == 0); /* Direct mode does not affect non-TOS builds. */
+    Map_SetSelectionSize(2);
+    assert(requests == 10);
+    footprint(b, 3, 2, true);
+    clear_damage();
+    Map_SetSelectionObjectPosition(a);
+    assert(requests == 12 && g_dirtyViewportCount == 12);
+#endif
+    return 0;
+}
+"""
+        harness = harness.replace("/* MAP_UPDATE */", function(map_source, "Map_Update"))
+        harness = harness.replace("/* STATE */", state).replace(
+            "/* PREPARE */", function(viewport, "GUI_Widget_Viewport_PrepareSelection"))
+        harness = harness.replace("/* SETTERS */", "\n".join(
+            function(map_source, name) for name in (
+                "Map_InvalidateSelection", "Map_SetSelectionObjectPosition", "Map_SetSelectionSize")))
+        with tempfile.TemporaryDirectory(prefix="selection-damage-owner-") as directory:
+            source = Path(directory) / "test.c"
+            binary = Path(directory) / "test"
+            source.write_text(harness)
+            compiler = shlex.split(os.environ.get("CC", "cc"))
+            flags = shlex.split(os.environ.get("TEST_CFLAGS", ""))
+            for defines in (["-DTOS"], []):
+                subprocess.run([*compiler, "-std=c99", "-O2", "-Wall", "-Wextra",
+                                "-Werror", *defines, *flags,
+                                str(source), "-o", str(binary)], check=True)
+                subprocess.run([str(binary)], check=True)
+
     def test_selection_lifecycle_and_repair(self):
         viewport = (ROOT / "src/gui/viewport.c").read_text()
         state = viewport[viewport.index("static uint8 s_viewportSelectionTiles"):
@@ -160,6 +387,9 @@ int main(void) {
     g_selectionRectanglePosition = g_viewportPosition + 9 * 64 + 14;
     GUI_Widget_Viewport_PrepareSelection(); repair();
     check(224, 144, 3, 3, true);
+    g_selectionRectanglePosition = g_viewportPosition + 12 * 64 + 20;
+    GUI_Widget_Viewport_PrepareSelection(); repair();
+    check(320, 192, 3, 3, true);
     /* Fog and debug use the same selected-tile publisher, exactly once. */
     g_selectionRectanglePosition = g_viewportPosition;
     g_selectionWidth = g_selectionHeight = 1;

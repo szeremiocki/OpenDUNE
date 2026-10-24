@@ -155,6 +155,7 @@ extern bool g_var_37B8;
 
 #define GUI_ClearScreen(screenID) GFX_ClearScreen(screenID)
 extern void GUI_DrawScreen(Screen screenID);
+extern void GUI_InvalidateViewportMessage(void);
 #define GUI_SPRITE_ID_UNKNOWN 0xffff
 #define GUI_SPRITE_COLOUR_EMBEDDED 0xfe
 #define GUI_SPRITE_COLOUR_UNKNOWN 0xff
