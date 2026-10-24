@@ -276,6 +276,7 @@ int main(void) {
         u.o.flags.s.bulletIsBig = forced;
         occupant = owned ? &u : &other;
         g_map[packed].hasUnit = true; g_map[packed].index = 17;
+        BitArray_Set(g_dirtyViewport,packed); /* Map_UpdateAround's pre-callback write. */
         Unit_RemoveFromTile(&u,packed);
         bool removed = owned && (!destination || forced);
         assert(g_map[packed].hasUnit == !removed);

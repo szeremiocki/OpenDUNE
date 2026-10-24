@@ -2684,19 +2684,31 @@ void Unit_UpdateMap(uint16 type, Unit *unit)
 
 	radius = ui->dimension + 3;
 
-	if (unit->o.flags.s.bulletIsBig || unit->o.flags.s.isSmoking || (unit->o.type == UNIT_HARVESTER && unit->actionID == ACTION_HARVEST)) radius = 33;
+	if (unit->o.flags.s.bulletIsBig) {
+		radius = 33;
+	} else if (unit->o.flags.s.isSmoking || (unit->o.type == UNIT_HARVESTER && unit->actionID == ACTION_HARVEST)) {
+#ifdef TOS
+		/* Native harvester image repair uses component bounds, not this radius. */
+		if (unit->o.type != UNIT_HARVESTER || !Video_Atari_CursorDirect())
+#endif
+		radius = 33;
+	}
 
 	Map_UpdateAround(radius, position, unit, g_functions[1][type]);
 
 	if (unit->o.type != UNIT_HARVESTER) return;
 
-	/* The harvester is the only 2x1 unit, so also update tiles in behind us. */
+	/* Keep the older historical region for forced cleanup and legacy backends. */
+#ifdef TOS
+	if (!Video_Atari_CursorDirect() || unit->o.flags.s.bulletIsBig)
+#endif
 	Map_UpdateAround(radius, unit->targetPreLast, unit, g_functions[1][type]);
 	Map_UpdateAround(radius, unit->targetLast, unit, g_functions[1][type]);
 }
 
 /**
  * Removes the Unit from the given packed tile.
+ * Called by Map_UpdateAround(), which already marks viewport candidates.
  *
  * @param unit The Unit to remove.
  * @param packed The packed tile.
@@ -2713,19 +2725,16 @@ void Unit_RemoveFromTile(Unit *unit, uint16 packed)
 	Map_MarkTileDirty(packed);
 
 #ifdef TOS
-	if (Video_Atari_CursorDirect()) {
-		Map_Update(packed, 1, false);
-		return;
-	}
+	if (Video_Atari_CursorDirect()) return;
 #endif
 	Map_Update(packed, 0, false);
 }
 
+/** Run ADD bookkeeping for a tile already marked by Map_UpdateAround(). */
 void Unit_AddToTile(Unit *unit, uint16 packed)
 {
 	Map_UnveilTile(packed, Unit_GetHouseID(unit));
 	Map_MarkTileDirty(packed);
-	Map_Update(packed, 1, false);
 }
 
 /**

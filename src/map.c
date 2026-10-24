@@ -1095,6 +1095,7 @@ uint16 Map_FindLocationTile(uint16 locationID, uint8 houseID)
  * Around a position, run a certain function for all tiles within a certain radius.
  *
  * @note Radius is in a 1/4th of a tile unit.
+ * Viewport candidates are marked before callbacks; function 1 needs no callback.
  *
  * @param radius The radius of the to-update tiles.
  * @param position The position to go from.
@@ -1136,7 +1137,7 @@ void Map_UpdateAround(uint16 radius, tile32 position, Unit *unit, uint8 function
 
 				switch (function) {
 					case 0: Map_Update(curPacked, 0, false); break;
-					case 1: Map_Update(curPacked, 3, false); break;
+					case 1: break;
 					case 2: Unit_RemoveFromTile(unit, curPacked); break;
 					case 3: Unit_AddToTile(unit, curPacked); break;
 					default: break;
@@ -1167,7 +1168,7 @@ void Map_UpdateAround(uint16 radius, tile32 position, Unit *unit, uint8 function
 
 				switch (function) {
 					case 0: Map_Update(curPacked, 0, false); break;
-					case 1: Map_Update(curPacked, 3, false); break;
+					case 1: break;
 					case 2: Unit_RemoveFromTile(unit, curPacked); break;
 					case 3: Unit_AddToTile(unit, curPacked); break;
 					default: break;

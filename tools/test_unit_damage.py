@@ -1,4 +1,4 @@
-"""Exercise native unit damage reductions without changing simulation or registration."""
+"""Exercise unit damage and experimental native registration reductions."""
 
 import unittest
 
@@ -64,10 +64,14 @@ void Tile_RemoveFogInRadius(tile32 position, uint16 radius) {
 }
 Object *Object_GetByPackedTile(uint16 packed) { (void)packed; return NULL; }
 void Unit_AddToTile(Unit *unit, uint16 packed) {
-    assert(unit); occupancyAdd++; Map_Update(packed,1,false);
+    assert(unit && BitArray_Test(g_dirtyViewport,packed)); occupancyAdd++;
 }
 void Unit_RemoveFromTile(Unit *unit, uint16 packed) {
-    assert(unit); occupancyRemove++; Map_Update(packed,0,false);
+    assert(unit); occupancyRemove++;
+#ifdef TOS
+    if (direct) return;
+#endif
+    Map_Update(packed,0,false);
 }
 /* PRODUCTION */
 void Map_UpdateAround(uint16 radius, tile32 position, Unit *unit, uint8 callback) {
@@ -112,8 +116,14 @@ static void original(uint16 type, Unit *unit, bool history) {
     uint16 radius = ui->dimension + 3;
     if (unit->o.flags.s.bulletIsBig || unit->o.flags.s.isSmoking ||
         (unit->o.type == UNIT_HARVESTER && unit->actionID == ACTION_HARVEST)) radius = 33;
+#ifdef TOS
+    if (direct && unit->o.type == UNIT_HARVESTER && !unit->o.flags.s.bulletIsBig) radius = 27;
+#endif
     Map_UpdateAround(radius,position,unit,g_functions[1][type]);
     if (unit->o.type == UNIT_HARVESTER && history) {
+#ifdef TOS
+        if (!direct || unit->o.flags.s.bulletIsBig)
+#endif
         Map_UpdateAround(radius,unit->targetPreLast,unit,g_functions[1][type]);
         Map_UpdateAround(radius,unit->targetLast,unit,g_functions[1][type]);
     }
@@ -164,7 +174,7 @@ int main(void) {
     g_table_unitInfo[UNIT_CARRYALL].movementType = MOVEMENT_WINGER;
     for (unsigned native = 0; native < 2; native++)
     for (unsigned t = 0; t < 4; t++)
-    for (unsigned flags = 0; flags < 128; flags++)
+    for (unsigned flags = 0; flags < 256; flags++)
     for (unsigned mode = 0; mode <= UNIT_UPDATE_MAP_REMOVE_PREPARED; mode++) {
         direct = native; visible = true; unveiled = !!(flags & 1);
         Unit u = {0};
@@ -173,7 +183,7 @@ int main(void) {
         u.o.flags.s.isSmoking = !!(flags & 16);
         u.o.flags.s.bulletIsBig = !!(flags & 32);
         u.o.flags.s.isDirty = !!(flags & 64);
-        u.actionID = flags & 32 ? ACTION_HARVEST : ACTION_GUARD;
+        u.actionID = flags & 128 ? ACTION_HARVEST : ACTION_GUARD;
         u.o.position = (tile32){0x1480,0x1480};
         u.targetLast = (tile32){0x2080,0x2080};
         u.targetPreLast = (tile32){0x2880,0x2880};
@@ -226,7 +236,51 @@ int main(void) {
 #else
     assert(aroundCount == 3 && terrainCount() == 75);
 #endif
-    /* Zero/edge history positions and invisible terrain preserve old behavior. */
+    /* Native harvesters retain targetLast but omit targetPreLast outside forced cleanup. */
+    for (unsigned native = 0; native < 2; native++)
+    for (unsigned harvest = 0; harvest < 2; harvest++)
+    for (unsigned smoking = 0; smoking < 2; smoking++)
+    for (unsigned forced = 0; forced < 2; forced++)
+    for (unsigned mode = 0; mode < 2; mode++) {
+        direct = native;
+        h.actionID = harvest ? ACTION_HARVEST : ACTION_GUARD;
+        h.o.flags.s.isSmoking = smoking;
+        h.o.flags.s.bulletIsBig = forced;
+#ifdef TOS
+        bool local = direct;
+#else
+        bool local = false;
+#endif
+        bool wide = forced || (!local && (harvest || smoking));
+        unsigned radius = wide ? 33 : 27;
+        unsigned regions = local && !forced ? 2 : 3;
+        unsigned visits = regions * (wide ? 25 : 9);
+        reset(&h,false);
+        Unit_UpdateMap(mode,&h);
+        assert(aroundCount == regions);
+        for (unsigned i = 0; i < regions; i++) {
+            assert(around[i].radius == radius);
+            assert(around[i].callback == (mode == 0 ? 2 : 3));
+        }
+        assert(around[0].position.x == h.o.position.x && around[0].position.y == h.o.position.y);
+        if (regions == 3)
+            assert(around[1].position.x == h.targetPreLast.x && around[1].position.y == h.targetPreLast.y);
+        assert(around[regions-1].position.x == h.targetLast.x &&
+               around[regions-1].position.y == h.targetLast.y);
+        assert(!!BitArray_Test(g_dirtyViewport,Tile_PackTile(h.targetPreLast)) == (regions == 3));
+        assert(BitArray_Test(g_dirtyViewport,Tile_PackTile(h.targetLast)));
+        assert(occupancyAdd == (mode == 1 ? visits : 0));
+        assert(occupancyRemove == (mode == 0 ? visits : 0));
+        if (local) {
+            assert(terrainCount() == 0 && g_dirtyViewportCount == visits);
+            unsigned candidates = 0;
+            for (unsigned i = 0; i < 4096; i++) candidates += !!BitArray_Test(g_dirtyViewport,i);
+            assert(candidates == visits);
+        }
+    }
+    /* Zero/edge history positions and invisible terrain retain the selected policy. */
+    direct = true; h.o.flags.s.bulletIsBig = false;
+    h.actionID = ACTION_HARVEST; h.o.flags.s.isSmoking = true;
     h.targetPreLast = (tile32){0,0}; h.targetLast = (tile32){0xff80,0xff80};
     for (unsigned mode = 0; mode < 2; mode++) {
         Unit reference = h; Snapshot actual, expected;
@@ -236,6 +290,127 @@ int main(void) {
         assert(!memcmp(&actual,&expected,sizeof(actual)));
     }
     Unit_UpdateMap(UNIT_UPDATE_MAP_STATE,NULL);
+    return 0;
+}
+"""
+        for tos in (True, False):
+            run_harness(harness.replace("/* PRODUCTION */", production), tos=tos)
+
+    def test_registration_callbacks_do_not_repeat_candidate_updates(self):
+        unit = (ROOT / "src/unit.c").read_text()
+        map_source = (ROOT / "src/map.c").read_text()
+        tile = (ROOT / "src/tile.c").read_text()
+        production = "\n".join([
+            function(tile, "Tile_AddTileDiff"),
+            function(map_source, "Map_Update").replace(
+                "void Map_Update(", "static void Real_Map_Update(", 1),
+            function(map_source, "Map_UpdateAround"),
+            function(unit, "Unit_RemoveFromTile"),
+            function(unit, "Unit_AddToTile"),
+        ])
+        harness = r"""
+#include <assert.h>
+#include <string.h>
+#include "types.h"
+#include "src/unit.h"
+#include "src/map.h"
+#include "src/tile.h"
+#include "src/table/tilediff.c"
+#define min(a,b) ((a) < (b) ? (a) : (b))
+#define max(a,b) ((a) > (b) ? (a) : (b))
+#define BitArray_Set(a,n) ((a)[(n) >> 3] |= 1u << ((n) & 7))
+#define BitArray_Test(a,n) (((a)[(n) >> 3] >> ((n) & 7)) & 1)
+Tile g_map[4096];
+uint8 g_dirtyViewport[512], g_dirtyMinimap[512], g_displayedViewport[512];
+uint16 g_dirtyViewportCount;
+bool g_selectionRectangleNeedRepaint;
+static bool direct, visible;
+static Unit *occupant;
+static unsigned updates[5], marks, unveils;
+static uint8 marked[512], revealed[512];
+bool Video_Atari_CursorDirect(void) { return direct; }
+static bool Map_IsTileVisible(uint16 packed) { assert(packed < 4096); return visible; }
+Unit *Unit_Get_ByPackedTile(uint16 packed) { assert(packed < 4096); return occupant; }
+uint8 Unit_GetHouseID(Unit *unit) { return unit->o.houseID; }
+bool Map_UnveilTile(uint16 packed, uint8 house) {
+    assert(packed < 4096 && house == 2 && BitArray_Test(g_dirtyViewport,packed));
+    unveils++; BitArray_Set(revealed,packed); return false;
+}
+void Map_MarkTileDirty(uint16 packed) {
+    assert(packed < 4096 && BitArray_Test(g_dirtyViewport,packed));
+    marks++; BitArray_Set(marked,packed);
+}
+/* PRODUCTION */
+void Map_Update(uint16 packed, uint16 type, bool ignoreInvisible) {
+    assert(type < 5); updates[type]++; Real_Map_Update(packed,type,ignoreInvisible);
+}
+static void clear(void) {
+    memset(g_map,0,sizeof(g_map));
+    memset(g_dirtyViewport,0,sizeof(g_dirtyViewport));
+    memset(g_dirtyMinimap,0,sizeof(g_dirtyMinimap));
+    memset(g_displayedViewport,0,sizeof(g_displayedViewport));
+    memset(marked,0,sizeof(marked)); memset(revealed,0,sizeof(revealed));
+    memset(updates,0,sizeof(updates));
+    marks = unveils = g_dirtyViewportCount = 0;
+    g_selectionRectangleNeedRepaint = false;
+}
+int main(void) {
+    const tile32 positions[] = {{0x1480,0x1480},{0x1400,0x1400},{0x80,0x80},
+                                {0x3f80,0x3f80},{0,0},{0xff80,0xff80}};
+    const uint16 radii[] = {0,19,27,33};
+    for (unsigned native = 0; native < 2; native++)
+    for (unsigned shown = 0; shown < 2; shown++)
+    for (unsigned pos = 0; pos < sizeof(positions) / sizeof(*positions); pos++)
+    for (unsigned radius = 0; radius < sizeof(radii) / sizeof(*radii); radius++) {
+        direct = native; visible = shown;
+#ifdef TOS
+        bool local = direct;
+#else
+        bool local = false;
+#endif
+        clear();
+        Map_UpdateAround(radii[radius],positions[pos],NULL,1);
+        uint8 footprint[512]; memcpy(footprint,g_dirtyViewport,sizeof(footprint));
+        unsigned visits = g_dirtyViewportCount, cells = 0;
+        for (unsigned i = 0; i < 4096; i++) cells += !!BitArray_Test(footprint,i);
+        assert(cells <= visits && !marks && !unveils);
+        for (unsigned i = 0; i < 5; i++) assert(!updates[i]);
+        assert(!g_selectionRectangleNeedRepaint);
+        for (unsigned callback = 0; callback < 4; callback++)
+        for (unsigned owned = 0; owned < 2; owned++)
+        for (unsigned destination = 0; destination < 2; destination++)
+        for (unsigned forced = 0; forced < 2; forced++) {
+            clear();
+            Unit u = {0}, other = {0};
+            u.o.houseID = 2; u.o.flags.s.bulletIsBig = forced;
+            u.currentDestination = destination ? positions[pos] : (tile32){0x2180,0x2180};
+            occupant = owned ? &u : &other;
+            unsigned packed = Tile_PackTile(positions[pos]);
+            g_map[packed].hasUnit = true; g_map[packed].index = 17;
+            memcpy(g_displayedViewport,footprint,sizeof(footprint));
+            Map_UpdateAround(radii[radius],positions[pos],&u,callback);
+            bool terrain = callback == 0 || (callback == 2 && !local);
+            assert(updates[0] == (terrain ? visits : 0));
+            for (unsigned i = 1; i < 5; i++) assert(!updates[i]);
+            assert(marks == (callback >= 2 ? visits : 0));
+            assert(unveils == (callback == 3 ? visits : 0));
+            if (callback >= 2) assert(!memcmp(marked,footprint,sizeof(footprint)));
+            if (callback == 3) assert(!memcmp(revealed,footprint,sizeof(footprint)));
+            bool removed = callback == 2 && owned && BitArray_Test(footprint,packed) &&
+                           (!destination || forced);
+            assert(g_map[packed].hasUnit == !removed);
+            assert(g_map[packed].index == (removed ? 0 : 17));
+            if (terrain && visible) {
+                assert(!memcmp(g_dirtyMinimap,footprint,sizeof(footprint)));
+                assert(g_dirtyViewportCount == visits + cells);
+                assert(g_selectionRectangleNeedRepaint == (visits != 0));
+            } else {
+                assert(!memcmp(g_dirtyViewport,footprint,sizeof(footprint)));
+                assert(g_dirtyViewportCount == visits && !g_selectionRectangleNeedRepaint);
+                for (unsigned i = 0; i < 512; i++) assert(!g_dirtyMinimap[i]);
+            }
+        }
+    }
     return 0;
 }
 """

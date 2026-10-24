@@ -328,11 +328,31 @@ bookkeeping is state-only, without changing sandworm attack/removal behavior.
 Movement repairs old geometry before changing position or wobble. Wobble RNG
 ordering is preserved by holding the next index locally until departure repair.
 Removal/hiding capture old geometry before forcing cleanup flags; duplicate
-native pickup removal is omitted. Occupancy, fog and minimap callbacks retain
-their original registration footprints and harvester history, including the
-5x5 branch where required. Those broad candidate/registration visits no longer
-request broad terrain restoration. The general 5x5 registration policy is
-unchanged and remains a separate discussion.
+native pickup removal is omitted. Registration still traverses both harvester
+historical positions for forced cleanup and legacy backends; ordinary native
+harvesters now traverse only their current position and targetLast.
+
+Experimental ST/STE policy: ordinary harvester registration uses its normal
+dimension + 3 radius (24 + 3 = 27, a sampled footprint of at most 3x3 tiles),
+even when harvesting or smoking. The same radius applies at the current
+position and targetLast; the older targetPreLast traversal is experimentally
+omitted. Forced removal/hiding cleanup still traverses all three positions
+with radius 33 and its 5x5 footprint; other units and other video backends
+retain their original radius/history policy.
+This deliberately narrows candidate, fog-unveiling and minimap callback coverage,
+not old-image repair, which still uses actual component bounds. No movement
+REMOVE/ADD pair is skipped, no movement-specific scan suppression is added, and
+sprite propagation is unchanged. Further removal of targetLast is deferred
+until visual/profile assessment of this build.
+
+Map_UpdateAround still marks each candidate and increments its dirty counter
+before dispatch. Its candidate-only case and ADD callbacks no longer repeat
+that bit write through Map_Update; these were no-ops on every backend. Native
+REMOVE callbacks also omit their repeated candidate-only call, while legacy
+REMOVE retains its terrain-repair call. Occupancy, unveiling and minimap
+bookkeeping remain in the retained callbacks. Registration callbacks do not
+themselves request broad terrain restoration on the native backend, although
+real fog changes still queue repairs.
 
 Native explosion frame changes, vertical moves and disappearance repair the
 old sprite's actual bounds instead of radius 24. Repeated frame requests are
