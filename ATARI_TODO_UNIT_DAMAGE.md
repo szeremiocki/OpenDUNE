@@ -8,6 +8,9 @@ The committed STE12/12a baseline is recorded below. The current experimental
 native harvester registration footprint is described in its own section;
 it intentionally changes callback coverage, not the component-bound repair.
 
+Latest handoff: [session close, STE17/STE18](#session-close-ste17ste18).
+Next investigations: [firing/projectiles and CPU/BLiTTER publication](ATARI_BULLETS_AND_BLITS.md).
+
 ## Batch progression
 
 The first batch stopped after **five of the ten audit rows** and was profiled
@@ -1167,7 +1170,8 @@ Profiling binary: `bin/opendune.tos`, SHA256
 `533592329dfd6657166b274b0949f0af33c76831a0a61e32cd8d93bddd9f48b7`.
 The executable, matching object directory and disassembly are archived in the
 session files with the `message-coverage-repair-` prefix. This working build
-retains the unrelated local quiz bypass. No commit or push was made.
+retains the unrelated local quiz bypass. This was uncommitted when profiled;
+the implementation is now included in `5ef190cf` below.
 
 ### Native outline scheduling consolidation (implemented)
 
@@ -1222,4 +1226,94 @@ tests passed with address/undefined sanitizers. The trusted
 `53de32d7ef8a18d7a8ce7ea1c8a033768513ad24078f2315e9f3cb4f1660307d`.
 Matching executable, objects, disassembly and source/test artifacts are
 archived in the session files with the `selection-outline-owner-` prefix.
-The build retains the unrelated local quiz bypass. No commit or push was made.
+The build retains the unrelated local quiz bypass. This was uncommitted when
+profiled; the repair improvements are now included in `5ef190cf` below.
+
+## Session close: STE17/STE18
+
+Runtime improvements and their regression harnesses were committed as
+`5ef190cf` (`Reduce native ST-family message and outline repair damage`).
+This commit includes the two repair reductions above, not the unrelated local
+quiz bypass in `src/opendune.c`. No push was requested or performed.
+
+Completed in this session:
+
+- Audited old/new message and structure-outline repair scheduling, including
+  disappearance, scrolling, resizing and selection/placement transitions.
+- Removed absent-message scroll cleanup and replaced native message-only
+  full redraws with the accepted fourteen-tile repair approximation.
+- Made pre-draw native outline preparation the sole outline-damage owner,
+  preserving generic selection footprint bookkeeping, legacy transitions,
+  placement backups, real structure-map updates and the shared candidate halo.
+- Added production-code lifecycle, pixel-cleanup and exact damage-count
+  regression coverage. Sixteen focused tests passed with sanitizers; the
+  trusted 68000 build succeeded.
+
+### Profile evidence
+
+The STE17 and scroll-heavy captures match the archived message-repair build.
+STE18 matches the archived outline-owner build: all 38,199 sampled program
+instructions, including relocated operands, were validated. The captures are
+different gameplay workloads, not deterministic before/after replays.
+
+| Metric | STE16 | STE17 | STE18 |
+|---|---:|---:|---:|
+| Duration, seconds | 332.05 | 148.50 | 265.24 |
+| Viewport entries | 4263 | 1760 | 3196 |
+| Viewport passes/s | 12.838 | 11.852 | 12.049 |
+| Viewport drawing, ms/call | 19.503 | 18.545 | 19.659 |
+| Sprite drawing, ms/pass | 9.332 | 8.746 | 9.190 |
+| Terrain roots, ms/pass | 3.088 | 2.747 | 3.072 |
+| Sprite-triggered terrain repair, ms/pass | 2.661 | 2.737 | 2.792 |
+| Sprite publication, ms/pass | 3.088 | 2.720 | 2.913 |
+| Unit registration, ms/pass | 2.564 | 2.295 | 3.175 |
+| Actual planar scrolls | 11 | 0 | 12 |
+
+Inclusive cost rows overlap; registration is separate work, normalized by the
+viewport-entry count, not an additional child cost to sum into viewport drawing.
+Passes/s is not necessarily hardware display FPS.
+
+- STE17 had no effective viewport-origin changes and no forced viewport redraws.
+  One visible message replacement used fourteen repair requests.
+- `scrollheavy.txt` exercised 77 overlapping planar scrolls in 37.78 seconds:
+  67 absent-message strips were skipped and ten drawn-message strips retained.
+  This avoided 938 marking requests before coalescing. One visible replacement
+  used fourteen requests; no forced viewport redraw occurred.
+- STE18 exercised 3,401 native selection-setter entries. Bookkeeping-only
+  loops cleared 224 footprint bits and set 224, with zero calls at either
+  generic terrain-update site: 448 avoided marking requests, not a claim of
+  448 fewer unique tile publications.
+- All twelve STE18 scrolls skipped absent-message cleanup, avoiding another
+  168 marking requests. Two visible replacements used 28 repair requests.
+  No forced viewport redraw occurred.
+- STE18 viewport call cost is 6.0% above STE17 but only 0.8% above STE16.
+  Versus STE17 it published 14.7% more sprites/s and 10.7% more plain tiles/s,
+  despite 20.1% fewer harvester submissions/s. Unit-registration cost also
+  increased. These observations confirm executed policies, not an isolated
+  optimization speedup or regression.
+
+### Restart information and open boundaries
+
+Current profiling executable: `bin/opendune.tos`, SHA256
+`53de32d7ef8a18d7a8ce7ea1c8a033768513ad24078f2315e9f3cb4f1660307d`.
+It includes the local quiz bypass; that source change remains outside the
+improvements commit. Do not mistake a fresh clean-source rebuild for the exact
+profiled executable.
+
+Exact executable/object/disassembly archives and comparison scripts are in
+`/home/przemo/.copilot/session-state/a679a71e-2644-47f3-ae46-1bd496ee9550/files/`:
+`message-coverage-repair-*`, `selection-outline-owner-*`,
+`battleste17-compare.py`, `battleste18-compare.py`, and the corresponding
+analysis/comparison JSON and logs. Profile counters using object-relative
+offsets apply only to their matching archived objects.
+
+Open: real Atari visual verification of the fourteen-tile message approximation
+(especially long/localized/multiline text), and the earlier suspected minor
+harvester artifact. Do not tighten shared candidate coverage or historical
+cleanup merely on the basis of these profiles. Existing selection-transition
+and viewport-fade harnesses have stale mocks, as recorded in the audit above;
+they were not claimed to pass.
+
+Next-session starting points, hypotheses and code references are in
+[ATARI_BULLETS_AND_BLITS.md](ATARI_BULLETS_AND_BLITS.md). Neither investigation
+has been implemented by this handoff.
