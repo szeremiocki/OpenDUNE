@@ -92,8 +92,8 @@ extern void test_fail(unsigned line);
                     released = {}
                     heap = 0x200000
                     last_comparison = None
-                    path_counts = {case: [0, 0] for case in range(1, 22)}
-                    fusion_counts = {case: 0 for case in range(13, 22)}
+                    path_counts = {case: [0, 0] for case in range(1, 23)}
+                    fusion_counts = {case: 0 for case in range(13, 23)}
                     fallthrough_pcs = []
 
                     def integer(address):
@@ -145,11 +145,11 @@ extern void test_fail(unsigned line);
                         case = integer(addresses["_nativeCursorCase"])
                         if case:
                             path_counts[case][address == addresses["NativeFetch"]] += 1
-                        if case == 1 and address == addresses["NativeCursorFetch"]:
+                        if case == 1 and address in (addresses["NativeCursorFetch"], addresses["NativeLeanJump"]):
                             engine = cpu.reg_read(UC_M68K_REG_A2)
                             fallthrough_pcs.append(integer(engine + 2))
 
-                    for name in ("NativeCursorFetch", "NativeFetch"):
+                    for name in ("NativeCursorFetch", "NativeFetch", "NativeLeanJump"):
                         cpu.hook_add(UC_HOOK_CODE, cursor_hook,
                                      begin=addresses[name], end=addresses[name])
 
@@ -175,7 +175,7 @@ extern void test_fail(unsigned line);
                                      f"bytecode={words}; last comparison={last_comparison}")
                     self.assertEqual(cpu.reg_read(UC_M68K_REG_D0), 0)
                     self.assertFalse(allocations, "Native code allocation leaked")
-                    self.assertEqual(fusion_counts, {case: 1 for case in range(13, 22)})
+                    self.assertEqual(fusion_counts, {**{case: 1 for case in range(13, 22)}, 22: 6})
                     self.assertEqual(fallthrough_pcs, [addresses["_words"]] * 16,
                                      "Ordinary native opcodes must not publish bytecode PCs")
                     self.assertEqual(path_counts, {
@@ -192,6 +192,7 @@ extern void test_fail(unsigned line);
                         11: [0, 1],  # Audited delay yields before advancing.
                         12: [1, 2],  # Stack-error unload, final/nonfinal budget.
                         **{case: [1, 1] for case in range(13, 22)},  # All fused pairs.
+                        22: [6, 6],  # PUSH #5 + GetInfo, 2 widths x 3 targets.
                     })
 
 

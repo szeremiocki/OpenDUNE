@@ -9,8 +9,34 @@
 	xref	_Script_NativePush
 	xref	_Script_NativePop
 	xref	_Script_NativePeek
+	xref	_g_scriptCurrentUnit
+
+; offsetof(Unit, targetAttack); script_native.c asserts the same value.
+UNIT_TARGETATTACK equ 84
 
 	text
+
+; Opcode-pair statistics (build-time toggle). Must match
+; SCRIPT_NATIVE_PAIR_STATS in script_native.c, which stores a per-entry code
+; in word 7 and reads the counters. Counts sequential pairs only; jumps and
+; their targets are not counted.
+PAIRSTATS set 0
+	ifne	PAIRSTATS
+	xdef	_Script_NativePairStats
+	endc
+PAIRSTAT macro
+	ifne	PAIRSTATS
+	moveq	#0,d0
+	move.w	14(a6),d0
+	lsl.w	#7,d0
+	move.w	14(a6,d7.w),d4
+	and.w	#127,d4
+	add.w	d4,d0
+	lsl.l	#2,d0
+	lea	_Script_NativePairStats,a0
+	addq.l	#1,(a0,d0.l)
+	endc
+	endm
 
 PUBLISH_PC macro
 	move.l	a6,d0
@@ -33,6 +59,31 @@ PUBLISH_NEXT_PC macro
 .done\@:
 	endm
 
+; Lean dispatch (NativeLeanNext) skips the delay/unload/bounds checks, which
+; only C callbacks and jumps can affect. A stack error calls C and may unload
+; the script, so in LEAN regions it forces the next dispatch down the full path
+; by parking the budget in d3's high word and setting d2 to 1 (d3 bit 8 = flag).
+LEAN set 0
+STASH_BUDGET macro
+	ifne	LEAN
+	btst	#8,d3
+	bne	.stashed\@
+	swap	d3
+	move.w	d2,d3
+	swap	d3
+	bset	#8,d3
+	moveq	#1,d2
+.stashed\@:
+	endc
+	endm
+NEXT macro
+	ifne	LEAN
+	bra	NativeLeanNext
+	else
+	bra	_Script_NativeNext
+	endc
+	endm
+
 PUSH macro
 	moveq	#0,d0
 	move.b	13(a2),d0
@@ -52,6 +103,7 @@ PUSH macro
 	jsr	_Script_NativePush
 	addq.l	#8,sp
 	move.l	(sp)+,d1
+	STASH_BUDGET
 .end\@:
 	endm
 
@@ -72,6 +124,7 @@ POP macro
 	addq.l	#4,sp
 	move.l	(sp)+,d1
 	move.w	d0,\1
+	STASH_BUDGET
 .end\@:
 	endm
 
@@ -100,6 +153,7 @@ _Script_RunNative:
 	bra	NativeRebindCheck
 
 _Script_NativeNext:
+	PAIRSTAT
 	adda.w	d7,a6
 	subq.w	#1,d2
 NativeCheck:
@@ -116,10 +170,25 @@ NativeCursorFetch:
 	bcc	NativeCursorBounds
 	jmp	(a6)
 
+NativeLeanNext:
 NativeNextOneWord:
-	bra	_Script_NativeNext
 NativeNextTwoWords:
-	bra	_Script_NativeNext
+	PAIRSTAT
+	adda.w	d7,a6
+	subq.w	#1,d2
+	beq	NativeLeanZero
+NativeLeanJump:
+	jmp	(a6)
+NativeLeanZero:
+	btst	#8,d3
+	beq	NativeCursorSuccess
+	move.l	d3,d2
+	swap	d2
+	and.l	#$ff,d3
+	subq.w	#1,d2
+	bra	NativeCheck
+NativeSentinel:
+	bra	NativeCursorBounds
 
 NativeBranchNext:
 	subq.w	#1,d2
@@ -211,12 +280,13 @@ NativeInvalidPublished:
 	lea	12(sp),sp
 	bra	NativeExit
 
+LEAN set 1
 NativeJump:
 	move.l	a0,a6
 	bra	NativeBranchNext
 NativeSetReturn:
 	move.w	d1,10(a2)
-	bra	_Script_NativeNext
+	NEXT
 NativePushReturn:
 	tst.w	d1
 	beq	.pushReturn
@@ -234,23 +304,23 @@ NativePushReturn:
 	move.b	13(a2),d0
 	addq.b	#2,d0
 	move.b	d0,12(a2)
-	bra	_Script_NativeNext
+	NEXT
 .pushReturn:
 	move.w	10(a2),d4
 	PUSH	d4
-	bra	_Script_NativeNext
+	NEXT
 .invalid:
 	moveq	#2,d0
 	bra	NativeInvalid
 NativePush:
 	PUSH	d1
-	bra	_Script_NativeNext
+	NEXT
 NativePushVariable:
 	and.l	#$ffff,d1
 	add.l	d1,d1
 	move.w	14(a2,d1.l),d4
 	PUSH	d4
-	bra	_Script_NativeNext
+	NEXT
 
 LOCAL_INDEX macro
 	and.l	#$ffff,d1
@@ -277,12 +347,12 @@ NativePushLocal:
 	LOCAL_INDEX
 	move.w	24(a2,d4.l),d4
 	PUSH	d4
-	bra	_Script_NativeNext
+	NEXT
 NativePushParameter:
 	PARAMETER_INDEX
 	move.w	24(a2,d4.l),d4
 	PUSH	d4
-	bra	_Script_NativeNext
+	NEXT
 NativeStackBounds:
 	; Use the existing peek diagnostic without changing the stack pointer.
 	PUBLISH_NEXT_PC
@@ -291,6 +361,7 @@ NativeStackBounds:
 	jsr	_Script_NativePeek
 	addq.l	#8,sp
 	bra	NativeFailure
+LEAN set 0
 NativePopReturn:
 	tst.w	d1
 	beq	.popReturn
@@ -307,35 +378,36 @@ NativePopReturn:
 .popReturn:
 	POP	d4
 	move.w	d4,10(a2)
-	bra	_Script_NativeNext
+	NEXT
 .invalid:
 	moveq	#8,d0
 	bra	NativeInvalid
+LEAN set 1
 NativePopVariable:
 	and.l	#$ffff,d1
 	add.l	d1,d1
 	move.l	d1,d5
 	POP	d4
 	move.w	d4,14(a2,d5.l)
-	bra	_Script_NativeNext
+	NEXT
 NativePopLocal:
 	LOCAL_INDEX
 	move.l	d4,d5
 	POP	d4
 	move.w	d4,24(a2,d5.l)
-	bra	_Script_NativeNext
+	NEXT
 NativePopParameter:
 	PARAMETER_INDEX
 	move.l	d4,d5
 	POP	d4
 	move.w	d4,24(a2,d5.l)
-	bra	_Script_NativeNext
+	NEXT
 NativeStackRewind:
 	add.b	d1,13(a2)
-	bra	_Script_NativeNext
+	NEXT
 NativeStackForward:
 	sub.b	d1,13(a2)
-	bra	_Script_NativeNext
+	NEXT
 CALL_FUNCTION macro
 	PUBLISH_NEXT_PC
 	and.l	#$ff,d1
@@ -357,6 +429,7 @@ CALL_FUNCTION macro
 	bra	NativeInvalid
 	endm
 
+LEAN set 0
 NativeFunction:
 	CALL_FUNCTION	NativeReenter
 NativeFunctionFast:
@@ -378,11 +451,12 @@ NativeReturn:
 	clr.b	54(a2)
 	bra	NativeBranchNext
 
+LEAN set 1
 UNARY macro
 	POP	d4
 	\1	d4
 	PUSH	d4
-	bra	_Script_NativeNext
+	NEXT
 	endm
 NativeNot:
 	POP	d4
@@ -390,7 +464,7 @@ NativeNot:
 	seq	d4
 	and.w	#1,d4
 	PUSH	d4
-	bra	_Script_NativeNext
+	NEXT
 NativeNeg:
 	UNARY	neg.w
 NativeComplement:
@@ -402,7 +476,7 @@ BINARY_LOAD macro
 	endm
 BINARY_STORE macro
 	PUSH	d4
-	bra	_Script_NativeNext
+	NEXT
 	endm
 COMPARISON macro
 	BINARY_LOAD
@@ -487,6 +561,8 @@ NativeBinaryInvalid:
 	moveq	#17,d0
 	bra	NativeInvalid
 
+LEAN set 0
+
 NativeFuseRewindReturn:
 	cmp.w	#2,d2
 	bcs	NativeStackRewind
@@ -565,6 +641,28 @@ NativeFuseGreaterJump:
 NativeFuseGreaterEqualJump:
 	FUSED_COMPARISON	sge,NativeGreaterEqual
 
+; PUSH #5 + Script_Unit_GetInfo: GetInfo(5) is the unit's targetAttack. The push
+; stays visible on the VM stack; the callback itself cannot change the PC or
+; script, so no PC is published. Any unusual state takes the plain PUSH path.
+NativeFuseTargetAttack:
+	cmp.w	#2,d2
+	bcs	NativePush
+	move.l	_g_scriptCurrentUnit,a0
+	cmpa.w	#0,a0
+	beq	NativePush
+	moveq	#0,d0
+	move.b	13(a2),d0
+	beq	NativePush
+	cmp.b	#15,d0
+	bhi	NativePush
+	subq.b	#1,13(a2)
+	subq.w	#1,d0
+	add.w	d0,d0
+	move.w	d1,24(a2,d0.w)
+	move.w	UNIT_TARGETATTACK(a0),d4
+	move.w	d4,10(a2)
+	bra	NativeFusedNext
+
 NativeFusedNext:
 	adda.w	d7,a6
 	moveq	#0,d7
@@ -596,3 +694,12 @@ _Script_NativeHandlers:
 	dc.l	NativeFuseRewindReturn,NativeFuseReturnImmediate,NativeFuseReturnJump
 	dc.l	NativeFuseEqualJump,NativeFuseNotEqualJump,NativeFuseLessJump
 	dc.l	NativeFuseLessEqualJump,NativeFuseGreaterJump,NativeFuseGreaterEqualJump
+	dc.l	NativeSentinel
+	dc.l	NativeFuseTargetAttack
+
+	ifne	PAIRSTATS
+	bss
+	even
+_Script_NativePairStats:
+	ds.l	128*128
+	endc

@@ -6,8 +6,14 @@
 #include "types.h"
 #include "../os/endian.h"
 #include "script.h"
+#include "../unit.h"
 
 extern const uint32 Script_NativeHandlers[];
+
+#ifdef SCRIPT_NATIVE_PAIR_STATS
+#include "../os/error.h"
+extern uint32 Script_NativePairStats[128 * 128];
+#endif
 
 /* The assembly uses the mint ABI, including two-byte structure alignment. */
 typedef char NativeEngineLayout[
@@ -15,6 +21,7 @@ typedef char NativeEngineLayout[
 	 offsetof(ScriptEngine, scriptInfo) == 6 && offsetof(ScriptEngine, returnValue) == 10 &&
 	 offsetof(ScriptEngine, stackPointer) == 13 && offsetof(ScriptEngine, variables) == 14 &&
 	 offsetof(ScriptEngine, stack) == 24 && offsetof(ScriptEngine, isSubroutine) == 54) ? 1 : -1];
+typedef char NativeUnitLayout[offsetof(Unit, targetAttack) == 84 ? 1 : -1];
 typedef char NativeInfoLayout[
 	(offsetof(ScriptInfo, start) == 4 && offsetof(ScriptInfo, startCount) == 14 &&
 	 offsetof(ScriptInfo, functions) == 16 && offsetof(ScriptInfo, nativeCode) == 22) ? 1 : -1];
@@ -39,7 +46,8 @@ bool Script_CompileNative(ScriptInfo *scriptInfo)
 	uint16 *code;
 
 	if (scriptInfo->startCount == 0) return false;
-	code = calloc(scriptInfo->startCount, 16);
+	/* One extra entry past the last opcode traps fall-through for the lean dispatch. */
+	code = calloc((size_t)scriptInfo->startCount + 1, 16);
 	if (code == NULL) return false;
 
 	/* Every DATA word is an entry, including words used as operands. */
@@ -139,6 +147,13 @@ bool Script_CompileNative(ScriptInfo *scriptInfo)
 			           (nextTarget == Script_NativeHandlers[SCRIPT_PUSH] ||
 			            nextTarget == Script_NativeHandlers[SCRIPT_PUSH2])) {
 				fusion = 47;
+			} else if (normal && BETOH16(entry[2]) == 5 &&
+			           (firstTarget == Script_NativeHandlers[SCRIPT_PUSH] ||
+			            firstTarget == Script_NativeHandlers[SCRIPT_PUSH2]) &&
+			           (nextTarget == Script_NativeHandlers[14] || nextTarget == Script_NativeHandlers[45]) &&
+			           scriptInfo->functions != NULL && (BETOH16(next[2]) & 0xFF) < SCRIPT_FUNCTIONS_COUNT &&
+			           scriptInfo->functions[BETOH16(next[2]) & 0xFF] == Script_Unit_GetInfo) {
+				fusion = 56;
 			}
 		} else if (normal && BETOH16(next[1]) == 0x207C) {
 			nextTarget = ((uint32)BETOH16(next[5]) << 16) | BETOH16(next[6]);
@@ -163,6 +178,31 @@ bool Script_CompileNative(ScriptInfo *scriptInfo)
 			entry[6] = HTOBE16(0x4E71);
 		}
 	}
+	{
+		uint16 *entry = code + (size_t)scriptInfo->startCount * 8;
+		uint32 target = Script_NativeHandlers[55];
+
+		entry[0] = HTOBE16(0x7E00);
+		entry[1] = HTOBE16(0x4EF9);
+		entry[2] = HTOBE16(target >> 16);
+		entry[3] = HTOBE16(target);
+	}
+#ifdef SCRIPT_NATIVE_PAIR_STATS
+	/* Word 7 (never executed) holds a code: handler + 1, or 64 + callback index. */
+	for (i = 0; i < scriptInfo->startCount; i++) {
+		uint16 *entry = code + (size_t)i * 8;
+		uint32 target;
+		uint16 h;
+		uint16 callback = BETOH16(entry[2]) & 63;
+
+		if (BETOH16(entry[3]) == 0x4EF9) target = ((uint32)BETOH16(entry[4]) << 16) | BETOH16(entry[5]);
+		else if (BETOH16(entry[4]) == 0x4EF9) target = ((uint32)BETOH16(entry[5]) << 16) | BETOH16(entry[6]);
+		else continue;
+		for (h = 0; h < 57 && Script_NativeHandlers[h] != target; h++) {}
+		if (h >= 57) continue;
+		entry[7] = HTOBE16((h == 14 || h == 45) ? 64 + callback : h + 1);
+	}
+#endif
 	scriptInfo->nativeCode = code;
 	return true;
 }
@@ -181,3 +221,76 @@ uint16 Script_NativePeek(ScriptEngine *script, int position)
 {
 	return STACK_PEEK(position);
 }
+
+#ifdef SCRIPT_NATIVE_PAIR_STATS
+static const char *Script_NativeCodeName(uint16 code, char *buffer)
+{
+	static const char *const names[57] = {
+		"JUMP", "SETRET", "PUSHRET", "PUSH", "PUSH2", "PUSHVAR", "PUSHLOC", "PUSHPAR",
+		"POPRET", "POPVAR", "POPLOC", "POPPAR", "REWIND", "FORWARD", "FUNC", "JUMPNE",
+		"INV", "INV", "RETURN", "NOT", "NEG", "COMPL", "AND", "OR", "EQ", "NE", "LT",
+		"LE", "GT", "GE", "ADD", "SUB", "MUL", "DIV", "SHR", "SHL", "BAND", "BOR",
+		"MOD", "XOR", "INV", "TRUNC", "NEXT1", "BININV", "NEXT2", "FUNCFAST",
+		"F_REWRET", "F_RETIMM", "F_RETJMP", "F_EQJ", "F_NEJ", "F_LTJ", "F_LEJ",
+		"F_GTJ", "F_GEJ", "SENTINEL", "F_TGT"
+	};
+	if (code == 0) {
+		buffer[0] = '-'; buffer[1] = 0;
+		return buffer;
+	}
+	if (code >= 64) {
+		/* Function callback index */
+		static const char hex[] = "0123456789ABCDEF";
+		buffer[0] = 'C'; buffer[1] = 'A'; buffer[2] = 'L'; buffer[3] = 'L';
+		buffer[4] = hex[(code - 64) >> 4]; buffer[5] = hex[(code - 64) & 15]; buffer[6] = 0;
+		return buffer;
+	}
+	return names[code - 1];
+}
+
+void Script_NativePairStatsDump(void)
+{
+	enum { TOP = 40 };
+	uint32 topCount[TOP];
+	uint16 topIndex[TOP];
+	uint32 total = 0;
+	uint16 i, k, shown = 0;
+
+	for (k = 0; k < TOP; k++) { topCount[k] = 0; topIndex[k] = 0; }
+	for (i = 0; i < 128 * 128; i++) {
+		uint32 c = Script_NativePairStats[i];
+		if (c == 0) continue;
+		total += c;
+		if (c <= topCount[TOP - 1]) continue;
+		for (k = TOP - 1; k > 0 && topCount[k - 1] < c; k--) {
+			topCount[k] = topCount[k - 1];
+			topIndex[k] = topIndex[k - 1];
+		}
+		topCount[k] = c;
+		topIndex[k] = i;
+	}
+	Warning("NATIVEPAIRS total=%lu\n", (unsigned long)total);
+	for (k = 0; k < TOP && topCount[k] != 0; k++) {
+		char a[8], b[8];
+		Warning("NATIVEPAIR %-9s -> %-9s %lu\n",
+			Script_NativeCodeName(topIndex[k] >> 7, a),
+			Script_NativeCodeName(topIndex[k] & 127, b), (unsigned long)topCount[k]);
+		shown++;
+	}
+	(void)shown;
+}
+
+void Script_NativePairStatsPoll(uint32 now)
+{
+	static uint32 s_next;
+	static bool s_registered;
+
+	if (!s_registered) {
+		s_registered = true;
+		atexit(Script_NativePairStatsDump);
+	}
+	if (now < s_next) return;
+	s_next = now + 3600; /* every minute of game time */
+	Script_NativePairStatsDump();
+}
+#endif

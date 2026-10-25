@@ -5,7 +5,9 @@
 #include <string.h>
 #include <stdlib.h>
 #include "types.h"
+#include "../os/common.h"
 #include "../os/math.h"
+#include "../os/error.h"
 
 #include "script.h"
 
@@ -598,6 +600,7 @@ uint16 Script_Unit_Fire(ScriptEngine *script)
 	const UnitInfo *ui;
 	Unit *u;
 	uint16 target;
+	bool tileTarget;
 	UnitType typeID;
 	uint16 distance;
 	bool fireTwice;
@@ -608,7 +611,10 @@ uint16 Script_Unit_Fire(ScriptEngine *script)
 	target = u->targetAttack;
 	if (target == 0 || !Tools_Index_IsValid(target)) return 0;
 
-	if (u->o.type != UNIT_SANDWORM && target == Tools_Index_Encode(Tile_PackTile(u->o.position), IT_TILE)) u->targetAttack = 0;
+	/* Own-tile and tile-object checks can only apply to tile targets. */
+	tileTarget = (target & 0xC000) == 0xC000;
+
+	if (tileTarget && u->o.type != UNIT_SANDWORM && target == Tools_Index_Encode(Tile_PackTile(u->o.position), IT_TILE)) u->targetAttack = 0;
 
 	if (u->targetAttack != target) {
 		Unit_SetTarget(u, target);
@@ -619,7 +625,7 @@ uint16 Script_Unit_Fire(ScriptEngine *script)
 
 	if (u->o.type != UNIT_SANDWORM && u->orientation[ui->o.flags.hasTurret ? 1 : 0].speed != 0) return 0;
 
-	if (Tools_Index_GetType(target) == IT_TILE && Object_GetByPackedTile(Tools_Index_GetPackedTile(target)) != NULL) Unit_SetTarget(u, target);
+	if (tileTarget && Object_GetByPackedTile(Tools_Index_GetPackedTile(target)) != NULL) Unit_SetTarget(u, target);
 
 	if (u->fireDelay != 0) return 0;
 
@@ -768,7 +774,21 @@ uint16 Script_Unit_Rotate(ScriptEngine *script)
 
 	/* Check where we should rotate to */
 	tile = Tools_Index_GetTile(u->targetAttack);
+#ifdef TOS
+	/* Tile_GetDirection is pure: reuse the result while both exact positions are unchanged. */
+	if (u->rotateValid && u->rotateFrom.x == u->o.position.x && u->rotateFrom.y == u->o.position.y &&
+	    u->rotateTo.x == tile.x && u->rotateTo.y == tile.y) {
+		orientation = u->rotateOrientation;
+	} else {
+		orientation = Tile_GetDirection(u->o.position, tile);
+		u->rotateFrom = u->o.position;
+		u->rotateTo = tile;
+		u->rotateOrientation = orientation;
+		u->rotateValid = 1;
+	}
+#else
 	orientation = Tile_GetDirection(u->o.position, tile);
+#endif
 
 	/* If we aren't already looking at it, rotate */
 	if (orientation == current) return 0;
@@ -966,8 +986,50 @@ uint16 Script_Unit_GetInfo(ScriptEngine *script)
 {
 	const UnitInfo *ui;
 	Unit *u;
+#ifdef TOS
+	uint16 what;
+#endif
 
 	u = g_scriptCurrentUnit;
+
+#ifdef TOS
+	/* Range-check first so the switch needs no bounds test, and only the
+	 * cases that need the unit info look it up. */
+	what = STACK_PEEK(1);
+	if (what > 0x13) return 0;
+
+	switch ((uint8)what) {
+		case 0x00: ui = &g_table_unitInfo[u->o.type]; return u->o.hitpoints * 256 / ui->o.hitpoints;
+		case 0x01: return Tools_Index_IsValid(u->targetMove) ? u->targetMove : 0;
+		case 0x02: ui = &g_table_unitInfo[u->o.type]; return ui->fireDistance << 8;
+		case 0x03: return u->o.index;
+		case 0x04: return u->orientation[0].current;
+		case 0x05: return u->targetAttack;
+		case 0x06:
+			if (u->originEncoded == 0 || u->o.type == UNIT_HARVESTER) Unit_FindClosestRefinery(u);
+			return u->originEncoded;
+		case 0x07: return u->o.type;
+		case 0x08: return Tools_Index_Encode(u->o.index, IT_UNIT);
+		case 0x09: return u->movingSpeed;
+		case 0x0A: return abs(u->orientation[0].target - u->orientation[0].current);
+		case 0x0B: return (u->currentDestination.x == 0 && u->currentDestination.y == 0) ? 0 : 1;
+		case 0x0C: return u->fireDelay == 0 ? 1 : 0;
+		case 0x0D: ui = &g_table_unitInfo[u->o.type]; return ui->flags.explodeOnDeath;
+		case 0x0E: return Unit_GetHouseID(u);
+		case 0x0F: return u->o.flags.s.byScenario ? 1 : 0;
+		case 0x10:
+			ui = &g_table_unitInfo[u->o.type];
+			return u->orientation[ui->o.flags.hasTurret ? 1 : 0].current;
+		case 0x11:
+			ui = &g_table_unitInfo[u->o.type];
+			return abs(u->orientation[ui->o.flags.hasTurret ? 1 : 0].target - u->orientation[ui->o.flags.hasTurret ? 1 : 0].current);
+		case 0x12:
+			ui = &g_table_unitInfo[u->o.type];
+			return (ui->movementType & 0x40) == 0 ? 0 : 1;
+		case 0x13: return (u->o.seenByHouses & (1 << g_playerHouseID)) == 0 ? 0 : 1;
+		default:   return 0;
+	}
+#else
 	ui = &g_table_unitInfo[u->o.type];
 
 	switch (STACK_PEEK(1)) {
@@ -995,6 +1057,7 @@ uint16 Script_Unit_GetInfo(ScriptEngine *script)
 		case 0x13: return (u->o.seenByHouses & (1 << g_playerHouseID)) == 0 ? 0 : 1;
 		default:   return 0;
 	}
+#endif
 }
 
 /**
@@ -1612,6 +1675,41 @@ uint16 Script_Unit_FindStructure(ScriptEngine *script)
 	find.index   = 0xFFFF;
 	find.type    = STACK_PEEK(1);
 
+#ifdef TOS
+	/*
+	 * Cache "no structure of this type exists for this house". Existence only
+	 * changes when g_structureEpoch is bumped, so the cache is exact.
+	 */
+	{
+		static uint16 s_epoch;
+		static uint32 s_none[HOUSE_MAX];
+		uint32 bit = (find.type < 32) ? (1UL << find.type) : 0;
+		uint16 house = find.houseID;
+		bool sawAny = false;
+
+		if (s_epoch != g_structureEpoch) {
+			memset(s_none, 0, sizeof(s_none));
+			s_epoch = g_structureEpoch;
+		}
+		if (house < HOUSE_MAX && (s_none[house] & bit) != 0) return 0;
+
+		while (true) {
+			Structure *s;
+
+			s = Structure_Find(&find);
+			if (s == NULL) break;
+			sawAny = true;
+			if (s->state != STRUCTURE_STATE_IDLE) continue;
+			if (s->o.linkedID != 0xFF) continue;
+			if (s->o.script.variables[4] != 0) continue;
+
+			return Tools_Index_Encode(s->o.index, IT_STRUCTURE);
+		}
+
+		if (!sawAny && house < HOUSE_MAX) s_none[house] |= bit;
+		return 0;
+	}
+#else
 	while (true) {
 		Structure *s;
 
@@ -1625,6 +1723,7 @@ uint16 Script_Unit_FindStructure(ScriptEngine *script)
 	}
 
 	return 0;
+#endif
 }
 
 /**

@@ -90,7 +90,11 @@ void GameLoop_Structure(void)
 		Structure *s;
 		House *h;
 
+#ifdef TOS
+		s = Structure_FindNextAny(&find.index);
+#else
 		s = Structure_Find(&find);
+#endif
 		if (s == NULL) break;
 		if (s->o.type == STRUCTURE_SLAB_1x1 || s->o.type == STRUCTURE_SLAB_2x2 || s->o.type == STRUCTURE_WALL) continue;
 
@@ -536,6 +540,9 @@ bool Structure_Place(Structure *s, uint16 position)
 	s->o.seenByHouses |= 1 << s->o.houseID;
 	if (s->o.houseID == g_playerHouseID) s->o.seenByHouses |= 0xFF;
 
+#ifdef TOS
+	g_structureEpoch++;
+#endif
 	s->o.flags.s.isNotOnMap = false;
 
 	s->o.position = Tile_UnpackTile(position);

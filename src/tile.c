@@ -10,6 +10,7 @@
 
 #include "house.h"
 #include "map.h"
+#include "sprites.h"
 #include "tools.h"
 
 
@@ -113,19 +114,60 @@ uint16 Tile_GetDistanceRoundedUp(tile32 from, tile32 to)
  */
 void Tile_RemoveFogInRadius(tile32 tile, uint16 radius)
 {
+	/* Lazily built per-radius offsets, in the original i-major/j-minor order. */
+	enum { FOG_RADIUS_CACHED = 8, FOG_OFFSETS_MAX = (2 * FOG_RADIUS_CACHED + 1) * (2 * FOG_RADIUS_CACHED + 1) };
+	static int8 offsets[FOG_RADIUS_CACHED + 1][FOG_OFFSETS_MAX][2];
+	static uint16 counts[FOG_RADIUS_CACHED + 1];
+	static bool built[FOG_RADIUS_CACHED + 1];
+
 	uint16 packed;
 	uint16 x, y;
 	int16 i, j;
 
-	/* TODO this code could be simplified */
 	packed = Tile_PackTile(tile);
 
 	if (!Map_IsValidPosition(packed)) return;
 
-	/* setting tile from its packed position equals removing the
-	 * non integer part */
 	x = Tile_GetPackedX(packed);
 	y = Tile_GetPackedY(packed);
+
+	if (radius <= FOG_RADIUS_CACHED) {
+		uint16 n;
+
+		if (!built[radius]) {
+			tile32 origin, t;
+			uint16 count = 0;
+
+			Tile_MakeXY(origin, 32, 32);
+			for (i = -(int16)radius; i <= (int16)radius; i++) {
+				for (j = -(int16)radius; j <= (int16)radius; j++) {
+					Tile_MakeXY(t, 32 + i, 32 + j);
+					if (Tile_GetDistanceRoundedUp(origin, t) > radius) continue;
+					offsets[radius][count][0] = (int8)i;
+					offsets[radius][count][1] = (int8)j;
+					count++;
+				}
+			}
+			counts[radius] = count;
+			built[radius] = true;
+		}
+
+		for (n = 0; n < counts[radius]; n++) {
+			int16 px = (int16)x + offsets[radius][n][0];
+			int16 py = (int16)y + offsets[radius][n][1];
+			const Tile *t;
+
+			if (px < 0 || px >= 64 || py < 0 || py >= 64) continue;
+
+			packed = Tile_PackXY(px, py);
+			t = &g_map[packed];
+			if (t->isUnveiled && Tile_IsUnveiled(t->overlayTileID)) continue;
+
+			Map_UnveilTile(packed, g_playerHouseID);
+		}
+		return;
+	}
+
 	Tile_MakeXY(tile, x, y);
 
 	for (i = -radius; i <= radius; i++) {
@@ -394,6 +436,53 @@ int8 Tile_GetDirection(tile32 from, tile32 to)
 	if (quadrant == 0 || quadrant == 3) return (baseOrientation + 64 - i) & 0xFF;
 
 	return (baseOrientation + i) & 0xFF;
+}
+
+/**
+ * Orientation256ToOrientation8(Tile_GetDirection(from, to)) without the full search.
+ * The octant borders are the directions[15] and directions[16] steps (angle offset 16
+ * from an axis), so a single multiply-compare decides the result.
+ */
+uint8 Tile_GetDirection8(tile32 from, tile32 to)
+{
+	static const uint8 sectorOffsets[] = {2, 4, 0, 6};
+
+	int16 dx = (int16)(to.x - from.x);
+	int16 dy = (int16)(to.y - from.y);
+	uint16 quadrant = 0;
+	uint16 minor;
+	uint32 scaledMajor;
+	uint8 sector;
+	bool invert;
+
+	if (abs(dx) + abs(dy) > 8000) {
+		dx /= 2;
+		dy /= 2;
+	}
+
+	if (dy <= 0) {
+		quadrant |= 0x2;
+		dy = -dy;
+	}
+
+	if (dx < 0) {
+		quadrant |= 0x1;
+		dx = -dx;
+	}
+
+	invert = dx < dy;
+	minor = invert ? dx : dy;
+	scaledMajor = (uint32)(invert ? dy : dx) << 8;
+	sector = sectorOffsets[quadrant];
+
+	/* Quadrants 1 and 2 count the angle from the axis for invert, quadrants 0 and 3 for !invert. */
+	if (invert == (quadrant == 1 || quadrant == 2)) {
+		if (scaledMajor < (uint32)minor * 0x297) sector++;
+	} else {
+		sector += (scaledMajor >= (uint32)minor * 0x26A) ? 2 : 1;
+	}
+
+	return sector & 7;
 }
 
 /**

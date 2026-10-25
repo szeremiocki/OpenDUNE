@@ -1191,7 +1191,11 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 			uint8 bodyHouse;
 			layers.count = 0;
 
+#ifdef TOS
+			u = Unit_FindNextAny(&find.index);
+#else
 			u = Unit_Find(&find);
+#endif
 
 			if (u == NULL) break;
 
@@ -1298,7 +1302,11 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 			uint16 index;
 			int spriteFlags;
 
+#ifdef TOS
+			u = Unit_FindNextAny(&find.index);
+#else
 			u = Unit_Find(&find);
+#endif
 
 			if (u == NULL) break;
 

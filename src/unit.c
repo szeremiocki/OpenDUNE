@@ -242,6 +242,10 @@ void GameLoop_Unit(void)
 		s_tickUnitDeviation = g_timerGame + 60;
 	}
 
+#ifdef SCRIPT_NATIVE_PAIR_STATS
+	Script_NativePairStatsPoll(g_timerGame);
+#endif
+
 	find.houseID = HOUSE_INVALID;
 	find.index   = 0xFFFF;
 	find.type    = 0xFFFF;
@@ -250,7 +254,11 @@ void GameLoop_Unit(void)
 		const UnitInfo *ui;
 		Unit *u;
 
+#ifdef TOS
+		u = Unit_FindNextAny(&find.index);
+#else
 		u = Unit_Find(&find);
+#endif
 		if (u == NULL) break;
 
 		ui = &g_table_unitInfo[u->o.type];
@@ -685,6 +693,35 @@ void Unit_Sort(void)
 	House *h;
 	uint16 i;
 
+#ifdef TOS
+	/* Same single bubble pass; the carried (u1, y1) is exactly what the next
+	 * iteration would reload, and the bias table avoids UnitInfo indexing. */
+	static uint16 footBias[UNIT_MAX];
+	static bool footBiasReady = false;
+
+	if (!footBiasReady) {
+		for (i = 0; i < UNIT_MAX; i++) footBias[i] = g_table_unitInfo[i].movementType == MOVEMENT_FOOT ? 0x100 : 0;
+		footBiasReady = true;
+	}
+
+	if (g_unitFindCount != 0) {
+		Unit *u1 = g_unitFindArray[0];
+		uint16 y1 = Tile_GetY(u1->o.position) - footBias[u1->o.type];
+
+		for (i = 0; i + 1 < g_unitFindCount; i++) {
+			Unit *u2 = g_unitFindArray[i + 1];
+			uint16 y2 = Tile_GetY(u2->o.position) - footBias[u2->o.type];
+
+			if ((int16)y1 > (int16)y2) {
+				g_unitFindArray[i] = u2;
+				g_unitFindArray[i + 1] = u1;
+			} else {
+				u1 = u2;
+				y1 = y2;
+			}
+		}
+	}
+#else
 	for (i = 0; i < g_unitFindCount - 1; i++) {
 		Unit *u1;
 		Unit *u2;
@@ -703,6 +740,8 @@ void Unit_Sort(void)
 			g_unitFindArray[i + 1] = u1;
 		}
 	}
+
+#endif
 
 	if (--recountCountdown != 0) return;
 	recountCountdown = 10;
@@ -1728,6 +1767,12 @@ void Unit_UntargetMe(Unit *unit)
 
 	Object_Script_Variable4_Clear(&unit->o);
 
+	/* Bullets/missiles have no target priority and are never encoded as targets or team members. */
+	if (g_table_unitInfo[unit->o.type].flags.isBullet) {
+		Unit_RemoveFromTeam(unit);
+		return;
+	}
+
 	find.houseID = HOUSE_INVALID;
 	find.type    = 0xFFFF;
 	find.index   = 0xFFFF;
@@ -2370,6 +2415,9 @@ void Unit_EnterStructure(Unit *unit, Structure *s)
 		House *h;
 
 		h = House_Get_ByIndex(s->o.houseID);
+#ifdef TOS
+		g_structureEpoch++;
+#endif
 		s->o.houseID = Unit_GetHouseID(unit);
 		h->structuresBuilt = Structure_GetStructuresBuilt(h);
 
@@ -2739,7 +2787,11 @@ void Unit_RemoveFromTile(Unit *unit, uint16 packed)
 /** Run ADD bookkeeping independently of viewport candidate marking. */
 void Unit_AddToTile(Unit *unit, uint16 packed)
 {
-	Map_UnveilTile(packed, Unit_GetHouseID(unit));
+	/* Map_UnveilTile only acts for the player's house on still-veiled tiles; skip the call otherwise. */
+	if (Unit_GetHouseID(unit) == g_playerHouseID) {
+		const Tile *t = &g_map[packed];
+		if (Tile_IsOutOfMap(packed) || !t->isUnveiled || !Tile_IsUnveiled(t->overlayTileID)) Map_UnveilTile(packed, g_playerHouseID);
+	}
 	Map_MarkTileDirty(packed);
 }
 

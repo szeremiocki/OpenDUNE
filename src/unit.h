@@ -172,6 +172,13 @@ typedef struct Unit {
 	uint8  route[14];                                       /*!< The current route the Unit is following. */
 #ifdef TOS
 	ViewportCompositeKey viewportKey;
+	tile32 rotateFrom;                                      /*!< Unit position of the memoized Script_Unit_Rotate direction. */
+	tile32 rotateTo;                                        /*!< Target position of the memoized direction. */
+	int8   rotateOrientation;                               /*!< Memoized Tile_GetDirection(rotateFrom, rotateTo). */
+	uint8  rotateValid;                                     /*!< Non-zero if the memo above is set. */
+	tile32 distanceFrom;                                    /*!< Unit position of the memoized structure distance. */
+	uint16 distanceEncoded;                                 /*!< Encoded structure of the memoized distance, 0 if unset. */
+	uint16 distanceValue;                                   /*!< Memoized Object_GetDistanceToEncoded result. */
 #endif
 } Unit;
 
@@ -332,5 +339,29 @@ extern uint16 Unit_GetTargetStructurePriority(Unit *unit, struct Structure *s);
 extern uint16 Unit_FindBestTargetEncoded(Unit *unit, uint16 mode);
 extern Unit *Unit_FindBestTargetUnit(Unit *u, uint16 mode);
 extern Unit *Unit_Sandworm_FindBestTarget(Unit *unit);
+
+#ifdef TOS
+#include "pool/unit.h"
+#include "opendune.h"
+
+/**
+ * Unfiltered equivalent of Unit_Find(): advances *index (start at 0xFFFF)
+ * and returns the next on-map unit, or NULL. Inlined to avoid call overhead.
+ */
+static inline Unit *Unit_FindNextAny(uint16 *index)
+{
+	uint16 i = *index;
+	if (i >= g_unitFindCount && i != 0xFFFF) return NULL;
+	for (i++; i < g_unitFindCount; i++) {
+		Unit *u = g_unitFindArray[i];
+		if (u == NULL) continue;
+		if (u->o.flags.s.isNotOnMap && g_validateStrictIfZero == 0) continue;
+		*index = i;
+		return u;
+	}
+	*index = i;
+	return NULL;
+}
+#endif
 
 #endif /* UNIT_H */

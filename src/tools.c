@@ -102,25 +102,23 @@ uint16 Tools_Index_Encode(uint16 index, IndexType type)
  */
 bool Tools_Index_IsValid(uint16 encoded)
 {
-	uint16 index;
+	/* Mask-only decoding: avoids the costly 68000 shifts and the tile unpack. */
+	uint16 type = encoded & 0xC000;
 
-	if (encoded == 0) return false;
-
-	index = Tools_Index_Decode(encoded);
-
-	switch (Tools_Index_GetType(encoded)) {
-		case IT_UNIT:
-			if (index >= UNIT_INDEX_MAX) return false;
-			return Unit_Get_ByIndex(index)->o.flags.s.used && Unit_Get_ByIndex(index)->o.flags.s.allocated;
-
-		case IT_STRUCTURE:
-			if (index >= STRUCTURE_INDEX_MAX_HARD) return false;
-			return Structure_Get_ByIndex(index)->o.flags.s.used;
-
-		case IT_TILE : return true;
-
-		default: return false;
+	if (type == 0x4000) {
+		const Unit *u;
+		uint16 index = encoded & 0x3FFF;
+		if (index >= UNIT_INDEX_MAX) return false;
+		u = Unit_Get_ByIndex(index);
+		return u->o.flags.s.used && u->o.flags.s.allocated;
 	}
+	if (type == 0xC000) return true;
+	if (type == 0x8000) {
+		uint16 index = encoded & 0x3FFF;
+		if (index >= STRUCTURE_INDEX_MAX_HARD) return false;
+		return Structure_Get_ByIndex(index)->o.flags.s.used;
+	}
+	return false;
 }
 
 /**

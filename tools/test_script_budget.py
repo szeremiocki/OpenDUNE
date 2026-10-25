@@ -172,7 +172,11 @@ static uint16 replacement_count_call(ScriptEngine *script) {
     record_call(script, 11);
     return ++script->variables[1];
 }
+struct Unit *g_scriptCurrentUnit;
+/* Fake unit: targetAttack sits at byte offset 84 (UNIT_TARGETATTACK in the runner). */
+static uint16 unitWords[64];
 uint16 Script_Unit_GetInfo(ScriptEngine *script) {
+    if (STACK_PEEK(1) == 5) return unitWords[42];
     record_call(script, 12);
     return STACK_PEEK(1);
 }
@@ -535,6 +539,41 @@ int main(void) {
         compare(script, 3);
         nativeCursorCase = 0;
     }
+    /* PUSH #5 + Script_Unit_GetInfo (callback 11) reads targetAttack inline. */
+    g_scriptCurrentUnit = (struct Unit *)unitWords;
+    for (unsigned firstWords = 1; firstWords <= 2; firstWords++) {
+        for (unsigned target = 0; target < 3; target++) {
+            fill();
+            unitWords[42] = target * 0x8001;
+            words[0] = firstWords == 1 ? inline_command(SCRIPT_PUSH, 5) :
+                       HTOBE16(0x2000 | (SCRIPT_PUSH << 8));
+            if (firstWords == 2) words[1] = HTOBE16(5);
+            words[firstWords] = inline_command(SCRIPT_FUNCTION, 11);
+            words[firstWords + 1] = inline_command(SCRIPT_FUNCTION, 0);
+            for (unsigned b = 0; b < sizeof(budgets) / sizeof(budgets[0]); b++)
+                compare(initial(), budgets[b]);
+            script = initial();
+            script.stackPointer = 0;
+            compare(script, 3);
+            script.stackPointer = 255;
+            compare(script, 3);
+            script = initial();
+            script.script = words + firstWords;
+            compare(script, 2);
+            compare_steps(initial(), 4);
+            script = initial();
+            nativeCursorCase = 22;
+            compare(script, 3);
+            nativeCursorCase = 0;
+        }
+    }
+    /* A null current unit takes the plain path instead of dereferencing it. */
+    g_scriptCurrentUnit = NULL;
+    fill();
+    words[0] = inline_command(SCRIPT_PUSH, 5);
+    words[1] = inline_command(SCRIPT_FUNCTION, 11);
+    compare(initial(), 3);
+    g_scriptCurrentUnit = (struct Unit *)unitWords;
     /* Overlapping pairs execute left-to-right. Entering the middle still
      * enables its own pair, while budget two must not consume three opcodes. */
     fill();

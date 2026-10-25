@@ -16,8 +16,17 @@ enum {
 
 struct PoolFindStruct;
 
+#ifdef TOS
+extern struct Structure *g_structureFindArray[STRUCTURE_INDEX_MAX_SOFT];
+extern uint16 g_structureFindCount;
+#endif
+
 extern struct Structure *Structure_Get_ByIndex(uint16 index);
 extern struct Structure *Structure_Find(struct PoolFindStruct *find);
+
+#ifdef TOS
+extern uint16 g_structureEpoch; /*!< Bumped whenever structure existence, house or on-map state may change. */
+#endif
 
 extern void Structure_Init(void);
 extern void Structure_Recount(void);

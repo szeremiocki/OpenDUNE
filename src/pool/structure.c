@@ -8,14 +8,16 @@
 #include "structure.h"
 
 #include "house.h"
+#include "unit.h"
 #include "pool.h"
 #include "../house.h"
 #include "../opendune.h"
 #include "../structure.h"
+#include "../unit.h"
 
 static struct Structure g_structureArray[STRUCTURE_INDEX_MAX_HARD];
-static struct Structure *g_structureFindArray[STRUCTURE_INDEX_MAX_SOFT];
-static uint16 g_structureFindCount;
+struct Structure *g_structureFindArray[STRUCTURE_INDEX_MAX_SOFT];
+uint16 g_structureFindCount;
 
 /**
  * Get a Structure from the pool with the indicated index.
@@ -85,8 +87,15 @@ Structure *Structure_Find(PoolFindStruct *find)
  *
  * @param address If non-zero, the new location of the Structure array.
  */
+#ifdef TOS
+uint16 g_structureEpoch;
+#endif
+
 void Structure_Init(void)
 {
+#ifdef TOS
+	g_structureEpoch++;
+#endif
 	memset(g_structureArray, 0, sizeof(g_structureArray));
 	memset(g_structureFindArray, 0, sizeof(g_structureFindArray));
 	g_structureFindCount = 0;
@@ -98,6 +107,9 @@ void Structure_Init(void)
  */
 void Structure_Recount(void)
 {
+#ifdef TOS
+	g_structureEpoch++;
+#endif
 	uint16 index;
 	PoolFindStruct find = { -1, -1, -1 };
 	House *h = House_Find(&find);
@@ -124,6 +136,9 @@ void Structure_Recount(void)
  */
 Structure *Structure_Allocate(uint16 index, uint8 type)
 {
+#ifdef TOS
+	g_structureEpoch++;
+#endif
 	Structure *s = NULL;
 
 	switch (type) {
@@ -160,6 +175,19 @@ Structure *Structure_Allocate(uint16 index, uint8 type)
 	}
 	assert(s != NULL);
 
+#ifdef TOS
+	/* Drop memoized distances (Object_GetDistanceToEncoded) to a previous occupant of this index. */
+	{
+		uint16 encoded = (uint16)(index | 0x8000);
+		uint16 i;
+
+		for (i = 0; i < UNIT_INDEX_MAX; i++) {
+			Unit *u = Unit_Get_ByIndex(i);
+			if (u->distanceEncoded == encoded) u->distanceEncoded = 0;
+		}
+	}
+#endif
+
 	/* Initialize the Structure */
 	memset(s, 0, sizeof(Structure));
 	s->o.index             = index;
@@ -179,6 +207,9 @@ Structure *Structure_Allocate(uint16 index, uint8 type)
  */
 void Structure_Free(Structure *s)
 {
+#ifdef TOS
+	g_structureEpoch++;
+#endif
 	int i;
 
 	memset(&s->o.flags, 0, sizeof(s->o.flags));

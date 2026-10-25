@@ -92,7 +92,7 @@ static void Warning(const char *format, const char *filename) {
     warnings++;
 }
 static void *test_calloc(size_t count, size_t size) {
-    if (failDecode && count == 4 && size == 16)
+    if (failDecode && count == 5 && size == 16)
         return NULL;
     return calloc(count, size);
 }
@@ -356,7 +356,7 @@ int main(void) {
         harness = harness.replace("/* ENDIAN */", str(ROOT / "src/os/endian.h"))
         harness = harness.replace("/* FOURCC */", str(ROOT / "include/multichar.h"))
         harness = harness.replace("/* HANDLERS */",
-                                  ",".join(hex(0x100000 + i * 16) for i in range(55)))
+                                  ",".join(hex(0x100000 + i * 16) for i in range(57)))
         harness = harness.replace("/* PRODUCTION */", production)
         with tempfile.TemporaryDirectory(prefix="script-native-loader-") as directory:
             c_file = Path(directory) / "test.c"

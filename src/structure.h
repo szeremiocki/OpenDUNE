@@ -165,4 +165,28 @@ extern uint32 Structure_GetBuildable(Structure *s);
 extern void Structure_HouseUnderAttack(uint8 houseID);
 extern uint16 Structure_AI_PickNextToBuild(Structure *s);
 
+#ifdef TOS
+#include "pool/structure.h"
+#include "opendune.h"
+
+/**
+ * Unfiltered iterator over g_structureFindArray only (the slab/wall specials
+ * are never in it). Start *index at 0xFFFF.
+ */
+static inline Structure *Structure_FindNextAny(uint16 *index)
+{
+	uint16 i = *index;
+	if (i >= g_structureFindCount && i != 0xFFFF) return NULL;
+	for (i++; i < g_structureFindCount; i++) {
+		Structure *s = g_structureFindArray[i];
+		if (s == NULL) continue;
+		if (s->o.flags.s.isNotOnMap && g_validateStrictIfZero == 0) continue;
+		*index = i;
+		return s;
+	}
+	*index = i;
+	return NULL;
+}
+#endif
+
 #endif /* STRUCTURE_H */

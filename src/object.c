@@ -115,22 +115,54 @@ uint16 Object_GetDistanceToEncoded(Object *o, uint16 encoded)
 {
 	Structure *s;
 	tile32 position;
+#ifdef TOS
+	Unit *u = NULL;
+#endif
+
+	/* Unit targets (the common case) need no structure lookup or re-decoding. */
+	if ((encoded & 0xC000) == 0x4000) {
+		uint16 index = encoded & 0x3FFF;
+
+		if (index < UNIT_INDEX_MAX) return Tile_GetDistance(o->position, Unit_Get_ByIndex(index)->o.position);
+		position.x = 0;
+		position.y = 0;
+		return Tile_GetDistance(o->position, position);
+	}
 
 	s = Tools_Index_GetStructure(encoded);
 
 	if (s != NULL) {
 		uint16 packed;
+#ifdef TOS
+		/* Structures never move; Structure_Allocate clears memos of a reused index. */
+		if (o->flags.s.isUnit) u = (Unit *)o;
+
+		if (u != NULL && u->distanceEncoded == encoded &&
+		    u->distanceFrom.x == o->position.x && u->distanceFrom.y == o->position.y) {
+			return u->distanceValue;
+		}
+#endif
 
 		position = s->o.position;
 		packed = Tile_PackTile(position);
 
 		/* ENHANCEMENT -- Originally this was o->type, where 'o' refers to a unit. */
-		packed += g_table_structure_layoutEdgeTiles[g_table_structureInfo[s->o.type].layout][(Orientation_Orientation256ToOrientation8(Tile_GetDirection(o->position, position)) + 4) & 7];
+		packed += g_table_structure_layoutEdgeTiles[g_table_structureInfo[s->o.type].layout][(Tile_GetDirection8(o->position, position) + 4) & 7];
 
 		position = Tile_UnpackTile(packed);
 	} else {
 		position = Tools_Index_GetTile(encoded);
 	}
 
+#ifdef TOS
+	if (s != NULL && u != NULL) {
+		uint16 distance = Tile_GetDistance(o->position, position);
+
+		u->distanceFrom = o->position;
+		u->distanceEncoded = encoded;
+		u->distanceValue = distance;
+		return distance;
+	}
+#endif
 	return Tile_GetDistance(o->position, position);
 }

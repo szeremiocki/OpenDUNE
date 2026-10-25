@@ -69,6 +69,14 @@ typedef struct ScriptInfo {
 
 #ifdef TOS
 extern bool Script_CompileNative(ScriptInfo *scriptInfo);
+
+/* Opcode-pair statistics for the native runner. The assembly counterpart is
+ * PAIRSTATS in script_native_runner.s; switch both together. Logs the most
+ * frequent sequential pairs to error.log (NATIVEPAIR lines). */
+#if defined(TOS) && !defined(NATIVE_EMULATED)
+/* #define SCRIPT_NATIVE_PAIR_STATS 1 */
+extern void Script_NativePairStatsPoll(uint32 now);
+#endif
 extern bool Script_RunNative(ScriptEngine *script, uint16 budget, bool stopOnDelay);
 extern bool Script_RunNativeFallback(ScriptEngine *script, uint16 budget, bool stopOnDelay);
 extern bool Script_NativeError(ScriptEngine *script, uint16 opcode, uint16 parameter);
