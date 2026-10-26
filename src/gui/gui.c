@@ -445,6 +445,46 @@ void GUI_DisplayText(const char *str, int importance, ...)
 	}
 }
 
+/* Draws one glyph cell into screen at index x; rows are fc->width + remainingWidth apart. */
+static void GUI_RenderGlyph(const FontChar *fc, uint8 *screen, uint16 x, uint16 remainingWidth)
+{
+	uint8 i, j;
+	const uint8 *fontData;
+
+	if (g_colours[0] != 0) {
+		/* fill unused lines with g_colours[0] */
+		for (j = 0; j < fc->unusedLines; j++) {
+			for (i = 0; i < fc->width; i++) screen[x++] = g_colours[0];
+			x += remainingWidth;
+		}
+	} else {
+		/* unused lines are left untouched (transparent). Row stride is
+		 * fc->width + remainingWidth either way (SCREEN_WIDTH normally,
+		 * or the tightly packed glyphBuf width when writing to planar). */
+		x += fc->unusedLines * (uint16)(fc->width + remainingWidth);
+	}
+
+	if (fc->usedLines == 0) return;
+
+	fontData = fc->data;
+	for (j = 0; j < fc->usedLines; j++) {
+		for (i = 0; i < fc->width; i++) {
+			uint8 c = g_colours[*fontData++ & 0xF];
+			if (c != 0) screen[x] = c;
+			x++;
+		}
+		x += remainingWidth;
+	}
+
+	if (g_colours[0] == 0) return;
+
+	/* fill unused lines with g_colours[0] */
+	for (j = fc->unusedLines + fc->usedLines; j < g_fontCurrent->height; j++) {
+		for (i = 0; i < fc->width; i++) screen[x++] = g_colours[0];
+		x += remainingWidth;
+	}
+}
+
 /**
  * Draw a char on the screen.
  *
@@ -459,9 +499,6 @@ static void GUI_DrawChar(unsigned char c, uint16 x, uint16 y)
 	FontChar *fc;
 
 	uint16 remainingWidth;
-	uint8 i;
-	uint8 j;
-	const uint8 * fontData;
 	uint16 startX = x;
 	uint16 startY = y;
 #ifdef TOS
@@ -519,40 +556,8 @@ static void GUI_DrawChar(unsigned char c, uint16 x, uint16 y)
 	remainingWidth = SCREEN_WIDTH - fc->width;
 #endif
 
-	if (g_colours[0] != 0) {
-		/* fill unused lines with g_colours[0] */
-		for (j = 0; j < fc->unusedLines; j++) {
-			for (i = 0; i < fc->width; i++) screen[x++] = g_colours[0];
-			x += remainingWidth;
-		}
-	} else {
-		/* unused lines are left untouched (transparent). Row stride is
-		 * fc->width + remainingWidth either way (SCREEN_WIDTH normally,
-		 * or the tightly packed glyphBuf width when writing to planar). */
-		x += fc->unusedLines * (uint16)(fc->width + remainingWidth);
-	}
+	GUI_RenderGlyph(fc, screen, x, remainingWidth);
 
-	if (fc->usedLines == 0) goto l_present;
-
-	fontData = fc->data;
-	for (j = 0; j < fc->usedLines; j++) {
-		for (i = 0; i < fc->width; i++) {
-			uint8 c = g_colours[*fontData++ & 0xF];
-			if (c != 0) screen[x] = c;
-			x++;
-		}
-		x += remainingWidth;
-	}
-
-	if (g_colours[0] == 0) goto l_present;
-
-	/* fill unused lines with g_colours[0] */
-	for (j = fc->unusedLines + fc->usedLines; j < g_fontCurrent->height; j++) {
-		for (i = 0; i < fc->width; i++) screen[x++] = g_colours[0];
-		x += remainingWidth;
-	}
-
-l_present:
 #ifdef TOS
 	if (toPlanar) {
 		Video_Atari_PresentChunkyTransparent(glyphBuf, fc->width,
@@ -561,6 +566,117 @@ l_present:
 #endif
 	return;
 }
+
+#ifdef TOS
+#define TEXT_PLANAR_ENTRIES 4
+#define TEXT_PLANAR_STRIP_WIDTH 80
+#define TEXT_PLANAR_STRIP_WORDS (TEXT_PLANAR_STRIP_WIDTH / 16 * TEXT_PLANAR_HEIGHT * 5)
+#define TEXT_PLANAR_MAX_WIDTH 128
+#define TEXT_PLANAR_HEIGHT 16
+
+typedef struct TextPlanarEntry {
+	const char *text; /* key: String_Get_ByIndex() pointers are stable after String_Init() */
+	uint16 x, top, width, height;
+	/* Per strip: planar pixels, then one mask word per 16 pixel group. Strip 1 starts at
+	 * TEXT_PLANAR_STRIP_WORDS and only needs the remaining 3 groups. */
+	uint16 store[TEXT_PLANAR_STRIP_WORDS + (TEXT_PLANAR_MAX_WIDTH - TEXT_PLANAR_STRIP_WIDTH) / 16 * TEXT_PLANAR_HEIGHT * 5];
+} TextPlanarEntry;
+
+static TextPlanarEntry s_textPlanar[TEXT_PLANAR_ENTRIES];
+static uint16 s_textPlanarNext;
+static bool s_textPlanarAllowed;
+static const char *s_textPlanarKey;
+
+static bool GUI_TextPlanar_Usable(void)
+{
+	return GFX_Screen_IsActive(SCREEN_0) && Video_Atari_CursorDirect() && !GUI_Sidebar_Active();
+}
+
+static void GUI_TextPlanar_Present(const TextPlanarEntry *entry)
+{
+	uint16 i, strips = (entry->width + TEXT_PLANAR_STRIP_WIDTH - 1) / TEXT_PLANAR_STRIP_WIDTH;
+
+	for (i = 0; i < strips; i++) {
+		uint16 stripWidth = min(TEXT_PLANAR_STRIP_WIDTH, entry->width - i * TEXT_PLANAR_STRIP_WIDTH);
+		const uint16 *pixels = entry->store + i * TEXT_PLANAR_STRIP_WORDS;
+
+		Video_Atari_PresentPlanarSprite(pixels, pixels + (stripWidth >> 4) * entry->height * 4,
+		                                stripWidth, entry->height, entry->x + i * TEXT_PLANAR_STRIP_WIDTH, entry->top);
+	}
+}
+
+/* Builds the planar image of the viewport message and presents it. The slot is keyed by
+ * s_textPlanarKey, the original message pointer: unlike the formatted copy that reaches
+ * GUI_DrawText(), it points into the string table, which is never written after String_Init(). */
+static bool GUI_DrawTextPlanarCached(const char *string, int16 left, int16 top)
+{
+	static union { uint32 align; uint8 bytes[TEXT_PLANAR_MAX_WIDTH * TEXT_PLANAR_HEIGHT]; } canvas;
+	const Font *font = g_fontCurrent;
+	TextPlanarEntry *entry, *victim;
+	uint16 i, height, strips;
+
+	if (!s_textPlanarAllowed || !GUI_TextPlanar_Usable()) return false;
+	height = font->height;
+	if (height == 0 || height > TEXT_PLANAR_HEIGHT || left < 0 || top < 40 || top + height > 200) return false;
+
+	{
+		const char *s;
+		uint16 phase = left & 15, x = phase, extent = phase, width;
+
+		for (s = string; *s != '\0'; s++) {
+			const FontChar *fc = &font->chars[(unsigned char)*s];
+			int advance = (int)fc->width + g_fontCharOffset;
+
+			if (*s == '\n' || *s == '\r' || advance < 0) return false;
+			if (fc->data != NULL && x + fc->width > extent) extent = x + fc->width;
+			x += advance;
+			if (x > 240) return false;
+		}
+		width = (extent + 15) & ~15;
+		if (extent == phase || width > TEXT_PLANAR_MAX_WIDTH || (left & ~15) + width > 240) return false;
+
+		memset(canvas.bytes, 0, (size_t)width * height);
+		x = phase;
+		for (s = string; *s != '\0'; s++) {
+			const FontChar *fc = &font->chars[(unsigned char)*s];
+
+			if (fc->data != NULL) GUI_RenderGlyph(fc, canvas.bytes, x, width - fc->width);
+			x += fc->width + g_fontCharOffset;
+		}
+
+		victim = &s_textPlanar[s_textPlanarNext];
+		s_textPlanarNext = (s_textPlanarNext + 1) % TEXT_PLANAR_ENTRIES;
+
+		strips = (width + TEXT_PLANAR_STRIP_WIDTH - 1) / TEXT_PLANAR_STRIP_WIDTH;
+		for (i = 0; i < strips; i++) {
+			uint16 stripWidth = min(TEXT_PLANAR_STRIP_WIDTH, width - i * TEXT_PLANAR_STRIP_WIDTH);
+			uint16 groups = stripWidth >> 4, row, column;
+			const uint8 *source = canvas.bytes + i * TEXT_PLANAR_STRIP_WIDTH;
+			uint16 *masks;
+
+			uint16 *pixels = victim->store + i * TEXT_PLANAR_STRIP_WORDS;
+
+			Video_Atari_EncodePlanarStrided(source, width, pixels, stripWidth, height);
+			masks = pixels + groups * height * 4;
+			memset(masks, 0, (size_t)groups * height * sizeof(uint16));
+			for (row = 0; row < height; row++) {
+				for (column = 0; column < stripWidth; column++) {
+					if (source[row * width + column] != 0) masks[row * groups + (column >> 4)] |= 0x8000u >> (column & 15);
+				}
+			}
+		}
+		victim->text = s_textPlanarKey;
+		victim->x = left & ~15;
+		victim->top = top;
+		victim->width = width;
+		victim->height = height;
+		entry = victim;
+	}
+
+	GUI_TextPlanar_Present(entry);
+	return true;
+}
+#endif
 
 /**
  * Draw a string to the screen.
@@ -598,6 +714,7 @@ void GUI_DrawText(const char *string, int16 left, int16 top, uint8 fgColour, uin
 	sidebarText = GUI_Sidebar_Active() && strlen(string) < 240;
 	if (sidebarText && GUI_Sidebar_FragmentBegin(SIDEBAR_FRAGMENT_TEXT, string, left, top,
 	    0, 0, 0, g_colours)) return;
+	if (!sidebarText && GUI_DrawTextPlanarCached(string, left, top)) return;
 #endif
 	s = string;
 	x = left;
@@ -730,6 +847,29 @@ void GUI_DrawText_Wrapper(const char *string, int16 left, int16 top, uint8 fgCol
 
 	GUI_DrawText(textBuffer, left, top, fgColour, bgColour);
 }
+
+#ifdef TOS
+/* GUI_DrawText_Wrapper() for the viewport message. A cache hit skips the wrapper entirely, which
+ * is safe because the caller always passes the same position, flags and colours for a given string. */
+void GUI_DrawText_Planar(const char *string, int16 left, int16 top, uint8 fgColour, uint8 bgColour, int flags)
+{
+	uint16 i;
+
+	if (string != NULL && GUI_TextPlanar_Usable()) {
+		for (i = 0; i < TEXT_PLANAR_ENTRIES; i++) {
+			if (s_textPlanar[i].text == string) {
+				GUI_TextPlanar_Present(&s_textPlanar[i]);
+				return;
+			}
+		}
+	}
+
+	s_textPlanarKey = string;
+	s_textPlanarAllowed = true;
+	GUI_DrawText_Wrapper(string, left, top, fgColour, bgColour, flags);
+	s_textPlanarAllowed = false;
+}
+#endif
 
 #ifdef TOS
 bool GUI_Sidebar_ButtonBegin(const Widget *w, uint8 colour)

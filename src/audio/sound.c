@@ -416,6 +416,8 @@ void Sound_Output_Feedback(uint16 index)
 		Driver_Sound_Play(g_feedback[index].soundId, 0xFF);
 
 		g_viewportMessageText = String_Get_ByIndex(g_feedback[index].messageId);
+		/* Most feedback entries have an empty message; nothing to draw or invalidate for those. */
+		if (*g_viewportMessageText == '\0') g_viewportMessageText = NULL;
 
 		if ((g_viewportMessageCounter & 1) != 0) {
 			GUI_InvalidateViewportMessage();

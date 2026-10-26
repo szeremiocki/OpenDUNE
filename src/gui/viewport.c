@@ -1437,7 +1437,11 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 	}
 
 	if ((g_viewportMessageCounter & 1) != 0 && g_viewportMessageText != NULL) {
+#ifdef TOS
+		GUI_DrawText_Planar(g_viewportMessageText, 112, 139, 15, 0, 0x132);
+#else
 		GUI_DrawText_Wrapper(g_viewportMessageText, 112, 139, 15, 0, 0x132);
+#endif
 		if (trackCopyDamage) {
 			minX[6] = -1;
 			maxX[6] = 14;
