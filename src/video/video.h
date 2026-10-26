@@ -193,7 +193,8 @@ extern void Video_Atari_PresentPlanarSprite(const uint16 *pixels, const uint16 *
 extern void Video_Atari_PresentPlanarSpriteStrided(const uint16 *pixels, const uint16 *masks,
                                                  uint16 width, uint16 height, int16 x, int16 y,
                                                  uint16 sourceWidth);
-extern bool Video_Atari_ViewportBlitter(void);
+extern bool g_videoViewportBlitter;
+#define Video_Atari_ViewportBlitter() (g_videoViewportBlitter)
 typedef struct Video_Atari_SpriteBlitPlan {
 	uint16 words, firstMask, lastMask;
 	int16 sourceXinc, sourceYinc, destinationYinc;

@@ -54,7 +54,8 @@ static uint32 s_center_image_offset = 0;
 static uint8 *s_planarBase = NULL;
 /* ST/STE: composite the mouse cursor directly into the planar screen */
 static bool s_curDirect = false;
-static bool s_viewportBlitter = false;
+bool g_videoViewportBlitter = false;
+#define s_viewportBlitter g_videoViewportBlitter
 static bool s_blitterTileSetup = false;
 
 #define BLITTER_SRC_XINC ((volatile int16 *)0xFFFF8A20UL)
@@ -2864,11 +2865,6 @@ void Video_Atari_DecodePlanarTile(const uint8 *src, const uint8 *palette, uint16
 		}
 	}
 	Video_Atari_EncodePlanarWithLookup(chunky.bytes, pixels, 16, 16, s_tilePenPairMap, 16);
-}
-
-bool Video_Atari_ViewportBlitter(void)
-{
-	return s_viewportBlitter;
 }
 
 #if 0 /* Experimental exclusive BLiTTER ownership: no IRQ barriers. */
