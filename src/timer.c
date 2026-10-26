@@ -29,6 +29,9 @@
 #include "types.h"
 #include "os/sleep.h"
 #include "os/error.h"
+#ifdef TOS
+#include "os/atari.h"
+#endif
 
 #include "timer.h"
 
@@ -72,6 +75,10 @@ uint32 Timer_GetTime(void)
 	return t;
 #elif defined(TOS)
 	/* use the 200 HZ system timer which has a 5ms granularity */
+#if ATARI_SUPERVISOR_RESIDENT
+	/* get_sysvar() would still issue a Super(1) GEMDOS trap on every call. */
+	if (g_atariSupervisorResident) return *(volatile uint32 *)0x4ba * 5;
+#endif
 	return get_sysvar(_hz_200) * 5;
 #elif defined(__WATCOMC__)
 	return clock() * 1000 / CLOCKS_PER_SEC;
