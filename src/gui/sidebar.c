@@ -177,7 +177,7 @@ bool GUI_Sidebar_FragmentBegin(uint16 kind, const char *text, int16 left, int16 
 	for (i = 0; i < SIDEBAR_FRAGMENT_WAYS; i++) {
 		SidebarFragment *entry = set[i];
 		uint16 row, group;
-		if (entry == NULL || entry->hash != hash || memcmp(&entry->key, key, sizeof(*key)) != 0 ||
+		if (entry == NULL || entry->hash != hash || !Memory_Equal16(&entry->key, key, sizeof(*key)) ||
 		    strcmp(entry->text, text) != 0) continue;
 		for (; i != 0; i--) set[i] = set[i - 1];
 		set[0] = entry;

@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "types.h"
+#include "../os/common.h"
 
 #include "font.h"
 #include "gui.h"
@@ -690,7 +691,7 @@ static uint16 GUI_Widget_ActionPanel_GetPlanarActionType(bool forceDraw)
 				break;
 		}
 	}
-	if (!forceDraw && GUI_Sidebar_Valid() && memcmp(&state, &displayed, sizeof(state)) == 0) return 0;
+	if (!forceDraw && GUI_Sidebar_Valid() && Memory_Equal16(&state, &displayed, sizeof(state))) return 0;
 	displayed = state;
 	return state.actionType;
 }
