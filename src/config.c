@@ -23,6 +23,7 @@ DuneCfg g_config;
 uint16 g_announcementPhase = 1;
 uint16 g_creditsPhase = 1;
 bool g_enableCosmeticAnimations = true;
+uint16 g_blinkEffect = 9;
 bool g_enableSoundMusic = true;
 bool g_enableVoices = true;
 /* Options load before Video_Init; resolve the default after machine detection. */
@@ -57,6 +58,8 @@ void Config_LoadAnimationPhases(void)
 	g_creditsPhase = Config_ReadAnimationPhase("phase_credits");
 	s_viewportFade = Config_ReadAnimationOption("viewport_fade", -1, 1);
 	g_enableCosmeticAnimations = Config_ReadAnimationOption("cosmetic_animations", 1, 1) != 0;
+	g_blinkEffect = Config_ReadAnimationOption("blink_effect", 9, 9);
+	if (g_blinkEffect == 0) g_blinkEffect = 9;
 }
 
 bool Config_ViewportFadeEnabled(void)

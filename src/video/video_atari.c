@@ -2915,6 +2915,43 @@ typedef struct PlanarBlit {
 	uint16 height;
 } PlanarBlit;
 
+/* Highlight recipes: per destination plane, 0-3 copy a source colour plane,
+ * 4-7 fill the plane inside the sprite's opacity (masks are replicated per
+ * plane), HL_ZERO leaves it clear. Colours change in a fixed, not chosen, way. */
+#define HL_ZERO 8
+static const uint8 s_highlightRecipes[VIDEO_ATARI_HIGHLIGHT_EFFECTS][4] = {
+	{0, 1, 2, 7},       /* 1: force plane 3 */
+	{3, 1, 2, 0},       /* 2: swap planes 0 and 3 */
+	{0, 2, 1, 3},       /* 3: swap planes 1 and 2 */
+	{4, 1, 2, 3},       /* 4: force plane 0 */
+	{3, 2, 1, 0},       /* 5: reverse planes */
+	{1, 2, 3, 0},       /* 6: rotate planes */
+	{0, 1, 2, HL_ZERO}, /* 7: clear plane 3 */
+	{0, 5, 2, 3},       /* 8: force plane 1 */
+	{0, 1, 6, 3}        /* 9: force plane 2 */
+};
+static const uint8 *s_spriteHighlight = NULL;
+
+void Video_Atari_SetSpriteHighlight(uint16 effect)
+{
+	s_spriteHighlight = effect != 0 && effect <= VIDEO_ATARI_HIGHLIGHT_EFFECTS ?
+	    s_highlightRecipes[effect - 1] : NULL;
+}
+
+void Video_Atari_HighlightPixels(uint16 *dst, const uint16 *pixels, const uint16 *masks,
+                                 uint16 groups, uint16 effect)
+{
+	const uint8 *recipe = s_highlightRecipes[effect - 1];
+	uint16 group, plane;
+
+	for (group = 0; group < groups; group++, pixels += 4, masks += 4, dst += 4) {
+		for (plane = 0; plane < 4; plane++) {
+			uint8 source = recipe[plane];
+			dst[plane] = source < 4 ? pixels[source] : source < HL_ZERO ? masks[source - 4] : 0;
+		}
+	}
+}
+
 static const uint16 s_blitterLeftMasks[16] = {
 	0xffff, 0x7fff, 0x3fff, 0x1fff, 0x0fff, 0x07ff, 0x03ff, 0x01ff,
 	0x00ff, 0x007f, 0x003f, 0x001f, 0x000f, 0x0007, 0x0003, 0x0001
@@ -3000,6 +3037,32 @@ static void Video_Atari_BlitMasked(void)
 		}
 	}
 	/* Video_Atari_BlitterUnlock(status); */
+}
+
+static void Video_Atari_BlitMaskedHighlight(void)
+{
+	const uint8 *recipe = s_spriteHighlight;
+	uint16 pass, plane;
+
+	s_blitterTileSetup = false;
+	Video_Atari_BlitterSetup(s_planarBlit.plan, 8);
+	for (pass = 0; pass < 2; pass++) {
+		*BLITTER_OP = pass == 0 ? 4 : 7;
+		for (plane = 0; plane < 4; plane++) {
+			const uint16 *src;
+			if (pass == 0) {
+				src = s_planarBlit.masks + plane;
+			} else {
+				uint8 source = recipe[plane];
+				if (source == HL_ZERO) continue;
+				src = source < 4 ? s_planarBlit.pixels + source : s_planarBlit.masks + source - 4;
+			}
+			*BLITTER_SRC_ADDR = (uint32)(size_t)src;
+			*BLITTER_DST_ADDR = (uint32)(size_t)(s_planarBlit.dst + plane);
+			*BLITTER_YCOUNT = s_planarBlit.height;
+			Video_Atari_BlitterStart();
+		}
+	}
 }
 
 static void Video_Atari_BlitTile(const uint16 *pixels, uint8 *base, uint16 x, uint16 y)
@@ -3382,7 +3445,7 @@ void Video_Atari_PresentPlanarSpriteUnshifted(const uint16 *pixels, const uint16
 		s_planarBlit.masks = masks + (sourceX >> 4) * 4;
 		s_planarBlit.plan = plan;
 		s_planarBlit.height = height;
-		Atari_SupervisorExec(Video_Atari_BlitMasked);
+		Atari_SupervisorExec(s_spriteHighlight != NULL ? Video_Atari_BlitMaskedHighlight : Video_Atari_BlitMasked);
 		if (cursor) {
 			Video_Atari_RefreshViewportCursorUnshifted(base, masks, sourceWidth, sourceX,
 			    width, height, x, y);
@@ -3400,8 +3463,12 @@ void Video_Atari_PresentPlanarSpriteUnshifted(const uint16 *pixels, const uint16
 				if (group + 1 == words) edge &= lastMask;
 				mask = Video_Atari_ShiftSpriteWord(masks, groups, source, phase, 0) & edge;
 				if (mask == 0) continue;
-				for (plane = 0; plane < 4; plane++)
-					colours[plane] = Video_Atari_ShiftSpriteWord(pixels, groups, source, phase, plane);
+				for (plane = 0; plane < 4; plane++) {
+					uint8 recipe = s_spriteHighlight != NULL ? s_spriteHighlight[plane] : plane;
+					colours[plane] = recipe == HL_ZERO ? 0 : recipe < 4 ?
+					    Video_Atari_ShiftSpriteWord(pixels, groups, source, phase, recipe) :
+					    Video_Atari_ShiftSpriteWord(masks, groups, source, phase, recipe - 4);
+				}
 				if (cursor || placement) Video_Atari_PlanarMergeGroup(base, y + row, first + group, mask, colours);
 				else Video_Atari_PlanarMergePlain(
 				    (uint16 *)(base + (uint32)(y + row) * ST_PLANAR_LINE_BYTES + (first + group) * 8),

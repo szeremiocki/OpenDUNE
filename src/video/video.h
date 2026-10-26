@@ -212,6 +212,14 @@ extern void Video_Atari_PresentPlanarSpriteUnshifted(const uint16 *pixels, const
                                                    uint16 sourceWidth, uint16 sourceX,
                                                    uint16 width, uint16 height, uint16 x, uint16 y,
                                                    const Video_Atari_SpriteBlitPlan *plan);
+/* Cheap target-highlight effects done on bitplanes instead of a palette remap.
+ * effect 0 is off, 1..VIDEO_ATARI_HIGHLIGHT_EFFECTS select a plane recipe. */
+#define VIDEO_ATARI_HIGHLIGHT_EFFECTS 9
+/* Applies to the following Video_Atari_PresentPlanarSprite*() calls; 0 resets. */
+extern void Video_Atari_SetSpriteHighlight(uint16 effect);
+/* Writes `groups` interleaved 4-plane groups of pixels recoloured by effect. */
+extern void Video_Atari_HighlightPixels(uint16 *dst, const uint16 *pixels, const uint16 *masks,
+                                        uint16 groups, uint16 effect);
 #endif /* TOS */
 
 #endif /* VIDEO_VIDEO_H */

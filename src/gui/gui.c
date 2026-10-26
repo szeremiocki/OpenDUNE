@@ -1733,29 +1733,24 @@ void GUI_InitViewportSpriteCache(void)
 
 static void GUI_ViewportDecodeLayer(uint8 *chunky, uint16 width, uint16 height,
                                     const uint8 *sprite, int16 x, int16 y, int flags,
-                                    const uint8 *palette, const uint8 *remap)
+                                    const uint8 *palette)
 {
 	if (READ_LE_UINT16(sprite) & 1) {
-		uint8 colours[16];
-		uint16 i;
 		if (palette == NULL) palette = sprite + 10;
-		for (i = 0; i < 16; i++) colours[i] = remap != NULL ? remap[palette[i]] : palette[i];
 		GUI_DrawSpriteMask(chunky, width, height, sprite, x, y,
-		                   DRAWSPRITE_FLAG_PAL | (flags & 3), colours);
+		                   DRAWSPRITE_FLAG_PAL | (flags & 3), palette);
 	} else {
-		GUI_DrawSpriteMask(chunky, width, height, sprite, x, y,
-		                   (flags & 3) | (remap != NULL ? DRAWSPRITE_FLAG_REMAP : 0), remap, 1);
+		GUI_DrawSpriteMask(chunky, width, height, sprite, x, y, flags & 3);
 	}
 }
 
 static ViewportPlanarComponent *GUI_ViewportPlanarComponent(ViewportSpriteMask *mask,
                                                            uint16 spriteID, uint8 colourHouse,
-                                                           int flags, const uint8 *palette,
-                                                           const uint8 *remap)
+                                                           int flags, const uint8 *palette)
 {
 	uint32 key = 0x80000000UL | spriteID |
 	    ((uint32)(colourHouse == GUI_SPRITE_COLOUR_EMBEDDED ? 6 : colourHouse) << 9) |
-	    ((uint32)(flags & 3) << 12) | ((uint32)(remap != NULL) << 14);
+	    ((uint32)(flags & 3) << 12);
 	ViewportPlanarComponent *entry = NULL;
 	uint16 i;
 
@@ -1794,7 +1789,7 @@ static ViewportPlanarComponent *GUI_ViewportPlanarComponent(ViewportSpriteMask *
 		}
 		memset(scratch.bytes, 0, stride * mask->height);
 		GUI_ViewportDecodeLayer(scratch.bytes, stride, mask->height, mask->sprite, 0, 0,
-		                        flags, palette, remap);
+		                        flags, palette);
 		Video_Atari_EncodePlanar(scratch.bytes, entry->pixels, stride, mask->height);
 		for (row = 0; row < mask->height; row++) {
 			uint16 sourceRow = (flags & DRAWSPRITE_FLAG_BOTTOMUP) ? mask->height - 1 - row : row;
@@ -1814,7 +1809,7 @@ static ViewportPlanarComponent *GUI_ViewportPlanarComponent(ViewportSpriteMask *
 /* Validated nonzero IDs make zero an absent layer or an unused composite. */
 static void GUI_ViewportBuildCompositeKey(ViewportCompositeKey *out,
                                           uint16 spriteID, uint8 colourHouse, int flags,
-                                          bool highlighted, int16 x, bool blitter,
+                                          int16 x, bool blitter,
                                           const GUI_SpriteLayers *layers)
 {
 	uint16 phase = blitter ? 0 : (uint16)x & 15;
@@ -1823,7 +1818,7 @@ static void GUI_ViewportBuildCompositeKey(ViewportCompositeKey *out,
 
 	uint32 main = spriteID |
 	    ((uint32)(colourHouse == GUI_SPRITE_COLOUR_EMBEDDED ? 6 : colourHouse) << 9) |
-	    ((uint32)(flags & 3) << 12) | ((uint32)highlighted << 14) |
+	    ((uint32)(flags & 3) << 12) |
 	    ((uint32)phase << 15) | ((uint32)((flags & DRAWSPRITE_FLAG_CENTER) != 0) << 19) |
 	    ((uint32)selected << 20);
 	if (selected) {
@@ -1858,10 +1853,10 @@ static void GUI_ViewportBuildCompositeKey(ViewportCompositeKey *out,
 
 static void GUI_ViewportBuildCompositeKeyBlitter(ViewportCompositeKey *key,
                                                 uint16 spriteID, uint8 colourHouse, int flags,
-                                                bool highlighted, const GUI_SpriteLayers *layers)
+                                                const GUI_SpriteLayers *layers)
 {
 	if (key->main == 0) {
-		GUI_ViewportBuildCompositeKey(key, spriteID, colourHouse, flags, highlighted, 0, true, layers);
+		GUI_ViewportBuildCompositeKey(key, spriteID, colourHouse, flags, 0, true, layers);
 	} else {
 		key->main &= ~0x00078000UL;
 	}
@@ -1869,10 +1864,10 @@ static void GUI_ViewportBuildCompositeKeyBlitter(ViewportCompositeKey *key,
 
 static void GUI_ViewportBuildCompositeKeyCPU(ViewportCompositeKey *key,
                                             uint16 spriteID, uint8 colourHouse, int flags,
-                                            bool highlighted, int16 x, const GUI_SpriteLayers *layers)
+                                            int16 x, const GUI_SpriteLayers *layers)
 {
 	if (key->main == 0) {
-		GUI_ViewportBuildCompositeKey(key, spriteID, colourHouse, flags, highlighted, x, false, layers);
+		GUI_ViewportBuildCompositeKey(key, spriteID, colourHouse, flags, x, false, layers);
 	} else {
 		key->main = (key->main & ~0x00078000UL) | ((uint32)((uint16)x & 15) << 15);
 	}
@@ -2026,11 +2021,10 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 	ViewportSpriteMask *mask;
 	ViewportPlanarSprite *entry = NULL;
 	const uint8 *palette = NULL;
-	uint8 *remap = NULL;
 	uint16 i, position, count = layers != NULL ? layers->count : 0;
 	ViewportCompositeKey temporary;
 	int16 centreX = 0, centreY = 0;
-	int16 remapCount = 0;
+	uint16 highlight = 0;
 	bool blitter = Video_Atari_ViewportBlitter();
 
 	assert(s_viewportPlanar && s_viewportPlanarSprites != NULL && s_viewportPlanarComponents != NULL);
@@ -2061,9 +2055,13 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 		if (flags & DRAWSPRITE_FLAG_PAL_DEFERRED) palette = NULL;
 	}
 	if (flags & DRAWSPRITE_FLAG_REMAP) {
-		remap = va_arg(*ap, uint8 *);
-		remapCount = (int16)va_arg(*ap, int);
+		const uint8 *remap = va_arg(*ap, uint8 *);
+		int16 remapCount = (int16)va_arg(*ap, int);
 		assert(remapCount == 0 || (remapCount == 1 && remap == g_paletteMapping2));
+		VARIABLE_NOT_USED(remap);
+		/* The viewport highlight is a bitplane recipe applied at blit time, so
+		 * it shares the normal cache entry and needs no palette remap. */
+		if (remapCount != 0) highlight = g_blinkEffect;
 	}
 #ifndef NDEBUG
 	for (i = 0; i < count; i++) {
@@ -2083,9 +2081,9 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 		key = &temporary;
 	}
 	if (blitter) {
-		GUI_ViewportBuildCompositeKeyBlitter(key, spriteID, colourHouse, flags, remapCount != 0, layers);
+		GUI_ViewportBuildCompositeKeyBlitter(key, spriteID, colourHouse, flags, layers);
 	} else {
-		GUI_ViewportBuildCompositeKeyCPU(key, spriteID, colourHouse, flags, remapCount != 0, x, layers);
+		GUI_ViewportBuildCompositeKeyCPU(key, spriteID, colourHouse, flags, x, layers);
 	}
 	if (++s_viewportPlanarClock == 0) {
 		s_viewportPlanarClock = 1;
@@ -2137,7 +2135,7 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 			ViewportPlanarComponent *component = GUI_ViewportPlanarComponent(m,
 			    i == 0 ? spriteID : layers->layer[i - 1].spriteID,
 			    i == 0 ? colourHouse : layers->layer[i - 1].colourHouse,
-			    layerFlags, layerPalette, i == 0 && remapCount != 0 ? remap : NULL);
+			    layerFlags, layerPalette);
 			Video_Atari_ComposePlanarSprite(entry->pixels, entry->masks, stride, height,
 			    component->pixels, component->masks, component->width, component->height,
 			    left[i] - minX, top[i] - minY);
@@ -2168,6 +2166,7 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 		int16 left = x + entry->offsetX, top = y + entry->offsetY;
 		int16 firstRow = max(40, top), bottom = min(200, top + entry->height);
 		uint16 groups = entry->width >> 4;
+		const uint16 *pixels = entry->pixels;
 		int16 boundsLeft = x + entry->boundsOffsetX;
 		if (!GUI_Widget_Viewport_ShouldDrawSprite(boundsLeft, top,
 		    boundsLeft + entry->boundsWidth, top + entry->height)) return;
@@ -2177,13 +2176,21 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 				uint16 offset = (firstRow - top) * groups * 4;
 				GUI_Widget_Viewport_RepairTiles(start & ~15, firstRow, (right + 15) & ~15, bottom);
 				GFX_Screen_SetDirtySource(DIRTY_SRC_SPRITE);
+				Video_Atari_SetSpriteHighlight(highlight);
 				Video_Atari_PresentPlanarSpriteUnshifted(entry->pixels + offset,
 				    entry->masks + offset, entry->width, start - left,
 				    right - start, bottom - firstRow, start, firstRow,
 				    start == left && right - start == entry->extentWidth ?
 				    &entry->blitPlans[start & 15] : NULL);
+				Video_Atari_SetSpriteHighlight(0);
 			}
 			return;
+		}
+		if (highlight != 0) {
+			static uint16 s_highlightPixels[5 * 64 * 4];
+			Video_Atari_HighlightPixels(s_highlightPixels, entry->pixels, entry->masks,
+			    groups * entry->height, highlight);
+			pixels = s_highlightPixels;
 		}
 		for (i = 0; i < entry->width; i += 16) {
 			int16 column = left + i, row;
@@ -2193,7 +2200,7 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 				uint16 offset = (row - top) * groups + (i >> 4);
 				GUI_Widget_Viewport_RepairTiles(column, row, column + 16, end);
 				GFX_Screen_SetDirtySource(DIRTY_SRC_SPRITE);
-				Video_Atari_PresentPlanarSpriteStrided(entry->pixels + offset * 4,
+				Video_Atari_PresentPlanarSpriteStrided(pixels + offset * 4,
 				    entry->masks + offset, 16, end - row, column, row, entry->width);
 				row = end;
 			}
