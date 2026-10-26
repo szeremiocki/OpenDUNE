@@ -6,6 +6,7 @@
 #include <string.h>
 #include "types.h"
 #include "../os/common.h"
+#include "../os/endian.h"
 #include "../os/math.h"
 #include "../os/error.h"
 
@@ -177,6 +178,58 @@ static bool GUI_Widget_Viewport_SpriteDamageRect(int16 left, int16 top, int16 ri
 	 * even outside the initial terrain damage. */
 	for (y = firstRow; y < endRow; y++) s_viewportSpriteDamage[y] |= columns;
 	return true;
+}
+
+/* Read-only equivalent of the "no redraw needed" branch of SpriteDamageRect():
+ * true only when the exact test would also reject a sprite inside this box. */
+static bool GUI_Widget_Viewport_SpriteDamageFree(int16 left, int16 top, int16 right, int16 bottom)
+{
+	uint16 first, end, y, columns, firstRow, endRow;
+
+	if (!s_viewportSpriteFilterActive || s_viewportSpriteNeedsRedraw) return false;
+	left = max(left, 0);
+	top = max(top, 40);
+	right = min(right, 240);
+	bottom = min(bottom, 200);
+	if (left >= right || top >= bottom) return true;
+	first = left >> 4;
+	end = (right + 15) >> 4;
+	columns = (0x7fff >> (15 - end)) & (0x7fff << first);
+	firstRow = (top - 40) >> 4;
+	endRow = (bottom - 40 + 15) >> 4;
+	for (y = firstRow; y < endRow; y++) {
+		if ((s_viewportSpriteDamage[y] & columns) != 0) return false;
+	}
+	return true;
+}
+
+/* Same bounds GUI_ViewportPlanarSprite() hands to ShouldDrawSprite() for a
+ * centred, widget-positioned unit with layers. */
+static bool GUI_Widget_Viewport_UnitDamageFree(int16 x, int16 y, uint16 index,
+                                               const GUI_SpriteLayers *layers)
+{
+	const uint8 *sprite = g_sprites[index];
+	int16 width = READ_LE_UINT16(sprite + 3), height = sprite[2];
+	int16 left, top, right, bottom, i;
+
+	x += g_widgetProperties[2].xBase << 3;
+	y += g_widgetProperties[2].yBase;
+	left = x - width / 2;
+	top = y - height / 2;
+	right = left + width;
+	bottom = top + height;
+	for (i = 0; i < layers->count; i++) {
+		const GUI_SpriteLayer *layer = &layers->layer[i];
+		const uint8 *layerSprite = g_sprites[layer->spriteID];
+		int16 layerWidth = READ_LE_UINT16(layerSprite + 3), layerHeight = layerSprite[2];
+		int16 layerLeft = x + layer->offsetX - layerWidth / 2;
+		int16 layerTop = y + layer->offsetY - layerHeight / 2;
+		left = min(left, layerLeft);
+		top = min(top, layerTop);
+		right = max(right, (int16)(layerLeft + layerWidth));
+		bottom = max(bottom, (int16)(layerTop + layerHeight));
+	}
+	return GUI_Widget_Viewport_SpriteDamageFree(left, top, right, bottom);
 }
 
 bool GUI_Widget_Viewport_ShouldDrawSprite(int16 left, int16 top, int16 right, int16 bottom)
@@ -1217,6 +1270,9 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 			y += g_table_tilediff[0][u->wobbleIndex].y;
 
 			index = GUI_Widget_Viewport_GroundSprites(u, &spriteFlags, &layers, UNIT_SPRITE_ALL);
+#ifdef TOS
+			if (GUI_Widget_Viewport_UnitDamageFree(x, y, index, &layers)) continue;
+#endif
 
 			bodyHouse = (u->deviated != 0) ? u->deviatedHouse : Unit_GetHouseID(u);
 			int paletteFlags = GUI_Widget_Viewport_HousePaletteFlags(index, bodyHouse, paletteHouse);
