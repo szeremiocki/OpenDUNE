@@ -49,6 +49,9 @@ static uint8 * s_framebuffer = NULL;
 
 /* offset to center the 320x200 image in 320x240 display */
 static uint32 s_center_image_offset = 0;
+/* Logical screen base, fixed after Setscreen(); shaking only reprograms the
+ * hardware base (Video_ST_SetBase) and never changes Logbase(). */
+static uint8 *s_planarBase = NULL;
 /* ST/STE: composite the mouse cursor directly into the planar screen */
 static bool s_curDirect = false;
 static bool s_viewportBlitter = false;
@@ -1145,6 +1148,7 @@ bool Video_Init(int screen_magnification, VideoScaleFilter filter)
 		s_savedLogBase = Logbase();
 		s_savedPhysBase = Physbase();
 		Setscreen(-1, -1, 0);	 /* set ST-Low resolution */
+		s_planarBase = (uint8 *)Logbase() + s_center_image_offset;
 		s_blitterTileSetup = false;
 		Warning("ST/STE planar screen base: $%08lx (Logbase)\n", (unsigned long)Logbase());
 		/* set and backup system palette */
@@ -1194,6 +1198,7 @@ void Video_Uninit(void)
 			VARIABLE_NOT_USED(oldColor);
 		}
 		Setscreen(s_savedLogBase, s_savedPhysBase, s_savedMode);
+		s_planarBase = NULL;
 	}
 	Atari_SupervisorExec(uninstall_ikbd_handler);
 	if(s_savedCpuSpeed >= 0) {
@@ -2282,6 +2287,7 @@ static bool s_presentMode = false;
 
 static uint8 *Video_Atari_PlanarBase(void)
 {
+	if (s_planarBase != NULL) return s_planarBase;
 	return (uint8 *)Logbase() + s_center_image_offset;
 }
 
@@ -3718,7 +3724,7 @@ void Video_Tick(void)
 	 * SCREEN_0 for real, not corruption. TT/Falcon (which still fully
 	 * write SCREEN_0) keep reading from SCREEN_0 as before. */
 	uint8 *data = GFX_Screen_Get_ByIndex(Video_Atari_CursorDirect() ? SCREEN_1 : SCREEN_0);
-	uint8 *screen = Logbase();
+	uint8 *screen = s_planarBase != NULL ? s_planarBase - s_center_image_offset : (uint8 *)Logbase();
 	uint8 *frameBase = screen + s_center_image_offset;
 	bool placementRedraw = false;
 	screen += s_center_image_offset;
