@@ -3072,6 +3072,29 @@ static void Video_Atari_BlitTile(const uint16 *pixels, uint8 *base, uint16 x, ui
 	Atari_SupervisorExec(Video_Atari_BlitOpaque);
 }
 
+/* Lean opaque-tile blit for the viewport repair loop; false means "use the general path". */
+bool Video_Atari_BlitViewportTile(const uint16 *pixels, uint16 col, uint16 row)
+{
+	static const uint16 columnBits[15] = {
+		0x0001, 0x0002, 0x0004, 0x0008, 0x0010, 0x0020, 0x0040, 0x0080,
+		0x0100, 0x0200, 0x0400, 0x0800, 0x1000, 0x2000, 0x4000
+	};
+	static const uint16 rowOffsets[10] = {
+		40 * ST_PLANAR_LINE_BYTES, 56 * ST_PLANAR_LINE_BYTES, 72 * ST_PLANAR_LINE_BYTES,
+		88 * ST_PLANAR_LINE_BYTES, 104 * ST_PLANAR_LINE_BYTES, 120 * ST_PLANAR_LINE_BYTES,
+		136 * ST_PLANAR_LINE_BYTES, 152 * ST_PLANAR_LINE_BYTES, 168 * ST_PLANAR_LINE_BYTES,
+		184 * ST_PLANAR_LINE_BYTES
+	};
+
+	if (!s_viewportBlitter ||
+	    ((s_curViewportTiles[row] | s_placeViewportTiles[row]) & columnBits[col]) != 0) return false;
+	s_planarBlit.dst = (uint16 *)(Video_Atari_PlanarBase() + rowOffsets[row] + (col << 3));
+	s_planarBlit.pixels = pixels;
+	Atari_SupervisorExec(Video_Atari_BlitOpaque);
+	GFX_Screen_ClearDirtyRect(col << 4, (row << 4) + 40, (col << 4) + 16, (row << 4) + 56);
+	return true;
+}
+
 /* Keep post-write state out of the ordinary publishers' register allocation. */
 static void __attribute__((noinline)) Video_Atari_PublishViewportCursorRect(
     uint8 *base, const uint16 *pixels, const uint16 *masks, uint16 stride,

@@ -168,6 +168,7 @@ extern void Video_Atari_InitTileMapping(const uint8 *palette);
 extern void Video_Atari_DecodePlanarTile(const uint8 *src, const uint8 *palette, uint16 *pixels);
 /* copyPixels is NULL or a ground/overlay source proven fully opaque by
  * cached tile mask classifications. */
+extern bool Video_Atari_BlitViewportTile(const uint16 *pixels, uint16 col, uint16 row);
 extern void Video_Atari_DrawPlanarTile(const uint16 *pixels, const uint16 *masks, uint16 x, uint16 y,
                                       const uint16 *copyPixels);
 /* Fog-covered ground never reaches the screen: merge both cached images

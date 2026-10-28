@@ -336,13 +336,13 @@ void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 b
 				if (!g_debugScenario && (overlay == g_veiledTileID || overlay == fullyFoggedTileID)) overlay = 0xffff;
 				GFX_DrawPlanarSelectionTile(t->groundTileID, overlay, tileLeft, tileTop,
 				    t->houseID, s_viewportSelectionTiles[y][x], s_viewportSelectionPen);
-			} else if (!g_debugScenario &&
-			    (t->overlayTileID == g_veiledTileID || t->overlayTileID == fullyFoggedTileID)) {
-				GFX_DrawPlanarFogTile(tileLeft, tileTop);
-			} else if (t->overlayTileID != 0 && !g_debugScenario) {
-				GFX_DrawPlanarTileFogged(t->groundTileID, t->overlayTileID, tileLeft, tileTop, t->houseID);
 			} else {
-				GFX_DrawPlanarTile(t->groundTileID, tileLeft, tileTop, t->houseID);
+				uint16 overlay = g_debugScenario ? 0 : t->overlayTileID;
+				if (!g_debugScenario && (overlay == g_veiledTileID || overlay == fullyFoggedTileID)) {
+					GFX_DrawPlanarViewportFog(x, y);
+				} else {
+					GFX_DrawPlanarViewportTile(t->groundTileID, overlay, x, y, t->houseID);
+				}
 			}
 		}
 	}
