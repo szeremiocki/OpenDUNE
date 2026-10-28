@@ -3097,26 +3097,32 @@ static void Video_Atari_BlitTile(const uint16 *pixels, uint8 *base, uint16 x, ui
 	Atari_SupervisorExec(Video_Atari_BlitOpaque);
 }
 
-/* Lean opaque-tile blit for the viewport repair loop; false means "use the general path". */
+/* Lean opaque-tile blit for the viewport repair loop; false means "use the general path".
+ * Only called while the viewport is planar, so there is no chunky dirty rect to clear. */
 bool Video_Atari_BlitViewportTile(const uint16 *pixels, uint16 col, uint16 row)
 {
-	static const uint16 columnBits[15] = {
-		0x0001, 0x0002, 0x0004, 0x0008, 0x0010, 0x0020, 0x0040, 0x0080,
-		0x0100, 0x0200, 0x0400, 0x0800, 0x1000, 0x2000, 0x4000
-	};
 	static const uint16 rowOffsets[10] = {
 		40 * ST_PLANAR_LINE_BYTES, 56 * ST_PLANAR_LINE_BYTES, 72 * ST_PLANAR_LINE_BYTES,
 		88 * ST_PLANAR_LINE_BYTES, 104 * ST_PLANAR_LINE_BYTES, 120 * ST_PLANAR_LINE_BYTES,
 		136 * ST_PLANAR_LINE_BYTES, 152 * ST_PLANAR_LINE_BYTES, 168 * ST_PLANAR_LINE_BYTES,
 		184 * ST_PLANAR_LINE_BYTES
 	};
+	uint8 *dst;
 
-	if (!s_viewportBlitter ||
-	    (s_curViewportTiles[row] & columnBits[col]) != 0) return false;
-	s_planarBlit.dst = (uint16 *)(Video_Atari_PlanarBase() + rowOffsets[row] + (col << 3));
+	if (!s_viewportBlitter || ((s_curViewportTiles[row] >> col) & 1) != 0) return false;
+	dst = Video_Atari_PlanarBase() + rowOffsets[row] + (col << 3);
+#if ATARI_SUPERVISOR_RESIDENT
+	if (g_atariSupervisorResident && s_blitterTileSetup) {
+		*BLITTER_SRC_ADDR = (uint32)(size_t)pixels;
+		*BLITTER_DST_ADDR = (uint32)(size_t)dst;
+		*BLITTER_YCOUNT = 16;
+		Video_Atari_BlitterStart();
+		return true;
+	}
+#endif
+	s_planarBlit.dst = (uint16 *)dst;
 	s_planarBlit.pixels = pixels;
 	Atari_SupervisorExec(Video_Atari_BlitOpaque);
-	GFX_Screen_ClearDirtyRect(col << 4, (row << 4) + 40, (col << 4) + 16, (row << 4) + 56);
 	return true;
 }
 
