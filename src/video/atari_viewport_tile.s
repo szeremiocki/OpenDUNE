@@ -15,19 +15,17 @@
 ;                               unsigned long row, unsigned long house);
 ;
 ; Fast path for one opaque, overlay-free viewport tile: per-house index
-; lookup, opacity check, then a single blitter run (the tile setup must
-; already be cached by Video_Atari_BlitOpaque). Returns 1 when the tile was
-; drawn and 0 when the caller must use the general C path (no blitter, setup
-; not cached, supervisor not resident, cursor over the tile, tile not opaque
-; or not yet decoded). Arguments are full longs.
+; lookup, opacity check, then a single blitter run. The tile blitter setup is
+; reloaded here when a masked sprite blit has changed it. Returns 1 when the
+; tile was drawn and 0 when the caller must use the general C path (no
+; blitter, supervisor not resident, cursor over the tile, tile not opaque or
+; not yet decoded). Arguments are full longs.
 
 PLANAR_TILE_OPAQUE	equ	3
 
 _GFX_DrawViewportTileFast:
 	move.l	d2,-(sp)
 	tst.b	_g_videoViewportBlitter
-	beq	.fail
-	tst.b	_g_videoBlitterTileSetup
 	beq	.fail
 	tst.b	_g_atariSupervisorResident
 	beq	.fail
@@ -59,7 +57,23 @@ _GFX_DrawViewportTileFast:
 	bne	.fail
 	lsl.l	#7,d2
 	add.l	_s_planarTiles,d2
-	move.l	d2,$ffff8a24.w		; source address
+	tst.b	_g_videoBlitterTileSetup
+	bne	.ready
+.idle:	tst.b	$ffff8a3c.w
+	bmi	.idle
+	move.w	#2,$ffff8a20.w		; same registers as Video_Atari_BlitOpaque()
+	move.w	#2,$ffff8a22.w
+	move.w	#$ffff,$ffff8a28.w
+	move.w	#$ffff,$ffff8a2a.w
+	move.w	#$ffff,$ffff8a2c.w
+	move.w	#2,$ffff8a2e.w
+	move.w	#154,$ffff8a30.w
+	move.w	#4,$ffff8a36.w
+	move.b	#2,$ffff8a3a.w
+	move.b	#0,$ffff8a3d.w
+	move.b	#3,$ffff8a3b.w
+	move.b	#1,_g_videoBlitterTileSetup
+.ready:	move.l	d2,$ffff8a24.w		; source address
 	move.l	a1,$ffff8a32.w		; destination address
 	move.w	#16,$ffff8a38.w		; lines
 	move.b	#$c0,$ffff8a3c.w	; start, hog
