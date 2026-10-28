@@ -71,11 +71,11 @@ static uint8 GFX_TileHouseColor(uint8 colour, uint8 houseID)
 }
 
 #ifdef TOS
-static uint16 *s_planarTiles;
+uint16 *s_planarTiles;	/* the three below are read by atari_viewport_tile.s */
 static uint16 *s_planarTileMasks;
 static uint16 *s_planarTileIndex;
-static uint8 *s_planarTileReady;	/* zero = cold; otherwise cached mask classification */
-static uint16 *s_planarTileHouse[HOUSE_MAX];	/* per-house base of s_planarTileIndex */
+uint8 *s_planarTileReady;	/* zero = cold; otherwise cached mask classification */
+uint16 *s_planarTileHouse[HOUSE_MAX];	/* per-house base of s_planarTileIndex */
 static uint16 s_planarTileCount, s_planarVariants;
 static uint16 s_viewportFogPixels[64], s_viewportFogMasks[16];
 static bool s_viewportFogReady;

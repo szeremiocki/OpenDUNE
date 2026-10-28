@@ -341,7 +341,8 @@ void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 b
 				if (!g_debugScenario && (overlay == g_veiledTileID || overlay == fullyFoggedTileID)) {
 					GFX_DrawPlanarViewportFog(x, y);
 				} else {
-					GFX_DrawPlanarViewportTile(t->groundTileID, overlay, x, y, t->houseID);
+					if (overlay != 0 || !GFX_DrawViewportTileFast(t->groundTileID, x, y, t->houseID))
+						GFX_DrawPlanarViewportTile(t->groundTileID, overlay, x, y, t->houseID);
 				}
 			}
 		}

@@ -52,12 +52,14 @@ static uint8 * s_framebuffer = NULL;
 static uint32 s_center_image_offset = 0;
 /* Logical screen base, fixed after Setscreen(); shaking only reprograms the
  * hardware base (Video_ST_SetBase) and never changes Logbase(). */
-static uint8 *s_planarBase = NULL;
+uint8 *g_videoPlanarBase = NULL;	/* read by atari_viewport_tile.s */
+#define s_planarBase g_videoPlanarBase
 /* ST/STE: composite the mouse cursor directly into the planar screen */
 static bool s_curDirect = false;
 bool g_videoViewportBlitter = false;
 #define s_viewportBlitter g_videoViewportBlitter
-static bool s_blitterTileSetup = false;
+bool g_videoBlitterTileSetup = false;	/* read by atari_viewport_tile.s */
+#define s_blitterTileSetup g_videoBlitterTileSetup
 
 #define BLITTER_SRC_XINC ((volatile int16 *)0xFFFF8A20UL)
 #define BLITTER_SRC_YINC ((volatile int16 *)0xFFFF8A22UL)
@@ -1339,7 +1341,7 @@ static uint16 s_curGroup, s_curGroups, s_curShift;
 /* geometry of the composite that is currently on screen, needed to undo it */
 static uint8 *s_curDrawnBase = NULL;
 static uint16 s_curDrawnY, s_curDrawnH, s_curDrawnGroup, s_curDrawnGroups;
-static uint16 s_curViewportTiles[10];
+uint16 s_curViewportTiles[10];	/* read by atari_viewport_tile.s */
 
 static uint16 s_curData[CURSOR_MAX_H][CURSOR_MAX_GROUPS * 4];
 static uint16 s_curMask[CURSOR_MAX_H][CURSOR_MAX_GROUPS];

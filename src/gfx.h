@@ -47,6 +47,8 @@ extern void GFX_DrawPlanarFogTile(uint16 x, uint16 y);
 /* Viewport repair draws; col 0..14, row 0..9 (tile units). */
 extern void GFX_DrawPlanarViewportFog(uint16 col, uint16 row);
 extern void GFX_DrawPlanarViewportTile(uint16 tileID, uint16 overlayID, uint16 col, uint16 row, uint8 houseID);
+/* Assembly fast path for an opaque overlay-free tile; 0 means use GFX_DrawPlanarViewportTile(). */
+extern long GFX_DrawViewportTileFast(unsigned long tileID, unsigned long col, unsigned long row, unsigned long house);
 enum {
 	GFX_SELECTION_TOP = 0x10, GFX_SELECTION_BOTTOM = 0x20,
 	GFX_SELECTION_LEFT = 0x40, GFX_SELECTION_RIGHT = 0x80
