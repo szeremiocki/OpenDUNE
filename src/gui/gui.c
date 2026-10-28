@@ -6897,13 +6897,7 @@ void GUI_DrawScreen(Screen screenID)
 	Map_UpdateMinimapPosition(g_minimapPosition, false);
 
 #ifdef TOS
-	if (Video_Atari_CursorDirect() && g_selectionType == SELECTIONTYPE_PLACE && screenID == SCREEN_0) {
-		int16 x = ((int16)Tile_GetPackedX(g_selectionRectanglePosition) - (int16)Tile_GetPackedX(g_minimapPosition)) * 16;
-		int16 y = ((int16)Tile_GetPackedY(g_selectionRectanglePosition) - (int16)Tile_GetPackedY(g_minimapPosition)) * 16 + 40;
-		Video_Atari_PlacementSet(x, y, g_selectionWidth * 16, g_selectionHeight * 16, g_selectionState == 0);
-	} else {
-		Video_Atari_PlacementHide();
-	}
+	if (!(Video_Atari_CursorDirect() && g_selectionType == SELECTIONTYPE_PLACE && screenID == SCREEN_0)) Video_Atari_PlacementHide();
 #endif
 	GUI_Mouse_Show_InWidget();
 }

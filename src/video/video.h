@@ -39,7 +39,8 @@ extern bool Video_Atari_CursorUseIcon(uint16 iconIndex, int16 left, int16 top);
 
 /* Grid-aligned placement preview, below the planar cursor and above the
  * scene. Coordinates are screen pixels; clipping is to the battlefield. */
-extern void Video_Atari_PlacementSet(int16 x, int16 y, uint16 width, uint16 height, bool invalid);
+extern void Video_Atari_PlacementTint(int16 x, int16 y, uint16 width, uint16 height, bool invalid);
+extern void Video_Atari_PlacementCursor(bool hidden);
 extern void Video_Atari_PlacementHide(void);
 
 /* Fast path for GUI_SetPaletteAnimated(): on ST/STE the expensive

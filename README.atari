@@ -198,6 +198,17 @@ still redrawn normally; it only skips the dissolve, not asset loading or
 cold-cache work. Other screen transitions are unchanged. Invalid values warn
 and use the platform default.
 
+Building placement on ST/STE tints the footprint tiles with a checkerboard
+OR-ed into one bitplane (blitter halftone, no source reads) instead of drawing
+an outline. The software cursor is hidden over the viewport while placing:
+
+[opendune]
+placement_valid_plane=2
+placement_invalid_plane=0
+
+Planes 0-3; defaults 2 (valid) and 0 (invalid). Invalid values warn and use
+the defaults.
+
 Target blinking (a unit highlighted after an attack order) on ST/STE is drawn by
 recolouring the cached bitplanes while blitting, with no palette remap and no
 extra sprite-cache entries:

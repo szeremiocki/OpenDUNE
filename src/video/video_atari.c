@@ -12,6 +12,7 @@
 
 #include "types.h"
 #include "video.h"
+#include "../config.h"
 #include "../gfx.h"
 #include "../gui/gui.h"
 #include "../input/input.h"
@@ -1798,6 +1799,8 @@ static void Video_Atari_MarkViewportTiles(uint16 tiles[10], int16 x, int16 y,
 	for (; row <= lastRow; row++) tiles[row] = bits;
 }
 
+static bool s_curSuppress;
+
 /* Movement, actual hiding and screen shifts restore this backup.
  * Ordinary drawing updates it synchronously instead. */
 static void Video_Atari_CursorEraseFull(void)
@@ -1826,6 +1829,7 @@ static void Video_Atari_CursorDraw(uint8 *base)
 	uint16 *p;
 
 	if (s_curDrawn || !s_curVisible) return;
+	if (s_curSuppress && s_curGroup < 15 && s_curY + s_curH > 40) return;
 	if (s_curH == 0 || s_curGroups == 0) return;
 	if (s_curDrawData == NULL || s_curDrawMask == NULL) return;
 
@@ -1913,7 +1917,7 @@ static uint8 *s_placeDrawnBase;
 static int16 s_placeX, s_placeY;
 static uint16 s_placeWidth, s_placeHeight;
 static uint8 s_placePen;
-static bool s_placeInvalid, s_placeVisible, s_placeDirty;
+static bool s_placeVisible, s_placeDirty;
 static int16 s_placeDrawnX, s_placeDrawnY;
 static uint16 s_placeDrawnWidth, s_placeDrawnHeight;
 static uint16 s_placeViewportTiles[10];
@@ -2111,69 +2115,90 @@ static void Video_Atari_PlanarFinishRun(uint8 *base, uint16 x, uint16 y, uint16 
 	}
 }
 
-static void Video_Atari_PlacementCross(uint16 width, uint16 height)
-{
-	uint16 dx = width - 1, dy = height - 1;
-	uint16 steps = dx > dy ? dx : dy;
-	int16 error = steps / 2;
-	uint16 x = 0, y = 0, i;
+static void Video_Atari_BlitterStart(void);
+static uint8 *Video_Atari_PlanarBase(void);
 
-	/* Same midpoint stepping as GUI_DrawLine(), reflected for the other
-	 * diagonal. Generate before clipping so the cross keeps its slope. */
-	for (i = 0; i <= steps; i++) {
-		uint16 mirror = dx - x;
-		s_placeMask[y][x >> 4] |= 0x8000u >> (x & 15);
-		s_placeMask[y][mirror >> 4] |= 0x8000u >> (mirror & 15);
-		if (dx >= dy) {
-			x++;
-			error -= dy;
-			if (error < 0) { error += dx; y++; }
-		} else {
-			y++;
-			error -= dx;
-			if (error < 0) { error += dy; x++; }
-		}
+typedef struct PlacementTint {
+	uint8 *dst;
+	uint16 words, height;
+} PlacementTint;
+
+static PlacementTint s_placeTint;
+
+static void Video_Atari_PlacementTintBlit(void)
+{
+	volatile uint16 *halftone = (volatile uint16 *)0xFFFF8A00UL;
+	uint16 i;
+
+	while ((*BLITTER_CTRL & 0x80) != 0) {}
+	for (i = 0; i < 16; i += 2) {
+		halftone[i] = 0xaaaa;
+		halftone[i + 1] = 0x5555;
+	}
+	*BLITTER_ENDMASK1 = 0xffff;
+	*BLITTER_ENDMASK2 = 0xffff;
+	*BLITTER_ENDMASK3 = 0xffff;
+	*BLITTER_DST_XINC = 8;
+	*BLITTER_DST_YINC = (int16)(ST_PLANAR_LINE_BYTES - (s_placeTint.words - 1) * 8);
+	*BLITTER_XCOUNT = s_placeTint.words;
+	*BLITTER_HOP = 1;
+	*BLITTER_OP = 7;
+	*BLITTER_SKEW = 0;
+	*BLITTER_DST_ADDR = (uint32)(size_t)s_placeTint.dst;
+	*BLITTER_YCOUNT = s_placeTint.height;
+	Video_Atari_BlitterStart();
+	*BLITTER_HOP = 2;
+}
+
+/* OR a checkerboard into one bitplane of the 16-aligned footprint (viewport
+ * coordinates, clipped to the viewport). Idempotent, so it may be repeated. */
+void Video_Atari_PlacementTint(int16 x, int16 y, uint16 width, uint16 height, bool invalid)
+{
+	int16 right = x + (int16)width, bottom = y + (int16)height;
+	uint16 plane = invalid ? g_placementInvalidPlane : g_placementValidPlane;
+	uint16 words, lines, line, group;
+	uint8 *dst;
+
+	if (x < 0) x = 0;
+	if (y < 40) y = 40;
+	if (right > 240) right = 240;
+	if (bottom > 200) bottom = 200;
+	if (x >= right || y >= bottom) return;
+	words = (uint16)((right - x) >> 4);
+	lines = (uint16)(bottom - y);
+	dst = Video_Atari_PlanarBase() + (uint32)y * ST_PLANAR_LINE_BYTES + (x >> 1) + plane * 2;
+	if (s_viewportBlitter) {
+		s_placeTint.dst = dst;
+		s_placeTint.words = words;
+		s_placeTint.height = lines;
+		s_blitterTileSetup = false;
+		Atari_SupervisorExec(Video_Atari_PlacementTintBlit);
+		return;
+	}
+	for (line = 0; line < lines; line++) {
+		uint16 *p = (uint16 *)(dst + (uint32)line * ST_PLANAR_LINE_BYTES);
+		uint16 pattern = (line & 1) ? 0x5555 : 0xaaaa;
+
+		for (group = 0; group < words; group++) p[group * 4] |= pattern;
 	}
 }
 
-void Video_Atari_PlacementSet(int16 x, int16 y, uint16 width, uint16 height, bool invalid)
+/* While placing, the software cursor stays off the viewport (no restore bookkeeping). */
+void Video_Atari_PlacementCursor(bool hidden)
 {
-	uint16 line, group;
-
-	if (!s_curDirect) return;
-	if (width == 0 || width > PLACEMENT_MAX_GROUPS * 16 ||
-	    height == 0 || height > PLACEMENT_MAX_H ||
-	    (x & 15) != 0 || (width & 15) != 0 || (height & 15) != 0) {
-		Warning("Invalid planar placement geometry: %hd,%hd %hux%hu\n", x, y, width, height);
-		Video_Atari_PlacementHide();
-		return;
+	if (s_curSuppress == hidden) return;
+	s_curSuppress = hidden;
+	if (hidden && s_curDrawn && s_curDrawnGroup < 15 && s_curDrawnY + s_curDrawnH > 40) {
+		Video_Atari_CursorEraseFull();
 	}
-	if (width != s_placeWidth || height != s_placeHeight || invalid != s_placeInvalid) {
-		memset(s_placeMask, 0, sizeof(s_placeMask));
-		for (group = 0; group < width / 16; group++) {
-			s_placeMask[0][group] = 0xffff;
-			s_placeMask[height - 1][group] = 0xffff;
-		}
-		for (line = 1; line < height - 1; line++) {
-			s_placeMask[line][0] |= 0x8000;
-			s_placeMask[line][width / 16 - 1] |= 1;
-		}
-		if (invalid) Video_Atari_PlacementCross(width, height);
-		s_placeWidth = width;
-		s_placeHeight = height;
-		s_placeInvalid = invalid;
-		s_placeDirty = true;
-	}
-	if (!s_placeVisible || x != s_placeX || y != s_placeY) s_placeDirty = true;
-	s_placeX = x;
-	s_placeY = y;
-	s_placeVisible = true;
+	s_curDirty = true;
 }
 
 static void Video_Atari_PlacementEnd(uint8 *base);
 
 void Video_Atari_PlacementHide(void)
 {
+	Video_Atari_PlacementCursor(false);
 	if (s_placeVisible) {
 		s_placeVisible = false;
 		s_placeDirty = true;
@@ -3087,7 +3112,7 @@ bool Video_Atari_BlitViewportTile(const uint16 *pixels, uint16 col, uint16 row)
 	};
 
 	if (!s_viewportBlitter ||
-	    ((s_curViewportTiles[row] | s_placeViewportTiles[row]) & columnBits[col]) != 0) return false;
+	    (s_curViewportTiles[row] & columnBits[col]) != 0) return false;
 	s_planarBlit.dst = (uint16 *)(Video_Atari_PlanarBase() + rowOffsets[row] + (col << 3));
 	s_planarBlit.pixels = pixels;
 	Atari_SupervisorExec(Video_Atari_BlitOpaque);

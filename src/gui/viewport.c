@@ -998,6 +998,47 @@ static void GUI_Widget_Viewport_SetDirtyColumns(uint16 columns, uint16 y)
 }
 #endif
 
+#ifdef TOS
+/* Placement tint state: the footprint last drawn, in viewport pixels. */
+static bool s_placeTintShown, s_placeTintInvalid;
+static int16 s_placeTintX, s_placeTintY, s_placeTintW, s_placeTintH;
+
+static void GUI_Widget_Viewport_PlacementDirty(int16 x, int16 y, int16 w, int16 h)
+{
+	int16 col, row;
+
+	for (row = (y - 40) >> 4; row < (y - 40 + h) >> 4; row++) {
+		if (row < 0 || row >= 10) continue;
+		for (col = x >> 4; col < (x + w) >> 4; col++) {
+			if (col < 0 || col >= 15) continue;
+			Map_Update((g_viewportPosition + Tile_PackXY(col, row)) & 0xFFF, 0, true);
+		}
+	}
+}
+
+/* Runs before the dirty scan so old and new footprints get repaired. */
+static bool GUI_Widget_Viewport_PlacementPrepare(void)
+{
+	bool show = g_selectionType == SELECTIONTYPE_PLACE;
+	int16 x = ((int16)Tile_GetPackedX(g_selectionRectanglePosition) - (int16)Tile_GetPackedX(g_minimapPosition)) * 16;
+	int16 y = ((int16)Tile_GetPackedY(g_selectionRectanglePosition) - (int16)Tile_GetPackedY(g_minimapPosition)) * 16 + 40;
+	int16 w = (int16)g_selectionWidth * 16, h = (int16)g_selectionHeight * 16;
+	bool invalid = g_selectionState == 0;
+
+	if (show) Video_Atari_PlacementCursor(true);
+	if (show == s_placeTintShown &&
+	    (!show || (x == s_placeTintX && y == s_placeTintY && w == s_placeTintW &&
+	               h == s_placeTintH && invalid == s_placeTintInvalid))) return show;
+	if (s_placeTintShown) GUI_Widget_Viewport_PlacementDirty(s_placeTintX, s_placeTintY, s_placeTintW, s_placeTintH);
+	if (show) GUI_Widget_Viewport_PlacementDirty(x, y, w, h);
+	s_placeTintShown = show;
+	s_placeTintX = x; s_placeTintY = y; s_placeTintW = w; s_placeTintH = h;
+	s_placeTintInvalid = invalid;
+	if (!show) Video_Atari_PlacementCursor(false);
+	return show;
+}
+#endif
+
 /**
  * Redraw parts of the viewport that require redrawing.
  *
@@ -1058,7 +1099,10 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 
 #ifdef TOS
 	s_viewportRepairActive = planarViewport;
-	if (planarViewport) GUI_Widget_Viewport_PrepareSelection();
+	if (planarViewport) {
+		GUI_Widget_Viewport_PrepareSelection();
+		GUI_Widget_Viewport_PlacementPrepare();
+	}
 #endif
 	if (g_dirtyViewportCount != 0 || forceRedraw) {
 #ifdef TOS
@@ -1407,6 +1451,11 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 	}
 
 #ifdef TOS
+	if (planarViewport && s_placeTintShown &&
+	    GUI_Widget_Viewport_SpriteDamageRect(s_placeTintX, s_placeTintY, s_placeTintX + s_placeTintW,
+	                                         s_placeTintY + s_placeTintH, !s_viewportSpriteFilterActive)) {
+		Video_Atari_PlacementTint(s_placeTintX, s_placeTintY, s_placeTintW, s_placeTintH, s_placeTintInvalid);
+	}
 	s_viewportSpriteFilterActive = false;
 #endif
 	if (updateDisplay) {

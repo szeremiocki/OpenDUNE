@@ -39,6 +39,8 @@ extern uint16 g_announcementPhase;
 extern uint16 g_creditsPhase;
 extern bool g_enableCosmeticAnimations;
 extern uint16 g_blinkEffect;
+extern uint16 g_placementValidPlane;
+extern uint16 g_placementInvalidPlane;
 
 extern bool g_enableSoundMusic;
 extern bool g_enableVoices;
