@@ -208,6 +208,7 @@ video/video_fps.c
 video/c2p1x1_8.s
 video/atari_viewport_tile.s
 video/atari_copyrows.s
+video/atari_cursor.s
 #else
 video/hqx_init.c
 video/hq2x_8b.c

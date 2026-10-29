@@ -1092,11 +1092,15 @@ static void Video_ST_SetBase(void)
 /**
  * Initialize the video driver.
  */
+static void Video_Atari_CursorInitStorage(void);
+
 bool Video_Init(int screen_magnification, VideoScaleFilter filter)
 {
 	VARIABLE_NOT_USED(filter);
 	VARIABLE_NOT_USED(screen_magnification);
 	int i;
+
+	Video_Atari_CursorInitStorage();
 
 	s_framebuffer = calloc(1, SCREEN_WIDTH * (SCREEN_HEIGHT + 4));
 	if (s_framebuffer == NULL) {
@@ -1343,13 +1347,25 @@ static uint8 *s_curDrawnBase = NULL;
 static uint16 s_curDrawnY, s_curDrawnH, s_curDrawnGroup, s_curDrawnGroups;
 uint16 s_curViewportTiles[10];	/* read by atari_viewport_tile.s */
 
-static uint16 s_curData[CURSOR_MAX_H][CURSOR_MAX_GROUPS * 4];
+/* cursor.s moves longs, but the AOUT object format only aligns statics to 2:
+ * these buffers live in s_curStorage and are aligned by Video_Atari_CursorInitStorage(). */
+typedef uint16 CursorPlaneRow[CURSOR_MAX_GROUPS * 4];
+static uint16 s_curStorage[3 * CURSOR_MAX_H * CURSOR_MAX_GROUPS * 4 + 2];
+static CursorPlaneRow *s_curData, *s_curSave, *s_curDrawnData;
 static uint16 s_curMask[CURSOR_MAX_H][CURSOR_MAX_GROUPS];
-static uint16 s_curSave[CURSOR_MAX_H][CURSOR_MAX_GROUPS * 4];
 /* Requested icon caches can be rebuilt before the old cursor moves. Keep
  * the actual on-screen pixels/mask independent of those cache lifetimes. */
-static uint16 s_curDrawnData[CURSOR_MAX_H][CURSOR_MAX_GROUPS * 4];
 static uint16 s_curDrawnMask[CURSOR_MAX_H][CURSOR_MAX_GROUPS];
+
+static void Video_Atari_CursorInitStorage(void)
+{
+	uint16 *p = s_curStorage;
+
+	if (((size_t)p & 3) != 0) p++;
+	s_curData = (CursorPlaneRow *)p;
+	s_curSave = s_curData + CURSOR_MAX_H;
+	s_curDrawnData = s_curSave + CURSOR_MAX_H;
+}
 
 /* cache key of the currently built bitplane form (slow/edge path, see
  * Video_Atari_CursorPrepare() below) */
@@ -1528,7 +1544,8 @@ static bool Video_Atari_CursorBuildPhase(CursorIcon *icon, uint16 phase, const u
 	mask = (uint16 *)malloc(sizeof(uint16) * (size_t)icon->h * groups);
 	icon->data[phase] = data;
 	icon->mask[phase] = mask;
-	if (data == NULL || mask == NULL) return false;
+	/* cursor.s reads the data in longs */
+	if (data == NULL || mask == NULL || (((size_t)data) & 3) != 0) return false;
 
 	for (line = 0; line < icon->h; line++) {
 		uint16 *d = data + (uint32)line * groups * 4;
@@ -1803,23 +1820,40 @@ static void Video_Atari_MarkViewportTiles(uint16 tiles[10], int16 x, int16 y,
 
 static bool s_curSuppress;
 
+typedef struct CursorComposeArgs {
+	uint16 *dst, *save, *drawnData, *drawnMask;
+	const uint16 *data, *mask;
+	uint32 lines, groups, dstSkip, saveSkip, drawnMaskSkip, dataSkip, maskSkip;
+} CursorComposeArgs;
+
+typedef struct CursorRefreshArgs {
+	uint16 *dst, *save, *drawnData, *drawnMask;
+	const uint16 *masks;
+	uint32 lines, groups, dstSkip, saveSkip, drawnMaskSkip, masksSkip;
+} CursorRefreshArgs;
+
+/* cursor.s: plain 68000 loops over long-aligned screen/backup buffers */
+extern void Video_Atari_CursorRestore(uint16 *dst, const uint16 *save, long saveStride,
+                                      long lines, long groups);
+extern void Video_Atari_CursorCompose(const CursorComposeArgs *args);
+extern void Video_Atari_CursorRefreshGroups(CursorRefreshArgs *args);
+extern long Video_Atari_CursorRowsEqual(const uint16 *a, long strideA, const uint16 *b,
+                                        long strideB, long lines, long words);
+static const uint16 s_cursorAllOnes[CURSOR_MAX_GROUPS] = {
+	0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff
+};
+
 /* Movement, actual hiding and screen shifts restore this backup.
  * Ordinary drawing updates it synchronously instead. */
 static void Video_Atari_CursorEraseFull(void)
 {
-	uint16 line, i;
 	uint16 *p;
 
 	if (!s_curDrawn) return;
 
 	p = (uint16 *)(s_curDrawnBase + s_curDrawnY * (SCREEN_WIDTH >> 1)
 	                             + (s_curDrawnGroup << 3));
-	for (line = 0; line < s_curDrawnH; line++) {
-		const uint16 *s = s_curSave[line];
-
-		for (i = 0; i < (uint16)(s_curDrawnGroups << 2); i++) p[i] = s[i];
-		p += SCREEN_WIDTH >> 2;	/* 80 words per scanline */
-	}
+	Video_Atari_CursorRestore(p, &s_curSave[0][0], sizeof(s_curSave[0]), s_curDrawnH, s_curDrawnGroups);
 	s_curDrawn = false;
 	memset(s_curViewportTiles, 0, sizeof(s_curViewportTiles));
 }
@@ -1827,7 +1861,6 @@ static void Video_Atari_CursorEraseFull(void)
 /** Save the planar background and composite the cursor over it. */
 static void Video_Atari_CursorDraw(uint8 *base)
 {
-	uint16 line, g, i;
 	uint16 *p;
 
 	if (s_curDrawn || !s_curVisible) return;
@@ -1836,24 +1869,23 @@ static void Video_Atari_CursorDraw(uint8 *base)
 	if (s_curDrawData == NULL || s_curDrawMask == NULL) return;
 
 	p = (uint16 *)(base + s_curY * (SCREEN_WIDTH >> 1) + (s_curGroup << 3));
-	for (line = 0; line < s_curH; line++) {
-		const uint16 *d = s_curDrawData + (uint32)line * s_curDrawStride * 4;
-		const uint16 *m = s_curDrawMask + (uint32)line * s_curDrawStride;
-		uint16 *save = s_curSave[line];
+	{
+		CursorComposeArgs args;
 
-		for (g = 0; g < s_curGroups; g++) {
-			uint16 keep = (uint16)~m[g];
-
-			for (i = (uint16)(g << 2); i < (uint16)((g << 2) + 4); i++) {
-				uint16 w = p[i];
-
-				save[i] = w;
-				s_curDrawnData[line][i] = d[i];
-				p[i] = (uint16)((w & keep) | d[i]);
-			}
-			s_curDrawnMask[line][g] = m[g];
-		}
-		p += SCREEN_WIDTH >> 2;
+		args.dst = p;
+		args.save = &s_curSave[0][0];
+		args.drawnData = &s_curDrawnData[0][0];
+		args.drawnMask = &s_curDrawnMask[0][0];
+		args.data = s_curDrawData;
+		args.mask = s_curDrawMask;
+		args.lines = s_curH;
+		args.groups = s_curGroups;
+		args.dstSkip = 160 - (s_curGroups << 3);
+		args.saveSkip = sizeof(s_curSave[0]) - (s_curGroups << 3);
+		args.drawnMaskSkip = sizeof(s_curDrawnMask[0]) - (s_curGroups << 1);
+		args.dataSkip = ((uint32)s_curDrawStride << 3) - (s_curGroups << 3);
+		args.maskSkip = ((uint32)s_curDrawStride << 1) - (s_curGroups << 1);
+		Video_Atari_CursorCompose(&args);
 	}
 	s_curDrawnBase = base;
 	s_curDrawnY = s_curY;
@@ -1867,7 +1899,6 @@ static void Video_Atari_CursorDraw(uint8 *base)
 
 static void Video_Atari_CursorSync(uint8 *base)
 {
-	uint16 line;
 	bool same;
 
 	/* Palette changes rebuild icon caches eagerly. Uncached sprites need
@@ -1885,15 +1916,11 @@ static void Video_Atari_CursorSync(uint8 *base)
 
 	if (same && !s_curDirty) return;
 	if (same) {
-		for (line = 0; line < s_curH; line++) {
-			if (memcmp(s_curDrawnData[line], s_curDrawData + (uint32)line * s_curDrawStride * 4,
-			           s_curGroups * 4 * sizeof(uint16)) != 0 ||
-			    memcmp(s_curDrawnMask[line], s_curDrawMask + (uint32)line * s_curDrawStride,
-			           s_curGroups * sizeof(uint16)) != 0) {
-				same = false;
-				break;
-			}
-		}
+		same = s_curH == 0 || s_curGroups == 0 ||
+		    (Video_Atari_CursorRowsEqual(&s_curDrawnData[0][0], sizeof(s_curDrawnData[0]),
+		        s_curDrawData, (long)s_curDrawStride << 3, s_curH, s_curGroups << 2) &&
+		     Video_Atari_CursorRowsEqual(&s_curDrawnMask[0][0], sizeof(s_curDrawnMask[0]),
+		        s_curDrawMask, (long)s_curDrawStride << 1, s_curH, s_curGroups));
 	}
 	if (!same) {
 		Video_Atari_CursorEraseFull();
@@ -2056,7 +2083,7 @@ static void Video_Atari_RefreshViewportCursor(uint8 *base, uint16 first, uint16 
                                              uint16 top, uint16 bottom,
                                              const uint16 *masks, uint16 stride)
 {
-	uint16 maskFirst = first, maskTop = top, line, group;
+	uint16 maskFirst = first, maskTop = top;
 
 	assert(first < end && end <= 15 && top >= 40 && top < bottom && bottom <= 200);
 	if (!s_curDrawn || base != s_curDrawnBase) return;
@@ -2065,26 +2092,28 @@ static void Video_Atari_RefreshViewportCursor(uint8 *base, uint16 first, uint16 
 	top = max(top, s_curDrawnY);
 	bottom = min(bottom, s_curDrawnY + s_curDrawnH);
 	if (first >= end || top >= bottom) return;
-	for (line = top; line < bottom; line++) {
-		uint16 cursorRow = line - s_curDrawnY;
-		uint16 *dst = (uint16 *)(base + (uint32)line * 160 + first * 8);
-		for (group = first; group < end; group++, dst += 4) {
-			uint16 cursorGroup = group - s_curDrawnGroup;
-			uint16 writeMask = masks != NULL ?
-			    masks[(uint32)(line - maskTop) * stride + group - maskFirst] : 0xffff;
-			uint16 redraw, plane;
-			if (writeMask == 0) continue;
-			redraw = writeMask & s_curDrawnMask[cursorRow][cursorGroup];
-			for (plane = 0; plane < 4; plane++) {
-				uint16 index = cursorGroup * 4 + plane;
-				uint16 pixels = dst[plane];
-				/* Unwritten destination bits can still contain the cursor. */
-				s_curSave[cursorRow][index] =
-				    (s_curSave[cursorRow][index] & (uint16)~writeMask) | (pixels & writeMask);
-				dst[plane] = (pixels & (uint16)~redraw) |
-				    (s_curDrawnData[cursorRow][index] & redraw);
-			}
+	{
+		CursorRefreshArgs args;
+		uint16 cursorRow = top - s_curDrawnY, cursorGroup = first - s_curDrawnGroup;
+		uint32 count = end - first;
+
+		args.dst = (uint16 *)(base + (uint32)top * 160 + first * 8);
+		args.save = &s_curSave[cursorRow][cursorGroup * 4];
+		args.drawnData = &s_curDrawnData[cursorRow][cursorGroup * 4];
+		args.drawnMask = &s_curDrawnMask[cursorRow][cursorGroup];
+		args.lines = bottom - top;
+		args.groups = count;
+		args.dstSkip = 160 - (count << 3);
+		args.saveSkip = sizeof(s_curSave[0]) - (count << 3);
+		args.drawnMaskSkip = sizeof(s_curDrawnMask[0]) - (count << 1);
+		if (masks != NULL) {
+			args.masks = masks + (uint32)(top - maskTop) * stride + (first - maskFirst);
+			args.masksSkip = ((uint32)stride << 1) - (count << 1);
+		} else {
+			args.masks = s_cursorAllOnes;
+			args.masksSkip = -(int32)(count << 1);
 		}
+		Video_Atari_CursorRefreshGroups(&args);
 	}
 }
 
