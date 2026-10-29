@@ -1276,10 +1276,6 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 
 	/* Draw ground units */
 	if (g_dirtyUnitCount != 0 || forceRedraw || updateDisplay) {
-#ifdef TOS
-		const int16 viewportPixelX = (int16)(Tile_GetPackedX(g_viewportPosition) << 4);
-		const int16 viewportPixelY = (int16)(Tile_GetPackedY(g_viewportPosition) << 4);
-#endif
 		find.type    = 0xFFFF;
 		find.index   = 0xFFFF;
 		find.houseID = HOUSE_INVALID;
@@ -1303,42 +1299,17 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 
 			if (u->o.index < 20 || u->o.index > 101) continue;
 
-#ifdef TOS
-			/* Same arithmetic as Map_IsPositionInViewport(), inlined. A unit
-			 * that is neither dirty nor on a dirty tile is rejected without
-			 * packing its tile when it is also off screen; such a unit has
-			 * no side effects on the original path either. */
-			{
-				int16 px = (int16)((u->o.position.x >> 4) - viewportPixelX);
-				int16 py = (int16)((u->o.position.y >> 4) - viewportPixelY);
-				bool inViewport = px >= -16 && px <= 256 && py >= -16 && py <= 176;
-
-				if (!forceRedraw && !u->o.flags.s.isDirty) {
-					if (!inViewport) continue;
-					packed = Tile_PackTile(u->o.position);
-					if (!BitArray_Test(g_dirtyViewport, packed)) continue;
-					s_viewportSpriteNeedsRedraw = false;
-				} else {
-					packed = Tile_PackTile(u->o.position);
-					s_viewportSpriteNeedsRedraw = true;
-					u->o.flags.s.isDirty = false;
-				}
-
-				if (!g_map[packed].isUnveiled && !g_debugScenario) continue;
-				if (!inViewport) continue;
-				x = (uint16)px;
-				y = (uint16)py;
-			}
-#else
 			packed = Tile_PackTile(u->o.position);
 
 			if ((!u->o.flags.s.isDirty || u->o.flags.s.isNotOnMap) && !forceRedraw && !BitArray_Test(g_dirtyViewport, packed)) continue;
+#ifdef TOS
+			s_viewportSpriteNeedsRedraw = u->o.flags.s.isDirty || forceRedraw;
+#endif
 			u->o.flags.s.isDirty = false;
 
 			if (!g_map[packed].isUnveiled && !g_debugScenario) continue;
 
 			if (!Map_IsPositionInViewport(u->o.position, &x, &y)) continue;
-#endif
 
 			x += g_table_tilediff[0][u->wobbleIndex].x;
 			y += g_table_tilediff[0][u->wobbleIndex].y;

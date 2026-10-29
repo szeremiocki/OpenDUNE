@@ -145,6 +145,6 @@ Blockers to clear first:
   sprite-damage filter off when forced; check that all-dirty tiles give the
   same result.
 
-The ground-unit loop is already split once per pass on `forceRedraw` (the fast
-branch has no per-unit flag test), so removing the flag later only deletes the
-slow branch.
+A ground-unit loop precheck (inline viewport bounds reject, `e067ad38`) was
+tried and retired: capture 40 showed only ~0.3k cycles saved per pass, not
+worth the added code.
