@@ -344,6 +344,8 @@ extern Unit *Unit_Sandworm_FindBestTarget(Unit *unit);
 #include "pool/unit.h"
 #include "opendune.h"
 
+extern Unit g_unitArray[UNIT_INDEX_MAX];
+
 /**
  * Unfiltered equivalent of Unit_Find(): advances *index (start at 0xFFFF)
  * and returns the next on-map unit, or NULL. Inlined to avoid call overhead.

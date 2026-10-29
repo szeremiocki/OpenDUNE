@@ -1392,11 +1392,19 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 #endif
 	/* draw air units */
 	if (g_dirtyAirUnitCount != 0 || forceRedraw || updateDisplay) {
+#ifdef TOS
+		/* Air slots are 0-15: walk them directly, highest first, so that
+		 * missiles and bullets (12-15) are drawn below aircraft (0-10). */
+		int16 airSlot;
+
+		for (airSlot = 15; airSlot >= 0; airSlot--) {
+#else
 		find.type    = 0xFFFF;
 		find.index   = 0xFFFF;
 		find.houseID = HOUSE_INVALID;
 
 		while (true) {
+#endif
 			Unit *u;
 			UnitInfo *ui;
 			uint8 *sprite;
@@ -1404,18 +1412,23 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 			int spriteFlags;
 
 #ifdef TOS
-			u = Unit_FindNextAny(&find.index);
+			u = &g_unitArray[airSlot];
+			if (!u->o.flags.s.used || u->o.flags.s.isNotOnMap) continue;
 #else
 			u = Unit_Find(&find);
-#endif
 
 			if (u == NULL) break;
 
 			if (u->o.index > 15) continue;
+#endif
 
 			curPos = Tile_PackTile(u->o.position);
 
+#ifdef TOS
+			if (!u->o.flags.s.isDirty && !forceRedraw && !BitArray_Test(g_dirtyViewport, curPos)) continue;
+#else
 			if ((!u->o.flags.s.isDirty || u->o.flags.s.isNotOnMap) && !forceRedraw && !BitArray_Test(g_dirtyViewport, curPos)) continue;
+#endif
 #ifdef TOS
 			s_viewportSpriteNeedsRedraw = u->o.flags.s.isDirty || forceRedraw;
 #endif
