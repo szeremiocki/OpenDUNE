@@ -1,5 +1,6 @@
 ; vim: set tabstop=8 shiftwidth=8 noexpandtab:
 	xdef	_GFX_DrawViewportTileFast	;export symbol
+	xdef	_GFX_DrawViewportPixelsFast
 	xref	_g_videoViewportBlitter
 	xref	_g_videoBlitterTileSetup
 	xref	_g_videoPlanarBase
@@ -26,11 +27,11 @@ PLANAR_TILE_OPAQUE	equ	3
 _GFX_DrawViewportTileFast:
 	move.l	d2,-(sp)
 	tst.b	_g_videoViewportBlitter
-	beq	.fail
+	beq	tile_fail
 	tst.b	_g_atariSupervisorResident
-	beq	.fail
+	beq	tile_fail
 	move.l	_g_videoPlanarBase,d0
-	beq	.fail
+	beq	tile_fail
 	move.l	d0,a1
 	move.l	16(sp),d1		; row
 	move.l	12(sp),d2		; col
@@ -38,8 +39,8 @@ _GFX_DrawViewportTileFast:
 	lea	_s_curViewportTiles,a0
 	move.w	(a0,d1.w),d0
 	btst	d2,d0
-	bne	.fail
-	lea	.rows(pc),a0
+	bne	tile_fail
+	lea	tile_rows(pc),a0
 	move.w	(a0,d1.w),d1		; (40 + 16 * row) * 160
 	lsl.w	#3,d2
 	add.w	d2,d1
@@ -54,10 +55,10 @@ _GFX_DrawViewportTileFast:
 	move.w	(a0,d0.l),d2		; tile index
 	move.l	_s_planarTileReady,a0
 	cmp.b	#PLANAR_TILE_OPAQUE,(a0,d2.l)
-	bne	.fail
+	bne	tile_fail
 	lsl.l	#7,d2
 	add.l	_s_planarTiles,d2
-	tst.b	_g_videoBlitterTileSetup
+tile_blit:	tst.b	_g_videoBlitterTileSetup
 	bne	.ready
 .idle:	tst.b	$ffff8a3c.w
 	bmi	.idle
@@ -82,8 +83,35 @@ _GFX_DrawViewportTileFast:
 	moveq	#1,d0
 	move.l	(sp)+,d2
 	rts
-.fail:	moveq	#0,d0
+tile_fail:	moveq	#0,d0
 	move.l	(sp)+,d2
 	rts
 
-.rows:	dc.w	6400,8960,11520,14080,16640,19200,21760,24320,26880,29440
+; long GFX_DrawViewportPixelsFast(unsigned long pixels, unsigned long col,
+;                                 unsigned long row);
+; Same as above for an already composed opaque tile image at "pixels".
+_GFX_DrawViewportPixelsFast:
+	move.l	d2,-(sp)
+	tst.b	_g_videoViewportBlitter
+	beq	tile_fail
+	tst.b	_g_atariSupervisorResident
+	beq	tile_fail
+	move.l	_g_videoPlanarBase,d0
+	beq	tile_fail
+	move.l	d0,a1
+	move.l	16(sp),d1		; row
+	move.l	12(sp),d2		; col
+	add.w	d1,d1
+	lea	_s_curViewportTiles,a0
+	move.w	(a0,d1.w),d0
+	btst	d2,d0
+	bne	tile_fail
+	lea	tile_rows(pc),a0
+	move.w	(a0,d1.w),d1
+	lsl.w	#3,d2
+	add.w	d2,d1
+	lea	(a1,d1.w),a1
+	move.l	8(sp),d2		; pixels
+	bra	tile_blit
+
+tile_rows:	dc.w	6400,8960,11520,14080,16640,19200,21760,24320,26880,29440

@@ -79,18 +79,18 @@ uint16 *s_planarTileHouse[HOUSE_MAX];	/* per-house base of s_planarTileIndex */
 static uint16 s_planarTileCount, s_planarVariants;
 static uint16 s_viewportFogPixels[64], s_viewportFogMasks[16];
 static bool s_viewportFogReady;
-/* Ground + overlay composites are found without hashing: a variant number is
- * handed out per distinct overlay tile, and s_planarCompositeSlot holds
- * slot + 1 for every (ground tile slot, overlay variant) pair. The last slot is
- * scratch for overlay sets beyond PLANAR_FOG_VARIANTS. A full pool is simply
- * emptied and refilled. */
-enum { PLANAR_COMPOSITE_SLOTS = 128, PLANAR_FOG_VARIANTS = 16, PLANAR_COMPOSITE_SCRATCH = PLANAR_COMPOSITE_SLOTS };
-static uint8 *s_planarCompositeSlot;	/* s_planarVariants * PLANAR_FOG_VARIANTS */
-static uint8 *s_planarFogVariant;	/* per tile slot: overlay variant + 1, or zero */
-static uint8 s_planarFogVariants, s_planarCompositeNext;
-static uint8 s_planarCompositeReady[PLANAR_COMPOSITE_SLOTS + 1];
-static uint16 s_planarComposites[PLANAR_COMPOSITE_SLOTS + 1][64];
-static uint16 s_planarCompositeMasks[PLANAR_COMPOSITE_SLOTS + 1][16];
+/* Ground + overlay composites are pinned to the map cell: the slot is
+ * (x & 15) + 16 * (y mod 10), so a 15x10 viewport window never has two cells in
+ * one slot and scrolling reuses slots without moving data (the cell entering
+ * an edge takes the slot of the cell leaving the opposite edge). Each slot is
+ * tagged with its (ground index, overlay index) pair; a mismatch recomposes
+ * that slot only. */
+enum { PLANAR_COMPOSITE_SLOTS = 160 };
+static uint8 s_planarCompositeReady[PLANAR_COMPOSITE_SLOTS];
+static uint32 s_planarCompositeTag[PLANAR_COMPOSITE_SLOTS];
+static uint8 s_planarRowSlot[64];	/* (y mod 10) * 16 */
+static uint16 s_planarComposites[PLANAR_COMPOSITE_SLOTS][64];
+static uint16 s_planarCompositeMasks[PLANAR_COMPOSITE_SLOTS][16];
 static struct {
 	uint32 tiles;
 	uint16 style;
@@ -119,12 +119,9 @@ void GFX_FreePlanarTiles(void)
 	free(s_planarTileMasks);
 	free(s_planarTileIndex);
 	free(s_planarTileReady);
-	free(s_planarCompositeSlot);
-	free(s_planarFogVariant);
 	s_planarTiles = s_planarTileMasks = s_planarTileIndex = NULL;
-	s_planarTileReady = s_planarCompositeSlot = s_planarFogVariant = NULL;
+	s_planarTileReady = NULL;
 	s_planarTileCount = s_planarVariants = 0;
-	s_planarFogVariants = s_planarCompositeNext = 0;
 }
 
 bool GFX_PlanarTilesReady(void)
@@ -202,42 +199,30 @@ static uint8 GFX_ComposePlanarTile(const uint16 *pixels, const uint16 *masks,
 	       anyMask == 0 ? PLANAR_TILE_EMPTY : PLANAR_TILE_MIXED;
 }
 
-static uint16 GFX_PlanarCompositeSlot(uint16 tileID, uint16 fogTileID, uint8 houseID)
+static uint16 GFX_PlanarCompositeSlot(uint16 tileID, uint16 fogTileID, uint8 houseID, uint16 packed)
 {
 	const uint16 *map = s_planarTileHouse[houseID];
-	uint16 index = map[tileID], fogIndex = map[fogTileID], slot;
-	uint8 variant = s_planarFogVariant[fogIndex], *entry = NULL;
+	uint16 index = map[tileID], fogIndex = map[fogTileID];
+	uint16 slot = (packed & 15) + s_planarRowSlot[packed >> 6];
+	uint32 tag = ((uint32)index << 16) | fogIndex;
 
-	if (variant == 0 && s_planarFogVariants < PLANAR_FOG_VARIANTS) {
-		variant = s_planarFogVariant[fogIndex] = ++s_planarFogVariants;
-	}
-	if (variant != 0) {
-		entry = &s_planarCompositeSlot[(uint32)index * PLANAR_FOG_VARIANTS + variant - 1];
-		if (*entry != 0) return *entry - 1;
-		if (s_planarCompositeNext == PLANAR_COMPOSITE_SLOTS) {
-			memset(s_planarCompositeSlot, 0, (uint32)s_planarVariants * PLANAR_FOG_VARIANTS);
-			s_planarCompositeNext = 0;
-		}
-		slot = s_planarCompositeNext++;
-		*entry = (uint8)(slot + 1);
-	} else {
-		slot = PLANAR_COMPOSITE_SCRATCH;
-	}
+	if (s_planarCompositeReady[slot] != 0 && s_planarCompositeTag[slot] == tag) return slot;
 	if (s_planarTileReady[index] == 0) GFX_FillPlanarTile(tileID, houseID, index);
 	if (s_planarTileReady[fogIndex] == 0) GFX_FillPlanarTile(fogTileID, houseID, fogIndex);
 	s_planarCompositeReady[slot] = GFX_ComposePlanarTile(
 	    s_planarTiles + (uint32)index * 64, s_planarTileMasks + (uint32)tileID * 16,
 	    s_planarTiles + (uint32)fogIndex * 64, s_planarTileMasks + (uint32)fogTileID * 16,
 	    s_planarComposites[slot], s_planarCompositeMasks[slot]);
+	s_planarCompositeTag[slot] = tag;
 	return slot;
 }
 
-void GFX_DrawPlanarTileFogged(uint16 tileID, uint16 fogTileID, uint16 x, uint16 y, uint8 houseID)
+void GFX_DrawPlanarTileFogged(uint16 tileID, uint16 fogTileID, uint16 x, uint16 y, uint8 houseID, uint16 packed)
 {
 	uint16 slot;
 
 	assert(s_planarTiles != NULL && tileID < s_planarTileCount && fogTileID < s_planarTileCount && houseID < HOUSE_MAX);
-	slot = GFX_PlanarCompositeSlot(tileID, fogTileID, houseID);
+	slot = GFX_PlanarCompositeSlot(tileID, fogTileID, houseID, packed);
 	Video_Atari_DrawPlanarTile(s_planarComposites[slot], s_planarCompositeMasks[slot], x, y,
 	    s_planarCompositeReady[slot] == PLANAR_TILE_OPAQUE ? s_planarComposites[slot] : NULL);
 }
@@ -271,7 +256,7 @@ void GFX_DrawPlanarViewportFog(uint16 col, uint16 row)
 	    s_viewportFogPixels);
 }
 
-void GFX_DrawPlanarViewportTile(uint16 tileID, uint16 overlayID, uint16 col, uint16 row, uint8 houseID)
+void GFX_DrawPlanarViewportTile(uint16 tileID, uint16 overlayID, uint16 col, uint16 row, uint8 houseID, uint16 packed)
 {
 	uint16 index, slot;
 	const uint16 *pixels, *masks;
@@ -284,12 +269,13 @@ void GFX_DrawPlanarViewportTile(uint16 tileID, uint16 overlayID, uint16 col, uin
 		pixels = s_planarTiles + (uint32)index * 64;
 		masks = s_planarTileMasks + (uint32)tileID * 16;
 	} else {
-		slot = GFX_PlanarCompositeSlot(tileID, overlayID, houseID);
+		slot = GFX_PlanarCompositeSlot(tileID, overlayID, houseID, packed);
 		opacity = s_planarCompositeReady[slot];
 		pixels = s_planarComposites[slot];
 		masks = s_planarCompositeMasks[slot];
 	}
 	if (opacity == PLANAR_TILE_OPAQUE) {
+		if (overlayID != 0 && GFX_DrawViewportPixelsFast((unsigned long)pixels, col, row)) return;
 		if (Video_Atari_BlitViewportTile(pixels, col, row)) return;
 		Video_Atari_DrawPlanarTile(pixels, masks, col << 4, (row << 4) + 40, pixels);
 		return;
@@ -384,10 +370,9 @@ void GFX_InitPlanarTiles(uint32 tilesDataLength, const uint8 *palette)
 	s_planarTiles = malloc((uint32)variants * 128);
 	s_planarTileMasks = malloc((uint32)s_planarTileCount * 32);
 	s_planarTileReady = calloc(variants, sizeof(*s_planarTileReady));
-	s_planarCompositeSlot = calloc((uint32)variants * PLANAR_FOG_VARIANTS, 1);
-	s_planarFogVariant = calloc(variants, 1);
 	if (s_planarTiles == NULL || s_planarTileMasks == NULL || s_planarTileReady == NULL ||
-	    s_planarCompositeSlot == NULL || s_planarFogVariant == NULL) goto no_memory;
+	    false) goto no_memory;
+	for (tile = 0; tile < 64; tile++) s_planarRowSlot[tile] = (uint8)((tile % 10) * 16);
 	s_planarVariants = variants;
 	Video_Atari_InitTileMapping(palette);
 	Debug("Lazy planar tiles: %u tiles, %u stable house slots, %lu bytes\n", s_planarTileCount, variants,

@@ -342,7 +342,7 @@ void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 b
 					GFX_DrawPlanarViewportFog(x, y);
 				} else {
 					if (overlay != 0 || !GFX_DrawViewportTileFast(t->groundTileID, x, y, t->houseID))
-						GFX_DrawPlanarViewportTile(t->groundTileID, overlay, x, y, t->houseID);
+						GFX_DrawPlanarViewportTile(t->groundTileID, overlay, x, y, t->houseID, packed);
 				}
 			}
 		}
@@ -1178,7 +1178,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 
 #ifdef TOS
 				if (planarViewport && t->overlayTileID != 0 && !g_debugScenario) {
-					GFX_DrawPlanarTileFogged(t->groundTileID, t->overlayTileID, left, top, t->houseID);
+					GFX_DrawPlanarTileFogged(t->groundTileID, t->overlayTileID, left, top, t->houseID, curPos);
 					continue;
 				}
 				if (planarViewport) GFX_DrawPlanarTile(t->groundTileID, left, top, t->houseID);
