@@ -79,5 +79,6 @@ extern void Explosion_Init(void);
 extern void Explosion_Start(uint16 explosionType, tile32 position);
 extern void Explosion_Tick(void);
 extern Explosion *Explosion_Get_ByIndex(int i);
+extern uint8 g_explosionHigh;
 
 #endif /* EXPLOSION_H */

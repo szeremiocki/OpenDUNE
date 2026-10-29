@@ -22,6 +22,7 @@
 
 
 static Explosion g_explosions[EXPLOSION_MAX];               /*!< Explosions. */
+uint8 g_explosionHigh = 0;                                  /*!< One past the highest slot that may be active. */
 static uint32 s_explosionTimer = 0;                         /*!< Timeout value for next explosion activity. */
 
 
@@ -232,6 +233,10 @@ static void Explosion_Func_Stop(Explosion *e, uint16 parameter)
 	Explosion_Update(0, e);
 
 	e->commands = NULL;
+
+	if (g_explosionHigh != 0 && e == &g_explosions[g_explosionHigh - 1]) {
+		while (g_explosionHigh != 0 && g_explosions[g_explosionHigh - 1].commands == NULL) g_explosionHigh--;
+	}
 }
 
 /**
@@ -302,6 +307,7 @@ static void Explosion_StopAtPosition(uint16 packed)
 void Explosion_Init(void)
 {
 	memset(g_explosions, 0, EXPLOSION_MAX * sizeof(Explosion));
+	g_explosionHigh = 0;
 }
 
 /**
@@ -337,6 +343,7 @@ void Explosion_Start(uint16 explosionType, tile32 position)
 		e->timeOut  = g_timerGUI;
 		s_explosionTimer = 0;
 		g_map[packed].hasExplosion = true;
+		if (i >= g_explosionHigh) g_explosionHigh = i + 1;
 
 		break;
 	}
@@ -352,7 +359,7 @@ void Explosion_Tick(void)
 	if (s_explosionTimer > g_timerGUI) return;
 	s_explosionTimer += 10000;
 
-	for (i = 0; i < EXPLOSION_MAX; i++) {
+	for (i = 0; i < g_explosionHigh; i++) {
 		Explosion *e;
 
 		e = &g_explosions[i];

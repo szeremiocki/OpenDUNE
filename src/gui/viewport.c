@@ -1357,7 +1357,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 	{
 	Explosion *explosions = Explosion_Get_ByIndex(0);
 
-	for (i = 0; i < EXPLOSION_MAX; i++) {
+	for (i = 0; i < g_explosionHigh; i++) {
 		Explosion *e = explosions + i;
 
 		/* Inactive slots are by far the common case, so reject them before
