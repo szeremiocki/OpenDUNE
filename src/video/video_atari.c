@@ -2877,20 +2877,17 @@ void Video_Atari_InitTileMapping(const uint8 *palette)
 	}
 }
 
+extern void Video_Atari_ExpandTileNibbles(const uint8 *src, const uint8 *pens, uint8 *chunky);
+
 void Video_Atari_DecodePlanarTile(const uint8 *src, const uint8 *palette, uint16 *pixels)
 {
 	union { uint32 aligned; uint8 bytes[16 * 16]; } chunky;
 	uint8 pens[16];
-	uint16 line, col;
+	uint16 col;
 
 	assert(src != NULL && palette != NULL && pixels != NULL);
 	for (col = 0; col < 16; col++) pens[col] = s_tilePens[palette[col]];
-	for (line = 0; line < 16; line++, src += 8) {
-		for (col = 0; col < 8; col++) {
-			chunky.bytes[line * 16 + col * 2] = pens[src[col] >> 4];
-			chunky.bytes[line * 16 + col * 2 + 1] = pens[src[col] & 15];
-		}
-	}
+	Video_Atari_ExpandTileNibbles(src, pens, chunky.bytes);
 	Video_Atari_EncodePlanarWithLookup(chunky.bytes, pixels, 16, 16, s_tilePenPairMap, 16);
 }
 

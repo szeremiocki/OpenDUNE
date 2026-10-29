@@ -1,6 +1,7 @@
 ; vim: set tabstop=8 shiftwidth=8 noexpandtab:
 	xdef	_GFX_DrawViewportTileFast	;export symbol
 	xdef	_GFX_DrawViewportPixelsFast
+	xdef	_Video_Atari_ExpandTileNibbles
 	xref	_g_videoViewportBlitter
 	xref	_g_videoBlitterTileSetup
 	xref	_g_videoPlanarBase
@@ -115,3 +116,32 @@ _GFX_DrawViewportPixelsFast:
 	bra	tile_blit
 
 tile_rows:	dc.w	6400,8960,11520,14080,16640,19200,21760,24320,26880,29440
+
+; prototype:
+; void Video_Atari_ExpandTileNibbles(const uint8 *src, const uint8 *pens, uint8 *chunky);
+;
+; Expands 128 source bytes (two 4-bit pixels each, high nibble first) into 256
+; chunky bytes through the 16-entry pen table. Plain 68000 code.
+_Video_Atari_ExpandTileNibbles:
+	movem.l	d2/a2,-(sp)
+	move.l	12(sp),a0		; src
+	move.l	16(sp),a1		; pens
+	move.l	20(sp),a2		; chunky
+	moveq	#0,d0			; the upper bits stay zero: only move.b writes d0
+	moveq	#63,d2
+expand_loop:
+	move.b	(a0)+,d0
+	move.w	d0,d1
+	lsr.w	#4,d1
+	and.w	#15,d0
+	move.b	(a1,d1.w),(a2)+
+	move.b	(a1,d0.w),(a2)+
+	move.b	(a0)+,d0
+	move.w	d0,d1
+	lsr.w	#4,d1
+	and.w	#15,d0
+	move.b	(a1,d1.w),(a2)+
+	move.b	(a1,d0.w),(a2)+
+	dbra	d2,expand_loop
+	movem.l	(sp)+,d2/a2
+	rts
