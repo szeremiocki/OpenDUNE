@@ -125,3 +125,26 @@ sampled bytes including relocated operands. Never reuse old object-relative
 branch offsets after changing/rebuilding the relevant object. Complete visual
 checks for disappearance, overlap and scroll transitions on Atari/Hatari;
 performance data alone does not establish correctness.
+
+## Goal: remove `forceRedraw` from the engine
+
+`GUI_Widget_Viewport_Draw` still carries a `forceRedraw` flag
+(`g_viewport_forceRedraw`), tested per unit, per explosion and in several
+setup decisions. The goal is to delete it and, in the rare cases that set it
+(interface change, jump scroll without overlap, returning from options, mode
+switch), mark all 15x10 viewport tiles dirty instead. That is about 10
+dirty-row word writes, so it is cheap, and every consumer then needs only the
+normal dirty-tile test.
+
+Blockers to clear first:
+- The legacy chunky viewport path (`drawToMainScreen`, `trackCopyDamage`,
+  selection-rectangle repaint) and the planar/chunky switch near the top of
+  `GUI_Widget_Viewport_Draw` must go; all ST/STE drawing is planar anyway.
+- Verify `Video_Atari_CursorDirect()` is true wherever the viewport is drawn.
+- `BeginSpriteDamage(planarViewport && !forceRedraw && !hasScrolled)` turns the
+  sprite-damage filter off when forced; check that all-dirty tiles give the
+  same result.
+
+The ground-unit loop is already split once per pass on `forceRedraw` (the fast
+branch has no per-unit flag test), so removing the flag later only deletes the
+slow branch.
