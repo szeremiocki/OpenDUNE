@@ -57,6 +57,7 @@ void GameLoop_Structure(void)
 	bool tickStructure = false;
 	bool tickScript    = false;
 	bool tickPalace    = false;
+	bool needHouse;
 
 	if (s_tickStructureDegrade <= g_timerGame && g_campaignID > 1) {
 		tickDegrade = true;
@@ -84,11 +85,16 @@ void GameLoop_Structure(void)
 
 	if (g_debugScenario) return;
 
+	/* Every action below is gated by one of these flags. */
+	if (!(tickDegrade || tickStructure || tickScript || tickPalace)) return;
+
+	needHouse = tickDegrade || tickStructure || tickPalace;
+
 	while (true) {
-		const StructureInfo *si;
-		const HouseInfo *hi;
+		const StructureInfo *si = NULL;
+		const HouseInfo *hi = NULL;
 		Structure *s;
-		House *h;
+		House *h = NULL;
 
 #ifdef TOS
 		s = Structure_FindNextAny(&find.index);
@@ -98,9 +104,11 @@ void GameLoop_Structure(void)
 		if (s == NULL) break;
 		if (s->o.type == STRUCTURE_SLAB_1x1 || s->o.type == STRUCTURE_SLAB_2x2 || s->o.type == STRUCTURE_WALL) continue;
 
-		si = &g_table_structureInfo[s->o.type];
-		h  = House_Get_ByIndex(s->o.houseID);
-		hi = &g_table_houseInfo[h->index];
+		if (needHouse) {
+			si = &g_table_structureInfo[s->o.type];
+			h  = House_Get_ByIndex(s->o.houseID);
+			hi = &g_table_houseInfo[h->index];
+		}
 
 		g_scriptCurrentObject    = &s->o;
 		g_scriptCurrentStructure = s;

@@ -250,6 +250,10 @@ void GameLoop_Unit(void)
 	find.index   = 0xFFFF;
 	find.type    = 0xFFFF;
 
+	/* Only scripts read these; nothing in the loop changes them. */
+	g_scriptCurrentStructure = NULL;
+	g_scriptCurrentTeam      = NULL;
+
 	while (true) {
 		const UnitInfo *ui;
 		Unit *u;
@@ -262,11 +266,6 @@ void GameLoop_Unit(void)
 		if (u == NULL) break;
 
 		ui = &g_table_unitInfo[u->o.type];
-
-		g_scriptCurrentObject    = &u->o;
-		g_scriptCurrentStructure = NULL;
-		g_scriptCurrentUnit      = u;
-		g_scriptCurrentTeam      = NULL;
 
 		if (u->o.flags.s.isNotOnMap) continue;
 
@@ -317,7 +316,7 @@ void GameLoop_Unit(void)
 
 		if (tickDeviation) Unit_Deviation_Decrease(u, 1);
 
-		if (ui->movementType != MOVEMENT_WINGER && !Map_HasObject(Unit_PackedTile(u))) Unit_UpdateMap(1, u);
+		if (!Map_HasObject(Unit_PackedTile(u)) && ui->movementType != MOVEMENT_WINGER) Unit_UpdateMap(1, u);
 
 		if (tickUnknown5) {
 			if (u->timer == 0) {
@@ -394,6 +393,9 @@ void GameLoop_Unit(void)
 					}
 
 					u->o.script.variables[3] = g_playerHouseID;
+
+					g_scriptCurrentObject = &u->o;
+					g_scriptCurrentUnit   = u;
 
 					Script_RunBudget(&u->o.script, opcodesLeft);
 				}
