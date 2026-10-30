@@ -170,15 +170,35 @@ bool GUI_Sidebar_FragmentBegin(uint16 kind, const char *text, int16 left, int16 
 		    strcmp(entry->text, text) != 0) continue;
 		for (; i != 0; i--) set[i] = set[i - 1];
 		set[0] = entry;
-		for (row = 0; row < entry->height; row++) {
-			for (group = 0; group < entry->groups; group++) {
-				const uint16 *src = entry->data + (row * entry->groups + group) * 5;
-				uint16 mask = src[4], plane;
-				uint16 *dst = s_pixels + (entry->top + row) * SIDEBAR_WORDS + (entry->left + group) * 4;
-				if (mask == 0) continue;
-				if (mask == 0xffff) memcpy(dst, src, 8);
-				else for (plane = 0; plane < 4; plane++) dst[plane] = (dst[plane] & ~mask) | (src[plane] & mask);
-				GUI_Sidebar_Record(entry->top + row, entry->left + group, mask);
+		{
+			/* Fewer than lengthof(s_capture) captures are open here, so at most one records this replay. */
+			const uint16 *src = entry->data;
+			uint16 *dst = s_pixels + entry->top * SIDEBAR_WORDS + entry->left * 4;
+			uint16 *record = s_captureDepth != 0 ? s_capture[0].masks + entry->top * SIDEBAR_GROUPS + entry->left : NULL;
+			const uint16 groups = entry->groups;
+
+			for (row = entry->height; row != 0; row--) {
+				uint16 *d = dst, *m = record;
+				for (group = groups; group != 0; group--) {
+					uint16 mask = src[4];
+					if (mask != 0) {
+						if (mask == 0xffff) {
+							memcpy(d, src, 8);
+						} else {
+							const uint16 keep = ~mask;
+							d[0] = (d[0] & keep) | (src[0] & mask);
+							d[1] = (d[1] & keep) | (src[1] & mask);
+							d[2] = (d[2] & keep) | (src[2] & mask);
+							d[3] = (d[3] & keep) | (src[3] & mask);
+						}
+						if (m != NULL) *m |= mask;
+					}
+					src += 5;
+					d += 4;
+					if (m != NULL) m++;
+				}
+				dst += SIDEBAR_WORDS;
+				if (record != NULL) record += SIDEBAR_GROUPS;
 			}
 		}
 		return true;
