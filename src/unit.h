@@ -4,6 +4,7 @@
 #define UNIT_H
 
 #include "object.h"
+#include "tile.h"
 #ifdef TOS
 #include "gui/viewport_key.h"
 #endif
@@ -172,6 +173,7 @@ typedef struct Unit {
 	uint8  route[14];                                       /*!< The current route the Unit is following. */
 #ifdef TOS
 	ViewportCompositeKey viewportKey;
+	uint16 packedTile;                                      /*!< Cached Tile_PackTile(o.position); written only by Unit_SetPos(). */
 	tile32 rotateFrom;                                      /*!< Unit position of the memoized Script_Unit_Rotate direction. */
 	tile32 rotateTo;                                        /*!< Target position of the memoized direction. */
 	int8   rotateOrientation;                               /*!< Memoized Tile_GetDirection(rotateFrom, rotateTo). */
@@ -190,6 +192,22 @@ static inline void Unit_ClearViewportKey(Unit *unit)
 	(void)unit;
 #endif
 }
+
+/** Write o.position and keep the TOS packed-tile cache in sync. */
+static inline void Unit_SetPos(Unit *unit, tile32 position)
+{
+	unit->o.position = position;
+#ifdef TOS
+	unit->packedTile = Tile_PackTile(position);
+#endif
+}
+
+/** Packed tile of a unit's position. */
+#ifdef TOS
+#define Unit_PackedTile(u) ((u)->packedTile)
+#else
+#define Unit_PackedTile(u) Tile_PackTile((u)->o.position)
+#endif
 
 /**
  * Static information per Unit type.

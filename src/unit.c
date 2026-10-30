@@ -503,7 +503,7 @@ Unit *Unit_Create(uint16 index, uint8 typeID, uint8 houseID, tile32 position, in
 
 	Unit_SetSpeed(u, 0);
 
-	u->o.position       = position;
+	Unit_SetPos(u, position);
 	u->o.hitpoints      = ui->o.hitpoints;
 	u->currentDestination.x = 0;
 	u->currentDestination.y = 0;
@@ -991,7 +991,7 @@ bool Unit_SetPosition(Unit *u, tile32 position)
 	ui = &g_table_unitInfo[u->o.type];
 	u->o.flags.s.isNotOnMap = false;
 
-	u->o.position = Tile_Center(position);
+	Unit_SetPos(u, Tile_Center(position));
 
 	if (u->originEncoded == 0) Unit_FindClosestRefinery(u);
 
@@ -1553,7 +1553,7 @@ bool Unit_Move(Unit *unit, uint16 distance)
 			}
 
 			if (type == LST_WALL || type == LST_STRUCTURE || type == LST_ENTIRELY_MOUNTAIN) {
-				unit->o.position = newPosition;
+				Unit_SetPos(unit, newPosition);
 
 				Map_MakeExplosion((ui->explosionType + unit->o.hitpoints / 10) & 3, unit->o.position, unit->o.hitpoints, unit->originEncoded);
 
@@ -1655,7 +1655,7 @@ bool Unit_Move(Unit *unit, uint16 distance)
 	}
 
 	unit->distanceToDestination = distance;
-	unit->o.position = newPosition;
+	Unit_SetPos(unit, newPosition);
 
 	Unit_UpdateMap(1, unit);
 

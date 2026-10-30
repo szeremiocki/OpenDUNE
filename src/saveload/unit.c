@@ -102,6 +102,7 @@ bool Unit_Load(FILE *fp, uint32 length)
 
 		/* Copy over the data */
 		*u = ul;
+		Unit_SetPos(u, ul.o.position);
 		Unit_ClearViewportKey(u);
 	}
 	if (length != 0) return false;

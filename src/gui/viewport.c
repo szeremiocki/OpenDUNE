@@ -40,6 +40,13 @@
  * flip-flopping caused by the very narrow scroll edge widgets. */
 #define VIEWPORT_CURSOR_HYSTERESIS 12
 
+/* Build with -DVIEWPORT_CHECK_PACKED_TILE to verify the Unit.packedTile cache. */
+#if defined(TOS) && defined(VIEWPORT_CHECK_PACKED_TILE)
+#define VIEWPORT_CHECK_PACKED(u) assert((u)->packedTile == Tile_PackTile((u)->o.position))
+#else
+#define VIEWPORT_CHECK_PACKED(u) ((void)0)
+#endif
+
 static uint32 s_tickCursor;                                 /*!< Stores last time Viewport changed the cursor spriteID. */
 static uint32 s_tickMapScroll;                              /*!< Stores last time Viewport ran MapScroll function. */
 static uint32 s_tickClick;                                  /*!< Stores last time Viewport handled a click. */
@@ -1347,7 +1354,8 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 
 			if (u->o.index < 20 || u->o.index > 101) continue;
 
-			packed = Tile_PackTile(u->o.position);
+			packed = Unit_PackedTile(u);
+			VIEWPORT_CHECK_PACKED(u);
 
 			if ((!u->o.flags.s.isDirty || u->o.flags.s.isNotOnMap) && !forceRedraw && !BitArray_Test(g_dirtyViewport, packed)) continue;
 #ifdef TOS
@@ -1470,7 +1478,8 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 			if (u->o.index > 15) continue;
 #endif
 
-			curPos = Tile_PackTile(u->o.position);
+			curPos = Unit_PackedTile(u);
+			VIEWPORT_CHECK_PACKED(u);
 
 #ifdef TOS
 			if (!u->o.flags.s.isDirty && !forceRedraw && !BitArray_Test(g_dirtyViewport, curPos)) continue;

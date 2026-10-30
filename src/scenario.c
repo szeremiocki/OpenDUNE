@@ -178,7 +178,7 @@ static void Scenario_Load_Unit(const char *key, char *settings)
 	u->o.flags.s.byScenario = true;
 
 	u->o.hitpoints   = hitpoints * g_table_unitInfo[unitType].o.hitpoints / 256;
-	u->o.position    = position;
+	Unit_SetPos(u, position);
 	u->orientation[0].current = orientation;
 	u->actionID     = actionType;
 	u->nextActionID = ACTION_INVALID;

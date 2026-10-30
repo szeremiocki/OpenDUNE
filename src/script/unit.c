@@ -1838,10 +1838,14 @@ uint16 Script_Unit_IsValidDestination(ScriptEngine *script)
 			if (!Map_IsValidPosition(index)) return 1;
 			if (u->o.linkedID == 0xFF) return 1;
 			u2 = Unit_Get_ByIndex(u->o.linkedID);
-			u2->o.position = Tools_Index_GetTile(encoded);
+			Unit_SetPos(u2, Tools_Index_GetTile(encoded));
 			if (!Unit_IsTileOccupied(u2)) return 0;
-			u2->o.position.x = 0xFFFF;
-			u2->o.position.y = 0xFFFF;
+			{
+				tile32 invalid;
+				invalid.x = 0xFFFF;
+				invalid.y = 0xFFFF;
+				Unit_SetPos(u2, invalid);
+			}
 			return 1;
 
 		case IT_STRUCTURE: {
