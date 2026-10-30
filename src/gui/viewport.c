@@ -53,6 +53,22 @@ clear:
 #define Viewport_DirtyBitSet(packed) BitArray_Test(g_dirtyViewport, (packed))
 #endif
 
+#ifdef TOS
+/* Unit_FindNextAny() with the strict flag hoisted by the caller; the count is still re-read. */
+static inline Unit *Viewport_NextUnit(uint16 *index, bool skipNotOnMap)
+{
+	uint16 i = *index + 1;
+	while (i < g_unitFindCount) {
+		Unit *u = g_unitFindArray[i];
+		if (skipNotOnMap && u->o.flags.s.isNotOnMap) { i++; continue; }
+		*index = i;
+		return u;
+	}
+	*index = i;
+	return NULL;
+}
+#endif
+
 /* Build with -DVIEWPORT_CHECK_PACKED_TILE to verify the Unit.packedTile cache. */
 #if defined(TOS) && defined(VIEWPORT_CHECK_PACKED_TILE)
 #define VIEWPORT_CHECK_PACKED(u) assert((u)->packedTile == Tile_PackTile((u)->o.position))
@@ -1348,6 +1364,11 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 		find.index   = 0xFFFF;
 		find.houseID = HOUSE_INVALID;
 
+#ifdef TOS
+		/* Only house.c/load.c change it, never during a draw. */
+		const bool strictIfZero = (g_validateStrictIfZero == 0);
+#endif
+
 		while (true) {
 			Unit *u;
 			uint16 packed;
@@ -1357,7 +1378,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 			uint8 bodyHouse;
 
 #ifdef TOS
-			u = Unit_FindNextAny(&find.index);
+			u = Viewport_NextUnit(&find.index, strictIfZero);
 #else
 			u = Unit_Find(&find);
 #endif
