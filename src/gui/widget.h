@@ -236,6 +236,9 @@ extern void Widget_PaintCurrentWidget(void);
 extern bool GUI_Widget_Viewport_Click(Widget *w);
 extern void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShifted, bool drawToMainScreen);
 #ifdef TOS
+extern bool GUI_Widget_Viewport_TileCursorActive(void);
+#endif
+#ifdef TOS
 extern bool GUI_Widget_Viewport_IsPlanar(void);
 extern void GUI_Widget_Viewport_InvalidateMinimap(void);
 extern void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 bottom);

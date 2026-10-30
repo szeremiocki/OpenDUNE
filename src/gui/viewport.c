@@ -1060,6 +1060,11 @@ static void GUI_Widget_Viewport_TileCursorPrepare(bool placing)
 	s_tileCursorViewport = g_viewportPosition;
 }
 
+bool GUI_Widget_Viewport_TileCursorActive(void)
+{
+	return s_tileCursorOwns;
+}
+
 /* Runs before the dirty scan so old and new footprints get repaired. */
 static bool GUI_Widget_Viewport_PlacementPrepare(void)
 {
