@@ -42,6 +42,8 @@ extern uint16 g_blinkEffect;
 extern uint16 g_placementValidPlane;
 extern uint16 g_placementInvalidPlane;
 extern uint16 g_tileCursor;
+extern uint16 g_tileCursorPen;
+extern uint16 g_tileCursorTargetPen;
 
 extern bool g_enableSoundMusic;
 extern bool g_enableVoices;

@@ -27,6 +27,8 @@ uint16 g_blinkEffect = 9;
 uint16 g_placementValidPlane = 2;
 uint16 g_placementInvalidPlane = 0;
 uint16 g_tileCursor = 0;
+uint16 g_tileCursorPen = 4;
+uint16 g_tileCursorTargetPen = 2;
 bool g_enableSoundMusic = true;
 bool g_enableVoices = true;
 /* Options load before Video_Init; resolve the default after machine detection. */
@@ -66,6 +68,8 @@ void Config_LoadAnimationPhases(void)
 	g_placementValidPlane = Config_ReadAnimationOption("placement_valid_plane", 2, 3);
 	g_placementInvalidPlane = Config_ReadAnimationOption("placement_invalid_plane", 0, 3);
 	g_tileCursor = Config_ReadAnimationOption("tile_cursor", 0, 1);
+	g_tileCursorPen = Config_ReadAnimationOption("tile_cursor_pen", 4, 15);
+	g_tileCursorTargetPen = Config_ReadAnimationOption("tile_cursor_target_pen", 2, 15);
 }
 
 bool Config_ViewportFadeEnabled(void)

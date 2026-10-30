@@ -211,8 +211,9 @@ the defaults.
 
 On ST/STE, tile_cursor=1 (default 0) hides the pointer over the battlefield and
 marks the tile under the mouse with a frame instead (corner brackets, or a
-heavier frame in the invalid-plane colour in target mode). It uses the same
-bitplanes as the placement tint, so no cursor backup or refresh is needed.
+heavier frame in target mode). The frame is drawn in an exact palette pen (all four planes, blitter, no source
+reads), so no cursor backup or refresh is needed. tile_cursor_pen (default 4,
+white) and tile_cursor_target_pen (default 2, red) select the pens, 0-15.
 Scroll edges, the sidebar, minimap and menus keep the normal pointer:
 
 [opendune]
