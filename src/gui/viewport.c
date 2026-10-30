@@ -40,6 +40,19 @@
  * flip-flopping caused by the very narrow scroll edge widgets. */
 #define VIEWPORT_CURSOR_HYSTERESIS 12
 
+#ifdef TOS
+/* btst Dn,(An,Dm.w): the bit number is taken mod 8 on memory operands. */
+static inline __attribute__((always_inline)) bool Viewport_DirtyBitSet(uint16 packed)
+{
+	__asm__ goto("btst %0,(%1,%2.w)\n\tbeq %l3" : : "d"(packed), "a"(g_dirtyViewport), "d"((uint16)(packed >> 3)) : "cc", "memory" : clear);
+	return true;
+clear:
+	return false;
+}
+#else
+#define Viewport_DirtyBitSet(packed) BitArray_Test(g_dirtyViewport, (packed))
+#endif
+
 /* Build with -DVIEWPORT_CHECK_PACKED_TILE to verify the Unit.packedTile cache. */
 #if defined(TOS) && defined(VIEWPORT_CHECK_PACKED_TILE)
 #define VIEWPORT_CHECK_PACKED(u) assert((u)->packedTile == Tile_PackTile((u)->o.position))
@@ -1339,10 +1352,9 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 			Unit *u;
 			uint16 packed;
 			uint16 index;
-			int spriteFlags = 0;
+			int spriteFlags;
 			GUI_SpriteLayers layers;
 			uint8 bodyHouse;
-			layers.count = 0;
 
 #ifdef TOS
 			u = Unit_FindNextAny(&find.index);
@@ -1357,7 +1369,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 			packed = Unit_PackedTile(u);
 			VIEWPORT_CHECK_PACKED(u);
 
-			if ((!u->o.flags.s.isDirty || u->o.flags.s.isNotOnMap) && !forceRedraw && !BitArray_Test(g_dirtyViewport, packed)) continue;
+			if ((!u->o.flags.s.isDirty || u->o.flags.s.isNotOnMap) && !forceRedraw && !Viewport_DirtyBitSet(packed)) continue;
 #ifdef TOS
 			s_viewportSpriteNeedsRedraw = u->o.flags.s.isDirty || forceRedraw;
 #endif
@@ -1370,6 +1382,8 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 			x += g_table_tilediff[0][u->wobbleIndex].x;
 			y += g_table_tilediff[0][u->wobbleIndex].y;
 
+			spriteFlags = 0;
+			layers.count = 0;
 			index = GUI_Widget_Viewport_GroundSprites(u, &spriteFlags, &layers, UNIT_SPRITE_ALL);
 #ifdef TOS
 			if (GUI_Widget_Viewport_UnitDamageFree(x, y, index, &layers)) continue;
