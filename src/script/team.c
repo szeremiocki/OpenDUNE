@@ -8,6 +8,7 @@
 
 #include "../gui/gui.h"
 #include "../house.h"
+#include "../map.h"
 #include "../pool/team.h"
 #include "../pool/pool.h"
 #include "../pool/unit.h"
@@ -391,7 +392,7 @@ uint16 Script_Team_Unknown0788(ScriptEngine *script)
 
 		packed = Tile_PackTile(Tile_MoveByDirection(tile, orientation, distance));
 
-		if (Object_GetByPackedTile(packed) == NULL) {
+		if (!Map_HasObject(packed)) {
 			Unit_SetDestination(u, Tools_Index_Encode(packed, IT_TILE));
 		} else {
 			Unit_SetDestination(u, Tools_Index_Encode(Tile_PackTile(tile), IT_TILE));

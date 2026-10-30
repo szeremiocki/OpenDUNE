@@ -601,7 +601,7 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 		}
 
 		if (g_map[position].overlayTileID != g_veiledTileID || g_debugScenario) {
-			if (Object_GetByPackedTile(position) != NULL || g_debugScenario) {
+			if (Map_HasObject(position) || g_debugScenario) {
 				Map_SetSelection(position);
 				Unit_DisplayStatusText(g_unitSelected);
 			}

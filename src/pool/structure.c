@@ -15,7 +15,11 @@
 #include "../structure.h"
 #include "../unit.h"
 
+#ifdef TOS
+struct Structure g_structureArray[STRUCTURE_INDEX_MAX_HARD];
+#else
 static struct Structure g_structureArray[STRUCTURE_INDEX_MAX_HARD];
+#endif
 struct Structure *g_structureFindArray[STRUCTURE_INDEX_MAX_SOFT];
 uint16 g_structureFindCount;
 
@@ -25,11 +29,13 @@ uint16 g_structureFindCount;
  * @param index The index of the Structure to get.
  * @return The Structure.
  */
+#ifndef TOS
 Structure *Structure_Get_ByIndex(uint16 index)
 {
 	assert(index < STRUCTURE_INDEX_MAX_HARD);
 	return &g_structureArray[index];
 }
+#endif
 
 /**
  * Find the first matching Structure based on the PoolFindStruct filter data.

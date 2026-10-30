@@ -14,7 +14,9 @@ struct PoolFindStruct;
 extern struct Unit *g_unitFindArray[UNIT_INDEX_MAX];
 extern uint16 g_unitFindCount;
 
+#ifndef TOS
 extern struct Unit *Unit_Get_ByIndex(uint16 index);
+#endif
 extern struct Unit *Unit_Find(struct PoolFindStruct *find);
 
 extern void Unit_Init(void);

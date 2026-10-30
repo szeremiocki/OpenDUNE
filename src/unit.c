@@ -299,8 +299,9 @@ void GameLoop_Unit(void)
 		}
 
 		if (tickRotation) {
-			Unit_Rotate(u, 0);
-			if (ui->o.flags.hasTurret) Unit_Rotate(u, 1);
+			/* Rotation is idle for nearly every unit; skip the call (register save/restore). */
+			if (u->orientation[0].speed != 0) Unit_Rotate(u, 0);
+			if (ui->o.flags.hasTurret && u->orientation[1].speed != 0) Unit_Rotate(u, 1);
 		}
 
 		if (tickBlinking && u->blinkCounter != 0) {
@@ -316,7 +317,7 @@ void GameLoop_Unit(void)
 
 		if (tickDeviation) Unit_Deviation_Decrease(u, 1);
 
-		if (ui->movementType != MOVEMENT_WINGER && Object_GetByPackedTile(Tile_PackTile(u->o.position)) == NULL) Unit_UpdateMap(1, u);
+		if (ui->movementType != MOVEMENT_WINGER && !Map_HasObject(Unit_PackedTile(u))) Unit_UpdateMap(1, u);
 
 		if (tickUnknown5) {
 			if (u->timer == 0) {
@@ -2714,7 +2715,7 @@ void Unit_UpdateMap(uint16 type, Unit *unit)
 			Tile_RemoveFogInRadius(position, 1);
 		}
 
-		if (Object_GetByPackedTile(packed) == NULL) {
+		if (!Map_HasObject(packed)) {
 			t->index = unit->o.index + 1;
 			t->hasUnit = true;
 		}

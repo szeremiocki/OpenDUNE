@@ -25,11 +25,13 @@ uint16 g_unitFindCount;
  * @param index The index of the Unit to get.
  * @return The Unit.
  */
+#ifndef TOS
 Unit *Unit_Get_ByIndex(uint16 index)
 {
 	assert(index < UNIT_INDEX_MAX);
 	return &g_unitArray[index];
 }
+#endif
 
 /**
  * Find the first matching Unit based on the PoolFindStruct filter data.

@@ -69,6 +69,16 @@ struct Unit;
 
 extern uint16 g_mapTileID[64 * 64];
 extern Tile g_map[64 * 64];
+
+/** True if a unit or structure is registered on the tile; same as Object_GetByPackedTile() != NULL. */
+static inline bool Map_HasObject(uint16 packed)
+{
+	const Tile *t;
+
+	if (((packed) & 0xF000) != 0) return false;
+	t = &g_map[packed];
+	return t->hasUnit || t->hasStructure;
+}
 extern uint8 g_functions[3][3];
 
 extern uint8 g_dirtyMinimap[512];
@@ -96,7 +106,23 @@ extern uint16 Map_SetSelectionObjectPosition(uint16 packed);
 extern void Map_UpdateMinimapPosition(uint16 packed, bool forceUpdate);
 extern bool Map_IsValidPosition(uint16 position);
 extern bool Map_IsPositionUnveiled(uint16 position);
+#ifdef TOS
+extern uint16 g_viewportPosition;
+
+/* Unsigned range compares replace the signed pairs; the viewport origin is masked, not shifted. */
+static inline bool Map_IsPositionInViewport(tile32 position, uint16 *retX, uint16 *retY)
+{
+	uint16 x = (position.x >> 4) - ((g_viewportPosition & 0x003F) << 4);
+	uint16 y = (position.y >> 4) - ((g_viewportPosition & 0x0FC0) >> 2);
+
+	if (retX != NULL) *retX = x;
+	if (retY != NULL) *retY = y;
+
+	return (uint16)(x + 16) <= 272 && (uint16)(y + 16) <= 192;
+}
+#else
 extern bool Map_IsPositionInViewport(tile32 position, uint16 *retX, uint16 *retY);
+#endif
 extern void Map_MakeExplosion(uint16 type, tile32 position, uint16 hitpoints, uint16 unitOriginEncoded);
 extern uint16 Map_GetLandscapeType(uint16 packed);
 extern void Map_Update(uint16 packed, uint16 type, bool ignoreInvisible);

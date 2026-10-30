@@ -388,6 +388,7 @@ bool Map_IsPositionUnveiled(uint16 position)
  * @param retY Pointer to Y inside the viewport.
  * @return True if and only if the position is in the viewport.
  */
+#ifndef TOS
 bool Map_IsPositionInViewport(tile32 position, uint16 *retX, uint16 *retY)
 {
 	int16 x, y;
@@ -400,6 +401,7 @@ bool Map_IsPositionInViewport(tile32 position, uint16 *retX, uint16 *retY)
 
 	return x >= -16 && x <= 256 && y >= -16 && y <= 176;
 }
+#endif
 
 static bool Map_UpdateWall(uint16 packed)
 {
@@ -1089,7 +1091,7 @@ uint16 Map_FindLocationTile(uint16 locationID, uint8 houseID)
 		}
 
 		ret &= 0xFFF;
-		if (ret != 0 && Object_GetByPackedTile(ret) != NULL) ret = 0;
+		if (ret != 0 && Map_HasObject(ret)) ret = 0;
 	}
 
 	return ret;

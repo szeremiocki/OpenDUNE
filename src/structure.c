@@ -784,7 +784,7 @@ int16 Structure_IsValidBuildLocation(uint16 position, StructureType type)
 			}
 		}
 
-		if (Object_GetByPackedTile(curPos) != NULL) {
+		if (Map_HasObject(curPos)) {
 			isValid = false;
 			break;
 		}

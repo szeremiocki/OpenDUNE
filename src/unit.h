@@ -360,6 +360,11 @@ extern Unit *Unit_Sandworm_FindBestTarget(Unit *unit);
 
 #ifdef TOS
 #include "pool/unit.h"
+#ifdef TOS
+/* Direct pool indexing: the call overhead dominated this lookup. */
+extern Unit g_unitArray[UNIT_INDEX_MAX];
+#define Unit_Get_ByIndex(index) (&g_unitArray[(index)])
+#endif
 #include "opendune.h"
 
 extern Unit g_unitArray[UNIT_INDEX_MAX];

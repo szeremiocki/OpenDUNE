@@ -625,7 +625,7 @@ uint16 Script_Unit_Fire(ScriptEngine *script)
 
 	if (u->o.type != UNIT_SANDWORM && u->orientation[ui->o.flags.hasTurret ? 1 : 0].speed != 0) return 0;
 
-	if (tileTarget && Object_GetByPackedTile(Tools_Index_GetPackedTile(target)) != NULL) Unit_SetTarget(u, target);
+	if (tileTarget && Map_HasObject(Tools_Index_GetPackedTile(target))) Unit_SetTarget(u, target);
 
 	if (u->fireDelay != 0) return 0;
 

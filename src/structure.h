@@ -167,6 +167,10 @@ extern uint16 Structure_AI_PickNextToBuild(Structure *s);
 
 #ifdef TOS
 #include "pool/structure.h"
+#ifdef TOS
+extern Structure g_structureArray[STRUCTURE_INDEX_MAX_HARD];
+#define Structure_Get_ByIndex(index) (&g_structureArray[(index)])
+#endif
 #include "opendune.h"
 
 /**

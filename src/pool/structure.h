@@ -21,7 +21,9 @@ extern struct Structure *g_structureFindArray[STRUCTURE_INDEX_MAX_SOFT];
 extern uint16 g_structureFindCount;
 #endif
 
+#ifndef TOS
 extern struct Structure *Structure_Get_ByIndex(uint16 index);
+#endif
 extern struct Structure *Structure_Find(struct PoolFindStruct *find);
 
 #ifdef TOS
