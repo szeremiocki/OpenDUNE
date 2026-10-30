@@ -2151,6 +2151,7 @@ static uint8 *Video_Atari_PlanarBase(void);
 
 typedef struct PlacementTint {
 	uint8 *dst;
+	const uint16 *pattern;	/* 16 line words, or NULL for the checkerboard */
 	uint16 words, height;
 } PlacementTint;
 
@@ -2162,9 +2163,13 @@ static void Video_Atari_PlacementTintBlit(void)
 	uint16 i;
 
 	while ((*BLITTER_CTRL & 0x80) != 0) {}
-	for (i = 0; i < 16; i += 2) {
-		halftone[i] = 0xaaaa;
-		halftone[i + 1] = 0x5555;
+	if (s_placeTint.pattern != NULL) {
+		for (i = 0; i < 16; i++) halftone[i] = s_placeTint.pattern[i];
+	} else {
+		for (i = 0; i < 16; i += 2) {
+			halftone[i] = 0xaaaa;
+			halftone[i + 1] = 0x5555;
+		}
 	}
 	*BLITTER_ENDMASK1 = 0xffff;
 	*BLITTER_ENDMASK2 = 0xffff;
@@ -2200,6 +2205,7 @@ void Video_Atari_PlacementTint(int16 x, int16 y, uint16 width, uint16 height, bo
 	dst = Video_Atari_PlanarBase() + (uint32)y * ST_PLANAR_LINE_BYTES + (x >> 1) + plane * 2;
 	if (s_viewportBlitter) {
 		s_placeTint.dst = dst;
+		s_placeTint.pattern = NULL;
 		s_placeTint.words = words;
 		s_placeTint.height = lines;
 		s_blitterTileSetup = false;
@@ -2211,6 +2217,37 @@ void Video_Atari_PlacementTint(int16 x, int16 y, uint16 width, uint16 height, bo
 		uint16 pattern = (line & 1) ? 0x5555 : 0xaaaa;
 
 		for (group = 0; group < words; group++) p[group * 4] |= pattern;
+	}
+}
+
+/* Battlefield tile cursor: a one-tile frame OR-ed into one bitplane. The blitter
+ * runs from line 0 of the halftone RAM on every start, so the 16 words are
+ * the tile's lines. Idempotent like the placement tint; the tile is redrawn
+ * to remove it. */
+void Video_Atari_TileCursorFrame(uint16 col, uint16 row, bool target)
+{
+	static const uint16 patterns[2][16] = {
+		{ 0xf00f, 0x8001, 0x8001, 0x8001, 0, 0, 0, 0, 0, 0, 0, 0, 0x8001, 0x8001, 0x8001, 0xf00f },
+		{ 0xfc3f, 0x8001, 0x8001, 0x8001, 0x8001, 0x8001, 0, 0x0180, 0x0180, 0, 0x8001, 0x8001, 0x8001, 0x8001, 0x8001, 0xfc3f }
+	};
+	uint16 plane = target ? g_placementInvalidPlane : g_placementValidPlane;
+	const uint16 *pattern = patterns[target ? 1 : 0];
+	uint8 *dst;
+	uint16 line;
+
+	if (col >= 15 || row >= 10) return;
+	dst = Video_Atari_PlanarBase() + (uint32)(40 + (row << 4)) * ST_PLANAR_LINE_BYTES + (col << 3) + plane * 2;
+	if (s_viewportBlitter) {
+		s_placeTint.dst = dst;
+		s_placeTint.pattern = pattern;
+		s_placeTint.words = 1;
+		s_placeTint.height = 16;
+		s_blitterTileSetup = false;
+		Atari_SupervisorExec(Video_Atari_PlacementTintBlit);
+		return;
+	}
+	for (line = 0; line < 16; line++) {
+		*(uint16 *)(dst + (uint32)line * ST_PLANAR_LINE_BYTES) |= pattern[line];
 	}
 }
 

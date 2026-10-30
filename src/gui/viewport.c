@@ -1017,6 +1017,49 @@ static void GUI_Widget_Viewport_PlacementDirty(int16 x, int16 y, int16 w, int16 
 	}
 }
 
+/* Tile cursor (tile_cursor=1): the pointer is hidden over the battlefield and
+ * the tile under it carries a frame, drawn like the placement tint. */
+static bool s_tileCursorShown, s_tileCursorTarget, s_tileCursorOwns;
+static uint16 s_tileCursorCol, s_tileCursorRow, s_tileCursorViewport;
+
+static void GUI_Widget_Viewport_TileCursorPrepare(bool placing)
+{
+	bool show = false, target = false;
+	uint16 col = 0, row = 0;
+
+	if (g_tileCursor != 0 && !placing && g_mouseDisabled == 0 && g_mouseX < 240 &&
+	    g_mouseY >= 40 && g_mouseY < 200 && (g_cursorSpriteID < 1 || g_cursorSpriteID > 4)) {
+		show = true;
+		col = g_mouseX >> 4;
+		row = (g_mouseY - 40) >> 4;
+		target = g_cursorSpriteID == 5;
+	}
+	if (show) {
+		Video_Atari_PlacementCursor(true);
+		s_tileCursorOwns = true;
+	} else if (s_tileCursorOwns && !placing) {
+		Video_Atari_PlacementCursor(false);
+		s_tileCursorOwns = false;
+	}
+	if (s_tileCursorShown && s_tileCursorViewport != g_viewportPosition) {
+		/* Scrolling moved the old frame's pixels with the map. */
+		int16 dx = (int16)Tile_GetPackedX(s_tileCursorViewport) - (int16)Tile_GetPackedX(g_viewportPosition);
+		int16 dy = (int16)Tile_GetPackedY(s_tileCursorViewport) - (int16)Tile_GetPackedY(g_viewportPosition);
+		GUI_Widget_Viewport_PlacementDirty((int16)((s_tileCursorCol + dx) << 4),
+		    (int16)(((s_tileCursorRow + dy) << 4) + 40), 16, 16);
+	} else if (show == s_tileCursorShown &&
+	           (!show || (col == s_tileCursorCol && row == s_tileCursorRow && target == s_tileCursorTarget))) {
+		return;
+	}
+	if (s_tileCursorShown) GUI_Widget_Viewport_PlacementDirty((int16)(s_tileCursorCol << 4), (int16)((s_tileCursorRow << 4) + 40), 16, 16);
+	if (show) GUI_Widget_Viewport_PlacementDirty((int16)(col << 4), (int16)((row << 4) + 40), 16, 16);
+	s_tileCursorShown = show;
+	s_tileCursorCol = col;
+	s_tileCursorRow = row;
+	s_tileCursorTarget = target;
+	s_tileCursorViewport = g_viewportPosition;
+}
+
 /* Runs before the dirty scan so old and new footprints get repaired. */
 static bool GUI_Widget_Viewport_PlacementPrepare(void)
 {
@@ -1102,7 +1145,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 	s_viewportRepairActive = planarViewport;
 	if (planarViewport) {
 		GUI_Widget_Viewport_PrepareSelection();
-		GUI_Widget_Viewport_PlacementPrepare();
+		GUI_Widget_Viewport_TileCursorPrepare(GUI_Widget_Viewport_PlacementPrepare());
 	}
 #endif
 	if (g_dirtyViewportCount != 0 || forceRedraw) {
@@ -1469,6 +1512,12 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 	    GUI_Widget_Viewport_SpriteDamageRect(s_placeTintX, s_placeTintY, s_placeTintX + s_placeTintW,
 	                                         s_placeTintY + s_placeTintH, !s_viewportSpriteFilterActive)) {
 		Video_Atari_PlacementTint(s_placeTintX, s_placeTintY, s_placeTintW, s_placeTintH, s_placeTintInvalid);
+	}
+	if (planarViewport && s_tileCursorShown &&
+	    GUI_Widget_Viewport_SpriteDamageRect((int16)(s_tileCursorCol << 4), (int16)((s_tileCursorRow << 4) + 40),
+	                                         (int16)((s_tileCursorCol << 4) + 16), (int16)((s_tileCursorRow << 4) + 56),
+	                                         !s_viewportSpriteFilterActive)) {
+		Video_Atari_TileCursorFrame(s_tileCursorCol, s_tileCursorRow, s_tileCursorTarget);
 	}
 	s_viewportSpriteFilterActive = false;
 #endif

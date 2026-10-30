@@ -209,6 +209,15 @@ placement_invalid_plane=0
 Planes 0-3; defaults 2 (valid) and 0 (invalid). Invalid values warn and use
 the defaults.
 
+On ST/STE, tile_cursor=1 (default 0) hides the pointer over the battlefield and
+marks the tile under the mouse with a frame instead (corner brackets, or a
+heavier frame in the invalid-plane colour in target mode). It uses the same
+bitplanes as the placement tint, so no cursor backup or refresh is needed.
+Scroll edges, the sidebar, minimap and menus keep the normal pointer:
+
+[opendune]
+tile_cursor=1
+
 Target blinking (a unit highlighted after an attack order) on ST/STE is drawn by
 recolouring the cached bitplanes while blitting, with no palette remap and no
 extra sprite-cache entries:

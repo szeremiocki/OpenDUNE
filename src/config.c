@@ -26,6 +26,7 @@ bool g_enableCosmeticAnimations = true;
 uint16 g_blinkEffect = 9;
 uint16 g_placementValidPlane = 2;
 uint16 g_placementInvalidPlane = 0;
+uint16 g_tileCursor = 0;
 bool g_enableSoundMusic = true;
 bool g_enableVoices = true;
 /* Options load before Video_Init; resolve the default after machine detection. */
@@ -64,6 +65,7 @@ void Config_LoadAnimationPhases(void)
 	if (g_blinkEffect == 0) g_blinkEffect = 9;
 	g_placementValidPlane = Config_ReadAnimationOption("placement_valid_plane", 2, 3);
 	g_placementInvalidPlane = Config_ReadAnimationOption("placement_invalid_plane", 0, 3);
+	g_tileCursor = Config_ReadAnimationOption("tile_cursor", 0, 1);
 }
 
 bool Config_ViewportFadeEnabled(void)
