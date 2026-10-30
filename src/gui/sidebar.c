@@ -7,6 +7,7 @@
 #include "gui.h"
 #include "widget.h"
 #include "sidebar.h"
+#include "glyph.h"
 #include "../config.h"
 #include "../os/common.h"
 #include "../os/error.h"
@@ -47,12 +48,6 @@ typedef struct SidebarCommand {
 	uint16 pixels[SIDEBAR_HEIGHT * SIDEBAR_WORDS];
 } SidebarCommand;
 
-typedef struct SidebarGlyph {
-	const Font *font;
-	uint8 colours[16];
-	uint16 pixels[16 * 4], masks[16];
-} SidebarGlyph;
-
 typedef struct SidebarSprite {
 	uint16 width, height;
 	uint16 data[];
@@ -62,7 +57,6 @@ static uint16 s_pixels[SIDEBAR_HEIGHT * SIDEBAR_WORDS];
 static uint16 s_display[SIDEBAR_HEIGHT * SIDEBAR_WORDS];
 static uint16 s_background[SIDEBAR_HEIGHT * SIDEBAR_WORDS];
 static uint16 s_masks[SIDEBAR_HEIGHT * SIDEBAR_GROUPS];
-static SidebarGlyph *s_glyphs[256][4];
 static SidebarSprite *s_sprites[SIDEBAR_SPRITES][3];
 static SidebarFragment *s_fragments[SIDEBAR_FRAGMENT_SETS][SIDEBAR_FRAGMENT_WAYS];
 static SidebarCapture s_capture[2];
@@ -90,12 +84,7 @@ void GUI_Sidebar_Free(void)
 			s_sprites[i][variant] = NULL;
 		}
 	}
-	for (i = 0; i < 256; i++) {
-		for (variant = 0; variant < 4; variant++) {
-			free(s_glyphs[i][variant]);
-			s_glyphs[i][variant] = NULL;
-		}
-	}
+	GUI_Glyph_Free();
 	for (i = 0; i < SIDEBAR_FRAGMENT_SETS; i++) {
 		for (variant = 0; variant < SIDEBAR_FRAGMENT_WAYS; variant++) {
 			free(s_fragments[i][variant]);
@@ -397,46 +386,9 @@ void GUI_Sidebar_Fill(int16 left, int16 top, int16 right, int16 bottom, uint8 co
 
 void GUI_Sidebar_Char(unsigned char c, uint16 x, uint16 y, const uint8 colours[16])
 {
-	const FontChar *fc = &g_fontCurrent->chars[c];
-	SidebarGlyph *glyph = NULL;
-	uint16 row, variant;
+	const GlyphCell *glyph = GUI_Glyph_Get(c, colours);
+	uint16 row;
 
-	assert(g_fontCurrent->height <= 16 && fc->width <= 16);
-	for (variant = 0; variant < 4; variant++) {
-		glyph = s_glyphs[c][variant];
-		if (glyph != NULL && glyph->font == g_fontCurrent &&
-		    memcmp(glyph->colours, colours, sizeof(glyph->colours)) == 0) break;
-	}
-	if (variant == 4) {
-		union { uint32 align; uint8 bytes[16 * 16]; } chunky;
-		variant = 3;
-		glyph = s_glyphs[c][variant];
-		if (glyph == NULL) {
-			glyph = malloc(sizeof(*glyph));
-			if (glyph == NULL) {
-				Error("Out of memory for sidebar glyph %u\n", c);
-				exit(1);
-			}
-			s_glyphs[c][variant] = glyph;
-		}
-		glyph->font = g_fontCurrent;
-		memcpy(glyph->colours, colours, sizeof(glyph->colours));
-		memset(chunky.bytes, 0, sizeof(chunky.bytes));
-		memset(glyph->masks, 0, sizeof(glyph->masks));
-		for (row = 0; row < g_fontCurrent->height; row++) {
-			uint16 column;
-			for (column = 0; column < fc->width; column++) {
-				uint8 colour = colours[0];
-				if (row >= fc->unusedLines && row < fc->unusedLines + fc->usedLines)
-					colour = colours[fc->data[(row - fc->unusedLines) * fc->width + column] & 15];
-				chunky.bytes[row * 16 + column] = colour;
-				if (colour != 0) glyph->masks[row] |= 0x8000u >> column;
-			}
-		}
-		Video_Atari_EncodePlanar(chunky.bytes, glyph->pixels, 16, g_fontCurrent->height);
-	}
-	for (; variant != 0; variant--) s_glyphs[c][variant] = s_glyphs[c][variant - 1];
-	s_glyphs[c][0] = glyph;
 	for (row = 0; row < g_fontCurrent->height; row++)
 		GUI_Sidebar_Merge(x - SIDEBAR_X, y + row - SIDEBAR_Y, glyph->masks[row], glyph->pixels + row * 4);
 }
