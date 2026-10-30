@@ -79,7 +79,8 @@
  * @return The tile packed into 12 bits.
  */
 /*extern uint16 Tile_PackTile(tile32 tile);*/
-#define Tile_PackTile(tile) ((Tile_GetPosY(tile) << 6) | Tile_GetPosX(tile))
+/* Same as (PosY << 6) | PosX, with a single shift for Y. */
+#define Tile_PackTile(tile) ((((tile).y >> 2) & 0x0fc0) | (((tile).x >> 8) & 0x3f))
 
 /**
  * Packs an x and y coordinate into a 12 bits packed tile.
