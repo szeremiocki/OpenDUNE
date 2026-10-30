@@ -2148,6 +2148,7 @@ static void Video_Atari_PlanarFinishRun(uint8 *base, uint16 x, uint16 y, uint16 
 
 static void Video_Atari_BlitterStart(void);
 static uint8 *Video_Atari_PlanarBase(void);
+extern bool GUI_Widget_Viewport_TileCursorActive(void);
 
 typedef struct PlacementTint {
 	uint8 *dst;
@@ -3927,7 +3928,7 @@ void Video_Tick(void)
 	}
 
 	if (s_curDirect) {
-		if (g_selectionType != SELECTIONTYPE_PLACE) Video_Atari_PlacementHide();
+		if (g_selectionType != SELECTIONTYPE_PLACE && !GUI_Widget_Viewport_TileCursorActive()) Video_Atari_PlacementHide();
 		placementRedraw = Video_Atari_PlacementBegin();
 	}
 
