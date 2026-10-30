@@ -19,6 +19,9 @@
 #include "mentat.h"
 #include "widget.h"
 #include "sidebar.h"
+#ifdef TOS
+#include "glyph.h"
+#endif
 #include "../animation.h"
 #include "../audio/driver.h"
 #include "../audio/sound.h"
@@ -268,6 +271,13 @@ void GUI_DrawFilledRectangle(int16 left, int16 top, int16 right, int16 bottom, u
 	GFX_Screen_SetDirty(SCREEN_ACTIVE, left, top, right + 1, bottom + 1);
 }
 
+#ifdef TOS
+/* While set, GUI_DrawChar() composes glyph cells into this planar buffer instead of drawing chunky. */
+static uint16 *s_planarTarget;
+static uint16 s_planarTargetStride;  /*!< Words per row. */
+static uint16 s_planarTargetRows;
+#endif
+
 /**
  * Display a text.
  * @param str The text to display. If \c NULL, update the text display (scroll text, and/or remove it on time out).
@@ -378,6 +388,39 @@ void GUI_DisplayText(const char *str, int importance, ...)
 
 		oldWidgetId = Widget_SetCurrentWidget(7);
 
+#ifdef TOS
+		if (Video_Atari_CursorDirect()) {
+			if (g_textDisplayNeedsUpdate || !bannerPlanarReady) {
+				static uint16 bannerBackground[24 * SCREEN_WIDTH / 4];
+				static uint8 bannerBackgroundPen = 0xFF;
+				uint8 pen = Video_Atari_GetPalettePen(g_curWidgetFGColourNormal);
+
+				if (pen != bannerBackgroundPen) {
+					uint16 *d = bannerBackground;
+					uint16 n;
+
+					for (n = 0; n < 24 * SCREEN_WIDTH / 16; n++) {
+						*d++ = (pen & 1) ? 0xFFFF : 0;
+						*d++ = (pen & 2) ? 0xFFFF : 0;
+						*d++ = (pen & 4) ? 0xFFFF : 0;
+						*d++ = (pen & 8) ? 0xFFFF : 0;
+					}
+					bannerBackgroundPen = pen;
+				}
+				memcpy(bannerPlanar, bannerBackground, sizeof(bannerPlanar));
+
+				s_planarTarget = bannerPlanar;
+				s_planarTargetStride = SCREEN_WIDTH / 4;
+				s_planarTargetRows = 24;
+				GUI_DrawText_Wrapper(displayLine2, g_curWidgetXBase << 3,  2, fgColour2, 0, 0x012);
+				GUI_DrawText_Wrapper(displayLine1, g_curWidgetXBase << 3, 13, fgColour1, 0, 0x012);
+				s_planarTarget = NULL;
+
+				g_textDisplayNeedsUpdate = false;
+				bannerPlanarReady = true;
+			}
+		} else
+#endif
 		if (g_textDisplayNeedsUpdate) {
 			Screen oldScreenID = GFX_Screen_SetActive(SCREEN_1);
 
@@ -404,10 +447,6 @@ void GUI_DisplayText(const char *str, int importance, ...)
 
 #ifdef TOS
 		if (Video_Atari_CursorDirect()) {
-			if (!bannerPlanarReady) {
-				Video_Atari_EncodePlanar(GFX_Screen_Get_ByIndex(SCREEN_1), bannerPlanar, SCREEN_WIDTH, 24);
-				bannerPlanarReady = true;
-			}
 			Video_Atari_PresentPlanarWindow(bannerPlanar + textOffset * (SCREEN_WIDTH / 4),
 			                               g_curWidgetXBase << 3, g_curWidgetYBase,
 			                               g_curWidgetWidth << 3, height);
@@ -523,6 +562,12 @@ static void GUI_DrawChar(unsigned char c, uint16 x, uint16 y)
 		GUI_Sidebar_Char(c, x, y, g_colours);
 		return;
 	}
+	if (s_planarTarget != NULL) {
+		if (y < s_planarTargetRows && fc->width <= 16 && g_fontCurrent->height <= 16)
+			GUI_Glyph_Merge(GUI_Glyph_Get(c, g_colours), s_planarTarget + y * s_planarTargetStride,
+			                s_planarTargetStride, s_planarTargetStride >> 2, s_planarTargetRows - y, x);
+		return;
+	}
 	toPlanar = GFX_Screen_IsActive(SCREEN_0) && Video_Atari_CursorDirect() &&
 	           fc->width <= 32 && g_fontCurrent->height <= 32;
 
@@ -589,7 +634,7 @@ static const char *s_textPlanarKey;
 
 static bool GUI_TextPlanar_Usable(void)
 {
-	return GFX_Screen_IsActive(SCREEN_0) && Video_Atari_CursorDirect() && !GUI_Sidebar_Active();
+	return GFX_Screen_IsActive(SCREEN_0) && Video_Atari_CursorDirect() && !GUI_Sidebar_Active() && s_planarTarget == NULL;
 }
 
 static void GUI_TextPlanar_Present(const TextPlanarEntry *entry)
