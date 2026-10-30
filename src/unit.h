@@ -356,7 +356,6 @@ static inline Unit *Unit_FindNextAny(uint16 *index)
 	if (i >= g_unitFindCount && i != 0xFFFF) return NULL;
 	for (i++; i < g_unitFindCount; i++) {
 		Unit *u = g_unitFindArray[i];
-		if (u == NULL) continue;
 		if (u->o.flags.s.isNotOnMap && g_validateStrictIfZero == 0) continue;
 		*index = i;
 		return u;
