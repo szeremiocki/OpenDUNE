@@ -31,7 +31,7 @@ const GlyphCell *GUI_Glyph_Get(unsigned char c, const uint8 colours[16])
 {
 	const FontChar *fc = &g_fontCurrent->chars[c];
 	GlyphCell *glyph = NULL;
-	uint16 row, way, generation = Video_Atari_GetPaletteGeneration();
+	uint16 row, plane, way, generation = Video_Atari_GetPaletteGeneration();
 
 	assert(g_fontCurrent->height <= 16 && fc->width <= 16);
 	if (generation != s_generation) {
@@ -70,6 +70,23 @@ const GlyphCell *GUI_Glyph_Get(unsigned char c, const uint8 colours[16])
 			}
 		}
 		Video_Atari_EncodePlanar(chunky.bytes, glyph->pixels, 16, g_fontCurrent->height);
+
+		glyph->simple = 1;
+		glyph->orPlanes = 0;
+		for (plane = 0; plane < 4; plane++) {
+			int type = -1;
+			for (row = 0; row < g_fontCurrent->height; row++) {
+				uint16 mask = glyph->masks[row], v = glyph->pixels[row * 4 + plane] & mask;
+				int t;
+				if (mask == 0) continue;
+				if (v == mask) t = 1;
+				else if (v == 0) t = 0;
+				else { glyph->simple = 0; break; }
+				if (type < 0) type = t;
+				else if (type != t) glyph->simple = 0;
+			}
+			if (type == 1) glyph->orPlanes |= 1 << plane;
+		}
 	}
 	for (; way != 0; way--) s_glyphs[c][way] = s_glyphs[c][way - 1];
 	s_glyphs[c][0] = glyph;
@@ -77,27 +94,47 @@ const GlyphCell *GUI_Glyph_Get(unsigned char c, const uint8 colours[16])
 }
 
 void GUI_Glyph_Merge(const GlyphCell *cell, uint16 *dst, uint16 stride,
-                     uint16 groups, uint16 rows, uint16 x)
+                     uint16 groups, uint16 rows, uint16 x, uint16 *masks)
 {
 	uint16 row, plane, group = x >> 4, shift = x & 15;
 	const uint16 rowCount = min(rows, cell->font->height);
+	const bool spill = shift != 0 && group + 1 < groups;
+	const uint8 orPlanes = cell->orPlanes;
 
 	if (group >= groups) return;
 	for (row = 0; row < rowCount; row++) {
 		uint16 mask = cell->masks[row];
 		const uint16 *pixels = cell->pixels + row * 4;
 		uint16 *d = dst + row * stride + group * 4;
-		uint16 part;
+		uint16 part = mask >> shift, part2 = 0;
 
 		if (mask == 0) continue;
-		part = mask >> shift;
+		if (spill) part2 = mask << (16 - shift);
+		if (masks != NULL) {
+			masks[row * groups + group] |= part;
+			if (spill) masks[row * groups + group + 1] |= part2;
+		}
+		if (cell->simple) {
+			uint16 keep = ~part;
+
+			if (orPlanes & 1) d[0] |= part; else d[0] &= keep;
+			if (orPlanes & 2) d[1] |= part; else d[1] &= keep;
+			if (orPlanes & 4) d[2] |= part; else d[2] &= keep;
+			if (orPlanes & 8) d[3] |= part; else d[3] &= keep;
+			if (part2 != 0) {
+				keep = ~part2;
+				if (orPlanes & 1) d[4] |= part2; else d[4] &= keep;
+				if (orPlanes & 2) d[5] |= part2; else d[5] &= keep;
+				if (orPlanes & 4) d[6] |= part2; else d[6] &= keep;
+				if (orPlanes & 8) d[7] |= part2; else d[7] &= keep;
+			}
+			continue;
+		}
 		for (plane = 0; plane < 4; plane++)
 			d[plane] = (d[plane] & ~part) | ((pixels[plane] >> shift) & part);
-		if (shift != 0 && group + 1 < groups) {
-			part = mask << (16 - shift);
-			if (part == 0) continue;
+		if (part2 != 0) {
 			for (plane = 0; plane < 4; plane++)
-				d[plane + 4] = (d[plane + 4] & ~part) | ((pixels[plane] << (16 - shift)) & part);
+				d[plane + 4] = (d[plane + 4] & ~part2) | ((pixels[plane] << (16 - shift)) & part2);
 		}
 	}
 }

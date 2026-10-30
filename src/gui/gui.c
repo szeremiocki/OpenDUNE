@@ -565,7 +565,7 @@ static void GUI_DrawChar(unsigned char c, uint16 x, uint16 y)
 	if (s_planarTarget != NULL) {
 		if (y < s_planarTargetRows && fc->width <= 16 && g_fontCurrent->height <= 16)
 			GUI_Glyph_Merge(GUI_Glyph_Get(c, g_colours), s_planarTarget + y * s_planarTargetStride,
-			                s_planarTargetStride, s_planarTargetStride >> 2, s_planarTargetRows - y, x);
+			                s_planarTargetStride, s_planarTargetStride >> 2, s_planarTargetRows - y, x, NULL);
 		return;
 	}
 	toPlanar = GFX_Screen_IsActive(SCREEN_0) && Video_Atari_CursorDirect() &&
@@ -655,14 +655,17 @@ static void GUI_TextPlanar_Present(const TextPlanarEntry *entry)
  * GUI_DrawText(), it points into the string table, which is never written after String_Init(). */
 static bool GUI_DrawTextPlanarCached(const char *string, int16 left, int16 top)
 {
-	static union { uint32 align; uint8 bytes[TEXT_PLANAR_MAX_WIDTH * TEXT_PLANAR_HEIGHT]; } canvas;
+	static struct {
+		uint16 pixels[TEXT_PLANAR_MAX_WIDTH / 16 * TEXT_PLANAR_HEIGHT * 4];
+		uint16 masks[TEXT_PLANAR_MAX_WIDTH / 16 * TEXT_PLANAR_HEIGHT];
+	} canvas;
 	const Font *font = g_fontCurrent;
 	TextPlanarEntry *entry, *victim;
 	uint16 i, height, strips;
 
 	if (!s_textPlanarAllowed || !GUI_TextPlanar_Usable()) return false;
 	height = font->height;
-	if (height == 0 || height > TEXT_PLANAR_HEIGHT || left < 0 || top < 40 || top + height > 200) return false;
+	if (height == 0 || height > TEXT_PLANAR_HEIGHT || font->maxWidth > 16 || left < 0 || top < 40 || top + height > 200) return false;
 
 	{
 		const char *s;
@@ -680,12 +683,15 @@ static bool GUI_DrawTextPlanarCached(const char *string, int16 left, int16 top)
 		width = (extent + 15) & ~15;
 		if (extent == phase || width > TEXT_PLANAR_MAX_WIDTH || (left & ~15) + width > 240) return false;
 
-		memset(canvas.bytes, 0, (size_t)width * height);
+		memset(canvas.pixels, 0, (size_t)(width >> 4) * height * 4 * sizeof(uint16));
+		memset(canvas.masks, 0, (size_t)(width >> 4) * height * sizeof(uint16));
 		x = phase;
 		for (s = string; *s != '\0'; s++) {
 			const FontChar *fc = &font->chars[(unsigned char)*s];
 
-			if (fc->data != NULL) GUI_RenderGlyph(fc, canvas.bytes, x, width - fc->width);
+			if (fc->data != NULL)
+				GUI_Glyph_Merge(GUI_Glyph_Get((unsigned char)*s, g_colours), canvas.pixels,
+				                width >> 2, width >> 4, height, x, canvas.masks);
 			x += fc->width + g_fontCharOffset;
 		}
 
@@ -695,19 +701,16 @@ static bool GUI_DrawTextPlanarCached(const char *string, int16 left, int16 top)
 		strips = (width + TEXT_PLANAR_STRIP_WIDTH - 1) / TEXT_PLANAR_STRIP_WIDTH;
 		for (i = 0; i < strips; i++) {
 			uint16 stripWidth = min(TEXT_PLANAR_STRIP_WIDTH, width - i * TEXT_PLANAR_STRIP_WIDTH);
-			uint16 groups = stripWidth >> 4, row, column;
-			const uint8 *source = canvas.bytes + i * TEXT_PLANAR_STRIP_WIDTH;
-			uint16 *masks;
-
+			uint16 groups = stripWidth >> 4, row;
 			uint16 *pixels = victim->store + i * TEXT_PLANAR_STRIP_WORDS;
+			uint16 *masks = pixels + groups * height * 4;
+			const uint16 firstGroup = i * (TEXT_PLANAR_STRIP_WIDTH >> 4);
 
-			Video_Atari_EncodePlanarStrided(source, width, pixels, stripWidth, height);
-			masks = pixels + groups * height * 4;
-			memset(masks, 0, (size_t)groups * height * sizeof(uint16));
 			for (row = 0; row < height; row++) {
-				for (column = 0; column < stripWidth; column++) {
-					if (source[row * width + column] != 0) masks[row * groups + (column >> 4)] |= 0x8000u >> (column & 15);
-				}
+				memcpy(pixels + row * groups * 4, canvas.pixels + (row * (width >> 4) + firstGroup) * 4,
+				       (size_t)groups * 4 * sizeof(uint16));
+				memcpy(masks + row * groups, canvas.masks + row * (width >> 4) + firstGroup,
+				       (size_t)groups * sizeof(uint16));
 			}
 		}
 		victim->text = s_textPlanarKey;
