@@ -276,6 +276,32 @@ void GUI_DrawFilledRectangle(int16 left, int16 top, int16 right, int16 bottom, u
 static uint16 *s_planarTarget;
 static uint16 s_planarTargetStride;  /*!< Words per row. */
 static uint16 s_planarTargetRows;
+
+/* Pixel rectangle; empty when right <= left or bottom <= top. */
+typedef struct PlanarBox {
+	uint16 left, top, right, bottom;
+} PlanarBox;
+static PlanarBox *s_planarTouch; /*!< Set by the banner composer: receives what the text drawn into the target touched. */
+
+static bool PlanarBox_Empty(const PlanarBox *b) { return b->right <= b->left || b->bottom <= b->top; }
+
+static void PlanarBox_Union(PlanarBox *b, const PlanarBox *o)
+{
+	if (PlanarBox_Empty(o)) return;
+	if (PlanarBox_Empty(b)) { *b = *o; return; }
+	if (o->left < b->left) b->left = o->left;
+	if (o->top < b->top) b->top = o->top;
+	if (o->right > b->right) b->right = o->right;
+	if (o->bottom > b->bottom) b->bottom = o->bottom;
+}
+
+static void PlanarBox_Intersect(PlanarBox *b, const PlanarBox *o)
+{
+	if (o->left > b->left) b->left = o->left;
+	if (o->top > b->top) b->top = o->top;
+	if (o->right < b->right) b->right = o->right;
+	if (o->bottom < b->bottom) b->bottom = o->bottom;
+}
 #endif
 
 /**
@@ -304,6 +330,10 @@ void GUI_DisplayText(const char *str, int importance, ...)
 #ifdef TOS
 	static uint16 bannerPlanar[24 * SCREEN_WIDTH / 4];
 	static bool bannerPlanarReady;
+	static bool bannerBoxValid;      /* bannerBox and screenBox describe what bannerPlanar and the bar hold. */
+	static bool bannerInternal;      /* The pending update comes from the scroll logic, not from outside. */
+	static PlanarBox bannerBox;      /* Where bannerPlanar differs from the background (buffer pixels). */
+	static PlanarBox screenBox;      /* Where the bar on screen differs from the background (screen pixels). */
 #endif
 
 	buffer[0] = '\0';
@@ -329,6 +359,7 @@ void GUI_DisplayText(const char *str, int importance, ...)
 		displayTimer = 0;
 #ifdef TOS
 		bannerPlanarReady = false;
+		bannerBoxValid = false;
 #endif
 		return;
 	}
@@ -368,6 +399,7 @@ void GUI_DisplayText(const char *str, int importance, ...)
 		scrollInProgress = true;
 #ifdef TOS
 		bannerPlanarReady = false;
+		bannerInternal = bannerInternal || !g_textDisplayNeedsUpdate;
 #endif
 		textOffset = (g_announcementPhase == 0) ? 0 : 10;
 		displayTimer = 0;
@@ -395,6 +427,9 @@ void GUI_DisplayText(const char *str, int importance, ...)
 				static uint8 bannerBackgroundPen = 0xFF;
 				uint8 pen = Video_Atari_GetPalettePen(g_curWidgetFGColourNormal);
 
+				PlanarBox touched = { 0, 0, 0, 0 };
+				bool full = !bannerBoxValid || (g_textDisplayNeedsUpdate && !bannerInternal) || pen != bannerBackgroundPen;
+
 				if (pen != bannerBackgroundPen) {
 					uint16 *d = bannerBackground;
 					uint16 n;
@@ -407,15 +442,29 @@ void GUI_DisplayText(const char *str, int importance, ...)
 					}
 					bannerBackgroundPen = pen;
 				}
-				memcpy(bannerPlanar, bannerBackground, sizeof(bannerPlanar));
+				if (full) {
+					memcpy(bannerPlanar, bannerBackground, sizeof(bannerPlanar));
+				} else if (!PlanarBox_Empty(&bannerBox)) {
+					const uint16 words = (bannerBox.right - bannerBox.left) >> 2, first = bannerBox.left >> 2;
+					uint16 row;
+
+					for (row = bannerBox.top; row < bannerBox.bottom; row++)
+						memcpy(bannerPlanar + row * (SCREEN_WIDTH / 4) + first,
+						       bannerBackground + row * (SCREEN_WIDTH / 4) + first, words * sizeof(uint16));
+				}
 
 				s_planarTarget = bannerPlanar;
 				s_planarTargetStride = SCREEN_WIDTH / 4;
 				s_planarTargetRows = 24;
+				s_planarTouch = &touched;
 				GUI_DrawText_Wrapper(displayLine2, g_curWidgetXBase << 3,  2, fgColour2, 0, 0x012);
 				GUI_DrawText_Wrapper(displayLine1, g_curWidgetXBase << 3, 13, fgColour1, 0, 0x012);
 				s_planarTarget = NULL;
+				s_planarTouch = NULL;
 
+				bannerBox = touched;
+				bannerInternal = false;
+				if (full) bannerBoxValid = false;
 				g_textDisplayNeedsUpdate = false;
 				bannerPlanarReady = true;
 			}
@@ -432,6 +481,7 @@ void GUI_DisplayText(const char *str, int importance, ...)
 			g_textDisplayNeedsUpdate = false;
 #ifdef TOS
 			bannerPlanarReady = false;
+			bannerBoxValid = false;
 #endif
 
 			GFX_Screen_SetActive(oldScreenID);
@@ -447,9 +497,27 @@ void GUI_DisplayText(const char *str, int importance, ...)
 
 #ifdef TOS
 		if (Video_Atari_CursorDirect()) {
-			Video_Atari_PresentPlanarWindow(bannerPlanar + textOffset * (SCREEN_WIDTH / 4),
-			                               g_curWidgetXBase << 3, g_curWidgetYBase,
-			                               g_curWidgetWidth << 3, height);
+			PlanarBox window = { g_curWidgetXBase << 3, g_curWidgetYBase, (g_curWidgetXBase + g_curWidgetWidth) << 3, g_curWidgetYBase + height };
+			PlanarBox now = bannerBox, present = window;
+
+			/* Buffer row r shows at screen row r - textOffset + g_curWidgetYBase. */
+			if (!PlanarBox_Empty(&bannerBox)) {
+				const int shift = (int)g_curWidgetYBase - (int)textOffset;
+
+				now.top = (uint16)max(0, (int)bannerBox.top + shift);
+				now.bottom = (uint16)max(0, (int)bannerBox.bottom + shift);
+			}
+			PlanarBox_Intersect(&now, &window);
+			if (bannerBoxValid) {
+				present = screenBox;
+				PlanarBox_Union(&present, &now);
+				PlanarBox_Intersect(&present, &window);
+			}
+			if (!PlanarBox_Empty(&present))
+				Video_Atari_PresentPlanarWindow(bannerPlanar + (present.top - g_curWidgetYBase + textOffset) * (SCREEN_WIDTH / 4),
+				                               present.left, present.top, present.right - present.left, present.bottom - present.top);
+			screenBox = now;
+			bannerBoxValid = true;
 		} else
 #endif
 		GUI_Screen_Copy(g_curWidgetXBase, textOffset, g_curWidgetXBase, g_curWidgetYBase, g_curWidgetWidth, height, SCREEN_1, SCREEN_0);
@@ -477,6 +545,9 @@ void GUI_DisplayText(const char *str, int importance, ...)
 		displayLine3[0] = '\0';
 
 		line3Importance = -1;
+#ifdef TOS
+		bannerInternal = bannerInternal || !g_textDisplayNeedsUpdate;
+#endif
 		g_textDisplayNeedsUpdate = true;
 		displayTimer = g_timerGUI + (line2Importance <= line1Importance ? 900 : 1);
 		scrollInProgress = false;
@@ -487,13 +558,13 @@ void GUI_DisplayText(const char *str, int importance, ...)
 /* Draws one glyph cell into screen at index x; rows are fc->width + remainingWidth apart. */
 #ifdef TOS
 /* Merges one line of text at (x, y) into s_planarTarget. */
-static void GUI_PlanarTarget_Text(const char *text, uint16 x, uint16 y)
+static uint16 GUI_PlanarTarget_Text(const char *text, uint16 x, uint16 y)
 {
 	static uint16 planes[GLYPH_MAX_GROUPS * 16 * 4], masks[GLYPH_MAX_GROUPS * 16];
 	const uint16 available = s_planarTargetStride >> 2, firstGroup = x >> 4;
 	uint16 groups, row, group;
 
-	if (firstGroup >= available) return;
+	if (firstGroup >= available) return 0;
 	groups = GUI_Glyph_Line(g_fontCurrent, g_colours, text, x & 15,
 	                        min(available - firstGroup, (uint16)GLYPH_MAX_GROUPS), planes, masks);
 	for (row = 0; row < g_fontCurrent->height && y + row < s_planarTargetRows; row++) {
@@ -509,6 +580,12 @@ static void GUI_PlanarTarget_Text(const char *text, uint16 x, uint16 y)
 			dst[3] = (dst[3] & ~mask) | (src[3] & mask);
 		}
 	}
+	if (groups != 0 && s_planarTouch != NULL) {
+		PlanarBox box = { firstGroup * 16, y, (firstGroup + groups) * 16, min(y + g_fontCurrent->height, s_planarTargetRows) };
+
+		PlanarBox_Union(s_planarTouch, &box);
+	}
+	return groups;
 }
 
 /* Draws a whole single-line string into s_planarTarget; false if it must go through GUI_DrawChar(). */
