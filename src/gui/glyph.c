@@ -120,7 +120,7 @@ uint16 GUI_Glyph_Line(const Font *font, const uint8 colours[16], const char *str
 	const char *s;
 
 	if (!GUI_Glyph_Usable(font) || maxGroups > GLYPH_MAX_GROUPS || phase > 15 || colours[0] != 0) return GLYPH_LINE_UNSUPPORTED;
-	for (s = string; *s != '\0'; s++) {
+	for (s = string; *s != '\0' && *s != '\n' && *s != '\r'; s++) {
 		const FontChar *fc = &font->chars[(unsigned char)*s];
 
 		if ((int)fc->width + g_fontCharOffset < 0) return GLYPH_LINE_UNSUPPORTED;

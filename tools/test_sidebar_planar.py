@@ -152,7 +152,7 @@ void GFX_PutPixel(uint16 x, uint16 y, uint8 colour) {
     screens[g_screenActiveID][y * 320 + x] = colour;
 }
 void Error(const char *format, ...) { (void)format; abort(); }
-void Warning(const char *format, ...) { if (strncmp(format, "Sidebar text per-char", 21) != 0) abort(); }
+void Warning(const char *format, ...) { if (strncmp(format, "SBTRACE", 7) != 0) abort(); }
 void GUI_Mouse_Hide_InRegion(uint16 l, uint16 t, uint16 r, uint16 b) {
     (void)l; (void)t; (void)r; (void)b; hides++;
 }
@@ -553,13 +553,13 @@ int main(void) {
         direct=false; g_screenActiveID=SCREEN_1;
         GUI_DrawFilledRectangle(256,42,319,123,background);
         GUI_InitColors(labelColours,0,15);
-        GUI_DrawText("AB",260,50,11,0);
+        GUI_DrawText(pass==1?"AB\rCD\r\nE":"AB",260,50,11,0);
         copy_rect(256,42,256,42,64,82,SCREEN_1);
         memcpy(reference,display,sizeof(display));
         direct=true; GUI_Sidebar_Begin(false);
         GUI_Sidebar_Fill(256,42,319,123,background);
         GUI_InitColors(labelColours,0,15);
-        GUI_DrawText("AB",260,50,11,0);
+        GUI_DrawText(pass==1?"AB\rCD\r\nE":"AB",260,50,11,0);
         GUI_Sidebar_End();
         assert(!memcmp(display,reference,sizeof(display)));
     }

@@ -229,17 +229,25 @@ void GUI_Sidebar_Char(unsigned char c, uint16 x, uint16 y, const uint8 colours[1
 
 bool GUI_Sidebar_Text(const char *string, int16 left, int16 top, const uint8 colours[16])
 {
-	uint16 px, group;
+	uint16 px, group, height;
 
-	if (g_fontCurrent == NULL || strpbrk(string, "\n\r") != NULL) return false;
-	if (left < SIDEBAR_X || top < SIDEBAR_Y || top + g_fontCurrent->height > SIDEBAR_Y + SIDEBAR_HEIGHT) return false;
+	if (g_fontCurrent == NULL) return false;
+	height = g_fontCurrent->height;
+	if (left < SIDEBAR_X || top < SIDEBAR_Y || top + height > SIDEBAR_Y + SIDEBAR_HEIGHT) return false;
 	px = left - SIDEBAR_X;
 	group = px >> 4;
 	if (group >= SIDEBAR_GROUPS) return false;
-	/* Glyphs that do not fit before the screen edge are skipped, not clipped. */
-	return GUI_Glyph_Line(g_fontCurrent, colours, string, px & 15, SIDEBAR_GROUPS - group,
-	    g_fontCurrent->height, s_dst + (top - SIDEBAR_Y) * s_stride + group * 4, s_stride,
-	    NULL, 0) != GLYPH_LINE_UNSUPPORTED;
+	/* Glyphs that do not fit before the screen edge are skipped, not clipped. Each line break
+	 * restarts at the same left edge one font line lower; the caller provides the room. */
+	if (GUI_Glyph_Line(g_fontCurrent, colours, string, px & 15, SIDEBAR_GROUPS - group, height,
+	    s_dst + (top - SIDEBAR_Y) * s_stride + group * 4, s_stride, NULL, 0) == GLYPH_LINE_UNSUPPORTED) return false;
+	for (string += strcspn(string, "\n\r"); *string != '\0'; string += strcspn(string, "\n\r")) {
+		while (*string == '\n' || *string == '\r') string++;
+		top += height;
+		GUI_Glyph_Line(g_fontCurrent, colours, string, px & 15, SIDEBAR_GROUPS - group, height,
+		    s_dst + (top - SIDEBAR_Y) * s_stride + group * 4, s_stride, NULL, 0);
+	}
+	return true;
 }
 
 void GUI_Sidebar_Sprite(const uint8 *sprite, uint16 spriteID, int16 x, int16 y,
