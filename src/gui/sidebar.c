@@ -84,7 +84,6 @@ void GUI_Sidebar_Free(void)
 			s_sprites[i][variant] = NULL;
 		}
 	}
-	GUI_Glyph_Free();
 	for (i = 0; i < SIDEBAR_FRAGMENT_SETS; i++) {
 		for (variant = 0; variant < SIDEBAR_FRAGMENT_WAYS; variant++) {
 			free(s_fragments[i][variant]);
@@ -406,11 +405,12 @@ void GUI_Sidebar_Fill(int16 left, int16 top, int16 right, int16 bottom, uint8 co
 
 void GUI_Sidebar_Char(unsigned char c, uint16 x, uint16 y, const uint8 colours[16])
 {
-	const GlyphCell *glyph = GUI_Glyph_Get(c, colours);
-	uint16 row;
+	uint16 planes[16 * 4], masks[16], row;
+	const char text[2] = { (char)c, '\0' };
 
+	if (GUI_Glyph_Line(g_fontCurrent, colours, text, 0, 1, planes, masks) == 0) return;
 	for (row = 0; row < g_fontCurrent->height; row++)
-		GUI_Sidebar_Merge(x - SIDEBAR_X, y + row - SIDEBAR_Y, glyph->masks[row], glyph->pixels + row * 4);
+		if (masks[row] != 0) GUI_Sidebar_Merge(x - SIDEBAR_X, y + row - SIDEBAR_Y, masks[row], planes + row * 4);
 }
 
 void GUI_Sidebar_Sprite(const uint8 *sprite, uint16 spriteID, int16 x, int16 y,

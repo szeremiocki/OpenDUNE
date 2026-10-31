@@ -15,6 +15,7 @@ typedef struct Font {
 	uint8 maxWidth;
 	uint8 count;
 	FontChar *chars;
+	void *planar; /*!< TOS: planar glyph masks (glyph.c), NULL if unsupported. */
 } Font;
 
 extern Font *g_fontIntro;

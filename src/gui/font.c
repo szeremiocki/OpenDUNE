@@ -6,6 +6,9 @@
 #include "types.h"
 
 #include "font.h"
+#ifdef TOS
+#include "glyph.h"
+#endif
 #include "../os/endian.h"
 
 #include "../config.h"
@@ -111,6 +114,9 @@ static Font *Font_LoadFile(const char *filename)
 
 	free(buf);
 
+#ifdef TOS
+	GUI_Glyph_FontBuild(f);
+#endif
 	return f;
 }
 
@@ -142,6 +148,9 @@ bool Font_Init(void)
 static void Font_Unload(Font *f) {
 	uint8 i;
 
+#ifdef TOS
+	GUI_Glyph_FontFree(f);
+#endif
 	for (i = 0; i < f->count; i++) free(f->chars[i].data);
 	free(f->chars);
 	free(f);

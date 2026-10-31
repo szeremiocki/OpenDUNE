@@ -485,6 +485,49 @@ void GUI_DisplayText(const char *str, int importance, ...)
 }
 
 /* Draws one glyph cell into screen at index x; rows are fc->width + remainingWidth apart. */
+#ifdef TOS
+/* Merges one line of text at (x, y) into s_planarTarget. */
+static void GUI_PlanarTarget_Text(const char *text, uint16 x, uint16 y)
+{
+	static uint16 planes[GLYPH_MAX_GROUPS * 16 * 4], masks[GLYPH_MAX_GROUPS * 16];
+	const uint16 available = s_planarTargetStride >> 2, firstGroup = x >> 4;
+	uint16 groups, row, group;
+
+	if (firstGroup >= available) return;
+	groups = GUI_Glyph_Line(g_fontCurrent, g_colours, text, x & 15,
+	                        min(available - firstGroup, (uint16)GLYPH_MAX_GROUPS), planes, masks);
+	for (row = 0; row < g_fontCurrent->height && y + row < s_planarTargetRows; row++) {
+		for (group = 0; group < groups; group++) {
+			const uint16 mask = masks[row * groups + group];
+			const uint16 *src = planes + (row * groups + group) * 4;
+			uint16 *dst = s_planarTarget + (y + row) * s_planarTargetStride + (firstGroup + group) * 4;
+
+			if (mask == 0) continue;
+			dst[0] = (dst[0] & ~mask) | (src[0] & mask);
+			dst[1] = (dst[1] & ~mask) | (src[1] & mask);
+			dst[2] = (dst[2] & ~mask) | (src[2] & mask);
+			dst[3] = (dst[3] & ~mask) | (src[3] & mask);
+		}
+	}
+}
+
+/* Draws a whole single-line string into s_planarTarget; false if it must go through GUI_DrawChar(). */
+static bool GUI_PlanarTarget_Line(const char *string, uint16 left, uint16 top)
+{
+	const char *s;
+	uint16 x = left;
+
+	if (!GUI_Glyph_Usable(g_fontCurrent) || top + g_fontCurrent->height > SCREEN_HEIGHT) return false;
+	for (s = string; *s != '\0'; s++) {
+		if (*s == '\n' || *s == '\r') return false;
+		x += Font_GetCharWidth((unsigned char)*s);
+		if (x > SCREEN_WIDTH) return false;
+	}
+	GUI_PlanarTarget_Text(string, left, top);
+	return true;
+}
+#endif
+
 static void GUI_RenderGlyph(const FontChar *fc, uint8 *screen, uint16 x, uint16 remainingWidth)
 {
 	uint8 i, j;
@@ -563,9 +606,9 @@ static void GUI_DrawChar(unsigned char c, uint16 x, uint16 y)
 		return;
 	}
 	if (s_planarTarget != NULL) {
-		if (y < s_planarTargetRows && fc->width <= 16 && g_fontCurrent->height <= 16)
-			GUI_Glyph_Merge(GUI_Glyph_Get(c, g_colours), s_planarTarget + y * s_planarTargetStride,
-			                s_planarTargetStride, s_planarTargetStride >> 2, s_planarTargetRows - y, x, NULL);
+		const char text[2] = { (char)c, '\0' };
+
+		GUI_PlanarTarget_Text(text, x, y);
 		return;
 	}
 	toPlanar = GFX_Screen_IsActive(SCREEN_0) && Video_Atari_CursorDirect() &&
@@ -665,7 +708,7 @@ static bool GUI_DrawTextPlanarCached(const char *string, int16 left, int16 top)
 
 	if (!s_textPlanarAllowed || !GUI_TextPlanar_Usable()) return false;
 	height = font->height;
-	if (height == 0 || height > TEXT_PLANAR_HEIGHT || font->maxWidth > 16 || left < 0 || top < 40 || top + height > 200) return false;
+	if (height == 0 || height > TEXT_PLANAR_HEIGHT || !GUI_Glyph_Usable(font) || left < 0 || top < 40 || top + height > 200) return false;
 
 	{
 		const char *s;
@@ -680,20 +723,9 @@ static bool GUI_DrawTextPlanarCached(const char *string, int16 left, int16 top)
 			x += advance;
 			if (x > 240) return false;
 		}
-		width = (extent + 15) & ~15;
-		if (extent == phase || width > TEXT_PLANAR_MAX_WIDTH || (left & ~15) + width > 240) return false;
-
-		memset(canvas.pixels, 0, (size_t)(width >> 4) * height * 4 * sizeof(uint16));
-		memset(canvas.masks, 0, (size_t)(width >> 4) * height * sizeof(uint16));
-		x = phase;
-		for (s = string; *s != '\0'; s++) {
-			const FontChar *fc = &font->chars[(unsigned char)*s];
-
-			if (fc->data != NULL)
-				GUI_Glyph_Merge(GUI_Glyph_Get((unsigned char)*s, g_colours), canvas.pixels,
-				                width >> 2, width >> 4, height, x, canvas.masks);
-			x += fc->width + g_fontCharOffset;
-		}
+		if (extent == phase || (left & ~15) + ((extent + 15) & ~15) > 240) return false;
+		width = GUI_Glyph_Line(font, g_colours, string, phase, TEXT_PLANAR_MAX_WIDTH / 16, canvas.pixels, canvas.masks) * 16;
+		if (width == 0) return false;
 
 		victim = &s_textPlanar[s_textPlanarNext];
 		s_textPlanarNext = (s_textPlanarNext + 1) % TEXT_PLANAR_ENTRIES;
@@ -763,6 +795,7 @@ void GUI_DrawText(const char *string, int16 left, int16 top, uint8 fgColour, uin
 	if (sidebarText && GUI_Sidebar_FragmentBegin(SIDEBAR_FRAGMENT_TEXT, string, left, top,
 	    0, 0, 0, g_colours)) return;
 	if (!sidebarText && GUI_DrawTextPlanarCached(string, left, top)) return;
+	if (s_planarTarget != NULL && GUI_PlanarTarget_Line(string, left, top)) return;
 #endif
 	s = string;
 	x = left;

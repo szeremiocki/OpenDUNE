@@ -1,140 +1,167 @@
-/** @file src/gui/glyph.c Planar glyph cell cache shared by the ST sidebar and the message banner. */
+/** @file src/gui/glyph.c Per-font planar glyph masks and the planar text line renderer (TOS). */
 
-#include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 #include "types.h"
 #include "glyph.h"
 #include "font.h"
-#include "../os/error.h"
-#include "../os/math.h"
 #include "../video/video.h"
 
-enum { GLYPH_WAYS = 6 };
+enum { GLYPH_MAX_VALUES = 8, GLYPH_MAX_CHARS = 128 };
 
-static GlyphCell *s_glyphs[256][GLYPH_WAYS];
-static uint16 s_generation;
+typedef struct GlyphFont {
+	uint8 values;                     /*!< Number of glyph pixel values in use (value 0 excluded). */
+	uint8 value[GLYPH_MAX_VALUES];    /*!< The pixel values, ascending. */
+	uint8 firstRow, rows;             /*!< Row span used by any glyph of the font. */
+	uint16 masks[];                   /*!< [char][value][row]: bit 15 = leftmost pixel. */
+} GlyphFont;
 
-void GUI_Glyph_Free(void)
+void GUI_Glyph_FontFree(Font *f)
 {
-	uint16 i, way;
-
-	for (i = 0; i < 256; i++) {
-		for (way = 0; way < GLYPH_WAYS; way++) {
-			free(s_glyphs[i][way]);
-			s_glyphs[i][way] = NULL;
-		}
-	}
+	free(f->planar);
+	f->planar = NULL;
 }
 
-const GlyphCell *GUI_Glyph_Get(unsigned char c, const uint8 colours[16])
+void GUI_Glyph_FontBuild(Font *f)
 {
-	const FontChar *fc = &g_fontCurrent->chars[c];
-	GlyphCell *glyph = NULL;
-	uint16 row, plane, way, generation = Video_Atari_GetPaletteGeneration();
+	GlyphFont *gf;
+	uint16 used = 0, c, x, y, j, first = 255, last = 0, rows, values = 0;
+	uint8 index[16];
 
-	assert(g_fontCurrent->height <= 16 && fc->width <= 16);
-	if (generation != s_generation) {
-		GUI_Glyph_Free();
-		s_generation = generation;
-	}
-	for (way = 0; way < GLYPH_WAYS; way++) {
-		glyph = s_glyphs[c][way];
-		if (glyph != NULL && glyph->font == g_fontCurrent &&
-		    memcmp(glyph->colours, colours, sizeof(glyph->colours)) == 0) break;
-	}
-	if (way == GLYPH_WAYS) {
-		union { uint32 align; uint8 bytes[16 * 16]; } chunky;
-		way = GLYPH_WAYS - 1;
-		glyph = s_glyphs[c][way];
-		if (glyph == NULL) {
-			glyph = malloc(sizeof(*glyph));
-			if (glyph == NULL) {
-				Error("Out of memory for glyph %u\n", c);
-				exit(1);
-			}
-			s_glyphs[c][way] = glyph;
-		}
-		glyph->font = g_fontCurrent;
-		memcpy(glyph->colours, colours, sizeof(glyph->colours));
-		memset(chunky.bytes, 0, sizeof(chunky.bytes));
-		memset(glyph->masks, 0, sizeof(glyph->masks));
-		for (row = 0; row < g_fontCurrent->height; row++) {
-			uint16 column;
-			for (column = 0; column < fc->width; column++) {
-				uint8 colour = colours[0];
-				if (row >= fc->unusedLines && row < fc->unusedLines + fc->usedLines)
-					colour = colours[fc->data[(row - fc->unusedLines) * fc->width + column] & 15];
-				chunky.bytes[row * 16 + column] = colour;
-				if (colour != 0) glyph->masks[row] |= 0x8000u >> column;
-			}
-		}
-		Video_Atari_EncodePlanar(chunky.bytes, glyph->pixels, 16, g_fontCurrent->height);
+	f->planar = NULL;
+	if (f->height == 0 || f->height > 16) return;
+	for (c = 0; c < f->count; c++) {
+		const FontChar *fc = &f->chars[c];
 
-		glyph->simple = 1;
-		glyph->orPlanes = 0;
-		for (plane = 0; plane < 4; plane++) {
-			int type = -1;
-			for (row = 0; row < g_fontCurrent->height; row++) {
-				uint16 mask = glyph->masks[row], v = glyph->pixels[row * 4 + plane] & mask;
-				int t;
-				if (mask == 0) continue;
-				if (v == mask) t = 1;
-				else if (v == 0) t = 0;
-				else { glyph->simple = 0; break; }
-				if (type < 0) type = t;
-				else if (type != t) glyph->simple = 0;
+		if (fc->width > 16) return;
+		if (fc->data == NULL || fc->usedLines == 0) continue;
+		for (y = 0; y < (uint16)fc->usedLines * fc->width; y++) used |= 1 << (fc->data[y] & 15);
+		if (fc->unusedLines < first) first = fc->unusedLines;
+		if (fc->unusedLines + fc->usedLines > last) last = fc->unusedLines + fc->usedLines;
+	}
+	used &= ~1;
+	for (j = 1; j < 16; j++) if (used & (1 << j)) values++;
+	if (values > GLYPH_MAX_VALUES || last > f->height) return;
+	rows = last > first ? last - first : 0;
+
+	gf = calloc(1, sizeof(*gf) + (size_t)f->count * values * rows * sizeof(uint16));
+	if (gf == NULL) return;
+	gf->values = values;
+	gf->firstRow = rows != 0 ? first : 0;
+	gf->rows = rows;
+	for (j = 1, c = 0; j < 16; j++) {
+		index[j] = c;
+		if (used & (1 << j)) gf->value[c++] = j;
+	}
+	for (c = 0; c < f->count; c++) {
+		const FontChar *fc = &f->chars[c];
+
+		if (fc->data == NULL) continue;
+		for (y = 0; y < fc->usedLines; y++) {
+			for (x = 0; x < fc->width; x++) {
+				uint8 v = fc->data[y * fc->width + x] & 15;
+
+				if (v == 0) continue;
+				gf->masks[((size_t)c * values + index[v]) * rows + fc->unusedLines + y - first] |= 0x8000u >> x;
 			}
-			if (type == 1) glyph->orPlanes |= 1 << plane;
 		}
 	}
-	for (; way != 0; way--) s_glyphs[c][way] = s_glyphs[c][way - 1];
-	s_glyphs[c][0] = glyph;
-	return glyph;
+	f->planar = gf;
 }
 
-void GUI_Glyph_Merge(const GlyphCell *cell, uint16 *dst, uint16 stride,
-                     uint16 groups, uint16 rows, uint16 x, uint16 *masks)
+bool GUI_Glyph_Usable(const Font *font)
 {
-	uint16 row, plane, group = x >> 4, shift = x & 15;
-	const uint16 rowCount = min(rows, cell->font->height);
-	const bool spill = shift != 0 && group + 1 < groups;
-	const uint8 orPlanes = cell->orPlanes;
+	return font != NULL && font->planar != NULL && g_fontCharOffset >= 0;
+}
 
-	if (group >= groups) return;
-	for (row = 0; row < rowCount; row++) {
-		uint16 mask = cell->masks[row];
-		const uint16 *pixels = cell->pixels + row * 4;
-		uint16 *d = dst + row * stride + group * 4;
-		uint16 part = mask >> shift, part2 = 0;
+uint16 GUI_Glyph_Line(const Font *font, const uint8 colours[16], const char *string,
+                      uint16 phase, uint16 maxGroups, uint16 *planes, uint16 *masks)
+{
+	static uint16 s_x[GLYPH_MAX_CHARS], s_box[GLYPH_MAX_CHARS];
+	static uint8 s_char[GLYPH_MAX_CHARS];
+	const GlyphFont *gf = font->planar;
+	const uint16 height = font->height, rows = gf != NULL ? gf->rows : 0, values = gf != NULL ? gf->values : 0;
+	const bool background = colours[0] != 0;
+	uint16 strips[GLYPH_MAX_VALUES][GLYPH_MAX_GROUPS], box[GLYPH_MAX_GROUPS];
+	uint16 count = 0, x = phase, extent = phase, groups, row, group, first, last;
+	uint8 pen[GLYPH_MAX_VALUES], bgPen = 0, visible[GLYPH_MAX_VALUES], visibleCount = 0;
+	uint16 j, plane;
+	const char *s;
 
-		if (mask == 0) continue;
-		if (spill) part2 = mask << (16 - shift);
-		if (masks != NULL) {
-			masks[row * groups + group] |= part;
-			if (spill) masks[row * groups + group + 1] |= part2;
+	if (!GUI_Glyph_Usable(font) || maxGroups > GLYPH_MAX_GROUPS || phase > 15) return 0;
+	for (s = string; *s != '\0'; s++) {
+		const FontChar *fc = &font->chars[(unsigned char)*s];
+
+		if (fc->data != NULL) {
+			if (count == GLYPH_MAX_CHARS) return 0;
+			s_char[count] = (unsigned char)*s;
+			s_x[count] = x;
+			s_box[count] = fc->width == 16 ? 0xffffu : (uint16)(0xffffu << (16 - fc->width));
+			count++;
+			if (x + fc->width > extent) extent = x + fc->width;
 		}
-		if (cell->simple) {
-			uint16 keep = ~part;
+		x += fc->width + g_fontCharOffset;
+	}
+	if (count == 0) return 0;
+	groups = (extent + 15) >> 4;
+	if (groups > maxGroups) return 0;
 
-			if (orPlanes & 1) d[0] |= part; else d[0] &= keep;
-			if (orPlanes & 2) d[1] |= part; else d[1] &= keep;
-			if (orPlanes & 4) d[2] |= part; else d[2] &= keep;
-			if (orPlanes & 8) d[3] |= part; else d[3] &= keep;
-			if (part2 != 0) {
-				keep = ~part2;
-				if (orPlanes & 1) d[4] |= part2; else d[4] &= keep;
-				if (orPlanes & 2) d[5] |= part2; else d[5] &= keep;
-				if (orPlanes & 4) d[6] |= part2; else d[6] &= keep;
-				if (orPlanes & 8) d[7] |= part2; else d[7] &= keep;
-			}
+	if (background) bgPen = Video_Atari_GetPalettePen(colours[0]);
+	for (j = 0; j < values; j++) {
+		pen[j] = Video_Atari_GetPalettePen(colours[gf->value[j]]);
+		if (colours[gf->value[j]] != 0) visible[visibleCount++] = j;
+	}
+
+	first = background ? 0 : gf->firstRow;
+	last = background ? height : gf->firstRow + rows;
+	for (row = 0; row < height; row++) {
+		if (row < first || row >= last) {
+			memset(masks + row * groups, 0, (size_t)groups * sizeof(uint16));
 			continue;
 		}
-		for (plane = 0; plane < 4; plane++)
-			d[plane] = (d[plane] & ~part) | ((pixels[plane] >> shift) & part);
-		if (part2 != 0) {
-			for (plane = 0; plane < 4; plane++)
-				d[plane + 4] = (d[plane + 4] & ~part2) | ((pixels[plane] << (16 - shift)) & part2);
+		memset(strips, 0, sizeof(strips[0]) * values);
+		memset(box, 0, (size_t)groups * sizeof(uint16));
+		{
+			const int span = row - gf->firstRow;
+			const bool inSpan = span >= 0 && span < (int)rows;
+
+			for (group = 0; group < count; group++) {
+				const uint16 px = s_x[group], g = px >> 4, shift = px & 15;
+				const bool spill = shift != 0 && g + 1 < groups;
+
+				if (background) {
+					box[g] |= s_box[group] >> shift;
+					if (spill) box[g + 1] |= (uint16)(s_box[group] << (16 - shift));
+				}
+				if (!inSpan) continue;
+				for (j = 0; j < values; j++) {
+					const uint16 m = gf->masks[((size_t)s_char[group] * values + j) * rows + span];
+
+					if (m == 0) continue;
+					strips[j][g] |= m >> shift;
+					if (spill) strips[j][g + 1] |= (uint16)(m << (16 - shift));
+				}
+			}
+		}
+		for (group = 0; group < groups; group++) {
+			uint16 under = 0, mask = 0, out[4] = { 0, 0, 0, 0 };
+
+			if (background) {
+				for (j = 0; j < values; j++) under |= strips[j][group];
+				under = box[group] & ~under;
+				mask = under;
+				for (plane = 0; plane < 4; plane++) if (bgPen & (1 << plane)) out[plane] = under;
+			}
+			for (j = 0; j < visibleCount; j++) {
+				const uint8 v = visible[j];
+				const uint16 m = strips[v][group];
+
+				mask |= m;
+				for (plane = 0; plane < 4; plane++) if (pen[v] & (1 << plane)) out[plane] |= m;
+			}
+			masks[row * groups + group] = mask;
+			memcpy(planes + (row * groups + group) * 4, out, sizeof(out));
 		}
 	}
+	return groups;
 }
