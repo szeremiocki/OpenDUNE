@@ -211,6 +211,7 @@ bool GUI_Sidebar_Border(int16 left, int16 top, uint16 width, uint16 height, cons
 	if (x0 < s_clipLeft || x0 + (int16)width - 1 > s_clipRight || y0 < s_clipTop || y0 + (int16)height - 1 > s_clipBottom) return false;
 	if (x0 < 0 || y0 < 0 || y0 + (int16)height > SIDEBAR_HEIGHT || x0 + (int16)width > SIDEBAR_GROUPS * 16) return false;
 	for (i = 0; i < 4; i++) pens[i] = Video_Atari_GetPalettePen(colours[i]);
+	SIDEBAR_TRACE("Border x=%d y=%d w=%u h=%u\n", (int)left, (int)top, (unsigned)width, (unsigned)height);
 	Planar_DrawBorder(s_dst + y0 * s_stride, s_stride, x0, width, height, pens);
 	return true;
 }

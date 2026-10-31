@@ -4460,6 +4460,8 @@ void GUI_ChangeSelectionType(uint16 selectionType)
 {
 	Screen oldScreenID;
 
+	SIDEBAR_TRACE("ChangeSelectionType %u\n", (unsigned)selectionType);
+
 	if (selectionType == SELECTIONTYPE_UNIT && g_unitSelected == NULL) {
 		selectionType = SELECTIONTYPE_STRUCTURE;
 	}

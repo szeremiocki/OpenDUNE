@@ -3,9 +3,12 @@
 
 #ifdef TOS
 #include "font.h"
+#include "../os/error.h"
 
 struct Widget;
 
+/* Temporary redraw tracing, one line per event in error.log. */
+#define SIDEBAR_TRACE(...) Warning("SBTRACE " __VA_ARGS__)
 extern bool GUI_Sidebar_Active(void);
 extern bool GUI_Sidebar_Valid(void);
 extern void GUI_Sidebar_Invalidate(void);

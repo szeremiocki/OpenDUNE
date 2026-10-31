@@ -667,6 +667,7 @@ static uint16 GUI_Widget_ActionPanel_GetPlanarActionType(bool forceDraw)
  */
 void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 {
+	SIDEBAR_TRACE("ActionPanel_Draw force=%d\n", (int)forceDraw);
 	const StructureInfo *si;
 	const ObjectInfo *oi;
 	const UnitInfo *ui;
