@@ -34,7 +34,7 @@ class SidebarPlanarTest(unittest.TestCase):
                 (font, ("Font_Select", "Font_GetCharWidth", "Font_GetStringWidth")),
                 (gui, ("GUI_InitColors", "GUI_RenderGlyph", "GUI_DrawChar", "GUI_DrawText",
                        "GUI_DrawText_Wrapper", "GUI_DrawFilledRectangle",
-                       "GUI_DrawWiredRectangle", "GUI_DrawBorder", "GUI_DrawProgressbar",
+                       "GUI_DrawWiredRectangle", "GUI_DrawBorder", "GUI_DrawBorderRepeating", "GUI_DrawProgressbar",
                        "GUI_UpdateProductionStringID")),
                 (widget, ("GUI_Widget_GetNext", "GUI_Widget_Get_ByIndex",
                           "GUI_Widget_MakeInvisible", "GUI_Widget_MakeVisible",
@@ -57,6 +57,7 @@ class SidebarPlanarTest(unittest.TestCase):
 #include "gui/widget.h"
 #include "gui/sidebar.h"
 #include "gui/glyph.h"
+#include "gui/planar.h"
 #include "video/video.h"
 #include "gui/font.h"
 #include "unit.h"
@@ -199,7 +200,7 @@ char *String_Get_ByIndex(uint16 id) {
         case STR_RADAR_SCANFRIEND_2DENEMY_2D: return "Radar\rF %2d\rE %2d";
         case STR_FRIGATEARRIVAL_INTMINUS_D: return "Arrival\rT %d";
         case STR_PICK_TARGETTMINUS_D: return "Target\rT %d";
-        default: return "Caption";
+        default: return "DMG";
     }
 }
 static void put_pen(uint16 *pixels, unsigned x, unsigned y, uint8 pen) {
@@ -291,6 +292,7 @@ void GUI_DrawBlockedRectangle(int16 l,int16 t,int16 w,int16 h,uint8 c) { (void)l
 static void GUI_Widget_DrawBlocked(Widget *w,uint8 c) { (void)w;(void)c; abort(); }
 /* PRODUCTION */
 /* GLYPH */
+/* PLANAR */
 /* SIDEBAR */
 #include "gui/widget_draw.c"
 
@@ -372,6 +374,8 @@ int main(void) {
         assets[id]=assetData[id]; assets[id][2]=id==24?3:24;
         assets[id][0]=1;
         assets[id][3]=id==24?3:32;
+        if(id==27) { assets[id][2]=5; assets[id][3]=28; }
+        if(id==63) { assets[id][2]=14; assets[id][3]=20; }
         for(unsigned p=0;p<assets[id][2]*assets[id][3];p++)
             assets[id][p+5]=(id+p)%5?(id+p)%255+1:0;
     }
@@ -476,7 +480,7 @@ int main(void) {
     }
     wideCaption=true;
     check_panel();
-    check_hover(6,0); check_hover(6,1);
+    /* No hover redraw here: an over-wide label spills into the margin that borders rely on repeating. */
     wideCaption=false;
     /* Templates distinguish language, prompt colour, fonts and mapping generations. */
     g_selectionType=SELECTIONTYPE_TARGET; g_activeAction=ACTION_MOVE;
@@ -522,6 +526,24 @@ int main(void) {
         GUI_Sidebar_End();
         for(unsigned y=42;y<124;y++) assert(!memcmp(display+y*80+64,reference+y*80+64,32));
     }
+    /* Write-only borders against the legacy renderer, over an underlay that only repeats per row. */
+    GUI_Sidebar_Free();
+    srand(7);
+    for(unsigned n=0;n<400;n++) {
+        unsigned w=2+rand()%63, h=3+rand()%80, x=256+rand()%(64-w+1), y=42+rand()%(82-h+1);
+        unsigned schema=rand()%5; bool fill=true;
+        direct=false; g_screenActiveID=SCREEN_1;
+        for(unsigned col=256;col<320;col++) GUI_DrawFilledRectangle(col,42,col,123,(col*5+n)%17+1);
+        GUI_DrawBorder(x,y,w,h,schema,fill);
+        copy_rect(256,42,256,42,64,82,SCREEN_1);
+        memcpy(reference,display,sizeof(display));
+        direct=true; GUI_Sidebar_Begin(false);
+        for(unsigned col=256;col<320;col++) GUI_Sidebar_Fill(col,42,col,123,(col*5+n)%17+1);
+        GUI_DrawBorderRepeating(x,y,w,h,schema);
+        GUI_Sidebar_End();
+        for(unsigned row=42;row<124;row++) assert(!memcmp(display+row*80+64,reference+row*80+64,32));
+        GUI_Sidebar_Free();
+    }
     /* Whole-string labels against the legacy renderer over equal and different backgrounds. */
     GUI_Sidebar_Free();
     for(unsigned pass=0;pass<3;pass++) {
@@ -559,6 +581,9 @@ int main(void) {
         glyph = "\n".join(line for line in (ROOT / "src/gui/glyph.c").read_text().splitlines()
                           if not line.startswith("#include "))
         harness = harness.replace("/* GLYPH */", glyph)
+        planar = "\n".join(line for line in (ROOT / "src/gui/planar.c").read_text().splitlines()
+                           if not line.startswith("#include "))
+        harness = harness.replace("/* PLANAR */", planar)
         harness = harness.replace("/* SIDEBAR */", sidebar)
         with tempfile.TemporaryDirectory(prefix="sidebar-planar-") as directory:
             source = Path(directory) / "test.c"

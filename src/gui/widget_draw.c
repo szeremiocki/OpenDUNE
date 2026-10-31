@@ -198,7 +198,7 @@ void GUI_Widget_SpriteTextButton_Draw(Widget *w)
 	height    = w->height;
 
 	GUI_DrawWiredRectangle(positionX - 1, positionY - 1, positionX + width, positionY + height, 12);
-	GUI_DrawBorder(positionX, positionY, width, height, buttonDown ? 0 : 1, true);
+	GUI_DrawBorderRepeating(positionX, positionY, width, height, buttonDown ? 0 : 1);
 
 	switch (g_productionStringID) {
 		case STR_LAUNCH:
@@ -343,7 +343,7 @@ void GUI_Widget_TextButton2_Draw(Widget *w)
 	}
 
 	GUI_DrawWiredRectangle(positionX - 1, positionY - 1, positionX + width, positionY + height, 12);
-	GUI_DrawBorder(positionX, positionY, width, height, buttonDown ? 0 : 1, true);
+	GUI_DrawBorderRepeating(positionX, positionY, width, height, buttonDown ? 0 : 1);
 	GUI_DrawText_Wrapper(String_Get_ByIndex(stringID), positionX + width / 2, positionY + 1, colour, 0, 0x121);
 
 	w->shortcut = GUI_Widget_GetShortcut(*String_Get_ByIndex(stringID));
@@ -1099,7 +1099,7 @@ void GUI_Widget_DrawBorder(uint16 widgetIndex, uint16 borderType, bool pressed)
 		GUI_Mouse_Hide_InRegion(left, top, left + width, top + height);
 	}
 
-	GUI_DrawBorder(left, top, width, height, colourSchemaIndex + 1, true);
+	GUI_DrawBorderRepeating(left, top, width, height, colourSchemaIndex + 1);
 
 	size = borderIndexSize[borderType][1];
 

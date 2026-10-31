@@ -213,6 +213,7 @@ extern bool GUI_Screen_FadeInPlanar(void *wsa, uint16 xDst, uint16 yDst, uint16 
 
 extern void GUI_DrawBlockedRectangle(int16 left, int16 top, int16 width, int16 height, uint8 colour);
 extern void GUI_DrawBorder(uint16 left, uint16 top, uint16 width, uint16 height, uint16 colourSchemaIndex, bool fill);
+extern void GUI_DrawBorderRepeating(uint16 left, uint16 top, uint16 width, uint16 height, uint16 colourSchemaIndex);
 extern void GUI_DrawCredits(uint8 houseID, uint16 mode);
 extern void GUI_DrawFilledRectangle(int16 left, int16 top, int16 right, int16 bottom, uint8 colour);
 extern void GUI_DrawLine(int16 x1, int16 y1, int16 x2, int16 y2, uint8 color);

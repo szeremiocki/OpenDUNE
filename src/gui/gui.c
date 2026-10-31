@@ -3735,6 +3735,23 @@ void GUI_DrawBorder(uint16 left, uint16 top, uint16 width, uint16 height, uint16
 }
 
 /**
+ * GUI_DrawBorder() with fill, writing whole planar groups without reading when drawing into the sidebar.
+ * Only for callers that guarantee that whatever lies in the 16-pixel groups beside the rectangle
+ * repeats unchanged on every row of the rectangle.
+ */
+void GUI_DrawBorderRepeating(uint16 left, uint16 top, uint16 width, uint16 height, uint16 colourSchemaIndex)
+{
+#ifdef TOS
+	if (GUI_Sidebar_Active()) {
+		const uint16 *schema = s_colourBorderSchema[colourSchemaIndex];
+		const uint8 colours[4] = { schema[0] & 0xFF, schema[1] & 0xFF, schema[2] & 0xFF, schema[3] & 0xFF };
+		if (GUI_Sidebar_Border(left, top, width, height, colours, true)) return;
+	}
+#endif
+	GUI_DrawBorder(left, top, width, height, colourSchemaIndex, true);
+}
+
+/**
  * Display a hint to the user. Only show each hint exactly once.
  *
  * @param stringID The string of the hint to show.

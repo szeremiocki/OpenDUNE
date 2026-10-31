@@ -8,6 +8,7 @@
 #include "widget.h"
 #include "sidebar.h"
 #include "glyph.h"
+#include "planar.h"
 #include "../config.h"
 #include "../os/common.h"
 #include "../os/error.h"
@@ -159,6 +160,20 @@ static void GUI_Sidebar_FillTo(uint16 *dst, uint16 stride, int16 left, int16 top
 void GUI_Sidebar_Fill(int16 left, int16 top, int16 right, int16 bottom, uint8 colour)
 {
 	GUI_Sidebar_FillTo(s_dst, s_stride, left, top, right, bottom, colour);
+}
+
+bool GUI_Sidebar_Border(int16 left, int16 top, uint16 width, uint16 height, const uint8 colours[4], bool fill)
+{
+	int16 x0 = left - SIDEBAR_X, y0 = top - SIDEBAR_Y;
+	uint8 pens[4];
+	uint16 i;
+
+	if (!s_active || !fill || width < 2 || height < 3) return false;
+	if (x0 < s_clipLeft || x0 + (int16)width - 1 > s_clipRight || y0 < s_clipTop || y0 + (int16)height - 1 > s_clipBottom) return false;
+	if (x0 < 0 || y0 < 0 || y0 + (int16)height > SIDEBAR_HEIGHT || x0 + (int16)width > SIDEBAR_GROUPS * 16) return false;
+	for (i = 0; i < 4; i++) pens[i] = Video_Atari_GetPalettePen(colours[i]);
+	Planar_DrawBorder(s_dst + y0 * s_stride, s_stride, x0, width, height, pens);
+	return true;
 }
 
 void GUI_Sidebar_Char(unsigned char c, uint16 x, uint16 y, const uint8 colours[16])

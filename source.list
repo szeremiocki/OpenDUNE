@@ -86,6 +86,7 @@ gui/mentat.c
 gui/security.c
 #if TOS
 gui/glyph.c
+gui/planar.c
 gui/sidebar.c
 #endif
 gui/viewport.c
@@ -241,6 +242,7 @@ gui/gui.h
 gui/mentat.h
 gui/security.h
 gui/glyph.h
+gui/planar.h
 gui/sidebar.h
 gui/widget.h
 house.h
