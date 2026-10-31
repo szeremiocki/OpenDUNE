@@ -71,27 +71,38 @@ void GUI_Glyph_FontBuild(Font *f)
 
 bool GUI_Glyph_Usable(const Font *font)
 {
-	return font != NULL && font->planar != NULL && g_fontCharOffset >= 0;
+	return font != NULL && font->planar != NULL;
 }
 
 uint16 GUI_Glyph_Line(const Font *font, const uint8 colours[16], const char *string,
                       uint16 phase, uint16 maxGroups, uint16 *planes, uint16 *masks)
 {
+	uint16 stride;
+
+	return GUI_Glyph_LineFill(font, colours, string, phase, maxGroups, 0, &stride, planes, masks);
+}
+
+uint16 GUI_Glyph_LineFill(const Font *font, const uint8 colours[16], const char *string,
+                          uint16 phase, uint16 maxGroups, uint16 fillGroups, uint16 *stride,
+                          uint16 *planes, uint16 *masks)
+{
 	static uint16 s_x[GLYPH_MAX_CHARS], s_box[GLYPH_MAX_CHARS];
 	static uint8 s_char[GLYPH_MAX_CHARS];
 	const GlyphFont *gf = font->planar;
 	const uint16 height = font->height, rows = gf != NULL ? gf->rows : 0, values = gf != NULL ? gf->values : 0;
-	const bool background = colours[0] != 0;
-	uint16 strips[GLYPH_MAX_VALUES][GLYPH_MAX_GROUPS], box[GLYPH_MAX_GROUPS];
-	uint16 count = 0, x = phase, extent = phase, groups, row, group, first, last;
-	uint8 pen[GLYPH_MAX_VALUES], bgPen = 0, visible[GLYPH_MAX_VALUES], visibleCount = 0;
+	const bool background = colours[0] != 0, overlap = g_fontCharOffset < 0;
+	uint16 strips[GLYPH_MAX_VALUES][GLYPH_MAX_GROUPS], box[GLYPH_MAX_GROUPS], bgBits[GLYPH_MAX_GROUPS];
+	uint16 count = 0, x = phase, extent = phase, textGroups = 0, groups, row, group, first, last;
+	uint8 pen[GLYPH_MAX_VALUES], bgPen = 0, visible[GLYPH_MAX_VALUES], isVisible[GLYPH_MAX_VALUES], visibleCount = 0;
 	uint16 j, plane;
 	const char *s;
 
+	*stride = 0;
 	if (!GUI_Glyph_Usable(font) || maxGroups > GLYPH_MAX_GROUPS || phase > 15) return 0;
 	for (s = string; *s != '\0'; s++) {
 		const FontChar *fc = &font->chars[(unsigned char)*s];
 
+		if ((int)fc->width + g_fontCharOffset < 0) return 0;
 		if (fc->data != NULL) {
 			if (count == GLYPH_MAX_CHARS) return 0;
 			s_char[count] = (unsigned char)*s;
@@ -102,14 +113,25 @@ uint16 GUI_Glyph_Line(const Font *font, const uint8 colours[16], const char *str
 		}
 		x += fc->width + g_fontCharOffset;
 	}
-	if (count == 0) return 0;
-	groups = (extent + 15) >> 4;
-	if (groups > maxGroups) return 0;
+	if (count != 0) textGroups = (extent + 15) >> 4;
+	if (textGroups > maxGroups) return 0;
+
+	/* The fill only pads with the background colour, so it needs one. */
+	groups = textGroups;
+	if (background && fillGroups != 0) {
+		if (fillGroups > maxGroups) fillGroups = maxGroups;
+		if (fillGroups > groups) groups = fillGroups;
+	} else {
+		fillGroups = 0;
+	}
+	if (groups == 0) return 0;
+	*stride = groups;
 
 	if (background) bgPen = Video_Atari_GetPalettePen(colours[0]);
 	for (j = 0; j < values; j++) {
 		pen[j] = Video_Atari_GetPalettePen(colours[gf->value[j]]);
-		if (colours[gf->value[j]] != 0) visible[visibleCount++] = j;
+		isVisible[j] = colours[gf->value[j]] != 0;
+		if (isVisible[j]) visible[visibleCount++] = j;
 	}
 
 	first = background ? 0 : gf->firstRow;
@@ -120,7 +142,8 @@ uint16 GUI_Glyph_Line(const Font *font, const uint8 colours[16], const char *str
 			continue;
 		}
 		memset(strips, 0, sizeof(strips[0]) * values);
-		memset(box, 0, (size_t)groups * sizeof(uint16));
+		memset(box, fillGroups != 0 ? 0xff : 0, (size_t)groups * sizeof(uint16));
+		memset(bgBits, 0, (size_t)groups * sizeof(uint16));
 		{
 			const int span = row - gf->firstRow;
 			const bool inSpan = span >= 0 && span < (int)rows;
@@ -129,9 +152,33 @@ uint16 GUI_Glyph_Line(const Font *font, const uint8 colours[16], const char *str
 				const uint16 px = s_x[group], g = px >> 4, shift = px & 15;
 				const bool spill = shift != 0 && g + 1 < groups;
 
-				if (background) {
+				if (background && fillGroups == 0) {
 					box[g] |= s_box[group] >> shift;
 					if (spill) box[g + 1] |= (uint16)(s_box[group] << (16 - shift));
+				}
+				if (overlap) {
+					/* A later glyph overwrites what it draws over earlier ones. */
+					uint16 all = 0, vis = 0, own, drawn;
+
+					if (inSpan) {
+						for (j = 0; j < values; j++) {
+							const uint16 m = gf->masks[((size_t)s_char[group] * values + j) * rows + span];
+
+							all |= m;
+							if (isVisible[j]) vis |= m;
+						}
+					}
+					own = background ? (uint16)(s_box[group] & ~all) : 0;
+
+					drawn = vis | own;
+					bgBits[g] = (uint16)((bgBits[g] & ~(vis >> shift)) | (own >> shift));
+					if (spill) bgBits[g + 1] = (uint16)((bgBits[g + 1] & ~(uint16)(vis << (16 - shift))) | (uint16)(own << (16 - shift)));
+					if (drawn != 0) {
+						for (j = 0; j < values; j++) {
+							strips[j][g] &= (uint16)~(drawn >> shift);
+							if (spill) strips[j][g + 1] &= (uint16)~(uint16)(drawn << (16 - shift));
+						}
+					}
 				}
 				if (!inSpan) continue;
 				for (j = 0; j < values; j++) {
@@ -147,8 +194,15 @@ uint16 GUI_Glyph_Line(const Font *font, const uint8 colours[16], const char *str
 			uint16 under = 0, mask = 0, out[4] = { 0, 0, 0, 0 };
 
 			if (background) {
-				for (j = 0; j < values; j++) under |= strips[j][group];
-				under = box[group] & ~under;
+				if (fillGroups != 0) {
+					for (j = 0; j < visibleCount; j++) under |= strips[visible[j]][group];
+					under = ~under;
+				} else if (overlap) {
+					under = bgBits[group];
+				} else {
+					for (j = 0; j < values; j++) under |= strips[j][group];
+					under = box[group] & ~under;
+				}
 				mask = under;
 				for (plane = 0; plane < 4; plane++) if (bgPen & (1 << plane)) out[plane] = under;
 			}
@@ -163,5 +217,5 @@ uint16 GUI_Glyph_Line(const Font *font, const uint8 colours[16], const char *str
 			memcpy(planes + (row * groups + group) * 4, out, sizeof(out));
 		}
 	}
-	return groups;
+	return textGroups;
 }
