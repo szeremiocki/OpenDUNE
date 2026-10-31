@@ -6,7 +6,7 @@
 #ifdef TOS
 #include "font.h"
 
-enum { GLYPH_MAX_GROUPS = 20 };
+enum { GLYPH_MAX_GROUPS = 20, GLYPH_LINE_UNSUPPORTED = 0xFFFF };
 
 /* Builds f->planar: per glyph one 16-bit mask word per row of the font's used row span
  * and per pixel value the font uses. Leaves f->planar NULL for fonts that do not fit
@@ -21,18 +21,12 @@ extern void GUI_Glyph_FontFree(Font *f);
  * font->height rows: planes[(row * groups + group) * 4 + plane] and masks[row * groups + group]
  * (bit 15 = leftmost pixel); plane words under a clear mask are undefined.
  * A glyph that does not fit entirely within maxGroups (<= GLYPH_MAX_GROUPS) groups is skipped,
- * as GUI_DrawChar() does at the screen edge. Returns 0 if nothing is drawn, or if the font is
- * unsupported or a character would advance backwards (see GUI_Glyph_Usable). */
+ * as GUI_DrawChar() does at the screen edge. Returns the groups per row, 0 if nothing is drawn,
+ * or GLYPH_LINE_UNSUPPORTED (nothing written) if the font cannot be used (see GUI_Glyph_Usable),
+ * a character would advance backwards, or a background colour is combined with negative
+ * character spacing on more than one glyph (overlap is only resolved for transparent text). */
 extern uint16 GUI_Glyph_Line(const Font *font, const uint8 colours[16], const char *string,
                              uint16 phase, uint16 maxGroups, uint16 *planes, uint16 *masks);
-/* As GUI_Glyph_Line(), and with fillGroups != 0 (needs colours[0] != 0) the output is padded
- * with colours[0] up to fillGroups groups, covering what an earlier, longer text left behind.
- * Returns the groups the text itself occupies (padding excluded); *stride receives the groups
- * per row of the output, max(text groups, fillGroups). Passing the returned value as the next
- * call's fillGroups therefore never grows the fill beyond the text drawn. */
-extern uint16 GUI_Glyph_LineFill(const Font *font, const uint8 colours[16], const char *string,
-                                 uint16 phase, uint16 maxGroups, uint16 fillGroups, uint16 *stride,
-                                 uint16 *planes, uint16 *masks);
 extern bool GUI_Glyph_Usable(const Font *font);
 #endif
 

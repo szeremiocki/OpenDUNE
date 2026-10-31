@@ -407,8 +407,9 @@ void GUI_Sidebar_Char(unsigned char c, uint16 x, uint16 y, const uint8 colours[1
 {
 	uint16 planes[16 * 4], masks[16], row;
 	const char text[2] = { (char)c, '\0' };
+	const uint16 groups = GUI_Glyph_Line(g_fontCurrent, colours, text, 0, 1, planes, masks);
 
-	if (GUI_Glyph_Line(g_fontCurrent, colours, text, 0, 1, planes, masks) == 0) return;
+	if (groups != 1) return;
 	for (row = 0; row < g_fontCurrent->height; row++)
 		if (masks[row] != 0) GUI_Sidebar_Merge(x - SIDEBAR_X, y + row - SIDEBAR_Y, masks[row], planes + row * 4);
 }

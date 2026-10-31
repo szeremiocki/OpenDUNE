@@ -282,7 +282,6 @@ typedef struct PlanarBox {
 	uint16 left, top, right, bottom;
 } PlanarBox;
 static PlanarBox *s_planarTouch; /*!< Set by the banner composer: receives what the text drawn into the target touched. */
-static uint16 s_planarFill;      /*!< Banner composer: groups a line is padded to (what the previous text drew). */
 static uint16 s_planarGroups;    /*!< Groups the last whole line drawn into the target occupied. */
 static bool s_planarLineDone;    /*!< The last line was drawn by the planar line renderer. */
 
@@ -448,11 +447,12 @@ void GUI_DisplayText(const char *str, int importance, ...)
 					bannerBackgroundPen = pen;
 				}
 
-				/* Each line is drawn over a solid background padded to what it drew last time, so
-				 * nothing needs restoring. A line the planar renderer cannot draw falls back to
-				 * glyph by glyph drawing, which cannot pad: redo everything from a clean buffer. */
+				/* Each line is drawn transparently over the bar colour: first the groups the line held
+				 * last time are cleared. A line the planar renderer cannot draw falls back to glyph by
+				 * glyph drawing, which leaves no record of its extent: redo everything from a clean buffer. */
 				for (pass = 0; pass < 2; pass++) {
 					bool done;
+					uint8 line;
 
 					if (full) {
 						memcpy(bannerPlanar, bannerBackground, sizeof(bannerPlanar));
@@ -462,19 +462,29 @@ void GUI_DisplayText(const char *str, int importance, ...)
 					s_planarTargetStride = SCREEN_WIDTH / 4;
 					s_planarTargetRows = 24;
 					s_planarTouch = &touched;
-					s_planarLineDone = false;
-					s_planarFill = bannerGroups[0];
-					GUI_DrawText_Wrapper(displayLine2, g_curWidgetXBase << 3,  2, fgColour2, g_curWidgetFGColourNormal, 0x012);
-					bannerGroups[0] = s_planarGroups;
-					done = s_planarLineDone;
-					s_planarLineDone = false;
-					s_planarFill = bannerGroups[1];
-					GUI_DrawText_Wrapper(displayLine1, g_curWidgetXBase << 3, 13, fgColour1, g_curWidgetFGColourNormal, 0x012);
-					bannerGroups[1] = s_planarGroups;
-					done = done && s_planarLineDone;
+					done = true;
+					for (line = 0; line < 2; line++) {
+						const uint16 y = line == 0 ? 2 : 13, left = g_curWidgetXBase << 3;
+
+						if (bannerGroups[line] != 0 && !full) {
+							PlanarBox cleared = { left & ~15, y, (left & ~15) + bannerGroups[line] * 16, y + g_fontNew8p->height };
+							uint16 row;
+
+							if (cleared.bottom > 24) cleared.bottom = 24;
+							for (row = cleared.top; row < cleared.bottom; row++)
+								memcpy(bannerPlanar + row * (SCREEN_WIDTH / 4) + (cleared.left >> 2),
+								       bannerBackground + row * (SCREEN_WIDTH / 4) + (cleared.left >> 2),
+								       bannerGroups[line] * 4 * sizeof(uint16));
+							PlanarBox_Union(&touched, &cleared);
+						}
+						s_planarLineDone = false;
+						GUI_DrawText_Wrapper(line == 0 ? displayLine2 : displayLine1, left, y,
+						                     line == 0 ? fgColour2 : fgColour1, 0, 0x012);
+						bannerGroups[line] = s_planarGroups;
+						done = done && s_planarLineDone;
+					}
 					s_planarTarget = NULL;
 					s_planarTouch = NULL;
-					s_planarFill = 0;
 					if (done || full) break;
 					full = true;
 					touched.left = touched.top = touched.right = touched.bottom = 0;
@@ -576,19 +586,20 @@ void GUI_DisplayText(const char *str, int importance, ...)
 /* Draws one glyph cell into screen at index x; rows are fc->width + remainingWidth apart. */
 #ifdef TOS
 /* Merges one line of text at (x, y) into s_planarTarget. */
-static uint16 GUI_PlanarTarget_Text(const char *text, uint16 x, uint16 y, uint16 fill)
+static uint16 GUI_PlanarTarget_Text(const char *text, uint16 x, uint16 y)
 {
 	static uint16 planes[GLYPH_MAX_GROUPS * 16 * 4], masks[GLYPH_MAX_GROUPS * 16];
 	const uint16 available = s_planarTargetStride >> 2, firstGroup = x >> 4;
-	uint16 groups, stride, row, group;
+	uint16 groups, row, group;
 
 	if (firstGroup >= available) return 0;
-	groups = GUI_Glyph_LineFill(g_fontCurrent, g_colours, text, x & 15,
-	                            min(available - firstGroup, (uint16)GLYPH_MAX_GROUPS), fill, &stride, planes, masks);
+	groups = GUI_Glyph_Line(g_fontCurrent, g_colours, text, x & 15,
+	                        min(available - firstGroup, (uint16)GLYPH_MAX_GROUPS), planes, masks);
+	if (groups == 0 || groups == GLYPH_LINE_UNSUPPORTED) return groups;
 	for (row = 0; row < g_fontCurrent->height && y + row < s_planarTargetRows; row++) {
-		for (group = 0; group < stride; group++) {
-			const uint16 mask = masks[row * stride + group];
-			const uint16 *src = planes + (row * stride + group) * 4;
+		for (group = 0; group < groups; group++) {
+			const uint16 mask = masks[row * groups + group];
+			const uint16 *src = planes + (row * groups + group) * 4;
 			uint16 *dst = s_planarTarget + (y + row) * s_planarTargetStride + (firstGroup + group) * 4;
 
 			if (mask == 0) continue;
@@ -598,12 +609,45 @@ static uint16 GUI_PlanarTarget_Text(const char *text, uint16 x, uint16 y, uint16
 			dst[3] = (dst[3] & ~mask) | (src[3] & mask);
 		}
 	}
-	if (stride != 0 && s_planarTouch != NULL) {
-		PlanarBox box = { firstGroup * 16, y, (firstGroup + stride) * 16, min(y + g_fontCurrent->height, s_planarTargetRows) };
+	if (s_planarTouch != NULL) {
+		PlanarBox box = { firstGroup * 16, y, (firstGroup + groups) * 16, min(y + g_fontCurrent->height, s_planarTargetRows) };
 
 		PlanarBox_Union(s_planarTouch, &box);
 	}
 	return groups;
+}
+
+static void GUI_RenderGlyph(const FontChar *fc, uint8 *screen, uint16 x, uint16 remainingWidth);
+
+/* Slow path for a glyph the planar renderer cannot draw: renders it chunky and merges the pixels. */
+static void GUI_PlanarTarget_Chunky(const FontChar *fc, uint16 x, uint16 y)
+{
+	uint8 chunky[32 * 32];
+	uint16 i, j;
+
+	if (fc->width > 32 || g_fontCurrent->height > 32 || (x >> 4) * 4 + 4 > s_planarTargetStride) return;
+	memset(chunky, 0, (size_t)fc->width * g_fontCurrent->height);
+	GUI_RenderGlyph(fc, chunky, 0, 0);
+	for (j = 0; j < g_fontCurrent->height && y + j < s_planarTargetRows; j++) {
+		for (i = 0; i < fc->width && x + i < SCREEN_WIDTH; i++) {
+			const uint8 colour = chunky[j * fc->width + i];
+			const uint8 pen = Video_Atari_GetPalettePen(colour);
+			uint16 *dst = s_planarTarget + (y + j) * s_planarTargetStride + ((x + i) >> 4) * 4;
+			const uint16 bit = 0x8000u >> ((x + i) & 15);
+			uint16 plane;
+
+			if (colour == 0) continue;
+			for (plane = 0; plane < 4; plane++) {
+				if (pen & (1 << plane)) dst[plane] |= bit;
+				else dst[plane] &= ~bit;
+			}
+		}
+	}
+	if (s_planarTouch != NULL) {
+		PlanarBox box = { x & ~15, y, (x + fc->width + 15) & ~15, min(y + g_fontCurrent->height, s_planarTargetRows) };
+
+		PlanarBox_Union(s_planarTouch, &box);
+	}
 }
 
 /* Draws a whole single-line string into s_planarTarget; false if it must go through GUI_DrawChar(). */
@@ -618,7 +662,8 @@ static bool GUI_PlanarTarget_Line(const char *string, uint16 left, uint16 top)
 		x += Font_GetCharWidth((unsigned char)*s);
 		if (x > SCREEN_WIDTH) return false;
 	}
-	s_planarGroups = GUI_PlanarTarget_Text(string, left, top, s_planarFill);
+	s_planarGroups = GUI_PlanarTarget_Text(string, left, top);
+	if (s_planarGroups == GLYPH_LINE_UNSUPPORTED) return false;
 	s_planarLineDone = true;
 	return true;
 }
@@ -704,7 +749,7 @@ static void GUI_DrawChar(unsigned char c, uint16 x, uint16 y)
 	if (s_planarTarget != NULL) {
 		const char text[2] = { (char)c, '\0' };
 
-		GUI_PlanarTarget_Text(text, x, y, 0);
+		if (GUI_PlanarTarget_Text(text, x, y) == GLYPH_LINE_UNSUPPORTED) GUI_PlanarTarget_Chunky(fc, x, y);
 		return;
 	}
 	toPlanar = GFX_Screen_IsActive(SCREEN_0) && Video_Atari_CursorDirect() &&
@@ -820,8 +865,9 @@ static bool GUI_DrawTextPlanarCached(const char *string, int16 left, int16 top)
 			if (x > 240) return false;
 		}
 		if (extent == phase || (left & ~15) + ((extent + 15) & ~15) > 240) return false;
-		width = GUI_Glyph_Line(font, g_colours, string, phase, TEXT_PLANAR_MAX_WIDTH / 16, canvas.pixels, canvas.masks) * 16;
-		if (width == 0) return false;
+		width = GUI_Glyph_Line(font, g_colours, string, phase, TEXT_PLANAR_MAX_WIDTH / 16, canvas.pixels, canvas.masks);
+		if (width == 0 || width == GLYPH_LINE_UNSUPPORTED) return false;
+		width *= 16;
 
 		victim = &s_textPlanar[s_textPlanarNext];
 		s_textPlanarNext = (s_textPlanarNext + 1) % TEXT_PLANAR_ENTRIES;
@@ -886,10 +932,9 @@ void GUI_DrawText(const char *string, int16 left, int16 top, uint8 fgColour, uin
 	GUI_InitColors(colours, 0, 1);
 	if (*string == '\0') {
 #ifdef TOS
-		/* An empty line still has to pad over what an earlier text left. */
 		if (s_planarTarget != NULL) {
 			s_planarGroups = 0;
-			if (s_planarFill == 0 || GUI_PlanarTarget_Line(string, left, top)) s_planarLineDone = true;
+			s_planarLineDone = true;
 		}
 #endif
 		return;
