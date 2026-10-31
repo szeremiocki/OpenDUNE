@@ -31,7 +31,7 @@ static SidebarSprite *s_sprites[SIDEBAR_SPRITES][3];
 /* Destination of the primitives: the sidebar's top-left group in a planar surface. */
 static uint16 *s_dst;
 static uint16 s_stride;
-static bool s_active, s_valid, s_complete, s_fullClip;
+static bool s_active, s_valid, s_complete;
 static uint16 s_generation;
 static int16 s_clipLeft, s_clipTop, s_clipRight, s_clipBottom;
 
@@ -70,7 +70,6 @@ void GUI_Sidebar_Begin(bool force)
 	s_stride = VIDEO_ATARI_LIVE_STRIDE;
 	s_active = true;
 	s_complete = true;
-	s_fullClip = true;
 	s_clipLeft = s_clipTop = 0;
 	s_clipRight = SIDEBAR_WIDTH - 1;
 	s_clipBottom = SIDEBAR_HEIGHT - 1;
@@ -95,11 +94,6 @@ bool GUI_Sidebar_WidgetBegin(const Widget *w)
 	if (GUI_Widget_Get_ByIndex(g_widgetLinkedListHead, w->index) != w) return false;
 	GUI_Sidebar_Begin(false);
 	s_complete = false;
-	s_fullClip = false;
-	s_clipLeft = w->offsetX - 1 - SIDEBAR_X;
-	s_clipTop = w->offsetY - 1 - SIDEBAR_Y;
-	s_clipRight = w->offsetX + w->width - SIDEBAR_X;
-	s_clipBottom = w->offsetY + w->height - SIDEBAR_Y;
 	return true;
 }
 
@@ -239,15 +233,6 @@ bool GUI_Sidebar_Text(const char *string, int16 left, int16 top, const uint8 col
 
 	if (g_fontCurrent == NULL || strpbrk(string, "\n\r") != NULL) return false;
 	if (left < SIDEBAR_X || top < SIDEBAR_Y || top + g_fontCurrent->height > SIDEBAR_Y + SIDEBAR_HEIGHT) return false;
-	/* A widget redraw is clipped to the widget; text lying wholly inside the clip can still use the
-	 * whole-string path. A glyph may reach past its advance by the negative character spacing. */
-	if (!s_fullClip) {
-		const int16 overhang = g_fontCharOffset < 0 ? -g_fontCharOffset : 0;
-		const int16 first = left - SIDEBAR_X, last = first + Font_GetStringWidth(string) + overhang - 1;
-
-		if (first < s_clipLeft || last > s_clipRight) return false;
-		if (top - SIDEBAR_Y < s_clipTop || top - SIDEBAR_Y + g_fontCurrent->height - 1 > s_clipBottom) return false;
-	}
 	px = left - SIDEBAR_X;
 	group = px >> 4;
 	if (group >= SIDEBAR_GROUPS) return false;
