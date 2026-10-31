@@ -20,8 +20,9 @@ extern void GUI_Glyph_FontFree(Font *f);
  * Output, row-major with the returned number of 16-pixel groups per row and
  * font->height rows: planes[(row * groups + group) * 4 + plane] and masks[row * groups + group]
  * (bit 15 = leftmost pixel); plane words under a clear mask are undefined.
- * Returns 0 if nothing is drawn or the line does not fit maxGroups (<= GLYPH_MAX_GROUPS),
- * or if the font is unsupported or a character would advance backwards (see GUI_Glyph_Usable). */
+ * A glyph that does not fit entirely within maxGroups (<= GLYPH_MAX_GROUPS) groups is skipped,
+ * as GUI_DrawChar() does at the screen edge. Returns 0 if nothing is drawn, or if the font is
+ * unsupported or a character would advance backwards (see GUI_Glyph_Usable). */
 extern uint16 GUI_Glyph_Line(const Font *font, const uint8 colours[16], const char *string,
                              uint16 phase, uint16 maxGroups, uint16 *planes, uint16 *masks);
 /* As GUI_Glyph_Line(), and with fillGroups != 0 (needs colours[0] != 0) the output is padded

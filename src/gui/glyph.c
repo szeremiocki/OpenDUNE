@@ -103,8 +103,8 @@ uint16 GUI_Glyph_LineFill(const Font *font, const uint8 colours[16], const char 
 		const FontChar *fc = &font->chars[(unsigned char)*s];
 
 		if ((int)fc->width + g_fontCharOffset < 0) return 0;
-		if (fc->data != NULL) {
-			if (count == GLYPH_MAX_CHARS) return 0;
+		/* As GUI_DrawChar(): a glyph that does not fit entirely is skipped. */
+		if (fc->data != NULL && count < GLYPH_MAX_CHARS && x + fc->width <= maxGroups * 16) {
 			s_char[count] = (unsigned char)*s;
 			s_x[count] = x;
 			s_box[count] = fc->width == 16 ? 0xffffu : (uint16)(0xffffu << (16 - fc->width));
@@ -114,7 +114,6 @@ uint16 GUI_Glyph_LineFill(const Font *font, const uint8 colours[16], const char 
 		x += fc->width + g_fontCharOffset;
 	}
 	if (count != 0) textGroups = (extent + 15) >> 4;
-	if (textGroups > maxGroups) return 0;
 
 	/* The fill only pads with the background colour, so it needs one. */
 	groups = textGroups;
