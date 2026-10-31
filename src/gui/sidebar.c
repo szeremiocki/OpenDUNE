@@ -405,9 +405,9 @@ void GUI_Sidebar_Fill(int16 left, int16 top, int16 right, int16 bottom, uint8 co
 
 void GUI_Sidebar_Char(unsigned char c, uint16 x, uint16 y, const uint8 colours[16])
 {
-	uint16 planes[16 * 4], masks[16], row;
+	uint16 planes[16 * 4], masks[16] = { 0 }, row;
 	const char text[2] = { (char)c, '\0' };
-	const uint16 groups = GUI_Glyph_Line(g_fontCurrent, colours, text, 0, 1, planes, masks);
+	const uint16 groups = GUI_Glyph_Line(g_fontCurrent, colours, text, 0, 1, 16, planes, 4, masks, 1);
 
 	if (groups != 1) return;
 	for (row = 0; row < g_fontCurrent->height; row++)

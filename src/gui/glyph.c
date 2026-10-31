@@ -74,146 +74,90 @@ bool GUI_Glyph_Usable(const Font *font)
 	return font != NULL && font->planar != NULL;
 }
 
-uint16 GUI_Glyph_Line(const Font *font, const uint8 colours[16], const char *string,
-                      uint16 phase, uint16 maxGroups, uint16 *planes, uint16 *masks)
+uint16 GUI_Glyph_Line(const Font *font, const uint8 colours[16], const char *string, uint16 phase,
+                      uint16 maxGroups, uint16 rows, uint16 *planes, uint16 planeStride,
+                      uint16 *masks, uint16 maskStride)
 {
-	enum { SLACK = GLYPH_MAX_GROUPS + 1 };
-	static uint16 s_x[GLYPH_MAX_CHARS], s_box[GLYPH_MAX_CHARS];
+	static uint16 s_x[GLYPH_MAX_CHARS];
 	static const uint16 *s_mask[GLYPH_MAX_CHARS];
 	const GlyphFont *gf = font->planar;
-	const uint16 height = font->height, rows = gf != NULL ? gf->rows : 0, values = gf != NULL ? gf->values : 0;
-	const bool background = colours[0] != 0, overlap = g_fontCharOffset < 0;
-	uint16 pl[4][SLACK], mk[SLACK], cov[SLACK], box[SLACK], written[SLACK];
-	uint16 vOff[GLYPH_MAX_VALUES], vBits[GLYPH_MAX_VALUES];
-	uint16 count = 0, x = phase, extent = phase, groups, row, group, first, last, listed = 0;
-	uint8 pen[GLYPH_MAX_VALUES], bgPen = 0;
-	uint16 j, i;
+	const uint16 values = gf != NULL ? gf->values : 0, spanRows = gf != NULL ? gf->rows : 0;
+	uint16 off[GLYPH_MAX_VALUES], bits[GLYPH_MAX_VALUES];
+	uint16 count = 0, x = phase, extent = phase, groups, listed = 0, rowStart, rowEnd, i, j;
 	const char *s;
 
-	if (!GUI_Glyph_Usable(font) || maxGroups > GLYPH_MAX_GROUPS || phase > 15) return GLYPH_LINE_UNSUPPORTED;
+	if (!GUI_Glyph_Usable(font) || maxGroups > GLYPH_MAX_GROUPS || phase > 15 || colours[0] != 0) return GLYPH_LINE_UNSUPPORTED;
 	for (s = string; *s != '\0'; s++) {
 		const FontChar *fc = &font->chars[(unsigned char)*s];
 
 		if ((int)fc->width + g_fontCharOffset < 0) return GLYPH_LINE_UNSUPPORTED;
 		/* As GUI_DrawChar(): a glyph that does not fit entirely is skipped. */
 		if (fc->data != NULL && count < GLYPH_MAX_CHARS && x + fc->width <= maxGroups * 16) {
-			s_mask[count] = gf->masks + (size_t)(unsigned char)*s * values * rows;
+			s_mask[count] = gf->masks + (size_t)(unsigned char)*s * values * spanRows;
 			s_x[count] = x;
-			s_box[count] = fc->width == 16 ? 0xffffu : (uint16)(0xffffu << (16 - fc->width));
 			count++;
 			if (x + fc->width > extent) extent = x + fc->width;
 		}
 		x += fc->width + g_fontCharOffset;
 	}
 	if (count == 0) return 0;
-	/* Overlapping glyphs are only resolved for transparent text. */
-	if (background && overlap && count > 1) return GLYPH_LINE_UNSUPPORTED;
 	groups = (extent + 15) >> 4;
 
-	if (background) bgPen = Video_Atari_GetPalettePen(colours[0]);
-	/* Transparent text only walks the visible values; a background also needs the others to
-	 * know which pixels the glyphs cover. */
 	for (j = 0; j < values; j++) {
 		const uint8 c = colours[gf->value[j]];
 
-		if (c == 0 && !background) continue;
-		pen[listed] = Video_Atari_GetPalettePen(c);
-		vOff[listed] = j * rows;
-		vBits[listed] = c != 0 ? pen[listed] : 0;
+		if (c == 0) continue;
+		off[listed] = j * spanRows;
+		bits[listed] = Video_Atari_GetPalettePen(c);
 		listed++;
 	}
+	rowStart = gf->firstRow;
+	rowEnd = gf->firstRow + spanRows < rows ? gf->firstRow + spanRows : rows;
+	if (listed == 0 || rowStart >= rowEnd) return groups;
 
-	first = background ? 0 : gf->firstRow;
-	last = background ? height : gf->firstRow + rows;
-	for (row = 0; row < height; row++) {
-		const bool inSpan = row >= gf->firstRow && row < gf->firstRow + rows;
-		uint16 *pw;
+	/* Glyph by glyph; a later glyph overwrites the pixels it draws and leaves the rest. */
+	for (i = 0; i < count; i++) {
+		const uint16 px = s_x[i], sh = 16 - (px & 15);
+		const uint16 *src = s_mask[i];
+		uint16 *dst = planes + rowStart * planeStride + (px >> 4) * 4;
+		uint16 *mdst = masks != NULL ? masks + rowStart * maskStride + (px >> 4) : NULL;
+		uint16 row;
 
-		if (row < first || row >= last) {
-			memset(masks + row * groups, 0, (size_t)groups * sizeof(uint16));
-			continue;
-		}
-		memset(pl, 0, sizeof(pl));
-		memset(mk, 0, (size_t)(groups + 1) * sizeof(uint16));
-		if (background) {
-			memset(cov, 0, (size_t)(groups + 1) * sizeof(uint16));
-			memset(box, 0, (size_t)(groups + 1) * sizeof(uint16));
-		}
-		if (overlap) memset(written, 0, (size_t)(groups + 1) * sizeof(uint16));
+		for (row = rowStart; row < rowEnd; row++, src++, dst += planeStride) {
+			uint16 drawn = 0, s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+			uint32 v;
+			uint16 hi, lo;
 
-		for (i = 0; i < count; i++) {
-			const uint16 px = s_x[i], g = px >> 4, sh = 16 - (px & 15);
-			const uint16 *src = s_mask[i] + (row - gf->firstRow);
-
-			if (background) {
-				const uint32 v = (uint32)s_box[i] << sh;
-
-				box[g] |= (uint16)(v >> 16);
-				box[g + 1] |= (uint16)v;
-			}
-			if (!inSpan) continue;
-
-			if (overlap) {
-				/* Later glyphs overwrite earlier pixels; only a real collision costs anything. */
-				uint16 drawn = 0;
-				uint32 v;
-				uint16 hi, lo;
-
-				for (j = 0; j < listed; j++) drawn |= src[vOff[j]];
-				if (drawn == 0) continue;
-				v = (uint32)drawn << sh;
-				hi = (uint16)(v >> 16);
-				lo = (uint16)v;
-				if (((hi & written[g]) | (lo & written[g + 1])) != 0) {
-					for (j = 0; j < 4; j++) { pl[j][g] &= ~hi; pl[j][g + 1] &= ~lo; }
-					mk[g] &= ~hi;
-					mk[g + 1] &= ~lo;
-				}
-				written[g] |= hi;
-				written[g + 1] |= lo;
-			}
 			for (j = 0; j < listed; j++) {
-				const uint16 m = src[vOff[j]];
-				uint32 v;
-				uint16 hi, lo, bits;
+				const uint16 m = src[off[j]];
+				const uint16 b = bits[j];
 
 				if (m == 0) continue;
-				v = (uint32)m << sh;
-				hi = (uint16)(v >> 16);
-				lo = (uint16)v;
-				if (background) {
-					cov[g] |= hi;
-					cov[g + 1] |= lo;
-				}
-				bits = vBits[j];
-				if (bits == 0) continue;
-				mk[g] |= hi;
-				mk[g + 1] |= lo;
-				if (bits & 1) { pl[0][g] |= hi; pl[0][g + 1] |= lo; }
-				if (bits & 2) { pl[1][g] |= hi; pl[1][g + 1] |= lo; }
-				if (bits & 4) { pl[2][g] |= hi; pl[2][g + 1] |= lo; }
-				if (bits & 8) { pl[3][g] |= hi; pl[3][g + 1] |= lo; }
+				drawn |= m;
+				if (b & 1) s0 |= m;
+				if (b & 2) s1 |= m;
+				if (b & 4) s2 |= m;
+				if (b & 8) s3 |= m;
 			}
-		}
+			if (drawn == 0) continue;
 
-		pw = planes + row * groups * 4;
-		for (group = 0; group < groups; group++) {
-			uint16 m = mk[group], p0 = pl[0][group], p1 = pl[1][group], p2 = pl[2][group], p3 = pl[3][group];
-
-			if (background) {
-				const uint16 under = box[group] & ~cov[group];
-
-				m |= under;
-				if (bgPen & 1) p0 |= under;
-				if (bgPen & 2) p1 |= under;
-				if (bgPen & 4) p2 |= under;
-				if (bgPen & 8) p3 |= under;
+			v = (uint32)drawn << sh;
+			hi = (uint16)(v >> 16);
+			lo = (uint16)v;
+			dst[0] = (dst[0] & ~hi) | (uint16)(((uint32)s0 << sh) >> 16);
+			dst[1] = (dst[1] & ~hi) | (uint16)(((uint32)s1 << sh) >> 16);
+			dst[2] = (dst[2] & ~hi) | (uint16)(((uint32)s2 << sh) >> 16);
+			dst[3] = (dst[3] & ~hi) | (uint16)(((uint32)s3 << sh) >> 16);
+			if (lo != 0) {
+				dst[4] = (dst[4] & ~lo) | (uint16)((uint32)s0 << sh);
+				dst[5] = (dst[5] & ~lo) | (uint16)((uint32)s1 << sh);
+				dst[6] = (dst[6] & ~lo) | (uint16)((uint32)s2 << sh);
+				dst[7] = (dst[7] & ~lo) | (uint16)((uint32)s3 << sh);
 			}
-			masks[row * groups + group] = m;
-			*pw++ = p0;
-			*pw++ = p1;
-			*pw++ = p2;
-			*pw++ = p3;
+			if (mdst != NULL) {
+				mdst[(row - rowStart) * maskStride] |= hi;
+				if (lo != 0) mdst[(row - rowStart) * maskStride + 1] |= lo;
+			}
 		}
 	}
 	return groups;

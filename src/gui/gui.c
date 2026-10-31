@@ -588,27 +588,14 @@ void GUI_DisplayText(const char *str, int importance, ...)
 /* Merges one line of text at (x, y) into s_planarTarget. */
 static uint16 GUI_PlanarTarget_Text(const char *text, uint16 x, uint16 y)
 {
-	static uint16 planes[GLYPH_MAX_GROUPS * 16 * 4], masks[GLYPH_MAX_GROUPS * 16];
 	const uint16 available = s_planarTargetStride >> 2, firstGroup = x >> 4;
-	uint16 groups, row, group;
+	uint16 groups;
 
-	if (firstGroup >= available) return 0;
-	groups = GUI_Glyph_Line(g_fontCurrent, g_colours, text, x & 15,
-	                        min(available - firstGroup, (uint16)GLYPH_MAX_GROUPS), planes, masks);
+	if (firstGroup >= available || y >= s_planarTargetRows) return 0;
+	groups = GUI_Glyph_Line(g_fontCurrent, g_colours, text, x & 15, min(available - firstGroup, (uint16)GLYPH_MAX_GROUPS),
+	                        s_planarTargetRows - y, s_planarTarget + y * s_planarTargetStride + firstGroup * 4,
+	                        s_planarTargetStride, NULL, 0);
 	if (groups == 0 || groups == GLYPH_LINE_UNSUPPORTED) return groups;
-	for (row = 0; row < g_fontCurrent->height && y + row < s_planarTargetRows; row++) {
-		for (group = 0; group < groups; group++) {
-			const uint16 mask = masks[row * groups + group];
-			const uint16 *src = planes + (row * groups + group) * 4;
-			uint16 *dst = s_planarTarget + (y + row) * s_planarTargetStride + (firstGroup + group) * 4;
-
-			if (mask == 0) continue;
-			dst[0] = (dst[0] & ~mask) | (src[0] & mask);
-			dst[1] = (dst[1] & ~mask) | (src[1] & mask);
-			dst[2] = (dst[2] & ~mask) | (src[2] & mask);
-			dst[3] = (dst[3] & ~mask) | (src[3] & mask);
-		}
-	}
 	if (s_planarTouch != NULL) {
 		PlanarBox box = { firstGroup * 16, y, (firstGroup + groups) * 16, min(y + g_fontCurrent->height, s_planarTargetRows) };
 
@@ -865,7 +852,9 @@ static bool GUI_DrawTextPlanarCached(const char *string, int16 left, int16 top)
 			if (x > 240) return false;
 		}
 		if (extent == phase || (left & ~15) + ((extent + 15) & ~15) > 240) return false;
-		width = GUI_Glyph_Line(font, g_colours, string, phase, TEXT_PLANAR_MAX_WIDTH / 16, canvas.pixels, canvas.masks);
+		memset(canvas.masks, 0, sizeof(canvas.masks));
+		width = GUI_Glyph_Line(font, g_colours, string, phase, TEXT_PLANAR_MAX_WIDTH / 16, height, canvas.pixels,
+		                       TEXT_PLANAR_MAX_WIDTH / 4, canvas.masks, TEXT_PLANAR_MAX_WIDTH / 16);
 		if (width == 0 || width == GLYPH_LINE_UNSUPPORTED) return false;
 		width *= 16;
 
@@ -881,9 +870,9 @@ static bool GUI_DrawTextPlanarCached(const char *string, int16 left, int16 top)
 			const uint16 firstGroup = i * (TEXT_PLANAR_STRIP_WIDTH >> 4);
 
 			for (row = 0; row < height; row++) {
-				memcpy(pixels + row * groups * 4, canvas.pixels + (row * (width >> 4) + firstGroup) * 4,
+				memcpy(pixels + row * groups * 4, canvas.pixels + (row * (TEXT_PLANAR_MAX_WIDTH / 16) + firstGroup) * 4,
 				       (size_t)groups * 4 * sizeof(uint16));
-				memcpy(masks + row * groups, canvas.masks + row * (width >> 4) + firstGroup,
+				memcpy(masks + row * groups, canvas.masks + row * (TEXT_PLANAR_MAX_WIDTH / 16) + firstGroup,
 				       (size_t)groups * sizeof(uint16));
 			}
 		}
