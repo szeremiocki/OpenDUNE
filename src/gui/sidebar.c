@@ -248,7 +248,7 @@ void GUI_Sidebar_Sprite(const uint8 *sprite, uint16 spriteID, int16 x, int16 y,
 	SidebarSprite *entry;
 	uint16 groups, words;
 	const uint16 *masks, *pixels;
-	uint16 clipped[64 * 48 / 16], height;
+	uint16 height;
 	int16 localX = x - SIDEBAR_X, localY = y - SIDEBAR_Y;
 
 	assert(spriteID < SIDEBAR_SPRITES && g_sprites[spriteID] == sprite);
@@ -302,27 +302,7 @@ void GUI_Sidebar_Sprite(const uint8 *sprite, uint16 spriteID, int16 x, int16 y,
 	masks = entry->data + words * 4;
 	pixels = entry->data;
 	height = entry->height;
-	assert(x >= SIDEBAR_X && y >= SIDEBAR_Y && y + entry->height <= SIDEBAR_Y + SIDEBAR_HEIGHT);
-	if (localY > s_clipBottom || localX > s_clipRight) return;
-	if (localY < s_clipTop) {
-		uint16 skip = s_clipTop - localY;
-		if (skip >= height) return;
-		pixels += skip * groups * 4;
-		masks += skip * groups;
-		height -= skip;
-		localY += skip;
-	}
-	height = min(height, s_clipBottom - localY + 1);
-	if (localX < s_clipLeft || localX + entry->width - 1 > s_clipRight) {
-		uint16 group, row;
-		for (group = 0; group < groups; group++) {
-			int16 start = localX + group * 16;
-			int16 left = max(0, s_clipLeft - start), right = min(15, s_clipRight - start);
-			uint16 mask = left > right ? 0 : (0xffffu >> left) & (0xffffu << (15 - right));
-			for (row = 0; row < height; row++) clipped[row * groups + group] = masks[row * groups + group] & mask;
-		}
-		masks = clipped;
-	}
+	assert(localX >= 0 && localY >= 0 && localY + height <= SIDEBAR_HEIGHT);
 	Video_Atari_BlitPlanarSprite(s_dst + localY * s_stride, s_stride, SIDEBAR_GROUPS,
 	    pixels, masks, entry->width, height, localX);
 }
