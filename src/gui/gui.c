@@ -983,6 +983,7 @@ void GUI_DrawText(const char *string, int16 left, int16 top, uint8 fgColour, uin
 void GUI_DrawText_Wrapper(const char *string, int16 left, int16 top, uint8 fgColour, uint8 bgColour, int flags, ...)
 {
 	char textBuffer[240];
+	const char *text = textBuffer;
 	static uint16 displayedarg12low = -1;
 	static uint16 displayedarg2mid  = -1;
 
@@ -1040,7 +1041,9 @@ void GUI_DrawText_Wrapper(const char *string, int16 left, int16 top, uint8 fgCol
 
 	if (string == NULL) return;
 
-	{
+	if (strchr(string, '%') == NULL && strlen(string) < sizeof(textBuffer)) {
+		text = string;
+	} else {
 		va_list ap;
 
 		va_start(ap, flags);
@@ -1050,15 +1053,15 @@ void GUI_DrawText_Wrapper(const char *string, int16 left, int16 top, uint8 fgCol
 
 	switch (flags & 0x0F00) {
 		case 0x100:
-			left -= Font_GetStringWidth(textBuffer) / 2;
+			left -= Font_GetStringWidth(text) / 2;
 			break;
 
 		case 0x200:
-			left -= Font_GetStringWidth(textBuffer);
+			left -= Font_GetStringWidth(text);
 			break;
 	}
 
-	GUI_DrawText(textBuffer, left, top, fgColour, bgColour);
+	GUI_DrawText(text, left, top, fgColour, bgColour);
 }
 
 #ifdef TOS

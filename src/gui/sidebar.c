@@ -134,25 +134,70 @@ static void GUI_Sidebar_Merge(uint16 *dst, uint16 stride, int16 x, int16 y, uint
 	}
 }
 
+/* 16-bit aligned access to two plane words at once; the 68000 only needs word alignment. */
+typedef uint32 __attribute__((may_alias, aligned(2))) SidebarLong;
+
 static void GUI_Sidebar_FillTo(uint16 *dst, uint16 stride, int16 left, int16 top, int16 right,
                                int16 bottom, uint8 colour)
 {
-	uint16 group, row, plane, pen = Video_Atari_GetPalettePen(colour);
+	const uint16 pen = Video_Atari_GetPalettePen(colour);
+	uint16 plane[4], leftMask, rightMask, row, group, firstGroup, lastGroup;
+	uint32 pair01, pair23;
 
 	left = max(left - SIDEBAR_X, s_clipLeft);
 	right = min(right - SIDEBAR_X, s_clipRight);
 	top = max(top - SIDEBAR_Y, s_clipTop);
 	bottom = min(bottom - SIDEBAR_Y, s_clipBottom);
 	if (left > right || top > bottom) return;
-	for (row = top; row <= bottom; row++) {
-		for (group = left >> 4; group <= (right >> 4); group++) {
-			uint16 mask = (0xffffu >> max(0, left - group * 16)) &
-			              (0xffffu << max(0, group * 16 + 15 - right));
-			uint16 *d = dst + row * stride + group * 4;
-			for (plane = 0; plane < 4; plane++) {
-				if (pen & (1 << plane)) d[plane] |= mask;
-				else d[plane] &= ~mask;
+
+	for (group = 0; group < 4; group++) plane[group] = (pen & (1 << group)) ? 0xffff : 0;
+	pair01 = *(const SidebarLong *)plane;
+	pair23 = *(const SidebarLong *)(plane + 2);
+	firstGroup = left >> 4;
+	lastGroup = right >> 4;
+	leftMask = 0xffffu >> (left & 15);
+	rightMask = 0xffffu << (15 - (right & 15));
+	dst += top * stride;
+
+	if (firstGroup == lastGroup) {
+		const uint16 mask = leftMask & rightMask, keep = ~mask;
+		const uint16 set0 = plane[0] & mask, set1 = plane[1] & mask, set2 = plane[2] & mask, set3 = plane[3] & mask;
+		uint16 *d = dst + firstGroup * 4;
+
+		for (row = top; row <= bottom; row++, d += stride) {
+			d[0] = (d[0] & keep) | set0;
+			d[1] = (d[1] & keep) | set1;
+			d[2] = (d[2] & keep) | set2;
+			d[3] = (d[3] & keep) | set3;
+		}
+		return;
+	}
+
+	{
+		const uint16 keepLeft = ~leftMask, keepRight = ~rightMask;
+		const uint16 setLeft[4] = { plane[0] & leftMask, plane[1] & leftMask, plane[2] & leftMask, plane[3] & leftMask };
+		const uint16 setRight[4] = { plane[0] & rightMask, plane[1] & rightMask, plane[2] & rightMask, plane[3] & rightMask };
+		const uint16 middle = lastGroup - firstGroup - 1;
+		uint16 *d = dst + firstGroup * 4;
+
+		for (row = top; row <= bottom; row++, d += stride) {
+			uint16 *g = d;
+			SidebarLong *l;
+
+			g[0] = (g[0] & keepLeft) | setLeft[0];
+			g[1] = (g[1] & keepLeft) | setLeft[1];
+			g[2] = (g[2] & keepLeft) | setLeft[2];
+			g[3] = (g[3] & keepLeft) | setLeft[3];
+			l = (SidebarLong *)(g + 4);
+			for (group = 0; group < middle; group++) {
+				*l++ = pair01;
+				*l++ = pair23;
 			}
+			g = (uint16 *)l;
+			g[0] = (g[0] & keepRight) | setRight[0];
+			g[1] = (g[1] & keepRight) | setRight[1];
+			g[2] = (g[2] & keepRight) | setRight[2];
+			g[3] = (g[3] & keepRight) | setRight[3];
 		}
 	}
 }
@@ -192,9 +237,17 @@ bool GUI_Sidebar_Text(const char *string, int16 left, int16 top, const uint8 col
 {
 	uint16 px, group;
 
-	/* Partial redraws are clipped to a widget; those go through the per-character merge. */
-	if (!s_fullClip || g_fontCurrent == NULL || strpbrk(string, "\n\r") != NULL) return false;
+	if (g_fontCurrent == NULL || strpbrk(string, "\n\r") != NULL) return false;
 	if (left < SIDEBAR_X || top < SIDEBAR_Y || top + g_fontCurrent->height > SIDEBAR_Y + SIDEBAR_HEIGHT) return false;
+	/* A widget redraw is clipped to the widget; text lying wholly inside the clip can still use the
+	 * whole-string path. A glyph may reach past its advance by the negative character spacing. */
+	if (!s_fullClip) {
+		const int16 overhang = g_fontCharOffset < 0 ? -g_fontCharOffset : 0;
+		const int16 first = left - SIDEBAR_X, last = first + Font_GetStringWidth(string) + overhang - 1;
+
+		if (first < s_clipLeft || last > s_clipRight) return false;
+		if (top - SIDEBAR_Y < s_clipTop || top - SIDEBAR_Y + g_fontCurrent->height - 1 > s_clipBottom) return false;
+	}
 	px = left - SIDEBAR_X;
 	group = px >> 4;
 	if (group >= SIDEBAR_GROUPS) return false;
