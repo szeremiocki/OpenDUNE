@@ -108,9 +108,6 @@ void GUI_Widget_SpriteButton_Draw(Widget *w)
 	uint16 width, height;
 	uint16 spriteID;
 	bool buttonDown;
-#ifdef TOS
-	bool cached = false;
-#endif
 
 	if (w == NULL) return;
 
@@ -144,18 +141,9 @@ void GUI_Widget_SpriteButton_Draw(Widget *w)
 	width     = w->width;
 	height    = w->height;
 
-#ifdef TOS
-	if (GUI_Sidebar_Active()) cached = GUI_Sidebar_FragmentBegin(SIDEBAR_FRAGMENT_PORTRAIT, "",
-	    positionX, positionY, width, height, spriteID * 2 + buttonDown, NULL);
-	if (!cached) {
-#endif
-		GUI_DrawWiredRectangle(positionX - 1, positionY - 1, positionX + width, positionY + height, 12);
-		GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[spriteID], spriteID, GUI_SPRITE_COLOUR_EMBEDDED, positionX, positionY, 0, DRAWSPRITE_FLAG_REMAP, g_paletteMapping1, buttonDown ? 1 : 0);
-		GUI_DrawBorder(positionX, positionY, width, height, buttonDown ? 0 : 1, false);
-#ifdef TOS
-		if (GUI_Sidebar_Active()) GUI_Sidebar_FragmentEnd();
-	}
-#endif
+	GUI_DrawWiredRectangle(positionX - 1, positionY - 1, positionX + width, positionY + height, 12);
+	GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[spriteID], spriteID, GUI_SPRITE_COLOUR_EMBEDDED, positionX, positionY, 0, DRAWSPRITE_FLAG_REMAP, g_paletteMapping1, buttonDown ? 1 : 0);
+	GUI_DrawBorder(positionX, positionY, width, height, buttonDown ? 0 : 1, false);
 
 #ifdef TOS
 	if (GUI_Sidebar_Active()) {
@@ -186,9 +174,6 @@ void GUI_Widget_SpriteTextButton_Draw(Widget *w)
 	uint16 spriteID;
 	uint16 percentDone;
 	bool buttonDown;
-#ifdef TOS
-	bool cachedFrame = false;
-#endif
 
 	if (w == NULL) return;
 
@@ -212,17 +197,8 @@ void GUI_Widget_SpriteTextButton_Draw(Widget *w)
 	width     = w->width;
 	height    = w->height;
 
-#ifdef TOS
-	if (GUI_Sidebar_Active()) cachedFrame = GUI_Sidebar_FragmentBegin(SIDEBAR_FRAGMENT_FRAME, "",
-	    positionX, positionY, width, height, buttonDown, NULL);
-	if (!cachedFrame) {
-#endif
-		GUI_DrawWiredRectangle(positionX - 1, positionY - 1, positionX + width, positionY + height, 12);
-		GUI_DrawBorder(positionX, positionY, width, height, buttonDown ? 0 : 1, true);
-#ifdef TOS
-		if (GUI_Sidebar_Active()) GUI_Sidebar_FragmentEnd();
-	}
-#endif
+	GUI_DrawWiredRectangle(positionX - 1, positionY - 1, positionX + width, positionY + height, 12);
+	GUI_DrawBorder(positionX, positionY, width, height, buttonDown ? 0 : 1, true);
 
 	switch (g_productionStringID) {
 		case STR_LAUNCH:
@@ -337,9 +313,6 @@ void GUI_Widget_TextButton2_Draw(Widget *w)
 	uint8 colour;
 	bool buttonSelected;
 	bool buttonDown;
-#ifdef TOS
-	bool cached = false;
-#endif
 
 	if (w == NULL) return;
 
@@ -369,20 +342,9 @@ void GUI_Widget_TextButton2_Draw(Widget *w)
 		colour = 0xEF;
 	}
 
-#ifdef TOS
-	if (GUI_Sidebar_Active()) {
-		/* Cached buttons must leave the same font/style state as a real draw. */
-		cached = GUI_Sidebar_ButtonBegin(w, colour);
-	}
-	if (!cached) {
-#endif
-		GUI_DrawWiredRectangle(positionX - 1, positionY - 1, positionX + width, positionY + height, 12);
-		GUI_DrawBorder(positionX, positionY, width, height, buttonDown ? 0 : 1, true);
-		GUI_DrawText_Wrapper(String_Get_ByIndex(stringID), positionX + width / 2, positionY + 1, colour, 0, 0x121);
-#ifdef TOS
-		if (GUI_Sidebar_Active()) GUI_Sidebar_FragmentEnd();
-	}
-#endif
+	GUI_DrawWiredRectangle(positionX - 1, positionY - 1, positionX + width, positionY + height, 12);
+	GUI_DrawBorder(positionX, positionY, width, height, buttonDown ? 0 : 1, true);
+	GUI_DrawText_Wrapper(String_Get_ByIndex(stringID), positionX + width / 2, positionY + 1, colour, 0, 0x121);
 
 	w->shortcut = GUI_Widget_GetShortcut(*String_Get_ByIndex(stringID));
 
@@ -720,7 +682,6 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 	Widget *widget24, *widget28, *widget2C, *widget30, *widget34;
 #ifdef TOS
 	bool native = Video_Atari_CursorDirect();
-	bool cachedCommand = false;
 #endif
 
 	o  = NULL;
@@ -828,23 +789,10 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 			GUI_Widget_MakeInvisible(buttons[i]);
 		}
 
-#ifdef TOS
-		if (native && actionType >= 4 && actionType <= 6)
-			cachedCommand = GUI_Sidebar_CommandRestore(actionType);
-		if (!cachedCommand && (!native || !GUI_Sidebar_Background())) {
-#endif
-			GUI_Widget_DrawBorder(g_curWidgetIndex, 0, 0);
-#ifdef TOS
-			if (native) GUI_Sidebar_CacheBackground();
-		}
-#endif
+		GUI_Widget_DrawBorder(g_curWidgetIndex, 0, 0);
 	}
 
-	if (actionType > 1
-#ifdef TOS
-	    && !cachedCommand
-#endif
-	) {
+	if (actionType > 1) {
 		uint16 stringID = STR_NULL;
 		uint16 spriteID = 0xFFFF;
 
@@ -1106,14 +1054,6 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 		bool presented = false;
 #ifdef TOS
 		if (native) {
-			if (actionType >= 4 && actionType <= 6) {
-				if (cachedCommand) {
-					GUI_Widget_MakeVisible(widget30);
-					GUI_DrawText_Wrapper("", 0, 0, g_curWidgetFGColourBlink, 0, 0x11);
-				} else {
-					GUI_Sidebar_CommandCache(actionType);
-				}
-			}
 			GUI_Sidebar_End();
 			presented = true;
 		}

@@ -904,9 +904,6 @@ void GUI_DrawText(const char *string, int16 left, int16 top, uint8 fgColour, uin
 	uint16 x;
 	uint16 y;
 	const char *s;
-#ifdef TOS
-	bool sidebarText;
-#endif
 
 	if (g_fontCurrent == NULL) return;
 
@@ -930,10 +927,9 @@ void GUI_DrawText(const char *string, int16 left, int16 top, uint8 fgColour, uin
 	}
 
 #ifdef TOS
-	sidebarText = GUI_Sidebar_Active() && strlen(string) < 240;
-	if (sidebarText && GUI_Sidebar_FragmentBegin(SIDEBAR_FRAGMENT_TEXT, string, left, top,
-	    0, 0, 0, g_colours)) return;
-	if (!sidebarText && GUI_DrawTextPlanarCached(string, left, top)) return;
+	if (GUI_Sidebar_Active()) {
+		if (GUI_Sidebar_Text(string, left, top, g_colours)) return;
+	} else if (GUI_DrawTextPlanarCached(string, left, top)) return;
 	if (s_planarTarget != NULL && GUI_PlanarTarget_Line(string, left, top)) return;
 #endif
 	s = string;
@@ -962,9 +958,6 @@ void GUI_DrawText(const char *string, int16 left, int16 top, uint8 fgColour, uin
 		x += width;
 		s++;
 	}
-#ifdef TOS
-	if (sidebarText) GUI_Sidebar_FragmentEnd();
-#endif
 }
 
 /**
@@ -1091,15 +1084,6 @@ void GUI_DrawText_Planar(const char *string, int16 left, int16 top, uint8 fgColo
 }
 #endif
 
-#ifdef TOS
-bool GUI_Sidebar_ButtonBegin(const Widget *w, uint8 colour)
-{
-	GUI_DrawText_Wrapper("", 0, 0, colour, 0, 0x121);
-	return GUI_Sidebar_FragmentBegin(SIDEBAR_FRAGMENT_BUTTON, String_Get_ByIndex(w->stringID),
-	    w->offsetX, w->offsetY, w->width, w->height,
-	    colour * 4 + w->state.selected * 2 + w->state.hover2, g_colours);
-}
-#endif
 
 /**
  * Shift the given colour toward the reference color.

@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def function(source, name):
-    match = re.search(r"^(?:static )?(?:inline )?[^\n]*\b" + name + r"\([^;]*?\n\{", source, re.M)
+    match = re.search(r"^(?:static )?(?:inline )?[A-Za-z_][^\n]*\b" + name + r"\([^;]*?\n\{", source, re.M)
     if match is None:
         raise ValueError("Missing function: " + name)
     return source[match.start():source.index("\n}\n", match.end()) + 3]

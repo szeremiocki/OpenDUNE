@@ -2419,6 +2419,23 @@ static uint8 *Video_Atari_PlanarBase(void)
 	return (uint8 *)Logbase() + s_center_image_offset;
 }
 
+/* Direct access to the live planar screen for callers that draw it in place. A drawn cursor
+ * over the rectangle is restored first, so stale backup pixels cannot overwrite the new ones;
+ * the next cursor sync draws it again. */
+uint16 *Video_Atari_LiveBegin(uint16 x, uint16 y, uint16 width, uint16 height)
+{
+	uint8 *base = Video_Atari_PlanarBase();
+
+	if (Video_Atari_CursorRectOverlap(base, x >> 4, (x + width + 15) >> 4, y, height))
+		Video_Atari_CursorEraseFull();
+	return (uint16 *)(base + (uint32)y * ST_PLANAR_LINE_BYTES + (uint32)(x >> 4) * 8);
+}
+
+void Video_Atari_LiveEnd(uint16 x, uint16 y, uint16 width, uint16 height)
+{
+	GFX_Screen_ClearDirtyRect(x & ~15, y, (x + width + 15) & ~15, y + height);
+}
+
 /* Flat-colour planar fill. Unlike the c2p path this handles rectangles
  * that do not start/end on a 16 pixel group boundary, by masking the
  * partially covered groups. */
@@ -3452,6 +3469,40 @@ void Video_Atari_ComposePlanarSprite(uint16 *dstPixels, uint16 *dstMasks,
 		if (row + 1 < height) {
 			dstPixels += dstGroups * 4;
 			dstMasks += dstGroups;
+		}
+	}
+}
+
+/* As Video_Atari_ComposePlanarSprite() but into any planar surface: `dst` is its row 0, group 0
+ * and no mask is accumulated. Source rows are group-aligned; groups past dstGroups are clipped. */
+void Video_Atari_BlitPlanarSprite(uint16 *dst, uint16 dstStride, uint16 dstGroups,
+                                  const uint16 *pixels, const uint16 *masks,
+                                  uint16 width, uint16 height, uint16 x)
+{
+	uint16 groups = width >> 4, shift = x & 15, first = x >> 4, row, group;
+
+	assert(width > 0 && (width & 15) == 0 && x >> 4 < dstGroups);
+	dst += first * 4;
+	for (row = 0; row < height; row++, dst += dstStride, pixels += groups * 4, masks += groups) {
+		for (group = 0; group < groups && first + group < dstGroups; group++) {
+			uint16 mask = masks[group];
+			const uint16 *src = pixels + group * 4;
+			uint16 *d = dst + group * 4;
+			if (mask == 0) continue;
+			if (shift == 0) {
+				Video_Atari_PlanarMergePlain(d, mask, src);
+			} else {
+				uint16 words[4], plane, part = mask >> shift;
+				if (part != 0) {
+					for (plane = 0; plane < 4; plane++) words[plane] = src[plane] >> shift;
+					Video_Atari_PlanarMergePlain(d, part, words);
+				}
+				part = (uint16)(mask << (16 - shift));
+				if (part != 0 && first + group + 1 < dstGroups) {
+					for (plane = 0; plane < 4; plane++) words[plane] = src[plane] << (16 - shift);
+					Video_Atari_PlanarMergePlain(d + 4, part, words);
+				}
+			}
 		}
 	}
 }

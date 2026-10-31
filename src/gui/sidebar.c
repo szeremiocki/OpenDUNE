@@ -1,4 +1,4 @@
-/** @file src/gui/sidebar.c Cached, private planar composition for the ST sidebar. */
+/** @file src/gui/sidebar.c Planar drawing of the ST sidebar straight into the live screen. */
 
 #include <assert.h>
 #include <stdlib.h>
@@ -8,6 +8,7 @@
 #include "widget.h"
 #include "sidebar.h"
 #include "glyph.h"
+#include "font.h"
 #include "../config.h"
 #include "../os/common.h"
 #include "../os/error.h"
@@ -17,52 +18,20 @@
 #include "../video/video.h"
 
 enum { SIDEBAR_X = 256, SIDEBAR_Y = 42, SIDEBAR_WIDTH = 64, SIDEBAR_HEIGHT = 82,
-       SIDEBAR_GROUPS = 4, SIDEBAR_WORDS = 16, SIDEBAR_SPRITES = 355,
-       SIDEBAR_FRAGMENT_SETS = 32, SIDEBAR_FRAGMENT_WAYS = 4 };
-
-typedef struct SidebarFragmentKey {
-	const Font *font;
-	int16 spacing, left, top, clipLeft, clipTop, clipRight, clipBottom;
-	uint16 kind, width, height, state;
-	uint8 colours[16];
-} SidebarFragmentKey;
-
-typedef struct SidebarFragment {
-	SidebarFragmentKey key;
-	char text[240];
-	uint16 hash, left, top, groups, height;
-	uint16 data[];
-} SidebarFragment;
-
-typedef struct SidebarCapture {
-	SidebarFragmentKey key;
-	char text[240];
-	uint16 hash;
-	uint16 masks[SIDEBAR_HEIGHT * SIDEBAR_GROUPS];
-} SidebarCapture;
-
-typedef struct SidebarCommand {
-	const Font *font;
-	uint16 language, colour;
-	bool valid;
-	uint16 pixels[SIDEBAR_HEIGHT * SIDEBAR_WORDS];
-} SidebarCommand;
+       SIDEBAR_GROUPS = 4, SIDEBAR_SPRITES = 355 };
 
 typedef struct SidebarSprite {
 	uint16 width, height;
 	uint16 data[];
 } SidebarSprite;
 
-static uint16 s_pixels[SIDEBAR_HEIGHT * SIDEBAR_WORDS];
-static uint16 s_display[SIDEBAR_HEIGHT * SIDEBAR_WORDS];
-static uint16 s_background[SIDEBAR_HEIGHT * SIDEBAR_WORDS];
-static uint16 s_masks[SIDEBAR_HEIGHT * SIDEBAR_GROUPS];
+/* Pre-decoded planar sprites: pixels (4 words per group) followed by one mask word per group. */
 static SidebarSprite *s_sprites[SIDEBAR_SPRITES][3];
-static SidebarFragment *s_fragments[SIDEBAR_FRAGMENT_SETS][SIDEBAR_FRAGMENT_WAYS];
-static SidebarCapture s_capture[2];
-static uint16 s_captureDepth;
-static SidebarCommand s_commands[3];
-static bool s_active, s_valid, s_force, s_backgroundValid, s_complete;
+
+/* Destination of the primitives: the sidebar's top-left group in a planar surface. */
+static uint16 *s_dst;
+static uint16 s_stride;
+static bool s_active, s_valid, s_complete, s_fullClip;
 static uint16 s_generation;
 static int16 s_clipLeft, s_clipTop, s_clipRight, s_clipBottom;
 
@@ -77,209 +46,43 @@ void GUI_Sidebar_Free(void)
 {
 	uint16 i, variant;
 
-	assert(!s_active && s_captureDepth == 0);
+	assert(!s_active);
 	for (i = 0; i < SIDEBAR_SPRITES; i++) {
 		for (variant = 0; variant < 3; variant++) {
 			free(s_sprites[i][variant]);
 			s_sprites[i][variant] = NULL;
 		}
 	}
-	for (i = 0; i < SIDEBAR_FRAGMENT_SETS; i++) {
-		for (variant = 0; variant < SIDEBAR_FRAGMENT_WAYS; variant++) {
-			free(s_fragments[i][variant]);
-			s_fragments[i][variant] = NULL;
-		}
-	}
-	memset(s_commands, 0, sizeof(s_commands));
 	s_valid = false;
-	s_backgroundValid = false;
-}
-
-bool GUI_Sidebar_CommandRestore(uint16 actionType)
-{
-	SidebarCommand *entry = &s_commands[actionType - 4];
-
-	assert(s_active && actionType >= 4 && actionType <= 6);
-	if (!entry->valid || entry->font != g_fontNew6p ||
-	    entry->language != g_config.language || entry->colour != g_curWidgetFGColourBlink) return false;
-	memcpy(s_pixels, entry->pixels, sizeof(s_pixels));
-	s_complete = true;
-	return true;
-}
-
-void GUI_Sidebar_CommandCache(uint16 actionType)
-{
-	SidebarCommand *entry = &s_commands[actionType - 4];
-
-	assert(s_active && s_complete && actionType >= 4 && actionType <= 6);
-	entry->font = g_fontNew6p;
-	entry->language = g_config.language;
-	entry->colour = g_curWidgetFGColourBlink;
-	memcpy(entry->pixels, s_pixels, sizeof(s_pixels));
-	entry->valid = true;
-}
-
-static void GUI_Sidebar_Record(uint16 row, uint16 group, uint16 mask)
-{
-	uint16 i;
-	/* Capture writes, not differences: equal pixels and opaque pen zero must replay. */
-	for (i = 0; i < s_captureDepth; i++) s_capture[i].masks[row * SIDEBAR_GROUPS + group] |= mask;
-}
-
-bool GUI_Sidebar_FragmentBegin(uint16 kind, const char *text, int16 left, int16 top,
-                              uint16 width, uint16 height, uint16 state, const uint8 *colours)
-{
-	SidebarCapture *capture = &s_capture[s_captureDepth];
-	SidebarFragmentKey *key = &capture->key;
-	SidebarFragment **set;
-	uint16 hash = 0, i;
-	const uint8 *bytes;
-
-	assert(s_active && s_captureDepth < lengthof(s_capture));
-	if (strlen(text) >= sizeof(capture->text)) {
-		Error("Sidebar fragment text exceeds cache limit\n");
-		exit(1);
-	}
-	memset(key, 0, sizeof(*key));
-	key->kind = kind;
-	key->left = left;
-	key->top = top;
-	key->width = width;
-	key->height = height;
-	key->state = state;
-	key->clipLeft = s_clipLeft;
-	key->clipTop = s_clipTop;
-	key->clipRight = s_clipRight;
-	key->clipBottom = s_clipBottom;
-	if (kind == SIDEBAR_FRAGMENT_TEXT || kind == SIDEBAR_FRAGMENT_BUTTON) {
-		key->font = g_fontCurrent;
-		key->spacing = g_fontCharOffset;
-	}
-	if (colours != NULL) memcpy(key->colours, colours, sizeof(key->colours));
-	strcpy(capture->text, text);
-	bytes = (const uint8 *)key;
-	for (i = 0; i < sizeof(*key); i++) hash = (hash << 5) - hash + bytes[i];
-	for (i = 0; text[i] != '\0'; i++) hash = (hash << 5) - hash + (uint8)text[i];
-	capture->hash = hash;
-	set = s_fragments[hash & (SIDEBAR_FRAGMENT_SETS - 1)];
-	for (i = 0; i < SIDEBAR_FRAGMENT_WAYS; i++) {
-		SidebarFragment *entry = set[i];
-		uint16 row, group;
-		if (entry == NULL || entry->hash != hash || !Memory_Equal16(&entry->key, key, sizeof(*key)) ||
-		    strcmp(entry->text, text) != 0) continue;
-		for (; i != 0; i--) set[i] = set[i - 1];
-		set[0] = entry;
-		{
-			/* Fewer than lengthof(s_capture) captures are open here, so at most one records this replay. */
-			const uint16 *src = entry->data;
-			uint16 *dst = s_pixels + entry->top * SIDEBAR_WORDS + entry->left * 4;
-			uint16 *record = s_captureDepth != 0 ? s_capture[0].masks + entry->top * SIDEBAR_GROUPS + entry->left : NULL;
-			const uint16 groups = entry->groups;
-
-			for (row = entry->height; row != 0; row--) {
-				uint16 *d = dst, *m = record;
-				for (group = groups; group != 0; group--) {
-					uint16 mask = src[4];
-					if (mask != 0) {
-						if (mask == 0xffff) {
-							memcpy(d, src, 8);
-						} else {
-							const uint16 keep = ~mask;
-							d[0] = (d[0] & keep) | (src[0] & mask);
-							d[1] = (d[1] & keep) | (src[1] & mask);
-							d[2] = (d[2] & keep) | (src[2] & mask);
-							d[3] = (d[3] & keep) | (src[3] & mask);
-						}
-						if (m != NULL) *m |= mask;
-					}
-					src += 5;
-					d += 4;
-					if (m != NULL) m++;
-				}
-				dst += SIDEBAR_WORDS;
-				if (record != NULL) record += SIDEBAR_GROUPS;
-			}
-		}
-		return true;
-	}
-	memset(capture->masks, 0, sizeof(capture->masks));
-	s_captureDepth++;
-	return false;
-}
-
-void GUI_Sidebar_FragmentEnd(void)
-{
-	SidebarCapture *capture;
-	SidebarFragment *entry, **set;
-	uint16 top = SIDEBAR_HEIGHT, bottom = 0, left = SIDEBAR_GROUPS, right = 0;
-	uint16 row, group, i;
-
-	assert(s_active && s_captureDepth != 0);
-	capture = &s_capture[--s_captureDepth];
-	for (row = 0; row < SIDEBAR_HEIGHT; row++) {
-		for (group = 0; group < SIDEBAR_GROUPS; group++) {
-			if (capture->masks[row * SIDEBAR_GROUPS + group] == 0) continue;
-			top = min(top, row);
-			bottom = max(bottom, row);
-			left = min(left, group);
-			right = max(right, group);
-		}
-	}
-	entry = malloc(sizeof(*entry) + (top == SIDEBAR_HEIGHT ? 0 :
-	               (bottom - top + 1) * (right - left + 1) * 5 * sizeof(uint16)));
-	if (entry == NULL) {
-		Error("Out of memory for sidebar fragment\n");
-		exit(1);
-	}
-	entry->key = capture->key;
-	strcpy(entry->text, capture->text);
-	entry->hash = capture->hash;
-	entry->left = left;
-	entry->top = top;
-	entry->groups = top == SIDEBAR_HEIGHT ? 0 : right - left + 1;
-	entry->height = top == SIDEBAR_HEIGHT ? 0 : bottom - top + 1;
-	for (row = 0; row < entry->height; row++) {
-		for (group = 0; group < entry->groups; group++) {
-			uint16 *dst = entry->data + (row * entry->groups + group) * 5;
-			memcpy(dst, s_pixels + (top + row) * SIDEBAR_WORDS + (left + group) * 4, 8);
-			dst[4] = capture->masks[(top + row) * SIDEBAR_GROUPS + left + group];
-		}
-	}
-	set = s_fragments[entry->hash & (SIDEBAR_FRAGMENT_SETS - 1)];
-	free(set[SIDEBAR_FRAGMENT_WAYS - 1]);
-	for (i = SIDEBAR_FRAGMENT_WAYS - 1; i != 0; i--) set[i] = set[i - 1];
-	set[0] = entry;
-}
-
-bool GUI_Sidebar_Background(void)
-{
-	s_complete = true;
-	if (!s_backgroundValid) return false;
-	memcpy(s_pixels, s_background, sizeof(s_pixels));
-	return true;
-}
-
-void GUI_Sidebar_CacheBackground(void)
-{
-	memcpy(s_background, s_pixels, sizeof(s_background));
-	s_backgroundValid = true;
 }
 
 void GUI_Sidebar_Begin(bool force)
 {
 	uint16 generation = Video_Atari_GetPaletteGeneration();
 
+	VARIABLE_NOT_USED(force);
 	assert(Video_Atari_CursorDirect() && !s_active);
 	if (generation != s_generation) {
 		GUI_Sidebar_Free();
 		s_generation = generation;
 	}
+	s_dst = Video_Atari_LiveBegin(SIDEBAR_X, SIDEBAR_Y, SIDEBAR_WIDTH, SIDEBAR_HEIGHT);
+	s_stride = VIDEO_ATARI_LIVE_STRIDE;
 	s_active = true;
-	s_complete = false;
-	s_force = force;
+	s_complete = true;
+	s_fullClip = true;
 	s_clipLeft = s_clipTop = 0;
 	s_clipRight = SIDEBAR_WIDTH - 1;
 	s_clipBottom = SIDEBAR_HEIGHT - 1;
+}
+
+void GUI_Sidebar_End(void)
+{
+	assert(s_active);
+	s_active = false;
+	Video_Atari_LiveEnd(SIDEBAR_X, SIDEBAR_Y, SIDEBAR_WIDTH, SIDEBAR_HEIGHT);
+	/* A widget-only update cannot validate the rest of a replaced panel. */
+	s_valid |= s_complete;
 }
 
 bool GUI_Sidebar_WidgetBegin(const Widget *w)
@@ -291,6 +94,8 @@ bool GUI_Sidebar_WidgetBegin(const Widget *w)
 	    w->offsetY + w->height >= SIDEBAR_Y + SIDEBAR_HEIGHT) return false;
 	if (GUI_Widget_Get_ByIndex(g_widgetLinkedListHead, w->index) != w) return false;
 	GUI_Sidebar_Begin(false);
+	s_complete = false;
+	s_fullClip = false;
 	s_clipLeft = w->offsetX - 1 - SIDEBAR_X;
 	s_clipTop = w->offsetY - 1 - SIDEBAR_Y;
 	s_clipRight = w->offsetX + w->width - SIDEBAR_X;
@@ -298,60 +103,12 @@ bool GUI_Sidebar_WidgetBegin(const Widget *w)
 	return true;
 }
 
-static uint8 GUI_Sidebar_Damage(uint16 row)
-{
-	uint8 result = 0;
-	uint16 group;
-
-	for (group = 0; group < SIDEBAR_GROUPS; group++) {
-		uint16 offset = row * SIDEBAR_WORDS + group * 4;
-		if (s_force || memcmp(s_pixels + offset, s_display + offset, 8) != 0) result |= 1 << group;
-	}
-	return result;
-}
-
-void GUI_Sidebar_End(void)
-{
-	uint16 row = 0;
-
-	assert(s_active && s_captureDepth == 0);
-	s_active = false;
-	s_force |= s_complete && !s_valid;
-	while (row < SIDEBAR_HEIGHT) {
-		uint8 damage = GUI_Sidebar_Damage(row);
-		uint16 end = row + 1, first = 0;
-		if (damage == 0) {
-			row++;
-			continue;
-		}
-		while (end < SIDEBAR_HEIGHT && GUI_Sidebar_Damage(end) == damage) end++;
-		while (first < SIDEBAR_GROUPS) {
-			uint16 last, offset;
-			if ((damage & (1 << first)) == 0) {
-				first++;
-				continue;
-			}
-			last = first + 1;
-			while (last < SIDEBAR_GROUPS && (damage & (1 << last)) != 0) last++;
-			offset = row * SIDEBAR_WORDS + first * 4;
-			if (!Video_Atari_PresentRestoreStrided(SIDEBAR_X + first * 16, SIDEBAR_Y + row,
-			    (last - first) * 16, end - row, (const uint8 *)(s_pixels + offset), SIDEBAR_WIDTH / 2)) {
-				Error("Unable to publish native sidebar fragment\n");
-				exit(1);
-			}
-			first = last;
-		}
-		row = end;
-	}
-	memcpy(s_display, s_pixels, sizeof(s_display));
-	/* A widget-only update cannot validate the rest of a replaced panel. */
-	s_valid |= s_complete;
-}
-
-static void GUI_Sidebar_Merge(int16 x, int16 y, uint16 mask, const uint16 pixels[4])
+/* Merges the pixels selected by `mask` of one 16-pixel row into `dst`, at column x of the
+ * sidebar, inside the clip rectangle. */
+static void GUI_Sidebar_Merge(uint16 *dst, uint16 stride, int16 x, int16 y, uint16 mask,
+                              const uint16 pixels[4])
 {
 	uint16 group, shift, plane, clipped[4];
-	uint16 *dst;
 	int16 left = max(x, s_clipLeft), right = min(x + 15, s_clipRight);
 
 	if (y < s_clipTop || y > s_clipBottom || left > right) return;
@@ -366,10 +123,7 @@ static void GUI_Sidebar_Merge(int16 x, int16 y, uint16 mask, const uint16 pixels
 	group = x >> 4;
 	shift = x & 15;
 	if (y < 0 || y >= SIDEBAR_HEIGHT || group >= SIDEBAR_GROUPS) return;
-	dst = s_pixels + y * SIDEBAR_WORDS + group * 4;
-	GUI_Sidebar_Record(y, group, mask >> shift);
-	if (shift != 0 && group + 1 < SIDEBAR_GROUPS)
-		GUI_Sidebar_Record(y, group + 1, mask << (16 - shift));
+	dst += y * stride + group * 4;
 	for (plane = 0; plane < 4; plane++) {
 		uint16 part = mask >> shift;
 		dst[plane] = (dst[plane] & ~part) | ((pixels[plane] >> shift) & part);
@@ -380,7 +134,8 @@ static void GUI_Sidebar_Merge(int16 x, int16 y, uint16 mask, const uint16 pixels
 	}
 }
 
-void GUI_Sidebar_Fill(int16 left, int16 top, int16 right, int16 bottom, uint8 colour)
+static void GUI_Sidebar_FillTo(uint16 *dst, uint16 stride, int16 left, int16 top, int16 right,
+                               int16 bottom, uint8 colour)
 {
 	uint16 group, row, plane, pen = Video_Atari_GetPalettePen(colour);
 
@@ -393,14 +148,18 @@ void GUI_Sidebar_Fill(int16 left, int16 top, int16 right, int16 bottom, uint8 co
 		for (group = left >> 4; group <= (right >> 4); group++) {
 			uint16 mask = (0xffffu >> max(0, left - group * 16)) &
 			              (0xffffu << max(0, group * 16 + 15 - right));
-			uint16 *dst = s_pixels + row * SIDEBAR_WORDS + group * 4;
-			GUI_Sidebar_Record(row, group, mask);
+			uint16 *d = dst + row * stride + group * 4;
 			for (plane = 0; plane < 4; plane++) {
-				if (pen & (1 << plane)) dst[plane] |= mask;
-				else dst[plane] &= ~mask;
+				if (pen & (1 << plane)) d[plane] |= mask;
+				else d[plane] &= ~mask;
 			}
 		}
 	}
+}
+
+void GUI_Sidebar_Fill(int16 left, int16 top, int16 right, int16 bottom, uint8 colour)
+{
+	GUI_Sidebar_FillTo(s_dst, s_stride, left, top, right, bottom, colour);
 }
 
 void GUI_Sidebar_Char(unsigned char c, uint16 x, uint16 y, const uint8 colours[16])
@@ -411,7 +170,24 @@ void GUI_Sidebar_Char(unsigned char c, uint16 x, uint16 y, const uint8 colours[1
 
 	if (groups != 1) return;
 	for (row = 0; row < g_fontCurrent->height; row++)
-		if (masks[row] != 0) GUI_Sidebar_Merge(x - SIDEBAR_X, y + row - SIDEBAR_Y, masks[row], planes + row * 4);
+		if (masks[row] != 0)
+			GUI_Sidebar_Merge(s_dst, s_stride, x - SIDEBAR_X, y + row - SIDEBAR_Y, masks[row], planes + row * 4);
+}
+
+bool GUI_Sidebar_Text(const char *string, int16 left, int16 top, const uint8 colours[16])
+{
+	uint16 px, group;
+
+	/* Partial redraws are clipped to a widget; those go through the per-character merge. */
+	if (!s_fullClip || g_fontCurrent == NULL || strpbrk(string, "\n\r") != NULL) return false;
+	if (left < SIDEBAR_X || top < SIDEBAR_Y || top + g_fontCurrent->height > SIDEBAR_Y + SIDEBAR_HEIGHT) return false;
+	px = left - SIDEBAR_X;
+	group = px >> 4;
+	/* Strings that may reach the edge need the per-character clip. */
+	if (px + Font_GetStringWidth(string) + g_fontCurrent->maxWidth > SIDEBAR_WIDTH) return false;
+	return GUI_Glyph_Line(g_fontCurrent, colours, string, px & 15, SIDEBAR_GROUPS - group,
+	    g_fontCurrent->height, s_dst + (top - SIDEBAR_Y) * s_stride + group * 4, s_stride,
+	    NULL, 0) != GLYPH_LINE_UNSUPPORTED;
 }
 
 void GUI_Sidebar_Sprite(const uint8 *sprite, uint16 spriteID, int16 x, int16 y,
@@ -469,24 +245,16 @@ void GUI_Sidebar_Sprite(const uint8 *sprite, uint16 spriteID, int16 x, int16 y,
 		Video_Atari_EncodePlanar(chunky.bytes, entry->data, width, height);
 		s_sprites[spriteID][remapCount] = entry;
 	}
-	if (GUI_Sidebar_FragmentBegin(SIDEBAR_FRAGMENT_SPRITE, "", x, y,
-	    entry->width, entry->height, spriteID * 3 + remapCount, NULL)) return;
 	groups = entry->width >> 4;
 	words = groups * entry->height;
 	masks = entry->data + words * 4;
 	pixels = entry->data;
 	height = entry->height;
 	assert(x >= SIDEBAR_X && y >= SIDEBAR_Y && y + entry->height <= SIDEBAR_Y + SIDEBAR_HEIGHT);
-	if (localY > s_clipBottom || localX > s_clipRight) {
-		GUI_Sidebar_FragmentEnd();
-		return;
-	}
+	if (localY > s_clipBottom || localX > s_clipRight) return;
 	if (localY < s_clipTop) {
 		uint16 skip = s_clipTop - localY;
-		if (skip >= height) {
-			GUI_Sidebar_FragmentEnd();
-			return;
-		}
+		if (skip >= height) return;
 		pixels += skip * groups * 4;
 		masks += skip * groups;
 		height -= skip;
@@ -503,18 +271,6 @@ void GUI_Sidebar_Sprite(const uint8 *sprite, uint16 spriteID, int16 x, int16 y,
 		}
 		masks = clipped;
 	}
-	Video_Atari_ComposePlanarSprite(s_pixels, s_masks, SIDEBAR_WIDTH, SIDEBAR_HEIGHT,
-	    pixels, masks, entry->width, height, localX, localY);
-	if (s_captureDepth != 0) {
-		uint16 row, group, shift = localX & 15;
-		for (row = 0; row < height; row++) {
-			for (group = 0; group < groups; group++) {
-				uint16 dstGroup = (localX >> 4) + group, mask = masks[row * groups + group];
-				if (dstGroup < SIDEBAR_GROUPS) GUI_Sidebar_Record(localY + row, dstGroup, mask >> shift);
-				if (shift != 0 && dstGroup + 1 < SIDEBAR_GROUPS)
-					GUI_Sidebar_Record(localY + row, dstGroup + 1, mask << (16 - shift));
-			}
-		}
-		GUI_Sidebar_FragmentEnd();
-	}
+	Video_Atari_BlitPlanarSprite(s_dst + localY * s_stride, s_stride, SIDEBAR_GROUPS,
+	    pixels, masks, entry->width, height, localX);
 }

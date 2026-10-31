@@ -24,7 +24,6 @@ class SidebarPlanarTest(unittest.TestCase):
             ("GUI_Sidebar_Char", "sidebarChars"),
             ("GUI_Sidebar_Fill", "sidebarFills"),
             ("GUI_Sidebar_Sprite", "sidebarSprites"),
-            ("GUI_Sidebar_FragmentEnd", "fragmentBuilds"),
         ):
             body = function(sidebar, name)
             sidebar = sidebar.replace(body, body.replace("{", "{\n" + counter + "++;", 1))
@@ -33,19 +32,19 @@ class SidebarPlanarTest(unittest.TestCase):
             function(source, name)
             for source, names in (
                 (font, ("Font_Select", "Font_GetCharWidth", "Font_GetStringWidth")),
-                (gui, ("GUI_InitColors", "GUI_DrawChar", "GUI_DrawText",
-                       "GUI_DrawText_Wrapper", "GUI_Sidebar_ButtonBegin", "GUI_DrawFilledRectangle",
+                (gui, ("GUI_InitColors", "GUI_RenderGlyph", "GUI_DrawChar", "GUI_DrawText",
+                       "GUI_DrawText_Wrapper", "GUI_DrawFilledRectangle",
                        "GUI_DrawWiredRectangle", "GUI_DrawBorder", "GUI_DrawProgressbar",
                        "GUI_UpdateProductionStringID")),
                 (widget, ("GUI_Widget_GetNext", "GUI_Widget_Get_ByIndex",
                           "GUI_Widget_MakeInvisible", "GUI_Widget_MakeVisible",
                           "GUI_Widget_Draw", "GUI_Widget_MakeSelected",
                           "GUI_Widget_MakeNormal")),
-                (video, ("Video_Atari_ComposePlanarSprite",)),
+                (video, ("Video_Atari_BlitPlanarSprite",)),
             )
             for name in names
         )
-        compose = function(video, "Video_Atari_ComposePlanarSprite")
+        compose = function(video, "Video_Atari_BlitPlanarSprite")
         functions = functions.replace(compose, compose.replace("{", "{\nsidebarCompositions++;", 1))
         harness = r"""
 #include <assert.h>
@@ -57,6 +56,7 @@ class SidebarPlanarTest(unittest.TestCase):
 #include "gui/gui.h"
 #include "gui/widget.h"
 #include "gui/sidebar.h"
+#include "gui/glyph.h"
 #include "video/video.h"
 #include "gui/font.h"
 #include "unit.h"
@@ -70,12 +70,14 @@ class SidebarPlanarTest(unittest.TestCase):
 #include "pool/house.h"
 #include "os/math.h"
 #include "os/common.h"
+/* The m68k helper assumes 4-byte longs. */
+#define Memory_Equal16(a, b, bytes) (memcmp((a), (b), (bytes)) == 0)
 #include "os/endian.h"
 
 static bool direct;
 static uint16 generation;
-static unsigned encodes, publications, publishedBytes, copies, hides, shows, widgetDraws[12];
-static unsigned sidebarChars, sidebarFills, sidebarSprites, fragmentBuilds, sidebarCompositions;
+static unsigned encodes, liveEnds, copies, hides, shows, widgetDraws[12];
+static unsigned sidebarChars, sidebarFills, sidebarSprites, sidebarCompositions;
 static uint16 display[320 * 200 / 4], reference[320 * 200 / 4];
 static uint8 screens[2][320 * 200], mapping[256], remapping[256];
 static uint8 assetData[355][5 + 32 * 24], *assets[355];
@@ -85,9 +87,16 @@ uint8 g_remap[256];
 uint8 Sprite_GetWidth(uint8 *sprite) { return sprite[3]; }
 static uint8 fontData[256][36];
 static FontChar chars[256];
-static Font font6 = {8, 6, 255, chars};
+static Font font6 = {8, 6, 255, chars, NULL};
 Font *g_fontCurrent = &font6, *g_fontNew6p = &font6, *g_fontNew8p = &font6;
 int8 g_fontCharOffset;
+static uint16 *s_planarTarget;
+static uint16 s_planarGroups;
+static bool s_planarLineDone;
+static bool GUI_DrawTextPlanarCached(const char *s, int16 l, int16 t) { (void)s; (void)l; (void)t; return false; }
+static bool GUI_PlanarTarget_Line(const char *s, uint16 l, uint16 t) { (void)s; (void)l; (void)t; return false; }
+static uint16 GUI_PlanarTarget_Text(const char *s, uint16 l, uint16 t) { (void)s; (void)l; (void)t; return 0xFFFF; }
+static void GUI_PlanarTarget_Chunky(const FontChar *f, uint16 l, uint16 t) { (void)f; (void)l; (void)t; }
 static uint8 g_colours[16];
 static uint16 s_colourBorderSchema[5][4] = {
     {26,29,29,29}, {20,26,16,20}, {20,16,26,20}, {233,235,232,233}, {233,232,235,233}
@@ -160,6 +169,7 @@ uint16 Widget_SetCurrentWidget(uint16 index) {
     return old;
 }
 House *House_Get_ByIndex(uint8 index) { assert(index <= 1); return &house; }
+#undef Unit_Get_ByIndex
 Unit *Unit_Get_ByIndex(uint16 index) { assert(index == 1); return &linked; }
 uint8 Unit_GetHouseID(Unit *u) { return u->deviated ? 1 : u->o.houseID; }
 Structure *Structure_Get_ByPackedTile(uint16 packed) {
@@ -265,12 +275,12 @@ void Video_Atari_EncodePlanar(const uint8 *src,uint16 *dst,uint16 w,uint16 h) {
         for(unsigned p=0;p<4;p++) if(mapping[src[y*w+x]]&(1<<p))
             dst[y*(w/4)+(x/16)*4+p]|=0x8000u>>(x&15);
 }
-bool Video_Atari_PresentRestoreStrided(int16 x,int16 y,uint16 w,uint16 h,const uint8 *src,uint16 stride) {
-    assert(x >= 256 && x+w <= 320 && y >= 42 && y+h <= 124 && stride == 32);
-    publications++; publishedBytes += w*h/2;
-    for(unsigned row=0;row<h;row++)
-        memcpy(display+(y+row)*80+(x/16)*4,src+row*stride,w/2);
-    return true;
+uint16 *Video_Atari_LiveBegin(uint16 x,uint16 y,uint16 w,uint16 h) {
+    assert(x >= 256 && x+w <= 320 && y >= 42 && y+h <= 124 && (x & 15) == 0);
+    return display+y*80+(x/16)*4;
+}
+void Video_Atari_LiveEnd(uint16 x,uint16 y,uint16 w,uint16 h) {
+    (void)x;(void)y;(void)w;(void)h; liveEnds++;
 }
 static void Video_Atari_PlanarMergePlain(uint16 *dst, uint16 mask, const uint16 src[4]) {
     for(unsigned p=0;p<4;p++) dst[p]=(dst[p]&~mask)|(src[p]&mask);
@@ -280,6 +290,7 @@ void GUI_DrawXorFilledRectangle(int16 l,int16 t,int16 r,int16 b,uint8 c) { (void
 void GUI_DrawBlockedRectangle(int16 l,int16 t,int16 w,int16 h,uint8 c) { (void)l;(void)t;(void)w;(void)h;(void)c; abort(); }
 static void GUI_Widget_DrawBlocked(Widget *w,uint8 c) { (void)w;(void)c; abort(); }
 /* PRODUCTION */
+/* GLYPH */
 /* SIDEBAR */
 #include "gui/widget_draw.c"
 
@@ -317,20 +328,13 @@ static void check_panel(void) {
     for(unsigned i=0;i<9;i++)
         if(!widgets[i].flags.invisible) assert(widgetDraws[widgets[i].index]==1);
     for(unsigned i=0;i<sizeof(screens);i++) assert(((uint8*)screens)[i]==0xa5);
-    unsigned p=publications, e=encodes;
+    unsigned p=liveEnds, e=encodes;
     GUI_Widget_ActionPanel_Draw(false);
-    assert(publications==p && encodes==e);
-    unsigned charsBefore=sidebarChars, fillsBefore=sidebarFills;
-    unsigned spritesBefore=sidebarSprites, buildsBefore=fragmentBuilds;
-    unsigned compositionsBefore=sidebarCompositions;
+    assert(liveEnds==p && encodes==e);
     GUI_Widget_ActionPanel_Draw(true);
-    assert(publications>p && encodes==e && !memcmp(display,reference,sizeof(display)));
-    assert(sidebarChars==charsBefore && fragmentBuilds==buildsBefore);
-    assert(sidebarCompositions==compositionsBefore);
-    if(g_selectionType==SELECTIONTYPE_TARGET && !g_unitHouseMissile) {
-        assert(sidebarFills==fillsBefore && sidebarSprites==spritesBefore);
+    assert(liveEnds>p && encodes==e && !memcmp(display,reference,sizeof(display)));
+    if(g_selectionType==SELECTIONTYPE_TARGET && !g_unitHouseMissile)
         assert(!widgets[4].flags.invisible && widgets[4].shortcut);
-    }
 }
 static void check_hover(unsigned i,unsigned down) {
     direct=false; setup_widgets(); g_screenActiveID=SCREEN_0; GUI_Widget_ActionPanel_Draw(true);
@@ -352,12 +356,9 @@ static void check_hover(unsigned i,unsigned down) {
             }
     }
     assert(copies==c && !memcmp(reference,display,sizeof(display)) && widgets[i].shortcut==shortcut);
-    unsigned charsBefore=sidebarChars, fillsBefore=sidebarFills, buildsBefore=fragmentBuilds;
     widgets[i].shortcut=0;
     GUI_Widget_Draw(&widgets[i]);
     assert(!memcmp(reference,display,sizeof(display)) && widgets[i].shortcut==shortcut);
-    assert(sidebarChars==charsBefore && fragmentBuilds==buildsBefore);
-    if(i!=2) assert(sidebarFills==fillsBefore);
     assert(g_fontCurrent==fontAfter && g_fontCharOffset==spacingAfter);
     assert(!memcmp(g_colours,coloursAfter,sizeof(coloursAfter)));
 }
@@ -398,12 +399,13 @@ int main(void) {
     g_map[0].isUnveiled=true;
     unit.o.type=UNIT_TANK; unit.o.hitpoints=75; unit.actionID=ACTION_MOVE;
     unit.nextActionID=ACTION_INVALID; g_unitSelected=&unit;
+    GUI_Glyph_FontBuild(&font6);
     check_panel();
-    unsigned p=publications;
+    unsigned p=liveEnds;
     unit.o.hitpoints=76; GUI_Widget_ActionPanel_Draw(false);
-    assert(publications==p); /* Same 18-pixel health bar. */
+    assert(liveEnds==p); /* Same 18-pixel health bar. */
     unit.nextActionID=ACTION_ATTACK; GUI_Widget_ActionPanel_Draw(false);
-    assert(publications>p);
+    assert(liveEnds>p);
     for(unsigned a=0;a<3;a++) {
         g_selectionType=SELECTIONTYPE_TARGET;
         g_activeAction=a==0?ACTION_ATTACK:a==1?ACTION_MOVE:ACTION_HARVEST;
@@ -412,14 +414,10 @@ int main(void) {
         Widget *cancel=&widgets[4];
         cancel->state.hover2=true; unsigned c=copies; GUI_Widget_Draw(cancel);
         assert(copies==c);
-        uint16 pressed[SIDEBAR_HEIGHT*SIDEBAR_WORDS];
-        memcpy(pressed,s_pixels,sizeof(pressed));
+        static uint16 pressed[sizeof(display)/sizeof(*display)];
+        memcpy(pressed,display,sizeof(pressed));
         GUI_Widget_ActionPanel_Draw(true);
-        assert(!memcmp(pressed,s_pixels,sizeof(pressed)) && !cancel->flags.invisible);
-        unsigned charsBefore=sidebarChars, fillsBefore=sidebarFills, spritesBefore=sidebarSprites;
-        GUI_Widget_ActionPanel_Draw(true);
-        assert(sidebarChars==charsBefore && sidebarFills==fillsBefore && sidebarSprites==spritesBefore);
-        assert(!memcmp(pressed,s_pixels,sizeof(pressed)));
+        assert(!memcmp(pressed,display,sizeof(pressed)) && !cancel->flags.invisible);
         cancel->state.hover2=false; GUI_Widget_Draw(cancel);
         assert(!memcmp(reference,display,sizeof(display)));
     }
@@ -438,13 +436,12 @@ int main(void) {
         structure.o.type=factories[f]; structure.objectType=f?STRUCTURE_WINDTRAP:UNIT_TANK;
         g_table_structureInfo[factories[f]].o.flags.factory=true;
         structure.countDown=50*256; check_panel();
-        p=publications; unsigned e=encodes;
+        p=liveEnds; unsigned e=encodes;
         structure.countDown--; GUI_Widget_ActionPanel_Draw(false);
-        assert(publications==p && encodes==e);
+        assert(liveEnds==p && encodes==e);
         structure.countDown-=3*256;
-        unsigned bytes=publishedBytes;
         GUI_Widget_ActionPanel_Draw(false);
-        assert(publications>p && publishedBytes-bytes<64*82/2);
+        assert(liveEnds>p);
         check_panel();
         structure.o.flags.s.onHold=true; check_panel();
         structure.o.flags.s.onHold=false; structure.countDown=0; check_panel();
@@ -454,13 +451,13 @@ int main(void) {
         for(unsigned i=1;i<4;i++) for(unsigned down=0;down<2;down++) check_hover(i,down);
     }
     structure.o.type=STRUCTURE_OUTPOST; check_panel();
-    p=publications; house.unitCountAllied++; GUI_Widget_ActionPanel_Draw(false); assert(publications>p);
+    p=liveEnds; house.unitCountAllied++; GUI_Widget_ActionPanel_Draw(false); assert(liveEnds>p);
     structure.o.type=STRUCTURE_WINDTRAP; check_panel();
-    p=publications; house.powerUsage+=10; GUI_Widget_ActionPanel_Draw(false); assert(publications>p);
+    p=liveEnds; house.powerUsage+=10; GUI_Widget_ActionPanel_Draw(false); assert(liveEnds>p);
     structure.o.type=STRUCTURE_SILO; check_panel();
-    p=publications; house.credits++; GUI_Widget_ActionPanel_Draw(false); assert(publications>p);
+    p=liveEnds; house.credits++; GUI_Widget_ActionPanel_Draw(false); assert(liveEnds>p);
     structure.o.type=STRUCTURE_STARPORT; check_panel();
-    p=publications; house.starportLinkedID=0xffff; GUI_Widget_ActionPanel_Draw(false); assert(publications>p);
+    p=liveEnds; house.starportLinkedID=0xffff; GUI_Widget_ActionPanel_Draw(false); assert(liveEnds>p);
     structure.o.type=STRUCTURE_WINDTRAP; structure.o.hitpoints=100; upgradable=true;
     structure.upgradeTimeLeft=0; check_panel(); assert(structure.upgradeTimeLeft==100 && upgradedChecks);
     structure.o.flags.s.repairing=true; structure.o.hitpoints=10; check_panel();
@@ -497,14 +494,14 @@ int main(void) {
     generation++; mapping[29]^=1; check_panel();
     g_selectionType=SELECTIONTYPE_UNIT; check_panel();
     /* Even an unchanged key must republish after interface or mapping replacement. */
-    GUI_Sidebar_Invalidate(); p=publications;
-    GUI_Widget_ActionPanel_Draw(false); assert(publications>p);
-    generation++; mapping[29]^=1; p=publications;
+    GUI_Sidebar_Invalidate(); p=liveEnds;
+    GUI_Widget_ActionPanel_Draw(false); assert(liveEnds>p);
+    generation++; mapping[29]^=1; p=liveEnds;
     unsigned beforeCopies=copies;
     widgets[5].state.hover2=true;
     GUI_Widget_Draw(&widgets[5]);
     assert(!GUI_Sidebar_Valid() && copies==beforeCopies);
-    GUI_Widget_ActionPanel_Draw(false); assert(publications>p);
+    GUI_Widget_ActionPanel_Draw(false); assert(liveEnds>p);
     assert(GUI_Sidebar_Valid());
     /* Clipping, both edge groups, transparency and an opaque pen-zero glyph. */
     uint8 colours[16]={0}; colours[1]=11; colours[2]=6; colours[3]=29; colours[4]=15;
@@ -525,7 +522,7 @@ int main(void) {
         GUI_Sidebar_End();
         for(unsigned y=42;y<124;y++) assert(!memcmp(display+y*80+64,reference+y*80+64,32));
     }
-    /* Cached labels replay writes even when their first pixels matched the background. */
+    /* Whole-string labels against the legacy renderer over equal and different backgrounds. */
     GUI_Sidebar_Free();
     for(unsigned pass=0;pass<3;pass++) {
         uint8 background=pass==0?11:20;
@@ -540,24 +537,10 @@ int main(void) {
         direct=true; GUI_Sidebar_Begin(false);
         GUI_Sidebar_Fill(256,42,319,123,background);
         GUI_InitColors(labelColours,0,15);
-        unsigned charsBefore=sidebarChars;
         GUI_DrawText("AB",260,50,11,0);
-        if(pass==1) assert(sidebarChars==charsBefore);
-        else assert(sidebarChars>charsBefore);
         GUI_Sidebar_End();
         assert(!memcmp(display,reference,sizeof(display)));
     }
-    /* Eviction stays bounded and never substitutes a different text/style/position. */
-    for(unsigned i=0;i<180;i++) {
-        char text[32]; snprintf(text,sizeof(text),"Label %u",i);
-        GUI_Sidebar_Begin(false);
-        GUI_DrawText(text,258,51,29,0);
-        GUI_Sidebar_End();
-    }
-    unsigned resident=0;
-    for(unsigned set=0;set<SIDEBAR_FRAGMENT_SETS;set++)
-        for(unsigned way=0;way<SIDEBAR_FRAGMENT_WAYS;way++) resident+=s_fragments[set][way]!=NULL;
-    assert(resident<=128 && resident>0);
     GUI_Sidebar_Free();
     assert(!GUI_Sidebar_Valid() && hides==shows);
     return 0;
@@ -569,6 +552,9 @@ int main(void) {
             "\n\tif (w == NULL) return;\n\twidgetDraws[w->index]++;\n\n#ifdef TOS\n\tsidebar",
         )
         harness = harness.replace("/* PRODUCTION */", functions)
+        glyph = "\n".join(line for line in (ROOT / "src/gui/glyph.c").read_text().splitlines()
+                          if not line.startswith("#include "))
+        harness = harness.replace("/* GLYPH */", glyph)
         harness = harness.replace("/* SIDEBAR */", sidebar)
         with tempfile.TemporaryDirectory(prefix="sidebar-planar-") as directory:
             source = Path(directory) / "test.c"

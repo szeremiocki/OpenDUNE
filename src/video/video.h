@@ -187,6 +187,14 @@ extern void Video_Atari_ComposePlanarSprite(uint16 *dstPixels, uint16 *dstMasks,
                                           uint16 dstWidth, uint16 dstHeight,
                                           const uint16 *pixels, const uint16 *masks,
                                           uint16 width, uint16 height, uint16 x, uint16 y);
+extern void Video_Atari_BlitPlanarSprite(uint16 *dst, uint16 dstStride, uint16 dstGroups,
+                                         const uint16 *pixels, const uint16 *masks,
+                                         uint16 width, uint16 height, uint16 x);
+/* Live planar screen, row stride in words. Begin restores a cursor drawn over the rectangle and
+ * returns the group containing x at row y; End drops the c2p dirty state of the rectangle. */
+#define VIDEO_ATARI_LIVE_STRIDE 80
+extern uint16 *Video_Atari_LiveBegin(uint16 x, uint16 y, uint16 width, uint16 height);
+extern void Video_Atari_LiveEnd(uint16 x, uint16 y, uint16 width, uint16 height);
 /* Prealigned/flipped frames or layered units, up to 80x64; width and X
  * are multiples of 16. Clipping preserves cursor/placement backgrounds. */
 extern void Video_Atari_PresentPlanarSprite(const uint16 *pixels, const uint16 *masks,
