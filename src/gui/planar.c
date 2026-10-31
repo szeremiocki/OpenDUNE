@@ -38,7 +38,8 @@ void Planar_DrawBorder(uint16 *dst, uint16 stride, uint16 x, uint16 width, uint1
 	const long strideBytes = (long)stride * 2;
 	uint16 x1 = x + width - 1, g0 = x >> 4, g1 = x1 >> 4, group, count = g1 - g0 + 1;
 
-	for (group = g0; group <= g1; group++) {
+		/* Only the first and last group mix in the sampled margin; groups between them are pure pen fills. */
+	for (group = g0; group <= g1; group += g1 > g0 ? g1 - g0 : 1) {
 		const uint16 *base = dst + stride + group * 4;
 		uint16 a = x > group * 16 ? x - group * 16 : 0;
 		uint16 b = x1 < group * 16 + 15 ? x1 - group * 16 : 15;
@@ -60,6 +61,19 @@ void Planar_DrawBorder(uint16 *dst, uint16 stride, uint16 x, uint16 width, uint1
 		masks[0] = span & ~edgeL; masks[1] = edgeL; masks[2] = 0;
 		classPens[0] = pens[1]; classPens[1] = pens[3]; classPens[2] = 0;
 		Planar_Word(pattern[2][group - g0], base, span, masks, classPens);
+	}
+	if (count > 2) {
+		const uint8 midPens[3] = { pens[2], pens[0], pens[1] };
+		uint16 type, plane;
+
+		for (type = 0; type < 3; type++) {
+			uint16 word[4];
+			for (plane = 0; plane < 4; plane++) word[plane] = (uint16)-(int16)((midPens[type] >> plane) & 1);
+			for (group = 1; group < count - 1; group++) {
+				uint16 *out = pattern[type][group];
+				out[0] = word[0]; out[1] = word[1]; out[2] = word[2]; out[3] = word[3];
+			}
+		}
 	}
 	dst += g0 * 4;
 	Planar_FillRows(dst, pattern[0][0], strideBytes, 1, count);

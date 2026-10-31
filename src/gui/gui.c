@@ -929,6 +929,10 @@ void GUI_DrawText(const char *string, int16 left, int16 top, uint8 fgColour, uin
 #ifdef TOS
 	if (GUI_Sidebar_Active()) {
 		if (GUI_Sidebar_Text(string, left, top, g_colours)) return;
+		/* Temporary instrumentation: which sidebar texts take the per-glyph path, and why. */
+		Warning("Sidebar text per-char: \"%s\" left=%d top=%d font=%s h=%d%s\n", string, (int)left, (int)top,
+		    g_fontCurrent == NULL ? "none" : "ok", g_fontCurrent == NULL ? 0 : (int)g_fontCurrent->height,
+		    strpbrk(string, "\n\r") != NULL ? " newline" : "");
 	} else if (GUI_DrawTextPlanarCached(string, left, top)) return;
 	if (s_planarTarget != NULL && GUI_PlanarTarget_Line(string, left, top)) return;
 #endif
