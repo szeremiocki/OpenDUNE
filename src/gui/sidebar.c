@@ -8,7 +8,6 @@
 #include "widget.h"
 #include "sidebar.h"
 #include "glyph.h"
-#include "font.h"
 #include "../config.h"
 #include "../os/common.h"
 #include "../os/error.h"
@@ -183,8 +182,8 @@ bool GUI_Sidebar_Text(const char *string, int16 left, int16 top, const uint8 col
 	if (left < SIDEBAR_X || top < SIDEBAR_Y || top + g_fontCurrent->height > SIDEBAR_Y + SIDEBAR_HEIGHT) return false;
 	px = left - SIDEBAR_X;
 	group = px >> 4;
-	/* Strings that may reach the edge need the per-character clip. */
-	if (px + Font_GetStringWidth(string) + g_fontCurrent->maxWidth > SIDEBAR_WIDTH) return false;
+	if (group >= SIDEBAR_GROUPS) return false;
+	/* Glyphs that do not fit before the screen edge are skipped, not clipped. */
 	return GUI_Glyph_Line(g_fontCurrent, colours, string, px & 15, SIDEBAR_GROUPS - group,
 	    g_fontCurrent->height, s_dst + (top - SIDEBAR_Y) * s_stride + group * 4, s_stride,
 	    NULL, 0) != GLYPH_LINE_UNSUPPORTED;

@@ -551,6 +551,10 @@ int main(void) {
             "\n\tif (w == NULL) return;\n\n#ifdef TOS\n\tsidebar",
             "\n\tif (w == NULL) return;\n\twidgetDraws[w->index]++;\n\n#ifdef TOS\n\tsidebar",
         )
+        # The sidebar skips glyphs past the screen edge instead of wrapping the string.
+        wrap = "\t\tif (x + width > SCREEN_WIDTH) {\n\t\t\tx = left;\n\t\t\ty += g_fontCurrent->height;\n\t\t}\n"
+        assert wrap in functions
+        functions = functions.replace(wrap, "\t\tif (x + width > SCREEN_WIDTH) { x += width; s++; continue; }\n")
         harness = harness.replace("/* PRODUCTION */", functions)
         glyph = "\n".join(line for line in (ROOT / "src/gui/glyph.c").read_text().splitlines()
                           if not line.startswith("#include "))
