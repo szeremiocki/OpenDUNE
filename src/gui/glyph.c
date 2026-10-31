@@ -74,6 +74,47 @@ bool GUI_Glyph_Usable(const Font *font)
 	return font != NULL && font->planar != NULL;
 }
 
+/* The common case: one visible pixel value. Each row costs one shift and a set or clear per
+ * plane word; `pen` is a constant in every expansion, so the plane tests fold away. */
+static inline __attribute__((always_inline)) void GUI_Glyph_Single(
+	uint16 count, const uint16 *xs, const uint16 *const *glyphs, uint16 off, uint16 rowStart, uint16 rowEnd,
+	uint16 *planes, uint16 planeStride, uint16 *masks, uint16 maskStride, const uint16 pen)
+{
+	uint16 i;
+
+	for (i = 0; i < count; i++) {
+		const uint16 px = xs[i], sh = 16 - (px & 15);
+		const uint16 *src = glyphs[i] + off;
+		uint16 *dst = planes + rowStart * planeStride + (px >> 4) * 4;
+		uint16 *mdst = masks != NULL ? masks + rowStart * maskStride + (px >> 4) : NULL;
+		uint16 row;
+
+		for (row = rowStart; row < rowEnd; row++, src++, dst += planeStride) {
+			uint32 v;
+			uint16 hi, lo;
+
+			if (*src == 0) continue;
+			v = (uint32)*src << sh;
+			hi = (uint16)(v >> 16);
+			lo = (uint16)v;
+			if (pen & 1) dst[0] |= hi; else dst[0] &= ~hi;
+			if (pen & 2) dst[1] |= hi; else dst[1] &= ~hi;
+			if (pen & 4) dst[2] |= hi; else dst[2] &= ~hi;
+			if (pen & 8) dst[3] |= hi; else dst[3] &= ~hi;
+			if (lo != 0) {
+				if (pen & 1) dst[4] |= lo; else dst[4] &= ~lo;
+				if (pen & 2) dst[5] |= lo; else dst[5] &= ~lo;
+				if (pen & 4) dst[6] |= lo; else dst[6] &= ~lo;
+				if (pen & 8) dst[7] |= lo; else dst[7] &= ~lo;
+			}
+			if (mdst != NULL) {
+				mdst[(row - rowStart) * maskStride] |= hi;
+				if (lo != 0) mdst[(row - rowStart) * maskStride + 1] |= lo;
+			}
+		}
+	}
+}
+
 uint16 GUI_Glyph_Line(const Font *font, const uint8 colours[16], const char *string, uint16 phase,
                       uint16 maxGroups, uint16 rows, uint16 *planes, uint16 planeStride,
                       uint16 *masks, uint16 maskStride)
@@ -114,6 +155,16 @@ uint16 GUI_Glyph_Line(const Font *font, const uint8 colours[16], const char *str
 	rowStart = gf->firstRow;
 	rowEnd = gf->firstRow + spanRows < rows ? gf->firstRow + spanRows : rows;
 	if (listed == 0 || rowStart >= rowEnd) return groups;
+
+	if (listed == 1) {
+#define SINGLE(n) case n: GUI_Glyph_Single(count, s_x, s_mask, off[0], rowStart, rowEnd, planes, planeStride, masks, maskStride, n); break
+		switch (bits[0] & 15) {
+		SINGLE(0); SINGLE(1); SINGLE(2); SINGLE(3); SINGLE(4); SINGLE(5); SINGLE(6); SINGLE(7);
+		SINGLE(8); SINGLE(9); SINGLE(10); SINGLE(11); SINGLE(12); SINGLE(13); SINGLE(14); SINGLE(15);
+		}
+#undef SINGLE
+		return groups;
+	}
 
 	/* Glyph by glyph; a later glyph overwrites the pixels it draws and leaves the rest. */
 	for (i = 0; i < count; i++) {
