@@ -13,27 +13,25 @@
 ;   top:      (span & ~edgeR) pen2, edgeR pen3
 ;   interior: (span & ~(edgeL | edgeR)) pen0, edgeL pen2, edgeR pen1
 ;   bottom:   (span & ~edgeL) pen1, edgeL pen3
-; Only the left and right groups sample the margin (the second row of the target); the middle
-; groups are the plain pen words. For each row type the left, middle and right words are held in
-; registers and written straight to the screen, nothing is read after the margin sample.
+; Each row type samples its own first row (the margin repeats vertically over the rectangle), builds
+; the left and right groups in registers (the middle groups are the plain pen words) and writes the
+; rows straight to the screen, one MOVEM per row for up to four groups.
 ; Two planes are processed per longword: masks are replicated into both halves and pens expand
 ; through a table of plane words. Word alignment of dst is all the 68000 needs.
 
-v_xl	equ	-8		; left margin words outside the span (2 longs)
-v_xr	equ	-16		; right margin words outside the span
-v_sl	equ	-20		; left group span, replicated in both halves
-v_ell	equ	-24		; left group left edge
-v_erl	equ	-28		; left group right edge (only when the rectangle has one group)
-v_sr	equ	-32		; right group span
-v_err	equ	-36		; right group right edge
-v_p0	equ	-40		; plane words of pens[0..3]
-v_p1	equ	-44
-v_p2	equ	-48
-v_p3	equ	-52
-v_count	equ	-56		; groups
-v_first	equ	-60		; dst + first group
-v_strideb	equ	-64		; stride in bytes
-v_lres	equ	-72		; left group result (2 longs)
+v_sl	equ	-4		; left group span, replicated in both halves
+v_ell	equ	-8		; left group left edge
+v_erl	equ	-12		; left group right edge (only when the rectangle has one group)
+v_sr	equ	-16		; right group span
+v_err	equ	-20		; right group right edge
+v_p0	equ	-24		; plane words of pens[0..3]
+v_p1	equ	-28
+v_p2	equ	-32
+v_p3	equ	-36
+v_count	equ	-40		; groups
+v_first	equ	-44		; dst + first group
+v_strideb	equ	-48		; stride in bytes
+v_roff	equ	-52		; byte offset of the right group
 
 REP	macro			; \1 = low word replicated into both halves, stored at \3(a6); \2 scratch
 	move.w	\1,\2
@@ -51,8 +49,26 @@ PEN	macro			; address of the plane words of pens[\1] stored at \2(a6)
 	move.l	a2,\2(a6)
 	endm
 
+MARGIN	macro			; d\3:d\4 = the two margin longs at (\1) outside the span \2(a6); d7 scratch
+	move.l	\2(a6),d7
+	not.l	d7
+	move.l	(\1),\3
+	and.l	d7,\3
+	move.l	4(\1),\4
+	and.l	d7,\4
+	endm
+
+TERM	macro			; \3:\4 |= \2 & the plane words at (\1); d6 scratch
+	move.l	\2,d6
+	and.l	(\1),d6
+	or.l	d6,\3
+	move.l	\2,d6
+	and.l	4(\1),d6
+	or.l	d6,\4
+	endm
+
 _Planar_DrawBorder:
-	link	a6,#-72
+	link	a6,#-52
 	movem.l	d2-d7/a2-a5,-(sp)
 	moveq	#0,d0
 	move.w	14(a6),d0
@@ -106,139 +122,98 @@ _Planar_DrawBorder:
 	REP	d1,d5,v_ell
 	REP	d2,d5,v_erl
 
-	move.l	v_first(a6),a0
-	add.l	v_strideb(a6),a0		; margin row
-	move.l	v_sl(a6),d1
-	not.l	d1
-	move.l	(a0),d4
-	and.l	d1,d4
-	move.l	d4,v_xl(a6)
-	move.l	4(a0),d4
-	and.l	d1,d4
-	move.l	d4,v_xl+4(a6)
-	cmp.l	#1,v_count(a6)
-	beq.s	.pens
 	move.l	v_count(a6),d0
 	subq.l	#1,d0
 	lsl.l	#3,d0
-	add.l	d0,a0
-	move.l	v_sr(a6),d1
-	not.l	d1
-	move.l	(a0),d4
-	and.l	d1,d4
-	move.l	d4,v_xr(a6)
-	move.l	4(a0),d4
-	and.l	d1,d4
-	move.l	d4,v_xr+4(a6)
-
-.pens:	move.l	28(a6),a1
+	move.l	d0,v_roff(a6)
+	move.l	28(a6),a1
 	PEN	0,v_p0
 	PEN	1,v_p1
 	PEN	2,v_p2
 	PEN	3,v_p3
 
-	; ---- top row
-	move.l	v_sl(a6),d0
-	move.l	v_erl(a6),d1
-	move.l	d1,d2
-	not.l	d2
-	and.l	d2,d0			; span & ~edgeR in pen2, edgeR in pen3
-	move.l	v_p2(a6),a3
-	move.l	v_p3(a6),a4
-	move.l	a3,a5
-	moveq	#0,d2
-	move.l	v_xl(a6),d4
-	move.l	v_xl+4(a6),d5
-	bsr	.mix
-	move.l	d4,v_lres(a6)
-	move.l	d5,v_lres+4(a6)
-	cmp.l	#1,v_count(a6)
-	beq.s	.topw
-	move.l	v_sr(a6),d0
-	move.l	v_err(a6),d1
-	move.l	d1,d2
-	not.l	d2
-	and.l	d2,d0
-	moveq	#0,d2
-	move.l	v_xr(a6),d4
-	move.l	v_xr+4(a6),d5
-	bsr	.mix
-.topw:	move.l	v_p2(a6),a1
+	; ---- top row: span & ~edgeR in pen2, edgeR in pen3
 	move.l	v_first(a6),a0
+	move.l	v_p2(a6),a2
+	move.l	v_p3(a6),a3
+	MARGIN	a0,v_sl,d0,d1
+	move.l	v_sl(a6),d2
+	move.l	v_erl(a6),d3
+	beq.s	.tl
+	eor.l	d3,d2
+	TERM	a3,d3,d0,d1
+.tl:	TERM	a2,d2,d0,d1
+	cmp.l	#1,v_count(a6)
+	beq.s	.tw
+	move.l	v_roff(a6),d7
+	lea	0(a0,d7.l),a1
+	MARGIN	a1,v_sr,d4,d5
+	move.l	v_sr(a6),d7
+	move.l	v_err(a6),d6
+	eor.l	d6,d7
+	TERM	a2,d7,d4,d5
+	move.l	v_err(a6),d7
+	TERM	a3,d7,d4,d5
+.tw:	move.l	a2,a1
 	moveq	#1,d6
 	bsr	.write
 
-	; ---- interior rows
-	move.l	v_sl(a6),d0
-	move.l	v_ell(a6),d1
-	move.l	v_erl(a6),d2
-	move.l	d1,d3
-	or.l	d2,d3
-	not.l	d3
-	and.l	d3,d0			; span & ~(edgeL | edgeR) in pen0, edgeL pen2, edgeR pen1
-	move.l	v_p0(a6),a3
-	move.l	v_p2(a6),a4
-	move.l	v_p1(a6),a5
-	move.l	v_xl(a6),d4
-	move.l	v_xl+4(a6),d5
-	bsr	.mix
-	move.l	d4,v_lres(a6)
-	move.l	d5,v_lres+4(a6)
-	cmp.l	#1,v_count(a6)
-	beq.s	.intw
-	move.l	v_sr(a6),d0
-	move.l	v_err(a6),d1
-	move.l	d1,d2
-	not.l	d2
-	and.l	d2,d0			; span & ~edgeR in pen0, edgeR in pen1
-	move.l	v_p0(a6),a3
-	move.l	v_p1(a6),a4
-	move.l	a3,a5
-	moveq	#0,d2
-	move.l	v_xr(a6),d4
-	move.l	v_xr+4(a6),d5
-	bsr	.mix
-.intw:	move.l	v_p0(a6),a1
+	; ---- interior rows: span & ~(edgeL | edgeR) in pen0, edgeL in pen2, edgeR in pen1
 	move.l	v_first(a6),a0
 	add.l	v_strideb(a6),a0
+	move.l	v_p0(a6),a2
+	move.l	v_p2(a6),a3
+	move.l	v_p1(a6),a4
+	MARGIN	a0,v_sl,d0,d1
+	move.l	v_sl(a6),d2
+	move.l	v_ell(a6),d3
+	eor.l	d3,d2
+	TERM	a3,d3,d0,d1
+	move.l	v_erl(a6),d3
+	beq.s	.il
+	eor.l	d3,d2
+	TERM	a4,d3,d0,d1
+.il:	TERM	a2,d2,d0,d1
+	cmp.l	#1,v_count(a6)
+	beq.s	.iw
+	move.l	v_roff(a6),d7
+	lea	0(a0,d7.l),a1
+	MARGIN	a1,v_sr,d4,d5
+	move.l	v_sr(a6),d7
+	move.l	v_err(a6),d6
+	eor.l	d6,d7
+	TERM	a2,d7,d4,d5
+	move.l	v_err(a6),d7
+	TERM	a4,d7,d4,d5
+.iw:	move.l	a2,a1
 	moveq	#0,d6
 	move.w	26(a6),d6
 	subq.w	#2,d6
 	bsr	.write
 
-	; ---- bottom row
-	move.l	v_sl(a6),d0
-	move.l	v_ell(a6),d1
-	move.l	d1,d2
-	not.l	d2
-	and.l	d2,d0			; span & ~edgeL in pen1, edgeL in pen3
-	move.l	v_p1(a6),a3
-	move.l	v_p3(a6),a4
-	move.l	a3,a5
-	moveq	#0,d2
-	move.l	v_xl(a6),d4
-	move.l	v_xl+4(a6),d5
-	bsr	.mix
-	move.l	d4,v_lres(a6)
-	move.l	d5,v_lres+4(a6)
-	cmp.l	#1,v_count(a6)
-	beq.s	.botw
-	move.l	v_sr(a6),d0		; right group: the whole span in pen1
-	moveq	#0,d1
-	moveq	#0,d2
-	move.l	v_p1(a6),a3
-	move.l	a3,a4
-	move.l	a3,a5
-	move.l	v_xr(a6),d4
-	move.l	v_xr+4(a6),d5
-	bsr	.mix
-.botw:	move.l	v_p1(a6),a1
+	; ---- bottom row: span & ~edgeL in pen1, edgeL in pen3
 	moveq	#0,d6
 	move.w	26(a6),d6
 	subq.l	#1,d6
 	mulu.w	v_strideb+2(a6),d6	; (height - 1) * stride, both below 64K
 	move.l	v_first(a6),a0
 	add.l	d6,a0
+	move.l	v_p1(a6),a2
+	move.l	v_p3(a6),a3
+	MARGIN	a0,v_sl,d0,d1
+	move.l	v_sl(a6),d2
+	move.l	v_ell(a6),d3
+	eor.l	d3,d2
+	TERM	a3,d3,d0,d1
+	TERM	a2,d2,d0,d1
+	cmp.l	#1,v_count(a6)
+	beq.s	.bw
+	move.l	v_roff(a6),d7
+	lea	0(a0,d7.l),a1
+	MARGIN	a1,v_sr,d4,d5
+	move.l	v_sr(a6),d7
+	TERM	a2,d7,d4,d5
+.bw:	move.l	a2,a1
 	moveq	#1,d6
 	bsr	.write
 
@@ -246,31 +221,8 @@ _Planar_DrawBorder:
 	unlk	a6
 	rts
 
-; d4:d5 |= (d0 & words at (a3)) | (d1 & (a4)) | (d2 & (a5)); clobbers d6.
-.mix:	move.l	d0,d6
-	and.l	(a3),d6
-	or.l	d6,d4
-	move.l	d0,d6
-	and.l	4(a3),d6
-	or.l	d6,d5
-	move.l	d1,d6
-	and.l	(a4),d6
-	or.l	d6,d4
-	move.l	d1,d6
-	and.l	4(a4),d6
-	or.l	d6,d5
-	move.l	d2,d6
-	and.l	(a5),d6
-	or.l	d6,d4
-	move.l	d2,d6
-	and.l	4(a5),d6
-	or.l	d6,d5
-	rts
-
-; Writes d6 rows at a0: left group (v_lres), v_count-2 middle groups (words at (a1)), right group (d4:d5).
-.write:	move.l	v_lres(a6),d0
-	move.l	v_lres+4(a6),d1
-	move.l	v_strideb(a6),a3
+; Writes d6 rows at a0: left group d0:d1, v_count-2 middle groups (plane words at (a1)), right group d4:d5.
+.write:	move.l	v_strideb(a6),a3
 	move.l	v_count(a6),d7
 	subq.w	#1,d6			; rows - 1 for DBRA
 	subq.l	#1,d7
