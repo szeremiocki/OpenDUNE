@@ -279,7 +279,11 @@ _Planar_DrawBorder:
 	beq.s	.w2
 	move.l	(a1),d2
 	move.l	4(a1),d3
-	addq.l	#1,d7
+	subq.l	#1,d7
+	beq.s	.w3
+	subq.l	#1,d7
+	beq.s	.w4
+	addq.l	#3,d7
 	lsl.l	#3,d7			; (count - 1) groups of 8 bytes
 	lea	0(a0,d7.l),a2		; end of the middle groups in the first row
 .wn:	move.l	a0,a1
@@ -295,15 +299,30 @@ _Planar_DrawBorder:
 	add.l	a3,a2
 	dbra	d6,.wn
 	rts
-.w2:	move.l	d0,(a0)
-	move.l	d1,4(a0)
-	move.l	d4,8(a0)
-	move.l	d5,12(a0)
+; up to four groups are one MOVEM per row: left d0-d1, middle d2-d3 (d4-d5), right in the next registers
+.w4:	addq.w	#1,d6
+	mulu.w	v_strideb+2(a6),d6
+	lea	0(a0,d6.l),a2		; end of the rows
+	move.l	d4,d6			; right group
+	move.l	d5,d7
+	move.l	d2,d4			; second middle group
+	move.l	d3,d5
+.w4l:	movem.l	d0-d7,(a0)
 	add.l	a3,a0
-	dbra	d6,.w2
+	cmp.l	a2,a0
+	bne.s	.w4l
 	rts
-.w1:	move.l	d0,(a0)
-	move.l	d1,4(a0)
+.w3:	movem.l	d0-d5,(a0)
+	add.l	a3,a0
+	dbra	d6,.w3
+	rts
+.w2:	move.l	d4,d2
+	move.l	d5,d3
+.w2l:	movem.l	d0-d3,(a0)
+	add.l	a3,a0
+	dbra	d6,.w2l
+	rts
+.w1:	movem.l	d0-d1,(a0)
 	add.l	a3,a0
 	dbra	d6,.w1
 	rts
