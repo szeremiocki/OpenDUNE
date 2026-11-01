@@ -296,8 +296,8 @@ bool GUI_Widget_TextButton_Click(Widget *w)
 	ai = &g_table_actionInfo[action];
 
 #ifdef TOS
-	/* A target panel replaces the buttons at once and a cancel restores the old command; do not flash the new one. */
-	if (ai->selectionType == g_selectionType)
+	/* A key command opens the target panel at once and a cancel restores the old command; do not flash the new one. */
+	if (ai->selectionType == g_selectionType || !w->state.keySelected)
 #endif
 	GUI_Widget_MakeSelected(w, false);
 

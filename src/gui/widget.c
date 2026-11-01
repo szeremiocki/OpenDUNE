@@ -493,8 +493,8 @@ uint16 GUI_Widget_HandleEvents(Widget *w)
 		/* When the state changed, redraw */
 		if (w->state.selected != w->state.selectedLast || w->state.hover1 != w->state.hover1Last) {
 #ifdef TOS
-			/* The target panel is about to replace the buttons; a cancel must find the old command still selected. */
-			if (!(Video_Atari_CursorDirect() && GUI_Widget_TextButton_OpensTarget(w)))
+			/* A key command opens the target panel at once; a cancel must find the old command still selected. Mouse clicks keep their press feedback. */
+			if (!(Video_Atari_CursorDirect() && w->state.keySelected && GUI_Widget_TextButton_OpensTarget(w)))
 #endif
 			GUI_Widget_Draw(w);
 		}
