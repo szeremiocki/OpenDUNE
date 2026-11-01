@@ -962,7 +962,6 @@ void Structure_ActivateSpecial(Structure *s)
 	}
 
 	if (s->o.houseID == g_playerHouseID) {
-		Warning("SBTRACE force caller Structure_ActivateSpecial\n");
 		GUI_Widget_ActionPanel_Draw(true);
 	}
 }

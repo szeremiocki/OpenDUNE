@@ -152,7 +152,7 @@ void GFX_PutPixel(uint16 x, uint16 y, uint8 colour) {
     screens[g_screenActiveID][y * 320 + x] = colour;
 }
 void Error(const char *format, ...) { (void)format; abort(); }
-void Warning(const char *format, ...) { if (strncmp(format, "SBTRACE", 7) != 0) abort(); }
+void Warning(const char *format, ...) { (void)format; abort(); }
 void GUI_Mouse_Hide_InRegion(uint16 l, uint16 t, uint16 r, uint16 b) {
     (void)l; (void)t; (void)r; (void)b; hides++;
 }

@@ -160,7 +160,6 @@ void GUI_Widget_Draw(Widget *w)
 
 #ifdef TOS
 	sidebar = GUI_Sidebar_WidgetBegin(w);
-	SIDEBAR_TRACE("Widget_Draw %u\n", (unsigned)w->index);
 #endif
 	if (w->flags.invisible) {
 		if (w->flags.greyWhenInvisible) GUI_Widget_DrawBlocked(w, 12);

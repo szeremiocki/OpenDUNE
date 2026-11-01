@@ -679,7 +679,6 @@ static uint16 GUI_Widget_ActionPanel_GetPlanarActionType(bool forceDraw)
  */
 void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 {
-	SIDEBAR_TRACE("ActionPanel_Draw force=%d\n", (int)forceDraw);
 	const StructureInfo *si;
 	const ObjectInfo *oi;
 	const UnitInfo *ui;
@@ -709,7 +708,6 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 
 	actionType = GUI_Widget_ActionPanel_GetActionType(forceDraw);
 #ifdef TOS
-	if (actionType != 0) SIDEBAR_TRACE("  panel type=%u sel=%u unit=%d only=%d\n", (unsigned)actionType, (unsigned)g_selectionType, g_unitSelected != NULL ? (int)g_unitSelected->o.index : -1, (int)s_planarActionOnly);
 #endif
 
 	switch (actionType) {

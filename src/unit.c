@@ -1920,7 +1920,6 @@ void Unit_Select(Unit *unit)
 
 		g_unitSelected = unit;
 
-		Warning("SBTRACE force caller Unit_Select\n");
 		GUI_Widget_ActionPanel_Draw(true);
 	} else {
 		Unit_DisplayStatusText(unit);
