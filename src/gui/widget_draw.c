@@ -558,6 +558,9 @@ typedef struct SidebarVisibleState {
 	uint16 value1, value2, value3;
 } SidebarVisibleState;
 
+/* Set when the unit's command is the only thing that changed since the last panel draw. */
+static bool s_planarActionOnly;
+
 static uint16 GUI_Widget_ActionPanel_GetPlanarActionType(bool forceDraw)
 {
 	static SidebarVisibleState displayed;
@@ -653,7 +656,16 @@ static uint16 GUI_Widget_ActionPanel_GetPlanarActionType(bool forceDraw)
 				break;
 		}
 	}
-	if (!forceDraw && GUI_Sidebar_Valid() && Memory_Equal16(&state, &displayed, sizeof(state))) return 0;
+	s_planarActionOnly = false;
+	if (!forceDraw && GUI_Sidebar_Valid()) {
+		if (Memory_Equal16(&state, &displayed, sizeof(state))) return 0;
+		if (state.actionType == 2 && displayed.actionType == 2 && state.action != displayed.action) {
+			SidebarVisibleState same = state;
+
+			same.action = displayed.action;
+			s_planarActionOnly = Memory_Equal16(&same, &displayed, sizeof(state));
+		}
+	}
 	displayed = state;
 	return state.actionType;
 }
@@ -755,6 +767,30 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 			break;
 
 	}
+
+#ifdef TOS
+	if (native && actionType == 2 && s_planarActionOnly) {
+		const uint16 *actions = oi->actionsPlayer;
+		const uint16 actionCurrent = (u->nextActionID != ACTION_INVALID) ? u->nextActionID : u->actionID;
+		int i;
+
+		if (isNotPlayerOwned && o->type != UNIT_HARVESTER) actions = g_table_actionsAI;
+
+		oldScreenID = GFX_Screen_SetActive(SCREEN_1);
+		GUI_Sidebar_Begin(false);
+		for (i = 0; i < 4; i++) {
+			Widget *button = GUI_Widget_Get_ByIndex(g_widgetLinkedListHead, i + 8);
+			const bool selected = actions[i] == actionCurrent;
+
+			if (button->state.selected == selected) continue;
+			if (selected) GUI_Widget_MakeSelected(button, false);
+			else GUI_Widget_MakeNormal(button, false);
+		}
+		GUI_Sidebar_End();
+		GFX_Screen_SetActive(oldScreenID);
+		return;
+	}
+#endif
 
 	oldScreenID = SCREEN_ACTIVE;
 	oldWidgetID = g_curWidgetIndex;
