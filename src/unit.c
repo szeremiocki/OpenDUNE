@@ -5,6 +5,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "types.h"
+#include "os/error.h"
 #include "os/common.h"
 #include "os/math.h"
 #include "os/strings.h"
@@ -1919,6 +1920,7 @@ void Unit_Select(Unit *unit)
 
 		g_unitSelected = unit;
 
+		Warning("SBTRACE force caller Unit_Select\n");
 		GUI_Widget_ActionPanel_Draw(true);
 	} else {
 		Unit_DisplayStatusText(unit);
