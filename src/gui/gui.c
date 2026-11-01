@@ -4531,7 +4531,12 @@ void GUI_ChangeSelectionType(uint16 selectionType)
 			while (w != NULL) {
 				const int8 *s = g_table_selectionType[selectionType].visibleWidgets;
 				bool wasInvisible = w->flags.invisible;
+#ifdef TOS
+				/* GUI_Widget_DrawAll below repaints everything; drawing here as well would double the work. */
+				bool redrawWidget = !redrawAllWidgets && w->state.selected;
+#else
 				bool redrawWidget = redrawAllWidgets || w->state.selected;
+#endif
 
 				w->state.selected = false;
 				w->flags.invisible = true;
@@ -4543,7 +4548,11 @@ void GUI_ChangeSelectionType(uint16 selectionType)
 					}
 				}
 
+#ifdef TOS
+				if (!redrawAllWidgets && (redrawWidget || wasInvisible != w->flags.invisible)) GUI_Widget_Draw(w);
+#else
 				if (redrawWidget || wasInvisible != w->flags.invisible) GUI_Widget_Draw(w);
+#endif
 				w = GUI_Widget_GetNext(w);
 			}
 
