@@ -258,6 +258,7 @@ extern bool GUI_Widget_Scrollbar_ArrowUp_Click(Widget *w);
 extern bool GUI_Widget_Scrollbar_ArrowDown_Click(Widget *w);
 extern bool GUI_Widget_Scrollbar_Click(Widget *w);
 extern bool GUI_Widget_TextButton_Click(Widget *w);
+extern bool GUI_Widget_TextButton_OpensTarget(const Widget *w);
 extern bool GUI_Widget_Name_Click(Widget *w);
 extern bool GUI_Widget_Cancel_Click(Widget *w);
 extern bool GUI_Widget_Picture_Click(Widget *w);

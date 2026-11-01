@@ -241,6 +241,18 @@ bool GUI_Widget_Scrollbar_Click(Widget *w)
  * @param w The widget.
  * @return True, always.
  */
+/* True when clicking this unit command button switches to the cancellable target panel. */
+bool GUI_Widget_TextButton_OpensTarget(const Widget *w)
+{
+	const Unit *u = g_unitSelected;
+	const uint16 *actions;
+
+	if (u == NULL || w->index < 8 || w->index > 11) return false;
+	actions = g_table_unitInfo[u->o.type].o.actionsPlayer;
+	if (Unit_GetHouseID(u) != g_playerHouseID && u->o.type != UNIT_HARVESTER) actions = g_table_actionsAI;
+	return g_table_actionInfo[actions[w->index - 8]].selectionType != g_selectionType;
+}
+
 bool GUI_Widget_TextButton_Click(Widget *w)
 {
 	const UnitInfo *ui;
