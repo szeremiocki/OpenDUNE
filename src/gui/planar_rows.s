@@ -4,49 +4,37 @@
 
 ; prototype (C ABI; 16-bit arguments sit in the low word of a 4-byte slot):
 ; void Planar_DrawBorder(uint16 *dst, uint16 stride, uint16 x, uint16 width, uint16 height,
-;                        const uint8 pens[4]);
+;                        const uint16 groups[16]);
 ;
 ; See planar.h for the contract. Each row is  left group | middle groups | right group  (one group
 ; when the rectangle fits in a single 16-pixel group). Per plane a group is
-;   (margin & ~span) | the class masks whose pen has the plane bit set
-; with, for the three row types,
-;   top:      (span & ~edgeR) pen2, edgeR pen3
-;   interior: (span & ~(edgeL | edgeR)) pen0, edgeL pen2, edgeR pen1
-;   bottom:   (span & ~edgeL) pen1, edgeL pen3
+;   (margin & ~span) | the class masks anded with that class group's plane word
+; with, for the three row types (fill, bottom/right, top/left, corner),
+;   top:      (span & ~edgeR) top/left, edgeR corner
+;   interior: (span & ~(edgeL | edgeR)) fill, edgeL top/left, edgeR bottom/right
+;   bottom:   (span & ~edgeL) bottom/right, edgeL corner
 ; Each row type samples its own first row (the margin repeats vertically over the rectangle), builds
-; the left and right groups in registers (the middle groups are the plain pen words) and writes the
+; the left and right groups in registers (the middle groups are the plain class group) and writes the
 ; rows straight to the screen, one MOVEM per row for up to four groups.
-; Two planes are processed per longword: masks are replicated into both halves and pens expand
-; through a table of plane words. Word alignment of dst is all the 68000 needs.
+; Two planes are processed per longword: masks are replicated into both halves and anded with the
+; plane words of the class groups (fill 0, bottom/right 8, top/left 16, corner 24 bytes into groups[],
+; kept in a2). Word alignment of dst is all the 68000 needs.
 
 v_sl	equ	-4		; left group span, replicated in both halves
 v_ell	equ	-8		; left group left edge
 v_erl	equ	-12		; left group right edge (only when the rectangle has one group)
 v_sr	equ	-16		; right group span
 v_err	equ	-20		; right group right edge
-v_p0	equ	-24		; plane words of pens[0..3]
-v_p1	equ	-28
-v_p2	equ	-32
-v_p3	equ	-36
-v_count	equ	-40		; groups
-v_first	equ	-44		; dst + first group
-v_strideb	equ	-48		; stride in bytes
-v_roff	equ	-52		; byte offset of the right group
+v_count	equ	-24		; groups
+v_first	equ	-28		; dst + first group
+v_strideb	equ	-32		; stride in bytes
+v_roff	equ	-36		; byte offset of the right group
 
 REP	macro			; \1 = low word replicated into both halves, stored at \3(a6); \2 scratch
 	move.w	\1,\2
 	swap	\1
 	move.w	\2,\1
 	move.l	\1,\3(a6)
-	endm
-
-PEN	macro			; address of the plane words of pens[\1] stored at \2(a6)
-	moveq	#0,d0
-	move.b	\1(a1),d0
-	lsl.l	#3,d0
-	lea	_planar_pen_table,a2
-	add.l	d0,a2
-	move.l	a2,\2(a6)
 	endm
 
 MARGIN	macro			; d\3:d\4 = the two margin longs at (\1) outside the span \2(a6); d7 scratch
@@ -58,17 +46,17 @@ MARGIN	macro			; d\3:d\4 = the two margin longs at (\1) outside the span \2(a6);
 	and.l	d7,\4
 	endm
 
-TERM	macro			; \3:\4 |= \2 & the plane words at (\1); d6 scratch
-	move.l	\2,d6
-	and.l	(\1),d6
+TERM	macro			; \2:\3 |= \1 & the plane words \4(a2); d6 scratch
+	move.l	\1,d6
+	and.l	\4(a2),d6
+	or.l	d6,\2
+	move.l	\1,d6
+	and.l	\4+4(a2),d6
 	or.l	d6,\3
-	move.l	\2,d6
-	and.l	4(\1),d6
-	or.l	d6,\4
 	endm
 
 _Planar_DrawBorder:
-	link	a6,#-52
+	link	a6,#-36
 	movem.l	d2-d7/a2-a5,-(sp)
 	moveq	#0,d0
 	move.w	14(a6),d0
@@ -126,23 +114,17 @@ _Planar_DrawBorder:
 	subq.l	#1,d0
 	lsl.l	#3,d0
 	move.l	d0,v_roff(a6)
-	move.l	28(a6),a1
-	PEN	0,v_p0
-	PEN	1,v_p1
-	PEN	2,v_p2
-	PEN	3,v_p3
+	move.l	28(a6),a2
 
-	; ---- top row: span & ~edgeR in pen2, edgeR in pen3
+	; ---- top row: span & ~edgeR top/left, edgeR corner
 	move.l	v_first(a6),a0
-	move.l	v_p2(a6),a2
-	move.l	v_p3(a6),a3
 	MARGIN	a0,v_sl,d0,d1
 	move.l	v_sl(a6),d2
 	move.l	v_erl(a6),d3
 	beq.s	.tl
 	eor.l	d3,d2
-	TERM	a3,d3,d0,d1
-.tl:	TERM	a2,d2,d0,d1
+	TERM	d3,d0,d1,24
+.tl:	TERM	d2,d0,d1,16
 	cmp.l	#1,v_count(a6)
 	beq.s	.tw
 	move.l	v_roff(a6),d7
@@ -151,27 +133,24 @@ _Planar_DrawBorder:
 	move.l	v_sr(a6),d7
 	move.l	v_err(a6),d6
 	eor.l	d6,d7
-	TERM	a2,d7,d4,d5
+	TERM	d7,d4,d5,16
 	move.l	v_err(a6),d7
-	TERM	a3,d7,d4,d5
-.tw:	move.l	a2,a1
+	TERM	d7,d4,d5,24
+.tw:	lea	16(a2),a1
 	moveq	#1,d6
 	bsr	.write
 
-	; ---- interior rows (a0 is left on their first row by the top row's write): span & ~(edgeL | edgeR) in pen0, edgeL in pen2, edgeR in pen1
-	move.l	v_p0(a6),a2
-	move.l	v_p2(a6),a3
-	move.l	v_p1(a6),a4
+	; ---- interior rows (a0 is left on their first row by the top row's write): span & ~(edgeL | edgeR) fill, edgeL top/left, edgeR bottom/right
 	MARGIN	a0,v_sl,d0,d1
 	move.l	v_sl(a6),d2
 	move.l	v_ell(a6),d3
 	eor.l	d3,d2
-	TERM	a3,d3,d0,d1
+	TERM	d3,d0,d1,16
 	move.l	v_erl(a6),d3
 	beq.s	.il
 	eor.l	d3,d2
-	TERM	a4,d3,d0,d1
-.il:	TERM	a2,d2,d0,d1
+	TERM	d3,d0,d1,8
+.il:	TERM	d2,d0,d1,0
 	cmp.l	#1,v_count(a6)
 	beq.s	.iw
 	move.l	v_roff(a6),d7
@@ -180,32 +159,30 @@ _Planar_DrawBorder:
 	move.l	v_sr(a6),d7
 	move.l	v_err(a6),d6
 	eor.l	d6,d7
-	TERM	a2,d7,d4,d5
+	TERM	d7,d4,d5,0
 	move.l	v_err(a6),d7
-	TERM	a4,d7,d4,d5
+	TERM	d7,d4,d5,8
 .iw:	move.l	a2,a1
 	moveq	#0,d6
 	move.w	26(a6),d6
 	subq.w	#2,d6
 	bsr	.write
 
-	; ---- bottom row (a0 is left on it by the interior write): span & ~edgeL in pen1, edgeL in pen3
-	move.l	v_p1(a6),a2
-	move.l	v_p3(a6),a3
+	; ---- bottom row (a0 is left on it by the interior write): span & ~edgeL bottom/right, edgeL corner
 	MARGIN	a0,v_sl,d0,d1
 	move.l	v_sl(a6),d2
 	move.l	v_ell(a6),d3
 	eor.l	d3,d2
-	TERM	a3,d3,d0,d1
-	TERM	a2,d2,d0,d1
+	TERM	d3,d0,d1,24
+	TERM	d2,d0,d1,8
 	cmp.l	#1,v_count(a6)
 	beq.s	.bw
 	move.l	v_roff(a6),d7
 	lea	0(a0,d7.l),a1
 	MARGIN	a1,v_sr,d4,d5
 	move.l	v_sr(a6),d7
-	TERM	a2,d7,d4,d5
-.bw:	move.l	a2,a1
+	TERM	d7,d4,d5,8
+.bw:	lea	8(a2),a1
 	moveq	#1,d6
 	bsr	.write
 
@@ -230,18 +207,18 @@ _Planar_DrawBorder:
 	beq.s	.w4
 	addq.l	#3,d7
 	lsl.l	#3,d7			; (count - 1) groups of 8 bytes
-	lea	0(a0,d7.l),a2		; end of the middle groups in the first row
+	lea	0(a0,d7.l),a4		; end of the middle groups in the first row
 .wn:	move.l	a0,a1
 	move.l	d0,(a1)+
 	move.l	d1,(a1)+
 .wm:	move.l	d2,(a1)+
 	move.l	d3,(a1)+
-	cmp.l	a2,a1
+	cmp.l	a4,a1
 	bne.s	.wm
 	move.l	d4,(a1)+
 	move.l	d5,(a1)
 	add.l	a3,a0
-	add.l	a3,a2
+	add.l	a3,a4
 	dbra	d6,.wn
 	rts
 ; up to four groups are one MOVEM per row: left d0-d1, middle d2-d3 (d4-d5), right in the next registers (a4-a5 for four)
@@ -267,22 +244,3 @@ _Planar_DrawBorder:
 	add.l	a3,a0
 	dbra	d6,.w1
 	rts
-
-	even
-_planar_pen_table:
-	dc.l	$00000000,$00000000	; pen 0
-	dc.l	$ffff0000,$00000000	; pen 1
-	dc.l	$0000ffff,$00000000	; pen 2
-	dc.l	$ffffffff,$00000000	; pen 3
-	dc.l	$00000000,$ffff0000	; pen 4
-	dc.l	$ffff0000,$ffff0000	; pen 5
-	dc.l	$0000ffff,$ffff0000	; pen 6
-	dc.l	$ffffffff,$ffff0000	; pen 7
-	dc.l	$00000000,$0000ffff	; pen 8
-	dc.l	$ffff0000,$0000ffff	; pen 9
-	dc.l	$0000ffff,$0000ffff	; pen 10
-	dc.l	$ffffffff,$0000ffff	; pen 11
-	dc.l	$00000000,$ffffffff	; pen 12
-	dc.l	$ffff0000,$ffffffff	; pen 13
-	dc.l	$0000ffff,$ffffffff	; pen 14
-	dc.l	$ffffffff,$ffffffff	; pen 15

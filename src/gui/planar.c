@@ -5,6 +5,13 @@
 
 enum { PLANAR_MAX_GROUPS = 20 };
 
+void Planar_SolidGroup(uint16 group[4], uint8 pen)
+{
+	uint16 plane;
+
+	for (plane = 0; plane < 4; plane++) group[plane] = (uint16)-(int16)((pen >> plane) & 1);
+}
+
 #ifndef __mc68000__
 /* The 68000 build uses planar_rows.s; this C version is the reference for the host test. */
 static void Planar_FillRows(uint16 *dst, const uint16 *pattern, long strideBytes, long rows, long groups)
@@ -16,25 +23,26 @@ static void Planar_FillRows(uint16 *dst, const uint16 *pattern, long strideBytes
 }
 
 /* One group word per plane: `base` outside `span`, and inside it up to three colour classes. */
-static void Planar_Word(uint16 *out, const uint16 *base, uint16 span, const uint16 masks[3], const uint8 pens[3])
+static void Planar_Word(uint16 *out, const uint16 *base, uint16 span, const uint16 masks[3], const uint16 *const cls[3])
 {
 	uint16 plane;
 
 	for (plane = 0; plane < 4; plane++) {
 		out[plane] = (base[plane] & ~span)
-		    | (masks[0] & (uint16)-(int16)((pens[0] >> plane) & 1))
-		    | (masks[1] & (uint16)-(int16)((pens[1] >> plane) & 1))
-		    | (masks[2] & (uint16)-(int16)((pens[2] >> plane) & 1));
+		    | (masks[0] & cls[0][plane])
+		    | (masks[1] & cls[1][plane])
+		    | (masks[2] & cls[2][plane]);
 	}
 }
 
-void Planar_DrawBorder(uint16 *dst, uint16 stride, uint16 x, uint16 width, uint16 height, const uint8 pens[4])
+void Planar_DrawBorder(uint16 *dst, uint16 stride, uint16 x, uint16 width, uint16 height, const uint16 groups[16])
 {
 	uint16 pattern[3][PLANAR_MAX_GROUPS][4];
 	const long strideBytes = (long)stride * 2;
+	const uint16 *fill = groups, *bottomRight = groups + 4, *topLeft = groups + 8, *corner = groups + 12;
 	uint16 x1 = x + width - 1, g0 = x >> 4, g1 = x1 >> 4, group, count = g1 - g0 + 1;
 
-		/* Only the first and last group mix in the sampled margin; groups between them are pure pen fills. */
+	/* Only the first and last group mix in the sampled margin; groups between them are pure class fills. */
 	for (group = g0; group <= g1; group += g1 > g0 ? g1 - g0 : 1) {
 		const uint16 *base = dst + stride + group * 4;
 		uint16 a = x > group * 16 ? x - group * 16 : 0;
@@ -43,31 +51,29 @@ void Planar_DrawBorder(uint16 *dst, uint16 stride, uint16 x, uint16 width, uint1
 		uint16 edgeL = g0 == group ? (uint16)(0x8000u >> (x & 15)) : 0;
 		uint16 edgeR = g1 == group ? (uint16)(0x8000u >> (x1 & 15)) : 0;
 		uint16 masks[3];
-		uint8 classPens[3];
+		const uint16 *cls[3];
 
-		/* top: pens[2], right corner pens[3] */
+		/* top: topLeft, right corner */
 		masks[0] = span & ~edgeR; masks[1] = edgeR; masks[2] = 0;
-		classPens[0] = pens[2]; classPens[1] = pens[3]; classPens[2] = 0;
-		Planar_Word(pattern[0][group - g0], base, span, masks, classPens);
-		/* interior: left pens[2], right pens[1], fill pens[0] between */
+		cls[0] = topLeft; cls[1] = corner; cls[2] = fill;
+		Planar_Word(pattern[0][group - g0], base, span, masks, cls);
+		/* interior: left topLeft, right bottomRight, fill between */
 		masks[0] = span & ~(edgeL | edgeR); masks[1] = edgeL; masks[2] = edgeR;
-		classPens[0] = pens[0]; classPens[1] = pens[2]; classPens[2] = pens[1];
-		Planar_Word(pattern[1][group - g0], base, span, masks, classPens);
-		/* bottom: pens[1], left corner pens[3] */
+		cls[0] = fill; cls[1] = topLeft; cls[2] = bottomRight;
+		Planar_Word(pattern[1][group - g0], base, span, masks, cls);
+		/* bottom: bottomRight, left corner */
 		masks[0] = span & ~edgeL; masks[1] = edgeL; masks[2] = 0;
-		classPens[0] = pens[1]; classPens[1] = pens[3]; classPens[2] = 0;
-		Planar_Word(pattern[2][group - g0], base, span, masks, classPens);
+		cls[0] = bottomRight; cls[1] = corner; cls[2] = fill;
+		Planar_Word(pattern[2][group - g0], base, span, masks, cls);
 	}
 	if (count > 2) {
-		const uint8 midPens[3] = { pens[2], pens[0], pens[1] };
-		uint16 type, plane;
+		const uint16 *mid[3] = { topLeft, fill, bottomRight };
+		uint16 type;
 
 		for (type = 0; type < 3; type++) {
-			uint16 word[4];
-			for (plane = 0; plane < 4; plane++) word[plane] = (uint16)-(int16)((midPens[type] >> plane) & 1);
 			for (group = 1; group < count - 1; group++) {
 				uint16 *out = pattern[type][group];
-				out[0] = word[0]; out[1] = word[1]; out[2] = word[2]; out[3] = word[3];
+				out[0] = mid[type][0]; out[1] = mid[type][1]; out[2] = mid[type][2]; out[3] = mid[type][3];
 			}
 		}
 	}
