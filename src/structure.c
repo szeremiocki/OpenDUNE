@@ -120,7 +120,12 @@ void GameLoop_Structure(void)
 				s->countDown--;
 
 				if (s->o.houseID == g_playerHouseID) {
+#ifdef TOS
+					/* The panel state includes the countdown; forcing would repaint a selected unit's panel every tick. */
+					GUI_Widget_ActionPanel_Draw(false);
+#else
 					GUI_Widget_ActionPanel_Draw(true);
+#endif
 				}
 			}
 
