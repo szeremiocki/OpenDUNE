@@ -1,82 +1,328 @@
 ; vim: set tabstop=8 shiftwidth=8 noexpandtab:
-	xdef	_Planar_FillRows_asm	;export symbol
+	xdef	_Planar_DrawBorder	;export symbol
 	;code
 
-; prototype:
-; void Planar_FillRows_asm(uint16 *dst, const uint16 *pattern, long strideBytes, long rows, long groups);
+; prototype (C ABI; 16-bit arguments sit in the low word of a 4-byte slot):
+; void Planar_DrawBorder(uint16 *dst, uint16 stride, uint16 x, uint16 width, uint16 height,
+;                        const uint8 pens[4]);
 ;
-; Stores `rows` rows of `groups` prebuilt planar groups (4 words each, contiguous in
-; `pattern`) at `dst`, advancing dst by strideBytes per row. Write-only.
-;
-; dst and pattern MUST be word-aligned (all the 68000 requires for MOVEM.L/MOVE.L).
-; 1..5 groups keep the whole pattern in registers: one MOVEM.L store per row.
-; More groups use a long-pair copy loop. rows <= 0 or groups <= 0 do nothing.
+; See planar.h for the contract. Each row is  left group | middle groups | right group  (one group
+; when the rectangle fits in a single 16-pixel group). Per plane a group is
+;   (margin & ~span) | the class masks whose pen has the plane bit set
+; with, for the three row types,
+;   top:      (span & ~edgeR) pen2, edgeR pen3
+;   interior: (span & ~(edgeL | edgeR)) pen0, edgeL pen2, edgeR pen1
+;   bottom:   (span & ~edgeL) pen1, edgeL pen3
+; Only the left and right groups sample the margin (the second row of the target); the middle
+; groups are the plain pen words. For each row type the left, middle and right words are held in
+; registers and written straight to the screen, nothing is read after the margin sample.
+; Two planes are processed per longword: masks are replicated into both halves and pens expand
+; through a table of plane words. Word alignment of dst is all the 68000 needs.
 
-_Planar_FillRows_asm:
-	movem.l	d2-d7/a2-a5,-(sp)	; 10 regs = 40 bytes, +4 return address
-	move.l	44(sp),a0		; dst
-	move.l	48(sp),a1		; pattern
-	move.l	52(sp),a3		; stride in bytes
-	move.l	56(sp),d1		; rows
-	move.l	60(sp),d0		; groups
+v_xl	equ	-8		; left margin words outside the span (2 longs)
+v_xr	equ	-16		; right margin words outside the span
+v_sl	equ	-20		; left group span, replicated in both halves
+v_ell	equ	-24		; left group left edge
+v_erl	equ	-28		; left group right edge (only when the rectangle has one group)
+v_sr	equ	-32		; right group span
+v_err	equ	-36		; right group right edge
+v_p0	equ	-40		; plane words of pens[0..3]
+v_p1	equ	-44
+v_p2	equ	-48
+v_p3	equ	-52
+v_count	equ	-56		; groups
+v_first	equ	-60		; dst + first group
+v_strideb	equ	-64		; stride in bytes
+v_lres	equ	-72		; left group result (2 longs)
 
-	subq.l	#1,d1			; bias rows for DBRA
-	bmi	.done
-	tst.l	d0
-	ble	.done
-	cmp.l	#5,d0
-	bgt	.generic
+REP	macro			; \1 = low word replicated into both halves, stored at \3(a6); \2 scratch
+	move.w	\1,\2
+	swap	\1
+	move.w	\2,\1
+	move.l	\1,\3(a6)
+	endm
+
+PEN	macro			; address of the plane words of pens[\1] stored at \2(a6)
+	moveq	#0,d0
+	move.b	\1(a1),d0
+	lsl.l	#3,d0
+	lea	_planar_pen_table,a2
+	add.l	d0,a2
+	move.l	a2,\2(a6)
+	endm
+
+_Planar_DrawBorder:
+	link	a6,#-72
+	movem.l	d2-d7/a2-a5,-(sp)
+	moveq	#0,d0
+	move.w	14(a6),d0
+	add.l	d0,d0
+	move.l	d0,v_strideb(a6)
+	moveq	#0,d4
+	move.w	18(a6),d4		; x
+	moveq	#0,d5
+	move.w	22(a6),d5
+	add.l	d4,d5
+	subq.l	#1,d5			; x1
+	move.l	d4,d2
+	lsr.l	#4,d2			; first group
+	move.l	d5,d3
+	lsr.l	#4,d3
+	sub.l	d2,d3
+	addq.l	#1,d3			; group count
+	move.l	d3,v_count(a6)
+	lsl.l	#3,d2
+	add.l	8(a6),d2
+	move.l	d2,v_first(a6)
+
+	moveq	#15,d6
+	and.w	d4,d6			; a = x & 15
+	moveq	#15,d7
+	and.w	d5,d7			; b = x1 & 15
+	move.l	#$8000,d1
+	lsr.l	d6,d1			; edgeL
+	move.l	#$ffff,d0
+	lsr.l	d6,d0			; span = $ffff >> a
+	moveq	#0,d2			; edgeR
+	cmp.l	#1,d3
+	bne.s	.two
+	move.l	#$8000,d2
+	lsr.l	d7,d2			; one group: edgeR = $8000 >> b
+	moveq	#15,d6
+	sub.w	d7,d6
+	move.l	#$ffff,d3
+	lsl.l	d6,d3
+	and.w	d3,d0			; span &= $ffff << (15 - b)
+	bra.s	.left
+.two:	move.l	#$8000,d3
+	lsr.l	d7,d3			; right group: edgeR
+	moveq	#15,d6
+	sub.w	d7,d6
+	move.l	#$ffff,d4
+	lsl.l	d6,d4			; right group: span
+	REP	d3,d5,v_err
+	REP	d4,d5,v_sr
+.left:	REP	d0,d5,v_sl
+	REP	d1,d5,v_ell
+	REP	d2,d5,v_erl
+
+	move.l	v_first(a6),a0
+	add.l	v_strideb(a6),a0		; margin row
+	move.l	v_sl(a6),d1
+	not.l	d1
+	move.l	(a0),d4
+	and.l	d1,d4
+	move.l	d4,v_xl(a6)
+	move.l	4(a0),d4
+	and.l	d1,d4
+	move.l	d4,v_xl+4(a6)
+	cmp.l	#1,v_count(a6)
+	beq.s	.pens
+	move.l	v_count(a6),d0
 	subq.l	#1,d0
-	beq.s	.g1
-	subq.l	#1,d0
-	beq.s	.g2
-	subq.l	#1,d0
-	beq.s	.g3
-	subq.l	#1,d0
-	beq.s	.g4
+	lsl.l	#3,d0
+	add.l	d0,a0
+	move.l	v_sr(a6),d1
+	not.l	d1
+	move.l	(a0),d4
+	and.l	d1,d4
+	move.l	d4,v_xr(a6)
+	move.l	4(a0),d4
+	and.l	d1,d4
+	move.l	d4,v_xr+4(a6)
 
-.g5:	movem.l	(a1),d0/d2-d7/a2/a4/a5
-.l5:	movem.l	d0/d2-d7/a2/a4/a5,(a0)
-	add.l	a3,a0
-	dbra	d1,.l5
-	bra	.done
+.pens:	move.l	28(a6),a1
+	PEN	0,v_p0
+	PEN	1,v_p1
+	PEN	2,v_p2
+	PEN	3,v_p3
 
-.g4:	movem.l	(a1),d0/d2-d7/a2
-.l4:	movem.l	d0/d2-d7/a2,(a0)
-	add.l	a3,a0
-	dbra	d1,.l4
-	bra.s	.done
+	; ---- top row
+	move.l	v_sl(a6),d0
+	move.l	v_erl(a6),d1
+	move.l	d1,d2
+	not.l	d2
+	and.l	d2,d0			; span & ~edgeR in pen2, edgeR in pen3
+	move.l	v_p2(a6),a3
+	move.l	v_p3(a6),a4
+	move.l	a3,a5
+	moveq	#0,d2
+	move.l	v_xl(a6),d4
+	move.l	v_xl+4(a6),d5
+	bsr	.mix
+	move.l	d4,v_lres(a6)
+	move.l	d5,v_lres+4(a6)
+	cmp.l	#1,v_count(a6)
+	beq.s	.topw
+	move.l	v_sr(a6),d0
+	move.l	v_err(a6),d1
+	move.l	d1,d2
+	not.l	d2
+	and.l	d2,d0
+	moveq	#0,d2
+	move.l	v_xr(a6),d4
+	move.l	v_xr+4(a6),d5
+	bsr	.mix
+.topw:	move.l	v_p2(a6),a1
+	move.l	v_first(a6),a0
+	moveq	#1,d6
+	bsr	.write
 
-.g3:	movem.l	(a1),d2-d7
-.l3:	movem.l	d2-d7,(a0)
-	add.l	a3,a0
-	dbra	d1,.l3
-	bra.s	.done
+	; ---- interior rows
+	move.l	v_sl(a6),d0
+	move.l	v_ell(a6),d1
+	move.l	v_erl(a6),d2
+	move.l	d1,d3
+	or.l	d2,d3
+	not.l	d3
+	and.l	d3,d0			; span & ~(edgeL | edgeR) in pen0, edgeL pen2, edgeR pen1
+	move.l	v_p0(a6),a3
+	move.l	v_p2(a6),a4
+	move.l	v_p1(a6),a5
+	move.l	v_xl(a6),d4
+	move.l	v_xl+4(a6),d5
+	bsr	.mix
+	move.l	d4,v_lres(a6)
+	move.l	d5,v_lres+4(a6)
+	cmp.l	#1,v_count(a6)
+	beq.s	.intw
+	move.l	v_sr(a6),d0
+	move.l	v_err(a6),d1
+	move.l	d1,d2
+	not.l	d2
+	and.l	d2,d0			; span & ~edgeR in pen0, edgeR in pen1
+	move.l	v_p0(a6),a3
+	move.l	v_p1(a6),a4
+	move.l	a3,a5
+	moveq	#0,d2
+	move.l	v_xr(a6),d4
+	move.l	v_xr+4(a6),d5
+	bsr	.mix
+.intw:	move.l	v_p0(a6),a1
+	move.l	v_first(a6),a0
+	add.l	v_strideb(a6),a0
+	moveq	#0,d6
+	move.w	26(a6),d6
+	subq.w	#2,d6
+	bsr	.write
 
-.g2:	movem.l	(a1),d2-d5
-.l2:	movem.l	d2-d5,(a0)
-	add.l	a3,a0
-	dbra	d1,.l2
-	bra.s	.done
+	; ---- bottom row
+	move.l	v_sl(a6),d0
+	move.l	v_ell(a6),d1
+	move.l	d1,d2
+	not.l	d2
+	and.l	d2,d0			; span & ~edgeL in pen1, edgeL in pen3
+	move.l	v_p1(a6),a3
+	move.l	v_p3(a6),a4
+	move.l	a3,a5
+	moveq	#0,d2
+	move.l	v_xl(a6),d4
+	move.l	v_xl+4(a6),d5
+	bsr	.mix
+	move.l	d4,v_lres(a6)
+	move.l	d5,v_lres+4(a6)
+	cmp.l	#1,v_count(a6)
+	beq.s	.botw
+	move.l	v_sr(a6),d0		; right group: the whole span in pen1
+	moveq	#0,d1
+	moveq	#0,d2
+	move.l	v_p1(a6),a3
+	move.l	a3,a4
+	move.l	a3,a5
+	move.l	v_xr(a6),d4
+	move.l	v_xr+4(a6),d5
+	bsr	.mix
+.botw:	move.l	v_p1(a6),a1
+	moveq	#0,d6
+	move.w	26(a6),d6
+	subq.l	#1,d6
+	mulu.w	v_strideb+2(a6),d6	; (height - 1) * stride, both below 64K
+	move.l	v_first(a6),a0
+	add.l	d6,a0
+	moveq	#1,d6
+	bsr	.write
 
-.g1:	movem.l	(a1),d2-d3
-.l1:	movem.l	d2-d3,(a0)
-	add.l	a3,a0
-	dbra	d1,.l1
-	bra.s	.done
-
-.generic:
-	subq.l	#1,d0			; groups - 1 for DBRA
-.grow:
-	move.l	a0,a4
-	move.l	a1,a2
-	move.w	d0,d2
-.gg:	move.l	(a2)+,(a4)+
-	move.l	(a2)+,(a4)+
-	dbra	d2,.gg
-	add.l	a3,a0
-	dbra	d1,.grow
-
-.done:
 	movem.l	(sp)+,d2-d7/a2-a5
+	unlk	a6
 	rts
+
+; d4:d5 |= (d0 & words at (a3)) | (d1 & (a4)) | (d2 & (a5)); clobbers d6.
+.mix:	move.l	d0,d6
+	and.l	(a3),d6
+	or.l	d6,d4
+	move.l	d0,d6
+	and.l	4(a3),d6
+	or.l	d6,d5
+	move.l	d1,d6
+	and.l	(a4),d6
+	or.l	d6,d4
+	move.l	d1,d6
+	and.l	4(a4),d6
+	or.l	d6,d5
+	move.l	d2,d6
+	and.l	(a5),d6
+	or.l	d6,d4
+	move.l	d2,d6
+	and.l	4(a5),d6
+	or.l	d6,d5
+	rts
+
+; Writes d6 rows at a0: left group (v_lres), v_count-2 middle groups (words at (a1)), right group (d4:d5).
+.write:	move.l	v_lres(a6),d0
+	move.l	v_lres+4(a6),d1
+	move.l	v_strideb(a6),a3
+	move.l	v_count(a6),d7
+	subq.w	#1,d6			; rows - 1 for DBRA
+	subq.l	#1,d7
+	beq.s	.w1
+	subq.l	#1,d7
+	beq.s	.w2
+	move.l	(a1),d2
+	move.l	4(a1),d3
+	addq.l	#1,d7
+	lsl.l	#3,d7			; (count - 1) groups of 8 bytes
+	lea	0(a0,d7.l),a2		; end of the middle groups in the first row
+.wn:	move.l	a0,a1
+	move.l	d0,(a1)+
+	move.l	d1,(a1)+
+.wm:	move.l	d2,(a1)+
+	move.l	d3,(a1)+
+	cmp.l	a2,a1
+	bne.s	.wm
+	move.l	d4,(a1)+
+	move.l	d5,(a1)
+	add.l	a3,a0
+	add.l	a3,a2
+	dbra	d6,.wn
+	rts
+.w2:	move.l	d0,(a0)
+	move.l	d1,4(a0)
+	move.l	d4,8(a0)
+	move.l	d5,12(a0)
+	add.l	a3,a0
+	dbra	d6,.w2
+	rts
+.w1:	move.l	d0,(a0)
+	move.l	d1,4(a0)
+	add.l	a3,a0
+	dbra	d6,.w1
+	rts
+
+	even
+_planar_pen_table:
+	dc.l	$00000000,$00000000	; pen 0
+	dc.l	$ffff0000,$00000000	; pen 1
+	dc.l	$0000ffff,$00000000	; pen 2
+	dc.l	$ffffffff,$00000000	; pen 3
+	dc.l	$00000000,$ffff0000	; pen 4
+	dc.l	$ffff0000,$ffff0000	; pen 5
+	dc.l	$0000ffff,$ffff0000	; pen 6
+	dc.l	$ffffffff,$ffff0000	; pen 7
+	dc.l	$00000000,$0000ffff	; pen 8
+	dc.l	$ffff0000,$0000ffff	; pen 9
+	dc.l	$0000ffff,$0000ffff	; pen 10
+	dc.l	$ffffffff,$0000ffff	; pen 11
+	dc.l	$00000000,$ffffffff	; pen 12
+	dc.l	$ffff0000,$ffffffff	; pen 13
+	dc.l	$0000ffff,$ffffffff	; pen 14
+	dc.l	$ffffffff,$ffffffff	; pen 15

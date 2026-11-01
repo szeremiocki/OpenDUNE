@@ -5,11 +5,8 @@
 
 enum { PLANAR_MAX_GROUPS = 20 };
 
-#ifdef __mc68000__
-extern void Planar_FillRows_asm(uint16 *dst, const uint16 *pattern, long strideBytes, long rows, long groups);
-#define Planar_FillRows(dst, pattern, strideBytes, rows, groups) \
-	Planar_FillRows_asm(dst, pattern, strideBytes, rows, groups)
-#else
+#ifndef __mc68000__
+/* The 68000 build uses planar_rows.s; this C version is the reference for the host test. */
 static void Planar_FillRows(uint16 *dst, const uint16 *pattern, long strideBytes, long rows, long groups)
 {
 	for (; rows > 0; rows--, dst = (uint16 *)((uint8 *)dst + strideBytes)) {
@@ -17,7 +14,6 @@ static void Planar_FillRows(uint16 *dst, const uint16 *pattern, long strideBytes
 		for (i = 0; i < groups * 4; i++) dst[i] = pattern[i];
 	}
 }
-#endif
 
 /* One group word per plane: `base` outside `span`, and inside it up to three colour classes. */
 static void Planar_Word(uint16 *out, const uint16 *base, uint16 span, const uint16 masks[3], const uint8 pens[3])
@@ -80,3 +76,4 @@ void Planar_DrawBorder(uint16 *dst, uint16 stride, uint16 x, uint16 width, uint1
 	Planar_FillRows(dst + stride, pattern[1][0], strideBytes, height - 2, count);
 	Planar_FillRows(dst + (height - 1) * stride, pattern[2][0], strideBytes, 1, count);
 }
+#endif
