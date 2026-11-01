@@ -281,9 +281,13 @@ bool GUI_Widget_TextButton_Click(Widget *w)
 		}
 	}
 
-	GUI_Widget_MakeSelected(w, false);
-
 	ai = &g_table_actionInfo[action];
+
+#ifdef TOS
+	/* A target panel replaces the buttons at once and a cancel restores the old command; do not flash the new one. */
+	if (ai->selectionType == g_selectionType)
+#endif
+	GUI_Widget_MakeSelected(w, false);
 
 	if (ai->selectionType != g_selectionType) {
 		g_unitActive = g_unitSelected;
