@@ -158,9 +158,7 @@ _Planar_DrawBorder:
 	moveq	#1,d6
 	bsr	.write
 
-	; ---- interior rows: span & ~(edgeL | edgeR) in pen0, edgeL in pen2, edgeR in pen1
-	move.l	v_first(a6),a0
-	add.l	v_strideb(a6),a0
+	; ---- interior rows (a0 is left on their first row by the top row's write): span & ~(edgeL | edgeR) in pen0, edgeL in pen2, edgeR in pen1
 	move.l	v_p0(a6),a2
 	move.l	v_p2(a6),a3
 	move.l	v_p1(a6),a4
@@ -191,13 +189,7 @@ _Planar_DrawBorder:
 	subq.w	#2,d6
 	bsr	.write
 
-	; ---- bottom row: span & ~edgeL in pen1, edgeL in pen3
-	moveq	#0,d6
-	move.w	26(a6),d6
-	subq.l	#1,d6
-	mulu.w	v_strideb+2(a6),d6	; (height - 1) * stride, both below 64K
-	move.l	v_first(a6),a0
-	add.l	d6,a0
+	; ---- bottom row (a0 is left on it by the interior write): span & ~edgeL in pen1, edgeL in pen3
 	move.l	v_p1(a6),a2
 	move.l	v_p3(a6),a3
 	MARGIN	a0,v_sl,d0,d1
@@ -222,6 +214,7 @@ _Planar_DrawBorder:
 	rts
 
 ; Writes d6 rows at a0: left group d0:d1, v_count-2 middle groups (plane words at (a1)), right group d4:d5.
+; Leaves a0 on the row after the last one written.
 .write:	move.l	v_strideb(a6),a3
 	move.l	v_count(a6),d7
 	subq.w	#1,d6			; rows - 1 for DBRA
@@ -251,18 +244,14 @@ _Planar_DrawBorder:
 	add.l	a3,a2
 	dbra	d6,.wn
 	rts
-; up to four groups are one MOVEM per row: left d0-d1, middle d2-d3 (d4-d5), right in the next registers
-.w4:	addq.w	#1,d6
-	mulu.w	v_strideb+2(a6),d6
-	lea	0(a0,d6.l),a2		; end of the rows
-	move.l	d4,d6			; right group
-	move.l	d5,d7
+; up to four groups are one MOVEM per row: left d0-d1, middle d2-d3 (d4-d5), right in the next registers (a4-a5 for four)
+.w4:	move.l	d4,a4			; right group
+	move.l	d5,a5
 	move.l	d2,d4			; second middle group
 	move.l	d3,d5
-.w4l:	movem.l	d0-d7,(a0)
+.w4l:	movem.l	d0-d5/a4-a5,(a0)
 	add.l	a3,a0
-	cmp.l	a2,a0
-	bne.s	.w4l
+	dbra	d6,.w4l
 	rts
 .w3:	movem.l	d0-d5,(a0)
 	add.l	a3,a0
