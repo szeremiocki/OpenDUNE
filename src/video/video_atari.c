@@ -102,6 +102,7 @@ static int s_savedCpuSpeed = -1;	/* -1 = not touched, else value to restore */
 #define ST_PLANAR_LINE_BYTES	(SCREEN_WIDTH / 2)	/* 4 bitplanes, 1 nibble/pixel */
 
 static uint32 s_stScreenBase = 0;	/* address to program, incl. shake offset */
+static const uint16 *s_blitterHalftonePattern;
 
 static uint32 s_paletteBackup[256];
 static uint16 s_SquareTable[256];
@@ -1100,6 +1101,7 @@ bool Video_Init(int screen_magnification, VideoScaleFilter filter)
 	VARIABLE_NOT_USED(screen_magnification);
 	int i;
 
+	s_blitterHalftonePattern = NULL;
 	Video_Atari_CursorInitStorage();
 
 	s_framebuffer = calloc(1, SCREEN_WIDTH * (SCREEN_HEIGHT + 4));
@@ -2176,20 +2178,26 @@ typedef struct PlacementTint {
 
 static PlacementTint s_placeTint;
 
-static void Video_Atari_PlacementTintBlit(void)
+/* Both halftone users share ownership; source-only blits leave this RAM intact. */
+static void Video_Atari_SetHalftonePattern(const uint16 *pattern)
 {
 	volatile uint16 *halftone = (volatile uint16 *)0xFFFF8A00UL;
 	uint16 i;
 
+	if (s_blitterHalftonePattern == pattern) return;
+	for (i = 0; i < 16; i++) halftone[i] = pattern[i];
+	s_blitterHalftonePattern = pattern;
+}
+
+static void Video_Atari_PlacementTintBlit(void)
+{
+	static const uint16 checkerboard[16] = {
+		0xaaaa, 0x5555, 0xaaaa, 0x5555, 0xaaaa, 0x5555, 0xaaaa, 0x5555,
+		0xaaaa, 0x5555, 0xaaaa, 0x5555, 0xaaaa, 0x5555, 0xaaaa, 0x5555
+	};
+
 	while ((*BLITTER_CTRL & 0x80) != 0) {}
-	if (s_placeTint.pattern != NULL) {
-		for (i = 0; i < 16; i++) halftone[i] = s_placeTint.pattern[i];
-	} else {
-		for (i = 0; i < 16; i += 2) {
-			halftone[i] = 0xaaaa;
-			halftone[i + 1] = 0x5555;
-		}
-	}
+	Video_Atari_SetHalftonePattern(s_placeTint.pattern != NULL ? s_placeTint.pattern : checkerboard);
 	*BLITTER_ENDMASK1 = 0xffff;
 	*BLITTER_ENDMASK2 = 0xffff;
 	*BLITTER_ENDMASK3 = 0xffff;
@@ -2243,11 +2251,10 @@ void Video_Atari_PlacementTint(int16 x, int16 y, uint16 width, uint16 height, bo
  * clear it (~S & D) where it does not, so the frame is the exact pen. */
 static void Video_Atari_TileCursorBlit(void)
 {
-	volatile uint16 *halftone = (volatile uint16 *)0xFFFF8A00UL;
-	uint16 i, plane;
+	uint16 plane;
 
 	while ((*BLITTER_CTRL & 0x80) != 0) {}
-	for (i = 0; i < 16; i++) halftone[i] = s_placeTint.pattern[i];
+	Video_Atari_SetHalftonePattern(s_placeTint.pattern);
 	*BLITTER_ENDMASK1 = 0xffff;
 	*BLITTER_ENDMASK2 = 0xffff;
 	*BLITTER_ENDMASK3 = 0xffff;
