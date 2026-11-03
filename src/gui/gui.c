@@ -1284,6 +1284,8 @@ uint16 GUI_DisplayModalMessage(const char *str, unsigned int spriteID, ...)
 
 #ifdef TOS
 	Video_Atari_PlacementHide();
+	/* Hiding the tile overlay must not re-enable the pointer over the hint. */
+	if (GUI_Widget_Viewport_TileCursorActive()) Video_Atari_PlacementCursor(true);
 #endif
 	va_start(ap, spriteID);
 	vsnprintf(textBuffer, sizeof(textBuffer), str, ap);
@@ -1782,6 +1784,7 @@ enum { VIEWPORT_PLANAR_SPRITES = 64, VIEWPORT_PLANAR_COMPONENTS = 64 };
 typedef struct ViewportPlanarComponent {
 	uint32 key;
 	uint16 used, width, height;
+	uint8 blitPasses;
 	uint16 pixels[32 * 32 / 4];
 	uint16 masks[2 * 32];
 } ViewportPlanarComponent;
@@ -1795,6 +1798,7 @@ typedef struct ViewportPlanarSprite {
 	int16 boundsOffsetX;
 	uint16 boundsWidth;
 	Video_Atari_SpriteBlitPlan blitPlans[16];
+	Video_Atari_SpriteBlitCode blitCode;
 	uint16 pixels[80 * 64 / 4];
 	uint16 *masks;
 } ViewportPlanarSprite;
@@ -2007,6 +2011,8 @@ static ViewportPlanarComponent *GUI_ViewportPlanarComponent(ViewportSpriteMask *
 		}
 		entry->width = stride;
 		entry->height = mask->height;
+		entry->blitPasses = Video_Atari_BuildSpriteBlitRecipe(entry->pixels, entry->masks,
+		    groups * mask->height);
 		entry->key = key;
 	}
 	entry->used = s_viewportComponentClock;
@@ -2331,8 +2337,10 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 			    (candidate->key.main == 0 || candidate->used < victim->used))) victim = candidate;
 		}
 		entry = victim;
-		memset(entry->pixels, 0, stride * height / 2);
-		memset(entry->masks, 0, groups * height * sizeof(*entry->masks));
+		if (count != 0 || !blitter) {
+			memset(entry->pixels, 0, stride * height / 2);
+			memset(entry->masks, 0, groups * height * sizeof(*entry->masks));
+		}
 		for (i = 0; i <= count; i++) {
 			ViewportSpriteMask *m = masks[i];
 			int layerFlags = i == 0 ? flags : layers->layer[i - 1].flags;
@@ -2343,12 +2351,23 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 			    i == 0 ? spriteID : layers->layer[i - 1].spriteID,
 			    i == 0 ? colourHouse : layers->layer[i - 1].colourHouse,
 			    layerFlags, layerPalette);
-			Video_Atari_ComposePlanarSprite(entry->pixels, entry->masks, stride, height,
-			    component->pixels, component->masks, component->width, component->height,
-			    left[i] - minX, top[i] - minY);
+			if (count == 0 && blitter) {
+				assert(stride == component->width && height == component->height);
+				memcpy(entry->pixels, component->pixels, stride * height / 2);
+				memcpy(entry->masks, component->masks, groups * height * sizeof(*entry->masks));
+				Video_Atari_CompileSpriteBlitCode(&entry->blitCode, component->blitPasses);
+			} else {
+				Video_Atari_ComposePlanarSprite(entry->pixels, entry->masks, stride, height,
+				    component->pixels, component->masks, component->width, component->height,
+				    left[i] - minX, top[i] - minY);
+			}
 		}
 		if (blitter) {
 			uint16 word = groups * height;
+			if (count != 0) {
+				uint8 passes = Video_Atari_BuildSpriteBlitRecipe(entry->pixels, entry->masks, word);
+				Video_Atari_CompileSpriteBlitCode(&entry->blitCode, passes);
+			}
 			while (word != 0) {
 				uint16 plane, opacity = entry->masks[--word];
 				for (plane = 0; plane < 4; plane++)
@@ -2388,7 +2407,7 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 				    entry->masks + offset, entry->width, start - left,
 				    right - start, bottom - firstRow, start, firstRow,
 				    start == left && right - start == entry->extentWidth ?
-				    &entry->blitPlans[start & 15] : NULL);
+				    &entry->blitPlans[start & 15] : NULL, &entry->blitCode);
 				Video_Atari_SetSpriteHighlight(0);
 			}
 			return;

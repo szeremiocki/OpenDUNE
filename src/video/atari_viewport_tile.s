@@ -63,17 +63,13 @@ tile_blit:	tst.b	_g_videoBlitterTileSetup
 	bne	.ready
 .idle:	tst.b	$ffff8a3c.w
 	bmi	.idle
-	move.w	#2,$ffff8a20.w		; same registers as Video_Atari_BlitOpaque()
-	move.w	#2,$ffff8a22.w
-	move.w	#$ffff,$ffff8a28.w
-	move.w	#$ffff,$ffff8a2a.w
-	move.w	#$ffff,$ffff8a2c.w
-	move.w	#2,$ffff8a2e.w
+	move.l	#$00020002,$ffff8a20.w	; same registers as Video_Atari_BlitOpaque()
+	move.l	#$ffffffff,$ffff8a28.w
+	move.l	#$ffff0002,$ffff8a2c.w
 	move.w	#154,$ffff8a30.w
 	move.w	#4,$ffff8a36.w
-	move.b	#2,$ffff8a3a.w
+	move.w	#$0203,$ffff8a3a.w
 	move.b	#0,$ffff8a3d.w
-	move.b	#3,$ffff8a3b.w
 	move.b	#1,_g_videoBlitterTileSetup
 .ready:	move.l	d2,$ffff8a24.w		; source address
 	move.l	a1,$ffff8a32.w		; destination address

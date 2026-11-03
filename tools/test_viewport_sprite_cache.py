@@ -23,15 +23,20 @@ def blit_plan_type():
     header = (ROOT / "src/video/video.h").read_text()
     start = header.index("typedef struct Video_Atari_SpriteBlitPlan {")
     end = header.index("} Video_Atari_SpriteBlitPlan;", start) + len("} Video_Atari_SpriteBlitPlan;")
-    return "#ifndef TEST_BLIT_PLAN_TYPE\n#define TEST_BLIT_PLAN_TYPE\n" + header[start:end] + "\n#endif\n"
+    code_start = header.index("#define VIDEO_ATARI_SPRITE_BLIT_CODE_WORDS")
+    code_end = header.index("} Video_Atari_SpriteBlitCode;", code_start) + len("} Video_Atari_SpriteBlitCode;")
+    return ("#ifndef TEST_BLIT_PLAN_TYPE\n#define TEST_BLIT_PLAN_TYPE\n" +
+            header[start:end] + "\n" + header[code_start:code_end] + "\n#endif\n")
 
 
 def blitter_model(video, tiles=False):
     """Execute production register setup against a persistent 32-bit latch."""
     model = r"""
 #define ST_PLANAR_LINE_BYTES 160
-#define Atari_SupervisorExec(callback) callback()
+#define Atari_SupervisorExec(callback) (callback)()
+#define VIDEO_ATARI_HIGHLIGHT_EFFECTS 9
 static bool s_viewportBlitter;
+#define Video_Atari_ViewportBlitter() (s_viewportBlitter)
 static bool s_blitterTileSetup;
 static int16 reg_src_x, reg_src_y, reg_dst_x, reg_dst_y;
 static uintptr_t reg_src, reg_dst;
@@ -55,16 +60,25 @@ static uint8 reg_hop, reg_op, reg_ctrl, reg_skew;
 static unsigned blitterLaunches, blitterLocks, blitterSetups, blitterPlanBuilds, cachedPlanDraws;
 static uintptr_t blitterPixels, blitterMasks;
 static uint16 blitterReadStride;
+static uint16 test_be_word(uint16 value) {
+    uint8 bytes[2] = {value >> 8, value};
+    uint16 result;
+    memcpy(&result, bytes, sizeof(result));
+    return result;
+}
+#define HTOBE16(v) test_be_word(v)
 static void Video_Atari_BlitterStart(void) {
     static uint32 latch = 0xa39fbc71;
     unsigned words = reg_x, rows = reg_y;
     uintptr_t src = reg_src, dst = reg_dst;
+    uintptr_t sourceBase = src >= blitterMasks && src < blitterMasks + blitterReadStride ?
+                           blitterMasks : blitterPixels;
     assert(!blitterLocks && reg_hop == 2 && words && rows);
     assert(reg_op == 3 || reg_op == 4 || reg_op == 7);
     assert(words != 1 || !(reg_skew & 0x40));
     blitterLaunches++;
     for (unsigned row = 0; row < rows; row++) {
-        uintptr_t rowBase = (reg_op == 4 ? blitterMasks : blitterPixels) + row * blitterReadStride;
+        uintptr_t rowBase = sourceBase + row * blitterReadStride;
         if (reg_skew & 0x80) {
             assert(reg_op == 3 || (src >= rowBase && src + 2 <= rowBase + blitterReadStride));
             uint16 value = *(const uint16 *)src;
@@ -106,8 +120,58 @@ static void Video_Atari_BlitterStart(void) {
     setup = setup.replace("\n{\n", "\n{\n    blitterSetups++;\n", 1)
     builder = function(video, "Video_Atari_BuildSpriteBlitPlan")
     builder = builder.replace("\n{\n", "\n{\n    blitterPlanBuilds++;\n", 1)
-    production = function(video, "Video_Atari_ViewportBlitter") + "\n" + setup + "\n" + block
+    production = setup + "\n" + block
     production += "\n" + builder + "\n" + function(video, "Video_Atari_BuildSpriteBlitPlans")
+    production += "\n" + function(video, "Video_Atari_BuildSpriteBlitRecipe")
+    production += "\n" + function(video, "Video_Atari_CompileSpriteBlitCode")
+    production += r"""
+static Video_Atari_SpriteBlitCode fullSpriteBlitCode;
+#define FULL_SPRITE_BLIT_CODE \
+    (Video_Atari_CompileSpriteBlitCode(&fullSpriteBlitCode, 0xff), &fullSpriteBlitCode)
+static void Video_Atari_ExecuteSpriteBlitCode(const Video_Atari_SpriteBlitCode *code,
+                                             const uint16 *pixels, const uint16 *masks,
+                                             uint16 *dst, uint16 height,
+                                             const Video_Atari_SpriteBlitPlan *plan) {
+    const uint16 *pc = code->words;
+    uintptr_t scratch = 0;
+    Video_Atari_BlitterSetup(plan, 8);
+    for (;;) {
+        uint16 opcode = test_be_word(*pc++);
+        if (opcode == 0x4e75) return;
+        if (opcode == 0x47e8 || opcode == 0x47e9 || opcode == 0x47ea) {
+            scratch = (uintptr_t)(opcode == 0x47e8 ? pixels :
+                                  opcode == 0x47e9 ? masks : dst) + test_be_word(*pc++);
+        } else if ((opcode & 0xfff8) == 0x21c8) {
+            uintptr_t value = opcode == 0x21c8 ? (uintptr_t)pixels :
+                              opcode == 0x21c9 ? (uintptr_t)masks :
+                              opcode == 0x21ca ? (uintptr_t)dst : scratch;
+            uint16 address = test_be_word(*pc++);
+            assert(address == 0x8a24 || address == 0x8a32);
+            if (address == 0x8a24) reg_src = value;
+            else reg_dst = value;
+        } else if (opcode == 0x31c0) {
+            assert(test_be_word(*pc++) == 0x8a38);
+            reg_y = height;
+        } else if (opcode == 0x31fc) {
+            uint16 value = test_be_word(*pc++), address = test_be_word(*pc++);
+            assert(address == 0x8a3a);
+            reg_hop = value >> 8;
+            reg_op = value & 255;
+        } else if (opcode == 0x11fc) {
+            uint16 value = test_be_word(*pc++), address = test_be_word(*pc++);
+            if (address == 0x8a3b) reg_op = value;
+            else {
+                assert(address == 0x8a3c && value == 0xc0);
+                Video_Atari_BlitterStart();
+            }
+        } else {
+            assert(opcode == 0x0838 && test_be_word(*pc++) == 7);
+            assert(test_be_word(*pc++) == 0x8a3c && test_be_word(*pc++) == 0x66f8);
+        }
+        assert(pc <= code->words + VIDEO_ATARI_SPRITE_BLIT_CODE_WORDS);
+    }
+}
+"""
     if tiles:
         production += "\n" + function(video, "Video_Atari_BlitOpaque")
         production += "\n" + function(video, "Video_Atari_BlitTile")
@@ -119,8 +183,10 @@ static bool Video_Atari_CursorRectOverlap(uint8 *base, uint16 first, uint16 end,
 }
 #define Video_Atari_RefreshViewportCursorUnshifted(...) assert(false)
 """
-    for name in ("Video_Atari_BlitMasked", "Video_Atari_ShiftSpriteWord",
+    for name in ("Video_Atari_BlitCompiledSprite",
+                 "Video_Atari_BlitMaskedHighlight", "Video_Atari_ShiftSpriteWord",
                  "Video_Atari_RefreshViewportCursorUnshifted",
+                 "Video_Atari_PresentPlanarSpriteUnshiftedCPU",
                  "Video_Atari_PresentPlanarSpriteUnshifted"):
         if name == "Video_Atari_RefreshViewportCursorUnshifted" and not tiles:
             continue
@@ -135,6 +201,141 @@ static bool Video_Atari_CursorRectOverlap(uint8 *base, uint16 first, uint16 end,
 
 
 class ViewportSpriteCacheTest(unittest.TestCase):
+    def test_constant_plane_blit_recipes(self):
+        video = (ROOT / "src/video/video_atari.c").read_text()
+        gui = (ROOT / "src/gui/gui.c").read_text()
+        cache = function(gui, "GUI_ViewportPlanarSprite")
+        classification = cache.index("Video_Atari_BuildSpriteBlitRecipe(")
+        self.assertGreater(classification, cache.index("Video_Atari_ComposePlanarSprite("))
+        self.assertLess(classification, cache.index("entry->masks[word * 4 + plane] = opacity"))
+        self.assertLess(classification, cache.index("entry->key.main = key->main"))
+        self.assertIn(": NULL, &entry->blitCode)", cache)
+        self.assertIn("component->blitPasses", cache)
+        harness = r"""
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
+typedef uint8_t uint8;
+typedef uint16_t uint16;
+typedef uint32_t uint32;
+typedef int16_t int16;
+static uint16 visible[16000], expected[16000];
+static uint8 *Video_Atari_PlanarBase(void) { return (uint8 *)visible; }
+static bool Video_Atari_PlacementRectOverlap(uint8 *base, uint16 l, uint16 r,
+                                            uint16 y, uint16 h) {
+    (void)base; (void)l; (void)r; (void)y; (void)h; return false;
+}
+#define Video_Atari_PlanarMergeGroup(base,y,group,mask,colours) \
+    ((void)(base), (void)(y), (void)(group), (void)(mask), (void)(colours), assert(false))
+#define Video_Atari_PlanarMergePlain(dst,mask,colours) \
+    ((void)(dst), (void)(mask), (void)(colours), assert(false))
+#define GFX_Screen_ClearDirtyRect(...) ((void)0)
+/* MODEL */
+static unsigned bits(uint8 value) {
+    unsigned count = 0;
+    for (; value; value >>= 1) count += value & 1;
+    return count;
+}
+int main(void) {
+    uint16 pixels[5 * 17 * 4], compact[5 * 17], masks[5 * 17 * 4];
+    const unsigned widths[] = {1, 16, 17, 32, 80};
+    s_viewportBlitter = true;
+    for (unsigned pattern = 0; pattern < 81; pattern++)
+    for (unsigned wi = 0; wi < sizeof(widths) / sizeof(widths[0]); wi++) {
+        unsigned width = widths[wi], stride = (width + 15) & ~15, groups = stride / 16;
+        unsigned states[4], patternCode = pattern;
+        uint8 wantPasses = 0;
+        for (unsigned p = 0; p < 4; p++, patternCode /= 3) {
+            states[p] = patternCode % 3; /* zero, one, mixed */
+            if (states[p] != 1) wantPasses |= 1u << p;
+            if (states[p] != 0) wantPasses |= 0x10u << p;
+        }
+        memset(pixels, 0, sizeof(pixels));
+        memset(compact, 0, sizeof(compact));
+        for (unsigned row = 0; row < 17; row++) for (unsigned x = 0; x < width; x++) {
+            if ((row + x) % 5 == 0) continue;
+            unsigned i = row * groups + x / 16;
+            uint16 bit = 0x8000u >> (x & 15);
+            compact[i] |= bit;
+            for (unsigned p = 0; p < 4; p++)
+                if (states[p] == 1 || (states[p] == 2 && ((row + x) & 1)))
+                    pixels[i * 4 + p] |= bit;
+        }
+        uint8 passes = Video_Atari_BuildSpriteBlitRecipe(pixels, compact, groups * 17);
+        assert(passes == wantPasses);
+        Video_Atari_SpriteBlitCode code;
+        Video_Atari_CompileSpriteBlitCode(&code, passes);
+        for (unsigned i = 0; i < groups * 17; i++)
+            for (unsigned p = 0; p < 4; p++) masks[i * 4 + p] = compact[i];
+        Video_Atari_SpriteBlitPlan plans[16];
+        Video_Atari_BuildSpriteBlitPlans(plans, stride, width);
+        const unsigned starts[] = {0, 1, 15, 16, width - 1};
+        for (unsigned phase = 0; phase < 16; phase++)
+        for (unsigned si = 0; si < sizeof(starts) / sizeof(starts[0]); si++)
+        for (unsigned narrow = 0; narrow < 2; narrow++)
+        for (unsigned top = 0; top < 2; top++) {
+            unsigned sourceX = starts[si];
+            if (sourceX >= width) continue;
+            unsigned drawWidth = narrow ? 1 : width - sourceX;
+            unsigned firstRow = top ? 16 : 0, height = 17 - firstRow;
+            unsigned offset = firstRow * groups * 4, x = 64 + phase, y = 80;
+            for (unsigned i = 0; i < 16000; i++) visible[i] = expected[i] = i * 113 + 17;
+            for (unsigned row = 0; row < height; row++) for (unsigned col = 0; col < drawWidth; col++) {
+                unsigned source = offset + (row * groups + (sourceX + col) / 16) * 4;
+                uint16 sb = 0x8000u >> ((sourceX + col) & 15);
+                uint16 db = 0x8000u >> ((x + col) & 15);
+                if (!(masks[source] & sb)) continue;
+                for (unsigned p = 0; p < 4; p++) {
+                    unsigned dest = (y + row) * 80 + ((x + col) / 16) * 4 + p;
+                    expected[dest] = (expected[dest] & (uint16)~db) |
+                                    (pixels[source + p] & sb ? db : 0);
+                }
+            }
+            const Video_Atari_SpriteBlitPlan *plan =
+                sourceX == 0 && drawWidth == width ? &plans[phase] : NULL;
+            unsigned launches = blitterLaunches;
+            Video_Atari_PresentPlanarSpriteUnshifted(pixels + offset, masks + offset,
+                stride, sourceX, drawWidth, height, x, y, plan, &code);
+            assert(blitterLaunches == launches + bits(passes));
+            assert(!memcmp(visible, expected, sizeof(visible)));
+        }
+        /* Highlighting must ignore the normal recipe, even an empty one. */
+        Video_Atari_SetSpriteHighlight(1);
+        for (unsigned i = 0; i < 16000; i++) visible[i] = i * 113 + 17;
+        Video_Atari_PresentPlanarSpriteUnshifted(pixels, masks, stride, 0, width, 17,
+            64, 80, &plans[0], FULL_SPRITE_BLIT_CODE);
+        memcpy(expected, visible, sizeof(visible));
+        for (unsigned i = 0; i < 16000; i++) visible[i] = i * 113 + 17;
+        unsigned launches = blitterLaunches;
+        Video_Atari_PresentPlanarSpriteUnshifted(pixels, masks, stride, 0, width, 17,
+            64, 80, &plans[0], &code);
+        assert(blitterLaunches == launches + 8);
+        assert(!memcmp(visible, expected, sizeof(visible)));
+        Video_Atari_SetSpriteHighlight(0);
+    }
+    memset(pixels, 0, sizeof(pixels));
+    memset(compact, 0, sizeof(compact));
+    memset(masks, 0, sizeof(masks));
+    assert(Video_Atari_BuildSpriteBlitRecipe(pixels, compact, 5 * 17) == 0);
+    memcpy(expected, visible, sizeof(visible));
+    unsigned launches = blitterLaunches;
+    Video_Atari_SpriteBlitCode emptyCode;
+    Video_Atari_CompileSpriteBlitCode(&emptyCode, 0);
+    Video_Atari_PresentPlanarSpriteUnshifted(pixels, masks, 80, 0, 80, 17, 65, 80, NULL, &emptyCode);
+    assert(blitterLaunches == launches && !memcmp(visible, expected, sizeof(visible)));
+    return 0;
+}
+"""
+        harness = harness.replace("/* MODEL */", blitter_model(video))
+        with tempfile.TemporaryDirectory(prefix="viewport-blit-recipes-") as directory:
+            source, binary = Path(directory) / "check.c", Path(directory) / "check"
+            source.write_text(harness)
+            compiler = shlex.split(os.environ.get("HOST_CC", "cc"))
+            subprocess.run(compiler + ["-std=c99", "-O2", "-Wall", "-Wextra",
+                                      str(source), "-o", str(binary)], check=True)
+            subprocess.run([str(binary)], check=True)
+
     def test_canonical_layer_order(self):
         viewport = (ROOT / "src/gui/viewport.c").read_text()
         draw = function(viewport, "GUI_Widget_Viewport_GroundSprites")
@@ -1639,7 +1840,7 @@ int main(int argc, char **argv) {
                             unsigned launches = blitterLaunches, setups = blitterSetups;
                             GUI_Widget_Viewport_RepairTiles(x & ~15, y, (x + width + 15) & ~15, y + height);
                             Video_Atari_PresentPlanarSpriteUnshifted(image, masks, stride, sourceX,
-                                                                    width, height, x, y, NULL);
+                                                                    width, height, x, y, NULL, FULL_SPRITE_BLIT_CODE);
                             assert(!pendingRepair && blitterLaunches == launches + 8);
                             assert(blitterSetups == setups + 1);
                             assert(!memcmp(visible, expected, sizeof(visible)));
@@ -1668,13 +1869,13 @@ int main(int argc, char **argv) {
                         for (unsigned i = 0; i < 16000; i++) visible[i] = i * 113 + 17;
                         GUI_Widget_Viewport_RepairTiles(64, 136, (64 + phase + width + 15) & ~15, 152);
                         Video_Atari_PresentPlanarSpriteUnshifted(image + offset, masks + offset,
-                            stride, 0, width, 16, 64 + phase, 136, NULL);
+                            stride, 0, width, 16, 64 + phase, 136, NULL, FULL_SPRITE_BLIT_CODE);
                         memcpy(reference, visible, sizeof(reference));
                         for (unsigned i = 0; i < 16000; i++) visible[i] = i * 113 + 17;
                         builds = blitterPlanBuilds;
                         GUI_Widget_Viewport_RepairTiles(64, 136, (64 + phase + width + 15) & ~15, 152);
                         Video_Atari_PresentPlanarSpriteUnshifted(image + offset, masks + offset,
-                            stride, 0, width, 16, 64 + phase, 136, &plans[phase]);
+                            stride, 0, width, 16, 64 + phase, 136, &plans[phase], FULL_SPRITE_BLIT_CODE);
                         assert(blitterPlanBuilds == builds && !pendingRepair);
                         assert(!memcmp(reference, visible, sizeof(reference)));
                     }

@@ -1,7 +1,9 @@
 ; vim: set tabstop=8 shiftwidth=8 noexpandtab:
 	xdef	_Video_Atari_CursorRestore
 	xdef	_Video_Atari_CursorCompose
+	xdef	_Video_Atari_CursorComposePointer
 	xdef	_Video_Atari_CursorRefreshGroups
+	xdef	_Video_Atari_CursorRefreshPointer
 	xdef	_Video_Atari_CursorRowsEqual
 	;code
 
@@ -51,7 +53,8 @@ restore_group:
 ; The skips are the byte offsets to add after a row to reach the next one.
 ; data must be long-aligned.
 
-_Video_Atari_CursorCompose:
+CURSOR_COMPOSE macro
+\1:
 	movem.l	d2-d5/a2-a6,-(sp)	; 36 bytes, +4 return address
 	move.l	40(sp),a6
 	move.l	(a6),a0
@@ -64,9 +67,9 @@ _Video_Atari_CursorCompose:
 	move.l	28(a6),d3
 	subq.w	#1,d2
 	subq.w	#1,d3
-compose_line:
+\1compose_line:
 	move.w	d3,d4
-compose_group:
+\1compose_group:
 	move.w	(a5)+,d0
 	move.w	d0,(a3)+
 	not.w	d0
@@ -78,7 +81,9 @@ compose_group:
 	move.l	(a4)+,d5
 	move.l	d5,(a2)+
 	and.l	d0,d1
+	ifeq	\2
 	or.l	d5,d1
+	endc
 	move.l	d1,(a0)+
 	move.l	(a0),d1
 	move.l	d1,(a1)+
@@ -87,16 +92,20 @@ compose_group:
 	and.l	d0,d1
 	or.l	d5,d1
 	move.l	d1,(a0)+
-	dbra	d4,compose_group
+	dbra	d4,\1compose_group
 	adda.l	32(a6),a0
 	adda.l	36(a6),a1
 	adda.l	36(a6),a2
 	adda.l	40(a6),a3
 	adda.l	44(a6),a4
 	adda.l	48(a6),a5
-	dbra	d2,compose_line
+	dbra	d2,\1compose_line
 	movem.l	(sp)+,d2-d5/a2-a6
 	rts
+	endm
+
+	CURSOR_COMPOSE	_Video_Atari_CursorCompose,0
+	CURSOR_COMPOSE	_Video_Atari_CursorComposePointer,1
 
 ; prototype:
 ; void Video_Atari_CursorRefreshGroups(CursorRefreshArgs *p);
@@ -109,7 +118,8 @@ compose_group:
 ; 40 masksSkip
 ; Uses the same skip convention as Video_Atari_CursorCompose.
 
-_Video_Atari_CursorRefreshGroups:
+CURSOR_REFRESH macro
+_Video_Atari_CursorRefresh\1:
 	movem.l	d2-d7/a2-a6,-(sp)	; 44 bytes, +4 return address
 	move.l	48(sp),a6
 	move.l	(a6),a0
@@ -117,12 +127,12 @@ _Video_Atari_CursorRefreshGroups:
 	move.l	8(a6),a2
 	move.l	12(a6),a3
 	move.l	16(a6),a5
-refresh_line:
+\1refresh_line:
 	move.l	24(a6),d4
 	subq.w	#1,d4
-refresh_group:
+\1refresh_group:
 	move.w	(a5)+,d1
-	beq	refresh_skip
+	beq	\1refresh_skip
 	move.w	d1,d0
 	swap	d0
 	move.w	d1,d0			; d0 = write mask
@@ -142,10 +152,16 @@ refresh_group:
 	and.l	d0,d3
 	or.l	d3,d2
 	move.l	d2,(a1)+
+	ifne	\2
+	addq.l	#4,a2
+	else
 	move.l	(a2)+,d3
 	and.l	d5,d3
+	endc
 	and.l	d6,d7
+	ifeq	\2
 	or.l	d3,d7
+	endc
 	move.l	d7,(a0)+
 	move.l	(a0),d7
 	move.l	(a1),d2
@@ -159,24 +175,28 @@ refresh_group:
 	and.l	d6,d7
 	or.l	d3,d7
 	move.l	d7,(a0)+
-	dbra	d4,refresh_group
-	bra	refresh_next
-refresh_skip:
+	dbra	d4,\1refresh_group
+	bra	\1refresh_next
+\1refresh_skip:
 	addq.l	#2,a3
 	addq.l	#8,a0
 	addq.l	#8,a1
 	addq.l	#8,a2
-	dbra	d4,refresh_group
-refresh_next:
+	dbra	d4,\1refresh_group
+\1refresh_next:
 	adda.l	28(a6),a0
 	adda.l	32(a6),a1
 	adda.l	32(a6),a2
 	adda.l	36(a6),a3
 	adda.l	40(a6),a5
 	subq.l	#1,20(a6)
-	bne	refresh_line
+	bne	\1refresh_line
 	movem.l	(sp)+,d2-d7/a2-a6
 	rts
+	endm
+
+	CURSOR_REFRESH	Groups,0
+	CURSOR_REFRESH	Pointer,1
 
 ; prototype:
 ; long Video_Atari_CursorRowsEqual(const uint16 *a, long strideA, const uint16 *b,

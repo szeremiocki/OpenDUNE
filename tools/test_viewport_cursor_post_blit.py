@@ -299,7 +299,7 @@ int main(void) {
                 }
             }
             Video_Atari_PresentPlanarSpriteUnshifted(sprite, expandedMasks, 80, sourceX,
-                                                    width, 12, 64 + phase, 74, NULL);
+                                                    width, 12, 64 + phase, 74, NULL, FULL_SPRITE_BLIT_CODE);
             check();
         }
         assert(!blitterLocks && (place ? mergeCalls != 0 : mergeCalls == 0));
@@ -334,7 +334,7 @@ int main(void) {
                 }
             }
             Video_Atari_PresentPlanarSpriteUnshifted(sprite, expandedMasks, 80, sourceX,
-                                                    width, height, x, y, NULL);
+                                                    width, height, x, y, NULL, FULL_SPRITE_BLIT_CODE);
             check();
         }
         assert(blitterLaunches == launches + 16 && !mergeCalls && repairCalls == 2);
@@ -355,7 +355,7 @@ int main(void) {
     assert(blitterLaunches == launches + 2 && blitterSetups == setups);
     /* A whole sprite changes mode; the following tile must restore its setup. */
     reference_sprite(false, 49, 106, 80);
-    Video_Atari_PresentPlanarSpriteUnshifted(sprite, expandedMasks, 80, 0, 80, 32, 49, 106, NULL);
+    Video_Atari_PresentPlanarSpriteUnshifted(sprite, expandedMasks, 80, 0, 80, 32, 49, 106, NULL, FULL_SPRITE_BLIT_CODE);
     check();
     assert(blitterLaunches == launches + 10 && blitterSetups == setups + 1);
     reference_tile(0, 96, 72);
@@ -373,7 +373,7 @@ int main(void) {
             reference_sprite(false, 48 + phase, 67, 80);
             unsigned builds = blitterPlanBuilds;
             Video_Atari_PresentPlanarSpriteUnshifted(sprite, expandedMasks, 80, 0, 80, 32,
-                                                    48 + phase, 67, &plans[phase]);
+                                                    48 + phase, 67, &plans[phase], FULL_SPRITE_BLIT_CODE);
             assert(blitterPlanBuilds == builds);
             check();
         }

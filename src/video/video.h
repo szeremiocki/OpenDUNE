@@ -207,14 +207,28 @@ extern void Video_Atari_PresentPlanarSpriteStrided(const uint16 *pixels, const u
 extern bool g_videoViewportBlitter;
 #define Video_Atari_ViewportBlitter() (g_videoViewportBlitter)
 typedef struct Video_Atari_SpriteBlitPlan {
-	uint16 words, firstMask, lastMask;
-	int16 sourceXinc, sourceYinc, destinationYinc;
+	/* Hardware order for paired longword writes in atari_sprite_blit.s. */
+	int16 sourceXinc, sourceYinc;
+	uint16 firstMask, middleMask, lastMask;
+	int16 destinationXinc, destinationYinc;
+	uint16 words;
 	uint8 skew;
 } Video_Atari_SpriteBlitPlan;
 /* Sixteen destination phases of the full, horizontally unclipped image.
  * sourceWidth is group-aligned; width excludes transparent right padding. */
 extern void Video_Atari_BuildSpriteBlitPlans(Video_Atari_SpriteBlitPlan plans[16],
                                             uint16 sourceWidth, uint16 width);
+/* Bits 0-3 enable opacity clears; bits 4-7 enable colour ORs.
+ * Classify the final image with one compact opacity word per four plane words. */
+extern uint8 Video_Atari_BuildSpriteBlitRecipe(const uint16 *pixels, const uint16 *masks,
+                                              uint16 groups);
+/* At most eight 17-word launches, two 3-word HOP/OP writes, and RTS.
+ * Executable words are big-endian, including in host-side cache tests. */
+#define VIDEO_ATARI_SPRITE_BLIT_CODE_WORDS (8 * 17 + 2 * 3 + 1)
+typedef struct Video_Atari_SpriteBlitCode {
+	uint16 words[VIDEO_ATARI_SPRITE_BLIT_CODE_WORDS];
+} Video_Atari_SpriteBlitCode;
+extern void Video_Atari_CompileSpriteBlitCode(Video_Atari_SpriteBlitCode *code, uint8 passes);
 /* Visible rectangle of an unshifted composite, up to 80x64. Masks duplicate
  * opacity across four interleaved planes; colour bits outside opacity are zero.
  * sourceX and x are pixel offsets. plan is NULL for calculated geometry, or
@@ -222,7 +236,8 @@ extern void Video_Atari_BuildSpriteBlitPlans(Video_Atari_SpriteBlitPlan plans[16
 extern void Video_Atari_PresentPlanarSpriteUnshifted(const uint16 *pixels, const uint16 *masks,
                                                    uint16 sourceWidth, uint16 sourceX,
                                                    uint16 width, uint16 height, uint16 x, uint16 y,
-                                                   const Video_Atari_SpriteBlitPlan *plan);
+                                                   const Video_Atari_SpriteBlitPlan *plan,
+                                                   const Video_Atari_SpriteBlitCode *code);
 /* Cheap target-highlight effects done on bitplanes instead of a palette remap.
  * effect 0 is off, 1..VIDEO_ATARI_HIGHLIGHT_EFFECTS select a plane recipe. */
 #define VIDEO_ATARI_HIGHLIGHT_EFFECTS 9
