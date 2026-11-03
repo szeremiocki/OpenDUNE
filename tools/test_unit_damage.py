@@ -51,6 +51,7 @@ static unsigned aroundCount;
 bool Video_Atari_CursorDirect(void) { return direct; }
 #ifdef TOS
 void Unit_PrepareSpriteChange(Unit *unit, uint16 parts) { (void)unit; (void)parts; }
+void GUI_Widget_Viewport_DamageUnit(Unit *unit, uint16 parts) { (void)unit; (void)parts; }
 #endif
 static bool Map_IsTileVisible(uint16 packed) { assert(packed < 4096); return visible; }
 void Unit_HouseUnitCount_Add(Unit *unit, uint8 houseID) {
@@ -85,7 +86,9 @@ void Map_UpdateAround(uint16 radius, tile32 position, Unit *unit, uint8 callback
 }
 static void original(uint16 type, Unit *unit, bool history) {
     if (unit == NULL) return;
-    Unit_ClearViewportKey(unit);
+#ifdef TOS
+    ViewportCompositeKey_Clear(&unit->viewportKey);
+#endif
     if (unit->o.flags.s.isNotOnMap || !unit->o.flags.s.used) return;
     const UnitInfo *ui = &g_table_unitInfo[unit->o.type];
     if (ui->movementType == MOVEMENT_WINGER) {
@@ -143,6 +146,9 @@ typedef struct {
     Around around[3];
 } Snapshot;
 static void reset(Unit *u, bool pending) {
+#ifdef TOS
+    u->viewportBoundsWidth = 29;
+#endif
     memset(g_map,0,sizeof(g_map));
     memset(g_dirtyViewport,0,sizeof(g_dirtyViewport));
     memset(g_dirtyMinimap,0,sizeof(g_dirtyMinimap));

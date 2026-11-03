@@ -8,16 +8,156 @@ import tempfile
 import unittest
 
 from tools.test_viewport_sprite_cache import function
+from tools.test_unit_smoke_damage import run_harness
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class ViewportSpriteDamageTest(unittest.TestCase):
+    def test_unit_footprint_cache_and_early_rejection(self):
+        viewport = (ROOT / "src/gui/viewport.c").read_text()
+        draw = function(viewport, "GUI_Widget_Viewport_Draw")
+        ground = draw[draw.index("bool boundsReady"):draw.index("bodyHouse =")]
+        ground = ground.replace("#ifdef TOS", "").replace("#endif", "")
+        production = "\n".join(function(viewport, name) for name in (
+            "GUI_Widget_Viewport_SpriteDamageRect",
+            "GUI_Widget_Viewport_SpriteDamageFree",
+            "GUI_Widget_Viewport_UpdateUnitBounds",
+            "GUI_Widget_Viewport_UnitDamageFree",
+            "GUI_Widget_Viewport_ShouldDrawSprite",
+        ))
+        harness = r"""
+#include <assert.h>
+#include <string.h>
+#include "types.h"
+#include "src/unit.h"
+#include "src/gui/gui.h"
+#include "src/gui/widget.h"
+#include "src/os/endian.h"
+#define min(a,b) ((a) < (b) ? (a) : (b))
+#define max(a,b) ((a) > (b) ? (a) : (b))
+static bool s_viewportSpriteFilterActive = true, s_viewportSpriteNeedsRedraw;
+static uint16 s_viewportSpriteDamage[10];
+WidgetProperties g_widgetProperties[22];
+static uint8 images[4][5], *sprites[4];
+uint8 **g_sprites = sprites;
+static GUI_SpriteLayers currentLayers;
+static unsigned builds;
+static uint16 GUI_Widget_Viewport_GroundSprites(Unit *u, int *flags,
+                                                GUI_SpriteLayers *layers, uint16 parts) {
+    (void)u; (void)flags; assert(parts == UNIT_SPRITE_ALL);
+    builds++;
+    *layers = currentLayers;
+    return 0;
+}
+/* PRODUCTION */
+static bool candidate(Unit *u, int16 x, int16 y) {
+    for (unsigned once = 0; once < 1; once++) {
+        int spriteFlags;
+        uint16 index;
+        GUI_SpriteLayers layers;
+        /* GROUND */
+        return true;
+    }
+    return false;
+}
+static void dimensions(unsigned id, unsigned width, unsigned height) {
+    images[id][3] = width; images[id][2] = height;
+}
+static void checkBox(Unit *u, int x, int y) {
+    int left = x - images[0][3] / 2, top = y - images[0][2] / 2;
+    int right = left + images[0][3], bottom = top + images[0][2];
+    for (unsigned i = 0; i < currentLayers.count; i++) {
+        GUI_SpriteLayer *layer = &currentLayers.layer[i];
+        unsigned id = layer->spriteID;
+        int l = x + layer->offsetX - images[id][3] / 2;
+        int t = y + layer->offsetY - images[id][2] / 2;
+        left = min(left,l); top = min(top,t);
+        right = max(right,l + images[id][3]); bottom = max(bottom,t + images[id][2]);
+    }
+    x += g_widgetProperties[2].xBase << 3; y += g_widgetProperties[2].yBase;
+    assert(x + u->viewportBoundsLeft == left + (g_widgetProperties[2].xBase << 3));
+    assert(y + u->viewportBoundsTop == top + g_widgetProperties[2].yBase);
+    assert(u->viewportBoundsWidth == right - left);
+    assert(u->viewportBoundsHeight == bottom - top);
+    bool expected = GUI_Widget_Viewport_SpriteDamageFree(
+        left + (g_widgetProperties[2].xBase << 3), top + g_widgetProperties[2].yBase,
+        right + (g_widgetProperties[2].xBase << 3), bottom + g_widgetProperties[2].yBase);
+    assert(GUI_Widget_Viewport_UnitDamageFree(u,x - (g_widgetProperties[2].xBase << 3),
+                                                y - g_widgetProperties[2].yBase) == expected);
+}
+int main(void) {
+    Unit u = {0}; u.o.type = UNIT_TANK;
+    for (unsigned id = 0; id < 4; id++) {
+        sprites[id] = images[id]; dimensions(id,16,16);
+    }
+    currentLayers.count = 3;
+    for (unsigned i = 0; i < 3; i++) currentLayers.layer[i].spriteID = i + 1;
+    currentLayers.layer[0].offsetX = -14; currentLayers.layer[0].offsetY = 7;
+    currentLayers.layer[1].offsetY = -14;
+    /* Odd and even dimensions, all combinations of zero to three layers. */
+    g_widgetProperties[2].xBase = 2; g_widgetProperties[2].yBase = 40;
+    for (unsigned count = 0; count <= 3; count++)
+    for (unsigned width = 1; width <= 32; width++)
+    for (unsigned height = 1; height <= 32; height++) {
+        currentLayers.count = count;
+        dimensions(0,width,height);
+        dimensions(1,33-width,33-height);
+        GUI_Widget_Viewport_UpdateUnitBounds(&u,0,&currentLayers);
+        for (int pos = -32; pos <= 240; pos += 16) {
+            memset(s_viewportSpriteDamage,0,sizeof(s_viewportSpriteDamage));
+            s_viewportSpriteDamage[0] = 1;
+            s_viewportSpriteDamage[9] = 1u << 14;
+            checkBox(&u,pos,pos - 40);
+        }
+    }
+    g_widgetProperties[2].xBase = 0;
+    dimensions(0,16,16); currentLayers.count = 0;
+    memset(s_viewportSpriteDamage,0,sizeof(s_viewportSpriteDamage));
+    Unit_ClearViewportKey(&u);
+    assert(!u.viewportBoundsWidth);
+    assert(!candidate(&u,24,8) && builds == 1 && u.viewportBoundsWidth == 16);
+    /* A cached rejection skips layer construction, including after movement. */
+    assert(!candidate(&u,24,8) && builds == 1);
+    tile32 position = {256,256}; Unit_SetPos(&u,position); u.wobbleIndex = 3;
+    assert(!candidate(&u,25,9) && builds == 1);
+    s_viewportSpriteDamage[0] = 1u << 1;
+    assert(candidate(&u,24,8) && builds == 2);
+    /* Retained foreground publication, independently dirty units and clipping. */
+    memset(s_viewportSpriteDamage,0,sizeof(s_viewportSpriteDamage));
+    assert(!candidate(&u,56,8) && builds == 2);
+    s_viewportSpriteNeedsRedraw = true;
+    assert(GUI_Widget_Viewport_ShouldDrawSprite(40,40,64,56));
+    s_viewportSpriteNeedsRedraw = false;
+    assert(candidate(&u,56,8) && builds == 3);
+    s_viewportSpriteNeedsRedraw = true;
+    assert(candidate(&u,100,80) && builds == 4);
+    s_viewportSpriteNeedsRedraw = false;
+    assert(!candidate(&u,248,8) && builds == 4);
+    s_viewportSpriteFilterActive = false;
+    assert(candidate(&u,100,80) && builds == 5);
+    s_viewportSpriteFilterActive = true;
+    /* Terrain-dependent harvester layers always rebuild and remeasure. */
+    u.o.type = UNIT_HARVESTER;
+    memset(s_viewportSpriteDamage,0,sizeof(s_viewportSpriteDamage));
+    assert(!candidate(&u,24,8) && builds == 6);
+    currentLayers.count = 1;
+    s_viewportSpriteDamage[0] = 1;
+    assert(candidate(&u,24,8) && builds == 7);
+    assert(u.viewportBoundsWidth > 16);
+    currentLayers.count = 0;
+    assert(!candidate(&u,24,8) && builds == 8 && u.viewportBoundsWidth == 16);
+    return 0;
+}
+"""
+        run_harness(harness.replace("/* PRODUCTION */", production).replace("/* GROUND */", ground))
+
     def test_damage_snapshot_and_foreground_dependencies(self):
         viewport = (ROOT / "src/gui/viewport.c").read_text()
         production = "\n".join(function(viewport, name) for name in (
             "GUI_Widget_Viewport_ReadRow",
+            "GUI_Widget_Viewport_LoadRepairRows",
             "GUI_Widget_Viewport_BeginSpriteDamage",
             "GUI_Widget_Viewport_SpriteDamageRect",
             "GUI_Widget_Viewport_ShouldDrawSprite",
@@ -36,6 +176,7 @@ typedef int16_t int16;
 #define max(a,b) ((a) > (b) ? (a) : (b))
 static bool s_viewportSpriteFilterActive, s_viewportSpriteNeedsRedraw;
 static uint16 s_viewportSpriteDamage[10], g_viewportPosition;
+static uint16 s_viewportRepairRows[10];
 static uint8 g_dirtyMinimap[512];
 /* PRODUCTION */
 static void tile(unsigned x, unsigned y) {
@@ -43,6 +184,7 @@ static void tile(unsigned x, unsigned y) {
     g_dirtyMinimap[packed >> 3] |= 1u << (packed & 7);
 }
 static void begin(void) {
+    GUI_Widget_Viewport_LoadRepairRows();
     GUI_Widget_Viewport_BeginSpriteDamage(true);
     s_viewportSpriteNeedsRedraw = false;
 }
@@ -59,6 +201,7 @@ int main(void) {
                     assert(s_viewportSpriteDamage[y] == (y == row ? 1u << col : 0));
                 /* Live repair consumption must not remove selection damage. */
                 memset(g_dirtyMinimap, 0, sizeof(g_dirtyMinimap));
+                memset(s_viewportRepairRows, 0, sizeof(s_viewportRepairRows));
                 int left = col * 16, top = 40 + row * 16;
                 assert(!GUI_Widget_Viewport_ShouldDrawSprite(left - 16, top, left, top + 16));
                 assert(!GUI_Widget_Viewport_ShouldDrawSprite(left + 16, top, left + 32, top + 16));
@@ -73,6 +216,7 @@ int main(void) {
     /* A intersects terrain; B only intersects A's publication; C only B's.
      * No live tile bits survive the first terrain repair. */
     memset(g_dirtyMinimap, 0, sizeof(g_dirtyMinimap));
+    memset(s_viewportRepairRows, 0, sizeof(s_viewportRepairRows));
     assert(GUI_Widget_Viewport_ShouldDrawSprite(24, 40, 48, 56));
     assert(GUI_Widget_Viewport_ShouldDrawSprite(40, 40, 64, 56));
     assert(GUI_Widget_Viewport_ShouldDrawSprite(56, 40, 80, 56));

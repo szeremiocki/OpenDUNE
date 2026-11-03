@@ -467,7 +467,9 @@ int main(int argc, char **argv) {
         save = (ROOT / "src/saveload/unit.c").read_text()
         for name in ("Unit_SetOrientation", "Unit_SetAction", "Unit_Damage", "Unit_EnterStructure"):
             self.assertIn("Unit_ClearViewportKey(", function(unit, name), name)
-        self.assertIn("Unit_ClearViewportKey(", function(unit, "Unit_UpdateMap"))
+        update = function(unit, "Unit_UpdateMap")
+        self.assertIn("ViewportCompositeKey_Clear(&unit->viewportKey)", update)
+        self.assertNotIn("Unit_ClearViewportKey(", update)
         for name in ("GameLoop_Unit", "Unit_Rotate", "Unit_SetPosition", "Unit_StartMovement",
                      "Unit_Deviate", "Unit_Deviation_Decrease"):
             self.assertIn("Unit_UpdateMap(", function(unit, name), name)
@@ -496,19 +498,22 @@ const ActionInfo g_table_actionInfo[ACTION_MAX] = {
 };
 Unit *g_unitSelected, *g_scriptCurrentUnit;
 ScriptInfo *g_scriptUnit;
-static Unit g_unitArray[UNIT_INDEX_MAX];
+Unit g_unitArray[UNIT_INDEX_MAX];
 Unit *g_unitFindArray[UNIT_INDEX_MAX];
 uint16 g_unitFindCount;
 static House house;
 static unsigned mapUpdates;
-static uint16 g_validateStrictIfZero;
-static bool g_debugGame;
+uint16 g_validateStrictIfZero;
+bool g_debugGame;
 HouseType g_playerHouseID;
 Tile g_map[64 * 64];
 uint8 g_functions[3][3];
 uint16 g_dirtyUnitCount, g_dirtyAirUnitCount;
 bool Video_Atari_CursorDirect(void) { return true; }
 void Unit_PrepareSpriteChange(Unit *unit, uint16 parts) {
+    assert(unit && parts); unit->viewportBoundsWidth = 0; mapUpdates++;
+}
+void GUI_Widget_Viewport_DamageUnit(Unit *unit, uint16 parts) {
     assert(unit && parts); mapUpdates++;
 }
 House *House_Get_ByIndex(uint8 index) { assert(index == 0); return &house; }
@@ -541,6 +546,7 @@ void Map_UpdateAround(uint16 radius, tile32 position, Unit *unit, uint8 operatio
 static void warm(Unit *unit) {
     assert(unit->o.index < UNIT_INDEX_MAX);
     unit->viewportKey.main = 111;
+    unit->viewportBoundsWidth = 16;
 }
 static bool valid(Unit *unit) { return unit->viewportKey.main != 0; }
 int main(void) {
@@ -558,6 +564,7 @@ int main(void) {
     assert(valid(u) && u->orientation[0].current == 8 && mapUpdates == 0);
     Unit_Rotate(u, 0);
     assert(!valid(u) && u->orientation[0].current == 16 && mapUpdates == 1);
+    assert(!u->viewportBoundsWidth);
     warm(u);
     Unit_Rotate(u, 0);
     assert(valid(u) && u->orientation[0].current == 24 && mapUpdates == 1);
@@ -598,6 +605,7 @@ int main(void) {
     u->o.position.x += 256;
     Unit_UpdateMap(1, u);
     assert(!valid(u));
+    assert(u->viewportBoundsWidth == 16);
     warm(u);
     u->o.flags.s.isNotOnMap = true;
     unsigned before = mapUpdates;
@@ -621,9 +629,11 @@ int main(void) {
     warm(u);
     Unit_Select(other);
     assert(g_unitSelected == other && !valid(u) && !valid(other));
+    assert(!u->viewportBoundsWidth && !other->viewportBoundsWidth);
     warm(other);
     Unit_Select(NULL);
     assert(g_unitSelected == NULL && !valid(other));
+    assert(!other->viewportBoundsWidth);
     warm(u);
     warm(other);
     SaveLoad_UnitSelected(NULL, 20, true);
@@ -643,7 +653,7 @@ int main(void) {
 """
         tile = (ROOT / "src/tile.c").read_text()
         implementations = [
-            function(pool, "Unit_Get_ByIndex"), function(pool, "Unit_Init"),
+            function(pool, "Unit_Init"),
             function(pool, "Unit_Allocate"), function(pool, "Unit_Free"),
             function(tile, "Orientation_Orientation256ToOrientation8"),
             function(tile, "Orientation_Orientation256ToOrientation16"),

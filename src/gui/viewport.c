@@ -87,6 +87,7 @@ static bool s_viewportWasPlanar;
 static bool s_viewportRepairActive;
 static bool s_viewportSpriteFilterActive;
 static bool s_viewportSpriteNeedsRedraw;
+static uint16 s_viewportRepairRows[10];
 static uint16 s_viewportSpriteDamage[10];
 static uint8 s_minimapAppearance[64 * 64];
 static uint8 s_minimapAppearanceValid[64 * 64 / 8];
@@ -138,6 +139,16 @@ static inline void GUI_Widget_Viewport_OrRow(uint8 *bits, uint16 shift, uint16 c
 	if (shift > 1) bits[2] |= (uint8)(word >> 16);
 }
 
+static void GUI_Widget_Viewport_LoadRepairRows(void)
+{
+	uint16 offset = g_viewportPosition >> 3;
+	const uint16 shift = g_viewportPosition & 7;
+	uint16 y;
+
+	for (y = 0; y < 10; y++, offset += 8)
+		s_viewportRepairRows[y] = GUI_Widget_Viewport_ReadRow(&g_dirtyMinimap[offset], shift);
+}
+
 static bool __attribute__((noinline)) GUI_Widget_Viewport_PrepareRows(uint16 fullyFoggedTileID)
 {
 	uint16 packedRow = g_viewportPosition;
@@ -153,6 +164,7 @@ static bool __attribute__((noinline)) GUI_Widget_Viewport_PrepareRows(uint16 ful
 		uint16 terrain = GUI_Widget_Viewport_ReadRow(terrainBits, shift);
 		uint16 promote = 0;
 
+		s_viewportRepairRows[y] = terrain;
 		if ((viewport | terrain) == 0) continue;
 		updateDisplay = true;
 		if (!g_debugScenario) {
@@ -170,24 +182,18 @@ static bool __attribute__((noinline)) GUI_Widget_Viewport_PrepareRows(uint16 ful
 		}
 		GUI_Widget_Viewport_OrRow(viewportBits, shift, terrain & ~viewport);
 		GUI_Widget_Viewport_OrRow(terrainBits, shift, promote);
+		s_viewportRepairRows[y] |= promote;
 	}
 	return updateDisplay;
 }
 
 static void GUI_Widget_Viewport_BeginSpriteDamage(bool active)
 {
-	uint16 y;
-
 	s_viewportSpriteFilterActive = active;
 	s_viewportSpriteNeedsRedraw = true;
 	if (!active) return;
-	for (y = 0; y < 10; y++) {
-		uint16 packed = g_viewportPosition + (y << 6);
-		const uint8 *bits = &g_dirtyMinimap[packed >> 3];
-		uint16 shift = packed & 7;
-		/* RepairTiles consumes the live bits; retain the original damage. */
-		s_viewportSpriteDamage[y] = GUI_Widget_Viewport_ReadRow(bits, shift);
-	}
+	/* RepairTiles consumes pending rows; preserve the original sprite damage. */
+	memcpy(s_viewportSpriteDamage, s_viewportRepairRows, sizeof(s_viewportSpriteDamage));
 }
 
 static bool GUI_Widget_Viewport_SpriteDamageRect(int16 left, int16 top, int16 right, int16 bottom, bool redraw)
@@ -241,31 +247,44 @@ static bool GUI_Widget_Viewport_SpriteDamageFree(int16 left, int16 top, int16 ri
 
 /* Same bounds GUI_ViewportPlanarSprite() hands to ShouldDrawSprite() for a
  * centred, widget-positioned unit with layers. */
-static bool GUI_Widget_Viewport_UnitDamageFree(int16 x, int16 y, uint16 index,
-                                               const GUI_SpriteLayers *layers)
+static void GUI_Widget_Viewport_UpdateUnitBounds(Unit *unit, uint16 index,
+                                                 const GUI_SpriteLayers *layers)
 {
 	const uint8 *sprite = g_sprites[index];
 	int16 width = READ_LE_UINT16(sprite + 3), height = sprite[2];
 	int16 left, top, right, bottom, i;
 
-	x += g_widgetProperties[2].xBase << 3;
-	y += g_widgetProperties[2].yBase;
-	left = x - width / 2;
-	top = y - height / 2;
+	left = -width / 2;
+	top = -height / 2;
 	right = left + width;
 	bottom = top + height;
 	for (i = 0; i < layers->count; i++) {
 		const GUI_SpriteLayer *layer = &layers->layer[i];
 		const uint8 *layerSprite = g_sprites[layer->spriteID];
 		int16 layerWidth = READ_LE_UINT16(layerSprite + 3), layerHeight = layerSprite[2];
-		int16 layerLeft = x + layer->offsetX - layerWidth / 2;
-		int16 layerTop = y + layer->offsetY - layerHeight / 2;
+		int16 layerLeft = layer->offsetX - layerWidth / 2;
+		int16 layerTop = layer->offsetY - layerHeight / 2;
 		left = min(left, layerLeft);
 		top = min(top, layerTop);
 		right = max(right, (int16)(layerLeft + layerWidth));
 		bottom = max(bottom, (int16)(layerTop + layerHeight));
 	}
-	return GUI_Widget_Viewport_SpriteDamageFree(left, top, right, bottom);
+	assert(left >= -128 && left <= 127 && top >= -128 && top <= 127);
+	assert(right > left && right - left <= 80 && bottom > top && bottom - top <= 64);
+	unit->viewportBoundsLeft = (int8)left;
+	unit->viewportBoundsTop = (int8)top;
+	unit->viewportBoundsHeight = (uint8)(bottom - top);
+	unit->viewportBoundsWidth = (uint8)(right - left);
+}
+
+static bool GUI_Widget_Viewport_UnitDamageFree(const Unit *unit, int16 x, int16 y)
+{
+	int16 left = x + (g_widgetProperties[2].xBase << 3) + unit->viewportBoundsLeft;
+	int16 top = y + g_widgetProperties[2].yBase + unit->viewportBoundsTop;
+
+	assert(unit->viewportBoundsWidth != 0);
+	return GUI_Widget_Viewport_SpriteDamageFree(left, top,
+	    left + unit->viewportBoundsWidth, top + unit->viewportBoundsHeight);
 }
 
 bool GUI_Widget_Viewport_ShouldDrawSprite(int16 left, int16 top, int16 right, int16 bottom)
@@ -334,7 +353,7 @@ static void GUI_Widget_Viewport_PrepareSelection(void)
 
 void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 bottom)
 {
-	uint16 x, y, first, end;
+	uint16 x, y, first, end, endMask, firstColumn;
 	uint16 fullyFoggedTileID;
 
 	if (!s_viewportRepairActive) return;
@@ -345,18 +364,18 @@ void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 b
 	if (left >= right || top >= bottom) return;
 	first = left >> 4;
 	end = (right + 15) >> 4;
+	endMask = 0xffffu >> (16 - end);
+	firstColumn = 1u << first;
 	fullyFoggedTileID = g_iconMap[g_iconMap[ICM_ICONGROUP_FOG_OF_WAR] + 15];
 
 	for (y = (top - 40) >> 4; y < (bottom - 40 + 15) >> 4; y++) {
 		uint16 packedRow = g_viewportPosition + (y << 6);
-		const uint8 *bits = &g_dirtyMinimap[packedRow >> 3];
-		uint16 shift = packedRow & 7;
-		uint16 remaining;
+		uint16 remaining, column = firstColumn;
 
-		remaining = GUI_Widget_Viewport_ReadRow(bits, shift) >> first;
+		remaining = (s_viewportRepairRows[y] & endMask) >> first;
 		if (remaining == 0) continue;
 
-		for (x = first; x < end && remaining != 0; x++, remaining >>= 1) {
+		for (x = first; remaining != 0; x++, remaining >>= 1, column <<= 1) {
 			uint16 packed;
 			if ((remaining & 1) == 0) continue;
 			packed = packedRow + x;
@@ -365,6 +384,7 @@ void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 b
 
 			/* Consume before drawing: later foreground must not restore
 			 * this tile again and erase an earlier foreground draw. */
+			s_viewportRepairRows[y] &= (uint16)~column;
 			BitArray_Clear(g_dirtyMinimap, packed);
 			t = &g_map[packed];
 			if (s_viewportSelectionTiles[y][x] != 0) {
@@ -1153,6 +1173,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 	static uint16 dirtyColumns[10];
 	bool directViewport = Video_Atari_CursorDirect();
 	bool planarViewport = directViewport;
+	bool repairRowsPrepared = false;
 	assert(!planarViewport || (!drawToMainScreen && GFX_PlanarTilesReady() && GUI_ViewportSpriteCacheReady()));
 	trackCopyDamage = !planarViewport;
 	if (planarViewport != s_viewportWasPlanar || (planarViewport && hasScrolled && !planarShifted)) {
@@ -1193,6 +1214,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 #ifdef TOS
 		if (planarViewport && !forceRedraw) {
 			if (GUI_Widget_Viewport_PrepareRows(fullyFoggedTileID)) updateDisplay = true;
+			repairRowsPrepared = true;
 		} else
 #endif
 		for (y = 0; y < 10; y++) {
@@ -1279,6 +1301,8 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 	}
 
 #ifdef TOS
+	/* Selection/cursor invalidation is complete before foreground repair starts. */
+	if (planarViewport && !repairRowsPrepared) GUI_Widget_Viewport_LoadRepairRows();
 	GUI_Widget_Viewport_BeginSpriteDamage(planarViewport && !forceRedraw && !hasScrolled);
 #endif
 
@@ -1403,11 +1427,18 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 			x += g_table_tilediff[0][u->wobbleIndex].x;
 			y += g_table_tilediff[0][u->wobbleIndex].y;
 
+#ifdef TOS
+			bool boundsReady = u->o.type != UNIT_HARVESTER && u->viewportBoundsWidth != 0;
+			if (boundsReady && GUI_Widget_Viewport_UnitDamageFree(u, x, y)) continue;
+#endif
 			spriteFlags = 0;
 			layers.count = 0;
 			index = GUI_Widget_Viewport_GroundSprites(u, &spriteFlags, &layers, UNIT_SPRITE_ALL);
 #ifdef TOS
-			if (GUI_Widget_Viewport_UnitDamageFree(x, y, index, &layers)) continue;
+			if (!boundsReady) {
+				GUI_Widget_Viewport_UpdateUnitBounds(u, index, &layers);
+				if (GUI_Widget_Viewport_UnitDamageFree(u, x, y)) continue;
+			}
 #endif
 
 			bodyHouse = (u->deviated != 0) ? u->deviatedHouse : Unit_GetHouseID(u);

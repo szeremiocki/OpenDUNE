@@ -132,7 +132,9 @@ static void Unit_MovementTick(Unit *unit)
 #ifdef TOS
 void Unit_PrepareSpriteChange(Unit *unit, uint16 parts)
 {
-	if (unit == NULL || !unit->o.flags.s.used || unit->o.flags.s.isNotOnMap) return;
+	if (unit == NULL) return;
+	unit->viewportBoundsWidth = 0;
+	if (!unit->o.flags.s.used || unit->o.flags.s.isNotOnMap) return;
 	if (unit->o.position.x == 0 && unit->o.position.y == 0) return;
 	if (Video_Atari_CursorDirect()) GUI_Widget_Viewport_DamageUnit(unit, parts);
 }
@@ -1915,6 +1917,7 @@ void Unit_Select(Unit *unit)
 		GUI_DisplayHint(ui->o.hintStringID, ui->o.spriteID);
 	}
 
+	Unit_ClearViewportKey(unit);
 	if (g_unitSelected != NULL) {
 		if (g_unitSelected != unit) Unit_DisplayStatusText(unit);
 
@@ -2665,7 +2668,10 @@ void Unit_UpdateMap(uint16 type, Unit *unit)
 	bool markViewport;
 
 	if (unit == NULL) return;
-	Unit_ClearViewportKey(unit);
+#ifdef TOS
+	/* Movement changes the image key, not the centre-relative footprint. */
+	ViewportCompositeKey_Clear(&unit->viewportKey);
+#endif
 	if (unit->o.flags.s.isNotOnMap || !unit->o.flags.s.used) return;
 
 	assert(type <= UNIT_UPDATE_MAP_REMOVE_PREPARED);
@@ -2682,7 +2688,8 @@ void Unit_UpdateMap(uint16 type, Unit *unit)
 
 #ifdef TOS
 	if ((type == UNIT_UPDATE_MAP_REDRAW || (type == UNIT_UPDATE_MAP_REMOVE && !removalPrepared)) &&
-	    Video_Atari_CursorDirect()) Unit_PrepareSpriteChange(unit, UNIT_SPRITE_ALL);
+	    Video_Atari_CursorDirect() && (unit->o.position.x != 0 || unit->o.position.y != 0))
+		GUI_Widget_Viewport_DamageUnit(unit, UNIT_SPRITE_ALL);
 #endif
 	if (ui->movementType == MOVEMENT_WINGER) {
 		if (type == UNIT_UPDATE_MAP_STATE) return;

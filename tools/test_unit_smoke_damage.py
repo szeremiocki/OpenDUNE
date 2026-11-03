@@ -71,6 +71,7 @@ static bool direct = true, visible = true;
 static unsigned added, removed, occupancy;
 static bool Video_Atari_CursorDirect(void) { return direct; }
 void Unit_PrepareSpriteChange(Unit *unit, uint16 parts) { (void)unit; (void)parts; }
+void GUI_Widget_Viewport_DamageUnit(Unit *unit, uint16 parts) { (void)unit; (void)parts; }
 static bool Map_IsTileVisible(uint16 packed) { assert(packed < 4096); return visible; }
 void Unit_HouseUnitCount_Add(Unit *unit, uint8 houseID) {
     assert(unit && houseID == g_playerHouseID); added++;
@@ -93,9 +94,11 @@ static void clear(void) {
 static void check(Unit *u, unsigned width, unsigned height) {
     clear();
     u->viewportKey.main = 123;
+    u->viewportBoundsWidth = 16;
     u->o.flags.s.isDirty = false;
     Unit_UpdateSmokeDamage(u);
     assert(!u->viewportKey.main && u->o.flags.s.isDirty && g_dirtyUnitCount == 1);
+    assert(!u->viewportBoundsWidth);
     assert(!occupancy);
     int cx = (u->o.position.x >> 4) + (int16)g_table_tilediff[0][u->wobbleIndex].x;
     int cy = (u->o.position.y >> 4) + (int16)g_table_tilediff[0][u->wobbleIndex].y - 14;

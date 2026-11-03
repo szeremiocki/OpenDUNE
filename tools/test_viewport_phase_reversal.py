@@ -173,6 +173,7 @@ static Tile g_map[4096];
 static uint8 g_dirtyViewport[512], g_dirtyMinimap[512];
 static uint16 g_viewportPosition, g_veiledTileID = 98;
 static bool g_debugScenario;
+static uint16 s_viewportRepairRows[10];
 /* PRODUCTION */
 static uint32 randomState = 123;
 static uint32 next(void) {
@@ -264,6 +265,13 @@ int main(void) {
                     assert(GUI_Widget_Viewport_PrepareRows(99) == expected);
                     assert(memcmp(g_dirtyViewport, expectedViewport, 512) == 0);
                     assert(memcmp(g_dirtyMinimap, expectedTerrain, 512) == 0);
+                    for (unsigned y = 0; y < 10; y++) {
+                        uint16 expectedRow = 0;
+                        for (unsigned x = 0; x < 15; x++)
+                            if (test(expectedTerrain, g_viewportPosition + y * 64 + x))
+                                expectedRow |= 1u << x;
+                        assert(s_viewportRepairRows[y] == expectedRow);
+                    }
                 }
     return 0;
 }
@@ -568,8 +576,8 @@ int main(void) {
     def test_hidden_tile_damage_gate(self):
         viewport = (ROOT / "src/gui/viewport.c").read_text()
         start = viewport.index("\tif (g_dirtyViewportCount != 0 || forceRedraw) {")
-        terrain = viewport[start:viewport.index(
-            "\n#ifdef TOS\n\tGUI_Widget_Viewport_BeginSpriteDamage", start)]
+        begin_damage = viewport.index("GUI_Widget_Viewport_BeginSpriteDamage", start)
+        terrain = viewport[start:viewport.rfind("\n#ifdef TOS", start, begin_damage)]
         harness = r"""
 #include <assert.h>
 #include <stdbool.h>
@@ -588,6 +596,7 @@ static uint8 g_dirtyViewport[512], g_dirtyMinimap[512], screen[200][320];
 static uint16 g_dirtyViewportCount, g_viewportPosition, g_veiledTileID = 98;
 static uint16 g_iconMap[32] = {[1] = 16, [31] = 99};
 static bool g_debugScenario, s_viewportRepairActive;
+static uint16 s_viewportRepairRows[10];
 static uint8 s_viewportSelectionTiles[10][15], s_viewportSelectionPen;
 static void GFX_DrawPlanarSelectionTile(uint16 id, uint16 overlay, uint16 x, uint16 y,
                                         uint8 house, uint8 selection, uint8 pen) {
@@ -609,7 +618,9 @@ static void GFX_DrawPlanarTile(uint16 tile, uint16 x, uint16 y, uint8 house) {
     assert(!BitArray_Test(g_dirtyMinimap, g_viewportPosition + Tile_PackXY(x >> 4, (y - 40) >> 4)));
     GFX_DrawTile(tile, x, y, house);
 }
-static void GFX_DrawPlanarTileFogged(uint16 tile, uint16 fog, uint16 x, uint16 y, uint8 house) {
+static void GFX_DrawPlanarTileFogged(uint16 tile, uint16 fog, uint16 x, uint16 y, uint8 house,
+                                    uint16 packed) {
+    (void)packed;
     assert(fog == 97);
     (void)house; partialDraws++;
     for (unsigned row = y; row < y + 16; row++)
@@ -619,6 +630,17 @@ static void GFX_DrawPlanarFogTile(uint16 x, uint16 y) {
     assert(!BitArray_Test(g_dirtyMinimap, g_viewportPosition + Tile_PackXY(x >> 4, (y - 40) >> 4)));
     fogDraws++; paint(x, y, 12);
 }
+static void GFX_DrawPlanarViewportFog(uint16 col, uint16 row) {
+    GFX_DrawPlanarFogTile(col * 16, 40 + row * 16);
+}
+static bool GFX_DrawViewportTileFast(uint16 id, uint16 col, uint16 row, uint8 house) {
+    GFX_DrawPlanarTile(id, col * 16, 40 + row * 16, house);
+    return true;
+}
+static void GFX_DrawPlanarViewportTile(uint16 id, uint16 overlay, uint16 col, uint16 row,
+                                      uint8 house, uint16 packed) {
+    GFX_DrawPlanarTileFogged(id, overlay, col * 16, 40 + row * 16, house, packed);
+}
 static void GUI_DrawFilledRectangle(uint16 l, uint16 t, uint16 r, uint16 b, uint8 c) {
     assert(r == l + 15 && b == t + 15 && c == 12);
     filledDraws++; paint(l, t, c);
@@ -626,6 +648,7 @@ static void GUI_DrawFilledRectangle(uint16 l, uint16 t, uint16 r, uint16 b, uint
 /* REPAIR */
 static bool scan(bool planarViewport, bool forceRedraw) {
     bool drawToMainScreen = true, updateDisplay = forceRedraw;
+    bool repairRowsPrepared = false;
     bool trackCopyDamage = !planarViewport;
     uint16 x, y, curPos, fullyFoggedTileID = 99;
     int16 minX[10], maxX[10];
@@ -637,6 +660,7 @@ static bool scan(bool planarViewport, bool forceRedraw) {
     }
     s_viewportRepairActive = planarViewport;
     /* TERRAIN */
+    if (planarViewport && !repairRowsPrepared) GUI_Widget_Viewport_LoadRepairRows();
     for (y = 0; y < 10; y++) {
         if (planarViewport) {
             assert(minX[y] == 0x5a5a && maxX[y] == 0x5a5a);
@@ -735,6 +759,7 @@ int main(void) {
         harness = harness.replace("/* REPAIR */", "\n".join(
             function(viewport, name) for name in (
                 "GUI_Widget_Viewport_ReadRow", "GUI_Widget_Viewport_OrRow",
+                "GUI_Widget_Viewport_LoadRepairRows",
                 "GUI_Widget_Viewport_PrepareRows", "GUI_Widget_Viewport_RepairTiles")))
         with tempfile.TemporaryDirectory(prefix="viewport-fog-damage-") as directory:
             source = Path(directory) / "test.c"
@@ -864,6 +889,7 @@ typedef struct { uint16 groundTileID, overlayTileID; uint8 houseID; } Tile;
 #define max(a,b) ((a) > (b) ? (a) : (b))
 #define ICM_ICONGROUP_FOG_OF_WAR 1
 static bool s_viewportRepairActive, g_debugScenario;
+static uint16 s_viewportRepairRows[10];
 static uint8 s_viewportSelectionTiles[10][15], s_viewportSelectionPen;
 static void GFX_DrawPlanarSelectionTile(uint16 id, uint16 overlay, uint16 x, uint16 y,
                                         uint8 house, uint8 selection, uint8 pen) {
@@ -874,7 +900,7 @@ static uint16 g_viewportPosition, g_veiledTileID = 98, g_iconMap[32];
 static uint8 g_dirtyMinimap[512], g_dirtyViewport[512];
 static Tile g_map[4096];
 static uint8 screen[200][320], expected[200][320];
-static unsigned repaired[150], fogged, filled, draws;
+static unsigned repaired[150], fogged, filled, draws, rowReads;
 static bool BitArray_Test(const uint8 *bits, uint16 p) { return (bits[p >> 3] >> (p & 7)) & 1; }
 static void BitArray_Set(uint8 *bits, uint16 p) { bits[p >> 3] |= 1u << (p & 7); }
 static void BitArray_Clear(uint8 *bits, uint16 p) { bits[p >> 3] &= ~(1u << (p & 7)); }
@@ -883,6 +909,7 @@ static void tile(uint16 x, uint16 y, uint8 colour) {
     assert(!(x & 15) && x < 240 && y >= 40 && !((y - 40) & 15) && y < 200);
     uint16 packed = g_viewportPosition + Tile_PackXY(x >> 4, (y - 40) >> 4);
     assert(!BitArray_Test(g_dirtyMinimap, packed));
+    assert(!(s_viewportRepairRows[(y - 40) >> 4] & (1u << (x >> 4))));
     for (uint16 row = y; row < y + 16; row++) memset(screen[row] + x, colour, 16);
     draws++;
 }
@@ -899,6 +926,18 @@ static void GFX_DrawPlanarTileFogged(uint16 id, uint16 overlay, uint16 x, uint16
 static void GFX_DrawPlanarFogTile(uint16 x, uint16 y) {
     filled++;
     tile(x, y, 12);
+}
+static void GFX_DrawPlanarViewportFog(uint16 col, uint16 row) {
+    GFX_DrawPlanarFogTile(col * 16, 40 + row * 16);
+}
+static bool GFX_DrawViewportTileFast(uint16 id, uint16 col, uint16 row, uint8 house) {
+    GFX_DrawPlanarTile(id, col * 16, 40 + row * 16, house);
+    return true;
+}
+static void GFX_DrawPlanarViewportTile(uint16 id, uint16 overlay, uint16 col, uint16 row,
+                                      uint8 house, uint16 packed) {
+    (void)packed;
+    GFX_DrawPlanarTileFogged(id, overlay, col * 16, 40 + row * 16, house);
 }
 /* REPAIR */
 static void reset(void) {
@@ -918,6 +957,7 @@ static void reset(void) {
         g_map[p].groundTileID = 7;
         BitArray_Set(g_dirtyMinimap, p);
     }
+    GUI_Widget_Viewport_LoadRepairRows();
 }
 static void sprite(int16 l, int16 t, int16 r, int16 b, uint8 colour) {
     GUI_Widget_Viewport_RepairTiles(l, t, r, b);
@@ -926,8 +966,10 @@ static void sprite(int16 l, int16 t, int16 r, int16 b, uint8 colour) {
             if ((x + y + colour) % 3) screen[y][x] = expected[y][x] = colour;
 }
 static void compare(void) {
+    unsigned reads = rowReads;
     GUI_Widget_Viewport_RepairTiles(0, 40, 240, 200);
     assert(draws == 150);
+    assert(rowReads == reads);
     for (unsigned y = 0; y < 200; y++) for (unsigned x = 0; x < 320; x++) {
         if (y >= 40 && x < 240) assert(screen[y][x] == expected[y][x]);
         else assert(screen[y][x] == 88);
@@ -967,15 +1009,18 @@ int main(void) {
     memset(g_dirtyMinimap, 0, sizeof(g_dirtyMinimap));
     BitArray_Set(g_dirtyMinimap, p);
     g_map[p].overlayTileID = 97;
+    GUI_Widget_Viewport_LoadRepairRows();
     GUI_Widget_Viewport_RepairTiles(0, 40, 16, 56);
     assert(fogged == 1 && screen[40][0] == 97);
     BitArray_Set(g_dirtyMinimap, p);
     g_map[p].overlayTileID = 98;
+    GUI_Widget_Viewport_LoadRepairRows();
     GUI_Widget_Viewport_RepairTiles(0, 40, 16, 56);
     assert(filled == 1 && screen[40][0] == 12 && !BitArray_Test(g_dirtyMinimap, p));
     for (unsigned id = 98; id <= 99; id++) {
         BitArray_Set(g_dirtyMinimap, p);
         g_map[p].overlayTileID = id;
+        GUI_Widget_Viewport_LoadRepairRows();
         GUI_Widget_Viewport_RepairTiles(0, 40, 16, 56);
         assert(screen[40][0] == 12);
     }
@@ -984,6 +1029,7 @@ int main(void) {
     memset(g_dirtyMinimap, 0, sizeof(g_dirtyMinimap));
     BitArray_Set(g_dirtyMinimap, g_viewportPosition);
     g_map[g_viewportPosition].overlayTileID = 9;
+    GUI_Widget_Viewport_LoadRepairRows();
     GUI_Widget_Viewport_RepairTiles(0, 40, 16, 56);
     assert(draws == 1 && fogged == 1 && screen[40][0] == 9);
     reset();
@@ -998,6 +1044,7 @@ int main(void) {
         memset(g_dirtyMinimap, 0, sizeof(g_dirtyMinimap));
         for (unsigned row = 0; row < 10; row++) for (unsigned col = 0; col < 15; col++)
             g_map[g_viewportPosition + Tile_PackXY(col, row)].groundTileID = 7;
+        GUI_Widget_Viewport_LoadRepairRows();
         GUI_Widget_Viewport_RepairTiles(0, 40, 240, 200);
         assert(draws == 0);
         uint16 rowBase = g_viewportPosition + Tile_PackXY(0, 9);
@@ -1006,6 +1053,7 @@ int main(void) {
         BitArray_Set(g_dirtyMinimap, rowBase + 14);
         if (origin != 0) BitArray_Set(g_dirtyMinimap, rowBase - 1);
         if (origin < 49) BitArray_Set(g_dirtyMinimap, rowBase + 15);
+        GUI_Widget_Viewport_LoadRepairRows();
         /* Restrict repair to columns 1-3; leave the other set bits intact. */
         GUI_Widget_Viewport_RepairTiles(16, 184, 64, 200);
         assert(draws == 1 && screen[184][32] == 7);
@@ -1024,9 +1072,11 @@ int main(void) {
     return 0;
 }
 """
-        harness = harness.replace(
-            "/* REPAIR */", "\n".join(function(viewport, name) for name in (
-                "GUI_Widget_Viewport_ReadRow", "GUI_Widget_Viewport_RepairTiles")))
+        read_row = function(viewport, "GUI_Widget_Viewport_ReadRow")
+        read_row = read_row.replace("\n{\n", "\n{\n    rowReads++;\n", 1)
+        harness = harness.replace("/* REPAIR */", read_row + "\n" + "\n".join(
+            function(viewport, name) for name in (
+                "GUI_Widget_Viewport_LoadRepairRows", "GUI_Widget_Viewport_RepairTiles")))
         with tempfile.TemporaryDirectory(prefix="viewport-phase-reversal-") as directory:
             source = Path(directory) / "test.c"
             binary = Path(directory) / "test"

@@ -123,7 +123,9 @@ static void check(Unit *u, uint16 parts, uint16 id, int dx, int dy) {
         assert(actual == id);
     }
     expectedSprite(expected,id,u->o.position,dx,dy);
+    u->viewportBoundsWidth = 16;
     clearDamage(); Unit_PrepareSpriteChange(u,parts);
+    assert(u->viewportBoundsWidth == 0);
     assert(!memcmp(expected,g_dirtyMinimap,512));
     /* Existing Map_Update(0) halo remains, separately from terrain repair. */
     for (unsigned i = 0; i < 4096; i++) if (BitArray_Test(expected,i)) {

@@ -181,6 +181,8 @@ typedef struct Unit {
 	tile32 distanceFrom;                                    /*!< Unit position of the memoized structure distance. */
 	uint16 distanceEncoded;                                 /*!< Encoded structure of the memoized distance, 0 if unset. */
 	uint16 distanceValue;                                   /*!< Memoized Object_GetDistanceToEncoded result. */
+	int8 viewportBoundsLeft, viewportBoundsTop;
+	uint8 viewportBoundsWidth, viewportBoundsHeight;         /*!< Zero width invalidates the centre-relative sprite footprint. */
 #endif
 } Unit;
 
@@ -188,6 +190,7 @@ static inline void Unit_ClearViewportKey(Unit *unit)
 {
 #ifdef TOS
 	ViewportCompositeKey_Clear(&unit->viewportKey);
+	unit->viewportBoundsWidth = 0;
 #else
 	(void)unit;
 #endif

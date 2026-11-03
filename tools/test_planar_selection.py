@@ -269,6 +269,7 @@ static uint16 g_viewportPosition, g_selectionRectanglePosition;
 static uint16 g_selectionWidth = 1, g_selectionHeight = 1, g_selectionType;
 static uint16 g_veiledTileID = 98, g_iconMap[32] = {[1] = 16, [31] = 99};
 static bool g_debugScenario, s_viewportRepairActive = true, structure = true;
+static uint16 s_viewportRepairRows[10];
 static void *g_unitSelected;
 static uint8 currentPen = 15;
 static unsigned updates, draws, selectedDraws, lastOverlay;
@@ -300,6 +301,18 @@ static void GFX_DrawPlanarTileFogged(uint16 id, uint16 fog, uint16 x, uint16 y, 
     (void)id; (void)fog; (void)house; paint(x, y, 12);
 }
 static void GFX_DrawPlanarFogTile(uint16 x, uint16 y) { paint(x, y, 12); }
+static void GFX_DrawPlanarViewportFog(uint16 col, uint16 row) {
+    GFX_DrawPlanarFogTile(col * 16, 40 + row * 16);
+}
+static bool GFX_DrawViewportTileFast(uint16 id, uint16 col, uint16 row, uint8 house) {
+    GFX_DrawPlanarTile(id, col * 16, 40 + row * 16, house);
+    return true;
+}
+static void GFX_DrawPlanarViewportTile(uint16 id, uint16 overlay, uint16 col, uint16 row,
+                                      uint8 house, uint16 packed) {
+    (void)packed;
+    GFX_DrawPlanarTileFogged(id, overlay, col * 16, 40 + row * 16, house);
+}
 static void GFX_DrawPlanarSelectionTile(uint16 id, uint16 overlay, uint16 x, uint16 y,
                                        uint8 house, uint8 token, uint8 pen) {
     assert(house == 2);
@@ -313,7 +326,10 @@ static void GFX_DrawPlanarSelectionTile(uint16 id, uint16 overlay, uint16 x, uin
     }
 }
 /* FUNCTIONS */
-static void repair(void) { GUI_Widget_Viewport_RepairTiles(0, 40, 240, 200); }
+static void repair(void) {
+    GUI_Widget_Viewport_LoadRepairRows();
+    GUI_Widget_Viewport_RepairTiles(0, 40, 240, 200);
+}
 static void check(int left, int top, unsigned w, unsigned h, bool active) {
     for (int y = 0; y < 160; y++) for (int x = 0; x < 240; x++) {
         bool edge = active && x >= left && x < left + (int)w * 16 &&
@@ -409,7 +425,8 @@ int main(void) {
 """
         harness = harness.replace("/* STATE */", state).replace(
             "/* FUNCTIONS */", "\n".join(function(viewport, name) for name in (
-                "GUI_Widget_Viewport_ReadRow", "GUI_Widget_Viewport_PrepareSelection",
+                "GUI_Widget_Viewport_ReadRow", "GUI_Widget_Viewport_LoadRepairRows",
+                "GUI_Widget_Viewport_PrepareSelection",
                 "GUI_Widget_Viewport_RepairTiles")))
         with tempfile.TemporaryDirectory(prefix="planar-selection-") as directory:
             source = Path(directory) / "test.c"
