@@ -2,7 +2,7 @@
 
 import unittest
 
-from tools.test_unit_smoke_damage import ROOT, run_harness
+from tools.test_unit_smoke_damage import ROOT, run_harness, world_damage_production
 from tools.test_viewport_sprite_cache import function
 
 
@@ -60,9 +60,10 @@ static void expectedSprite(uint8 *expected, uint16 id, tile32 position, int dx, 
 def map_production():
     source = (ROOT / "src/map.c").read_text()
     sprites = (ROOT / "src/sprites.c").read_text()
-    return "\n".join(function(text, name) for text, name in [
+    return world_damage_production(source, "Map_Update") + "\n" + "\n".join(
+        function(text, name) for text, name in [
         (sprites, "Sprite_GetWidth"), (sprites, "Sprite_GetHeight"),
-        (source, "Map_Update"), (source, "Map_UpdateSprite"),
+        (source, "Map_UpdateSprite"),
     ])
 
 

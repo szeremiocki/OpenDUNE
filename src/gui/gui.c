@@ -7020,6 +7020,9 @@ void GUI_DrawScreen(Screen screenID)
 	bool viewportPlanarShifted = false;
 	Screen oldScreenID;
 	uint16 xpos;
+#ifdef TOS
+	bool nativeViewport = Video_Atari_CursorDirect();
+#endif
 
 	if (g_selectionType == SELECTIONTYPE_MENTAT) return;
 	if (g_selectionType == SELECTIONTYPE_DEBUG) return;
@@ -7030,6 +7033,9 @@ void GUI_DrawScreen(Screen screenID)
 
 	if (!GFX_Screen_IsActive(SCREEN_0)) g_viewport_forceRedraw = true;
 
+#ifdef TOS
+	if (nativeViewport) Map_SetViewportDamagePosition(g_minimapPosition);
+#endif
 	Explosion_Tick();
 	Animation_Tick();
 	Unit_Sort();
@@ -7084,6 +7090,9 @@ void GUI_DrawScreen(Screen screenID)
 		xOffset = max(0, xOffset);
 		yOffset = max(0, yOffset);
 
+#ifdef TOS
+		if (nativeViewport) Map_SetViewportDamagePosition(g_viewportPosition);
+#endif
 		for (y = 0; y < 10; y++) {
 			uint16 mapYBase = (y + viewportY) << 6;
 
@@ -7105,6 +7114,9 @@ void GUI_DrawScreen(Screen screenID)
 		}
 	}
 
+#ifdef TOS
+	if (nativeViewport) Map_SetViewportDamagePosition(g_viewportPosition);
+#endif
 	if (hasScrolled) {
 		Map_SetSelectionObjectPosition(0xFFFF);
 
@@ -7114,6 +7126,12 @@ void GUI_DrawScreen(Screen screenID)
 		for (xpos = 0; xpos < 14; xpos++) {
 			uint16 v = g_minimapPosition + xpos + 6*64;
 
+#ifdef TOS
+			if (nativeViewport) {
+				Map_Update(v, 4, true);
+				continue;
+			}
+#endif
 			BitArray_Set(g_dirtyViewport, v);
 			BitArray_Set(g_dirtyMinimap, v);
 

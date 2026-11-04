@@ -321,14 +321,23 @@ image. The gameplay IBM palette and quantization are fixed, so hardware
 fades/dimming need no tile-cache rebuild. Tile decoding uses private buffers
 and never writes to the visible screen as scratch.
 
-Non-forced native-planar viewport preparation processes the engine's dirty
-bitmaps as 15-column row masks. Pending background repairs propagate to
-foreground damage in bulk; only viewport-dirty tiles without pending
-background repair are inspected for fully fogged/veiled neighbours that
-must be restored. Clean rows skip tile inspection, and fully terrain-dirty
-rows need none either. Forced redraw and non-ST-family viewports retain the original
-tile traversal. Repair-on-first-touch still consumes the same pending bits;
-sprite filtering retains a snapshot of that damage before repairs begin.
+ST/STE presentation damage is marked directly into viewport-relative words:
+ten 15-bit terrain rows and padded candidate rows covering the unit visibility
+border (including offscreen sprite centres). Native marking and drawing do not
+decode or mirror the legacy map-wide dirty bitmaps. World coordinates,
+unit/tile registration and minimap bookkeeping remain unchanged.
+Candidate tests use a 64-entry world-column-to-local-mask table and a cached
+top row, rebuilt only when the damage origin changes. No per-unit sidecar is
+needed. Unchanged-origin synchronisation is an inline comparison, avoiding
+the slow rebaser's stack frame.
+
+Pending background repairs propagate to foreground damage in bulk; only
+candidate tiles without pending background repair need fog inspection.
+Repair-on-first-touch consumes pending terrain bits, while sprite filtering
+retains an independent snapshot. Forced redraw fills the local terrain rows.
+Scrolling rebases pending masks from the old displayed origin before new
+edge tiles are marked; newly exposed edges are reconstructed from map state.
+Non-ST-family viewports retain the original map-wide dirty-bit traversal.
 
 Smoke animation on ST/STE marks terrain repair only over the tile-rounded
 union of the three smoke-frame bounds, at the rendered offset (including

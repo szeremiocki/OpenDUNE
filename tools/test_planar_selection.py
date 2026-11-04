@@ -16,6 +16,11 @@ ROOT = Path(__file__).resolve().parents[1]
 class PlanarSelectionTest(unittest.TestCase):
     def test_outline_damage_owner_and_bookkeeping(self):
         map_source = (ROOT / "src/map.c").read_text()
+        map_header = (ROOT / "src/map.h").read_text()
+        local = function(map_source, "Map_UpdateViewportCandidateColumns") + "\n"
+        local += "\n".join(function(map_header, name) for name in (
+            "Map_ViewportCandidateMask", "Map_MarkViewportCandidate",
+            "Map_ViewportCandidateDirty"))
         viewport = (ROOT / "src/gui/viewport.c").read_text()
         state = viewport[viewport.index("static uint8 s_viewportSelectionTiles"):
                          viewport.index("\nstatic void GUI_Widget_Viewport_PrepareSelection")]
@@ -28,6 +33,7 @@ class PlanarSelectionTest(unittest.TestCase):
 typedef uint8_t uint8;
 typedef uint16_t uint16;
 typedef int16_t int16;
+typedef uint32_t uint32;
 #define SELECTIONTYPE_PLACE 3
 #define GFX_SELECTION_TOP 0x10
 #define GFX_SELECTION_BOTTOM 0x20
@@ -40,6 +46,11 @@ static unsigned g_dirtyViewportCount, requests;
 static bool g_selectionRectangleNeedRepaint;
 static bool direct;
 #ifdef TOS
+static uint16 g_viewportDamagePosition = 20 * 64 + 20, g_viewportTerrainDamage[10];
+static uint16 g_viewportCandidateTop;
+static uint32 g_viewportCandidateDamage[13], g_viewportCandidateColumns[64];
+static bool Video_Atari_CursorDirect(void);
+/* LOCAL */
 static uint16 g_selectionRectanglePosition, g_selectionType;
 static bool structure = true;
 static void *g_unitSelected;
@@ -75,6 +86,12 @@ uint16 Map_SetSelectionObjectPosition(uint16 packed);
 static void clear_damage(void) {
     memset(g_dirtyViewport, 0, sizeof(g_dirtyViewport));
     memset(g_dirtyMinimap, 0, sizeof(g_dirtyMinimap));
+#ifdef TOS
+    memset(g_viewportTerrainDamage,0,sizeof(g_viewportTerrainDamage));
+    memset(g_viewportCandidateDamage,0,sizeof(g_viewportCandidateDamage));
+    g_viewportDamagePosition = g_viewportPosition;
+    Map_UpdateViewportCandidateColumns(g_viewportPosition);
+#endif
     g_dirtyViewportCount = requests = 0;
     g_selectionRectangleNeedRepaint = false;
 }
@@ -116,8 +133,8 @@ int main(void) {
         GUI_Widget_Viewport_PrepareSelection();
         assert(requests == 2 * border && g_dirtyViewportCount == 2 * border);
         /* The original type-0 sprite-candidate halo is preserved. */
-        assert(BitArray_Test(g_dirtyViewport, a - 65));
-        assert(BitArray_Test(g_dirtyViewport, b - 65));
+        assert(Map_ViewportCandidateDirty(a - 65));
+        assert(Map_ViewportCandidateDirty(b - 65));
         clear_damage(); /* Terrain/sprites consume the pre-draw damage. */
         Map_SetSelectionObjectPosition(b);
         assert(requests == 0 && g_dirtyViewportCount == 0);
@@ -223,6 +240,7 @@ int main(void) {
     return 0;
 }
 """
+        harness = harness.replace("/* LOCAL */", local)
         harness = harness.replace("/* MAP_UPDATE */", function(map_source, "Map_Update"))
         harness = harness.replace("/* STATE */", state).replace(
             "/* PREPARE */", function(viewport, "GUI_Widget_Viewport_PrepareSelection"))
@@ -269,14 +287,13 @@ static uint16 g_viewportPosition, g_selectionRectanglePosition;
 static uint16 g_selectionWidth = 1, g_selectionHeight = 1, g_selectionType;
 static uint16 g_veiledTileID = 98, g_iconMap[32] = {[1] = 16, [31] = 99};
 static bool g_debugScenario, s_viewportRepairActive = true, structure = true;
-static uint16 s_viewportRepairRows[10];
+static uint16 g_viewportTerrainDamage[10];
 static void *g_unitSelected;
 static uint8 currentPen = 15;
 static unsigned updates, draws, selectedDraws, lastOverlay;
 /* STATE */
 static bool BitArray_Test(const uint8 *bits, uint16 p) { return (bits[p >> 3] >> (p & 7)) & 1; }
 static void BitArray_Set(uint8 *bits, uint16 p) { assert(p < 4096); bits[p >> 3] |= 1u << (p & 7); }
-static void BitArray_Clear(uint8 *bits, uint16 p) { bits[p >> 3] &= ~(1u << (p & 7)); }
 static uint16 Tile_GetPackedX(uint16 p) { return p & 63; }
 static uint16 Tile_GetPackedY(uint16 p) { return p >> 6; }
 static void *Structure_Get_ByPackedTile(uint16 p) { (void)p; return structure ? g_map : NULL; }
@@ -290,7 +307,8 @@ static void Map_Update(uint16 p, uint16 type, bool invisible) {
 static void paint(uint16 x, uint16 y, uint8 colour) {
     assert(x < 240 && y >= 40 && y < 200);
     uint16 p = g_viewportPosition + ((y - 40) >> 4) * 64 + (x >> 4);
-    assert(!BitArray_Test(g_dirtyMinimap, p));
+    assert(!(g_viewportTerrainDamage[(y - 40) >> 4] & (1u << (x >> 4))));
+    (void)p;
     for (unsigned row = 0; row < 16; row++) memset(screen[y - 40 + row] + x, colour, 16);
     draws++;
 }
@@ -327,8 +345,15 @@ static void GFX_DrawPlanarSelectionTile(uint16 id, uint16 overlay, uint16 x, uin
 }
 /* FUNCTIONS */
 static void repair(void) {
-    GUI_Widget_Viewport_LoadRepairRows();
+    for (unsigned row = 0; row < 10; row++) {
+        g_viewportTerrainDamage[row] = 0;
+        for (unsigned col = 0; col < 15; col++) {
+            unsigned p = g_viewportPosition + row * 64 + col;
+            if (BitArray_Test(g_dirtyMinimap,p)) g_viewportTerrainDamage[row] |= 1u << col;
+        }
+    }
     GUI_Widget_Viewport_RepairTiles(0, 40, 240, 200);
+    memset(g_dirtyMinimap,0,sizeof(g_dirtyMinimap));
 }
 static void check(int left, int top, unsigned w, unsigned h, bool active) {
     for (int y = 0; y < 160; y++) for (int x = 0; x < 240; x++) {
@@ -425,7 +450,6 @@ int main(void) {
 """
         harness = harness.replace("/* STATE */", state).replace(
             "/* FUNCTIONS */", "\n".join(function(viewport, name) for name in (
-                "GUI_Widget_Viewport_ReadRow", "GUI_Widget_Viewport_LoadRepairRows",
                 "GUI_Widget_Viewport_PrepareSelection",
                 "GUI_Widget_Viewport_RepairTiles")))
         with tempfile.TemporaryDirectory(prefix="planar-selection-") as directory:

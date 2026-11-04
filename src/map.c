@@ -42,6 +42,66 @@ uint8 g_displayedMinimap[512];                              /*!< Displayed part 
 uint8 g_dirtyViewport[512];                                 /*!< Dirty tiles of the viewport (must be rendered again). */
 uint8 g_displayedViewport[512];                             /*!< Displayed part of the viewport. */
 
+#ifdef TOS
+uint16 g_viewportDamagePosition = 0xffff;
+uint16 g_viewportTerrainDamage[10];
+uint32 g_viewportCandidateDamage[13];
+uint32 g_viewportCandidateColumns[64];
+uint16 g_viewportCandidateTop;
+
+static void Map_UpdateViewportCandidateColumns(uint16 packed)
+{
+	int16 x = (packed & 63) - 1;
+	uint16 i;
+	uint32 column = 1;
+
+	memset(g_viewportCandidateColumns, 0, sizeof(g_viewportCandidateColumns));
+	for (i = 0; i < 18; i++, x++, column <<= 1) {
+		if (x >= 0 && x < 64) g_viewportCandidateColumns[x] = column;
+	}
+	g_viewportCandidateTop = (packed >> 6) - 1;
+}
+
+void Map_ClearViewportDamage(void)
+{
+	memset(g_viewportTerrainDamage, 0, sizeof(g_viewportTerrainDamage));
+	memset(g_viewportCandidateDamage, 0, sizeof(g_viewportCandidateDamage));
+	Map_SetViewportDamagePosition(g_minimapPosition);
+}
+
+void Map_RebaseViewportDamage(uint16 packed)
+{
+	uint16 terrain[10];
+	uint32 candidates[13];
+	int16 dx, dy, y;
+
+	dx = (packed & 63) - (g_viewportDamagePosition & 63);
+	dy = (packed >> 6) - (g_viewportDamagePosition >> 6);
+	for (y = 0; y < 10; y++) {
+		int16 source = y + dy;
+		uint16 row = source >= 0 && source < 10 ? g_viewportTerrainDamage[source] : 0;
+
+		if (dx <= -15 || dx >= 15) row = 0;
+		else if (dx >= 0) row >>= dx;
+		else row = (uint16)(row << -dx);
+		terrain[y] = row & 0x7fff;
+	}
+	for (y = 0; y < 13; y++) {
+		int16 source = y + dy;
+		uint32 row = source >= 0 && source < 13 ? g_viewportCandidateDamage[source] : 0;
+
+		if (dx <= -18 || dx >= 18) row = 0;
+		else if (dx >= 0) row >>= dx;
+		else row <<= -dx;
+		candidates[y] = row & 0x3ffffUL;
+	}
+	memcpy(g_viewportTerrainDamage, terrain, sizeof(terrain));
+	memcpy(g_viewportCandidateDamage, candidates, sizeof(candidates));
+	Map_UpdateViewportCandidateColumns(packed);
+	g_viewportDamagePosition = packed;
+}
+#endif
+
 uint16 g_changedTilesCount;                                 /*!< Number of changed tiles in #_changedTiles. */
 uint16 g_changedTiles[200];                                 /*!< Array of positions of changed tiles. */
 uint8 g_changedTilesMap[512];                               /*!< Bit array of changed tiles, in order not to loose changes. */
@@ -658,6 +718,57 @@ void Map_Update(uint16 packed, uint16 type, bool ignoreInvisible)
 
 	if (!ignoreInvisible && !Map_IsTileVisible(packed)) return;
 
+#ifdef TOS
+	if (Video_Atari_CursorDirect()) {
+		uint16 x = (packed & 63) - (g_viewportDamagePosition & 63);
+		uint16 y = (packed >> 6) - (g_viewportDamagePosition >> 6);
+		uint16 column = x < 15 && y < 10 ? (uint16)(1u << x) : 0;
+		uint8 i;
+
+		switch (type) {
+			case 1:
+			case 2:
+			case 3:
+				Map_MarkViewportCandidate(packed);
+				return;
+
+			default:
+			case 0:
+				if (column != 0) {
+					uint32 columns;
+
+					if ((g_viewportTerrainDamage[y] & column) != 0) return;
+					g_viewportTerrainDamage[y] |= column;
+					columns = (uint32)column * 7;
+					g_viewportCandidateDamage[y] |= columns;
+					g_viewportCandidateDamage[y + 1] |= columns;
+					g_viewportCandidateDamage[y + 2] |= columns;
+				} else {
+					for (i = 0; i < 9; i++)
+						Map_MarkViewportCandidate((packed + offsets[i]) & 0xfff);
+				}
+				if (!g_selectionRectangleNeedRepaint) {
+					for (i = 0; i < 9; i++) {
+						if (BitArray_Test(g_displayedViewport, (packed + offsets[i]) & 0xfff)) {
+							g_selectionRectangleNeedRepaint = true;
+							break;
+						}
+					}
+				}
+				break;
+
+			case 4:
+				if (column == 0 || (g_viewportTerrainDamage[y] & column) != 0) return;
+				g_viewportTerrainDamage[y] |= column;
+				g_viewportCandidateDamage[y + 1] |= (uint32)column << 1;
+				if (BitArray_Test(g_displayedViewport, packed)) g_selectionRectangleNeedRepaint = true;
+				break;
+		}
+		g_dirtyViewportCount++;
+		return;
+	}
+#endif
+
 	switch (type) {
 		default:
 		case 0: {
@@ -1122,6 +1233,9 @@ void Map_UpdateAround(uint16 radius, tile32 position, Unit *unit, uint8 function
 	int16 i, j;
 	tile32 diff;
 	uint16 lastPacked;
+#ifdef TOS
+	bool nativeDamage = markViewport && Video_Atari_CursorDirect();
+#endif
 
 	if (radius == 0 || (position.x == 0 && position.y == 0)) return;
 
@@ -1140,6 +1254,10 @@ void Map_UpdateAround(uint16 radius, tile32 position, Unit *unit, uint8 function
 
 				curPacked = Tile_PackXY(x + i, y + j);
 				if (markViewport) {
+#ifdef TOS
+					if (nativeDamage) Map_MarkViewportCandidate(curPacked);
+					else
+#endif
 					BitArray_Set(g_dirtyViewport, curPacked);
 					g_dirtyViewportCount++;
 				}
@@ -1173,6 +1291,10 @@ void Map_UpdateAround(uint16 radius, tile32 position, Unit *unit, uint8 function
 
 			if (curPacked != lastPacked) {
 				if (markViewport) {
+#ifdef TOS
+					if (nativeDamage) Map_MarkViewportCandidate(curPacked);
+					else
+#endif
 					BitArray_Set(g_dirtyViewport, curPacked);
 					g_dirtyViewportCount++;
 				}

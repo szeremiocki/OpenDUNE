@@ -2,7 +2,7 @@
 
 import unittest
 
-from tools.test_unit_smoke_damage import ROOT, run_harness
+from tools.test_unit_smoke_damage import ROOT, run_harness, world_damage_production
 from tools.test_viewport_sprite_cache import function
 
 
@@ -13,8 +13,8 @@ class UnitDamageTest(unittest.TestCase):
         tile = (ROOT / "src/tile.c").read_text()
         production = "\n".join([
             function(tile, "Tile_AddTileDiff"),
-            function(map_source, "Map_Update"),
-            function(map_source, "Map_UpdateAround").replace(
+            world_damage_production(map_source, "Map_Update"),
+            world_damage_production(map_source, "Map_UpdateAround").replace(
                 "void Map_UpdateAround(", "static void Real_Map_UpdateAround(", 1),
             function(unit, "Unit_UpdateMap"),
         ])
@@ -322,9 +322,9 @@ int main(void) {
         tile = (ROOT / "src/tile.c").read_text()
         production = "\n".join([
             function(tile, "Tile_AddTileDiff"),
-            function(map_source, "Map_Update").replace(
+            world_damage_production(map_source, "Map_Update").replace(
                 "void Map_Update(", "static void Real_Map_Update(", 1),
-            function(map_source, "Map_UpdateAround"),
+            world_damage_production(map_source, "Map_UpdateAround"),
             function(unit, "Unit_RemoveFromTile"),
             function(unit, "Unit_AddToTile"),
         ])
@@ -450,7 +450,7 @@ int main(void) {
         tile = (ROOT / "src/tile.c").read_text()
         production = map_production() + "\n" + "\n".join([
             function(tile, "Tile_AddTileDiff"),
-            function(map_source, "Map_UpdateAround"),
+            world_damage_production(map_source, "Map_UpdateAround"),
             function(unit, "Unit_RemoveFromTile"),
             function(unit, "Unit_AddToTile"),
             function(unit, "Unit_UpdateMap"),

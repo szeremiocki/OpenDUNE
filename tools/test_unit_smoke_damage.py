@@ -12,6 +12,10 @@ from tools.test_viewport_sprite_cache import function
 
 ROOT = Path(__file__).resolve().parents[1]
 
+def world_damage_production(source, name):
+    """Keep geometry/policy tests world-wide; native storage has separate tests."""
+    return function(source, name).replace("Video_Atari_CursorDirect()", "false")
+
 
 def run_harness(harness, tos=True):
     with tempfile.TemporaryDirectory(prefix="unit-smoke-") as directory:
@@ -37,8 +41,8 @@ class UnitSmokeDamageTest(unittest.TestCase):
             function(tile, "Tile_AddTileDiff"),
             function(sprites, "Sprite_GetWidth"),
             function(sprites, "Sprite_GetHeight"),
-            function(map_source, "Map_Update"),
-            function(map_source, "Map_UpdateAround"),
+            world_damage_production(map_source, "Map_Update"),
+            world_damage_production(map_source, "Map_UpdateAround"),
             function(unit, "Unit_UpdateMap"),
             function(unit, "Unit_UpdateSmokeDamage"),
         ])

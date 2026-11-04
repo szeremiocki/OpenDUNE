@@ -42,15 +42,16 @@
 
 #ifdef TOS
 /* btst Dn,(An,Dm.w): the bit number is taken mod 8 on memory operands. */
-static inline __attribute__((always_inline)) bool Viewport_DirtyBitSet(uint16 packed)
+static inline __attribute__((always_inline)) bool Viewport_DirtyBitSet(uint16 packed, bool local)
 {
+	if (local) return Map_ViewportCandidateDirty(packed);
 	__asm__ goto("btst %0,(%1,%2.w)\n\tbeq %l3" : : "d"(packed), "a"(g_dirtyViewport), "d"((uint16)(packed >> 3)) : "cc", "memory" : clear);
 	return true;
 clear:
 	return false;
 }
 #else
-#define Viewport_DirtyBitSet(packed) BitArray_Test(g_dirtyViewport, (packed))
+#define Viewport_DirtyBitSet(packed, local) BitArray_Test(g_dirtyViewport, (packed))
 #endif
 
 #ifdef TOS
@@ -87,7 +88,6 @@ static bool s_viewportWasPlanar;
 static bool s_viewportRepairActive;
 static bool s_viewportSpriteFilterActive;
 static bool s_viewportSpriteNeedsRedraw;
-static uint16 s_viewportRepairRows[10];
 static uint16 s_viewportSpriteDamage[10];
 static uint8 s_minimapAppearance[64 * 64];
 static uint8 s_minimapAppearanceValid[64 * 64 / 8];
@@ -120,51 +120,17 @@ static bool GUI_Widget_Viewport_MinimapUpdateDue(void)
 	return true;
 }
 
-static inline uint16 GUI_Widget_Viewport_ReadRow(const uint8 *bits, uint16 shift)
-{
-	uint32 word = (uint32)bits[0] | ((uint32)bits[1] << 8);
-
-	if (shift > 1) word |= (uint32)bits[2] << 16;
-	return (word >> shift) & 0x7fff;
-}
-
-static inline void GUI_Widget_Viewport_OrRow(uint8 *bits, uint16 shift, uint16 columns)
-{
-	uint32 word;
-
-	if (columns == 0) return;
-	word = (uint32)columns << shift;
-	bits[0] |= (uint8)word;
-	bits[1] |= (uint8)(word >> 8);
-	if (shift > 1) bits[2] |= (uint8)(word >> 16);
-}
-
-static void GUI_Widget_Viewport_LoadRepairRows(void)
-{
-	uint16 offset = g_viewportPosition >> 3;
-	const uint16 shift = g_viewportPosition & 7;
-	uint16 y;
-
-	for (y = 0; y < 10; y++, offset += 8)
-		s_viewportRepairRows[y] = GUI_Widget_Viewport_ReadRow(&g_dirtyMinimap[offset], shift);
-}
-
 static bool __attribute__((noinline)) GUI_Widget_Viewport_PrepareRows(uint16 fullyFoggedTileID)
 {
 	uint16 packedRow = g_viewportPosition;
-	const uint16 shift = packedRow & 7;
-	uint16 offset = packedRow >> 3;
 	uint16 y;
 	bool updateDisplay = false;
 
-	for (y = 0; y < 10; y++, packedRow += 64, offset += 8) {
-		uint8 *viewportBits = &g_dirtyViewport[offset];
-		uint8 *terrainBits = &g_dirtyMinimap[offset];
-		uint16 viewport = GUI_Widget_Viewport_ReadRow(viewportBits, shift);
-		uint16 terrain = GUI_Widget_Viewport_ReadRow(terrainBits, shift);
+	for (y = 0; y < 10; y++, packedRow += 64) {
+		uint16 viewport = (uint16)(g_viewportCandidateDamage[y + 1] >> 1) & 0x7fff;
+		uint16 terrain = g_viewportTerrainDamage[y];
 		uint16 promote = 0;
 
-		s_viewportRepairRows[y] = terrain;
 		if ((viewport | terrain) == 0) continue;
 		updateDisplay = true;
 		if (!g_debugScenario) {
@@ -180,9 +146,8 @@ static bool __attribute__((noinline)) GUI_Widget_Viewport_PrepareRows(uint16 ful
 				}
 			}
 		}
-		GUI_Widget_Viewport_OrRow(viewportBits, shift, terrain & ~viewport);
-		GUI_Widget_Viewport_OrRow(terrainBits, shift, promote);
-		s_viewportRepairRows[y] |= promote;
+		g_viewportCandidateDamage[y + 1] |= (uint32)terrain << 1;
+		g_viewportTerrainDamage[y] |= promote;
 	}
 	return updateDisplay;
 }
@@ -193,7 +158,7 @@ static void GUI_Widget_Viewport_BeginSpriteDamage(bool active)
 	s_viewportSpriteNeedsRedraw = true;
 	if (!active) return;
 	/* RepairTiles consumes pending rows; preserve the original sprite damage. */
-	memcpy(s_viewportSpriteDamage, s_viewportRepairRows, sizeof(s_viewportSpriteDamage));
+	memcpy(s_viewportSpriteDamage, g_viewportTerrainDamage, sizeof(s_viewportSpriteDamage));
 }
 
 static bool GUI_Widget_Viewport_SpriteDamageRect(int16 left, int16 top, int16 right, int16 bottom, bool redraw)
@@ -372,7 +337,7 @@ void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 b
 		uint16 packedRow = g_viewportPosition + (y << 6);
 		uint16 remaining, column = firstColumn;
 
-		remaining = (s_viewportRepairRows[y] & endMask) >> first;
+		remaining = (g_viewportTerrainDamage[y] & endMask) >> first;
 		if (remaining == 0) continue;
 
 		for (x = first; remaining != 0; x++, remaining >>= 1, column <<= 1) {
@@ -384,8 +349,7 @@ void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 b
 
 			/* Consume before drawing: later foreground must not restore
 			 * this tile again and erase an earlier foreground draw. */
-			s_viewportRepairRows[y] &= (uint16)~column;
-			BitArray_Clear(g_dirtyMinimap, packed);
+			g_viewportTerrainDamage[y] &= (uint16)~column;
 			t = &g_map[packed];
 			if (s_viewportSelectionTiles[y][x] != 0) {
 				uint16 overlay = g_debugScenario ? 0 : t->overlayTileID;
@@ -1173,7 +1137,6 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 	static uint16 dirtyColumns[10];
 	bool directViewport = Video_Atari_CursorDirect();
 	bool planarViewport = directViewport;
-	bool repairRowsPrepared = false;
 	assert(!planarViewport || (!drawToMainScreen && GFX_PlanarTilesReady() && GUI_ViewportSpriteCacheReady()));
 	trackCopyDamage = !planarViewport;
 	if (planarViewport != s_viewportWasPlanar || (planarViewport && hasScrolled && !planarShifted)) {
@@ -1206,24 +1169,27 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 #ifdef TOS
 	s_viewportRepairActive = planarViewport;
 	if (planarViewport) {
+		Map_SetViewportDamagePosition(g_viewportPosition);
 		GUI_Widget_Viewport_PrepareSelection();
 		GUI_Widget_Viewport_TileCursorPrepare(GUI_Widget_Viewport_PlacementPrepare());
 	}
 #endif
 	if (g_dirtyViewportCount != 0 || forceRedraw) {
 #ifdef TOS
-		if (planarViewport && !forceRedraw) {
-			if (GUI_Widget_Viewport_PrepareRows(fullyFoggedTileID)) updateDisplay = true;
-			repairRowsPrepared = true;
+		if (planarViewport) {
+			if (forceRedraw) {
+				for (y = 0; y < 10; y++) {
+					g_viewportTerrainDamage[y] = 0x7fff;
+					g_viewportCandidateDamage[y + 1] |= 0xfffeUL;
+				}
+			} else if (GUI_Widget_Viewport_PrepareRows(fullyFoggedTileID)) {
+				updateDisplay = true;
+			}
 		} else
 #endif
 		for (y = 0; y < 10; y++) {
 			uint16 top = (y << 4) + 0x28;	/* 40 */
-			for (x = 0; x < (
-#ifdef TOS
-			                  planarViewport ||
-#endif
-			                  drawToMainScreen ? 15 : 16); x++) {
+			for (x = 0; x < (drawToMainScreen ? 15 : 16); x++) {
 				Tile *t;
 				uint16 left;
 				bool viewportDirty;
@@ -1242,17 +1208,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 					updateDisplay = true;
 				}
 
-				if (!BitArray_Test(g_dirtyMinimap, curPos) && !forceRedraw) {
-#ifdef TOS
-					/* Sprite footprints can dirty hidden neighbours without
-					 * requesting terrain reconstruction there. */
-					t = &g_map[curPos];
-					if (!planarViewport || !viewportDirty || g_debugScenario ||
-					    (t->overlayTileID != g_veiledTileID && t->overlayTileID != fullyFoggedTileID)) continue;
-#else
-					continue;
-#endif
-				}
+				if (!BitArray_Test(g_dirtyMinimap, curPos) && !forceRedraw) continue;
 
 				BitArray_Set(g_dirtyViewport, curPos);
 
@@ -1267,12 +1223,6 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 					}
 				}
 
-#ifdef TOS
-				if (planarViewport) {
-					BitArray_Set(g_dirtyMinimap, curPos);
-					continue;
-				}
-#endif
 				t = &g_map[curPos];
 				left = x << 4;
 
@@ -1282,14 +1232,6 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 					continue;
 				}
 
-#ifdef TOS
-				if (planarViewport && t->overlayTileID != 0 && !g_debugScenario) {
-					GFX_DrawPlanarTileFogged(t->groundTileID, t->overlayTileID, left, top, t->houseID, curPos);
-					continue;
-				}
-				if (planarViewport) GFX_DrawPlanarTile(t->groundTileID, left, top, t->houseID);
-				else
-#endif
 				GFX_DrawTile(t->groundTileID, left, top, t->houseID);
 
 				if (t->overlayTileID != 0 && !g_debugScenario) {
@@ -1301,8 +1243,6 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 	}
 
 #ifdef TOS
-	/* Selection/cursor invalidation is complete before foreground repair starts. */
-	if (planarViewport && !repairRowsPrepared) GUI_Widget_Viewport_LoadRepairRows();
 	GUI_Widget_Viewport_BeginSpriteDamage(planarViewport && !forceRedraw && !hasScrolled);
 #endif
 
@@ -1414,7 +1354,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 			packed = Unit_PackedTile(u);
 			VIEWPORT_CHECK_PACKED(u);
 
-			if ((!u->o.flags.s.isDirty || u->o.flags.s.isNotOnMap) && !forceRedraw && !Viewport_DirtyBitSet(packed)) continue;
+			if ((!u->o.flags.s.isDirty || u->o.flags.s.isNotOnMap) && !forceRedraw && !Viewport_DirtyBitSet(packed, planarViewport)) continue;
 #ifdef TOS
 			s_viewportSpriteNeedsRedraw = u->o.flags.s.isDirty || forceRedraw;
 #endif
@@ -1494,7 +1434,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 #ifdef TOS
 		s_viewportSpriteNeedsRedraw = e->isDirty || forceRedraw;
 #endif
-		if (BitArray_Test(g_dirtyViewport, curPos)) e->isDirty = true;
+		if (Viewport_DirtyBitSet(curPos, planarViewport)) e->isDirty = true;
 
 		if (!e->isDirty && !forceRedraw) continue;
 		if (e->spriteID == 0) continue;
@@ -1548,7 +1488,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 			VIEWPORT_CHECK_PACKED(u);
 
 #ifdef TOS
-			if (!u->o.flags.s.isDirty && !forceRedraw && !BitArray_Test(g_dirtyViewport, curPos)) continue;
+			if (!u->o.flags.s.isDirty && !forceRedraw && !Viewport_DirtyBitSet(curPos, planarViewport)) continue;
 #else
 			if ((!u->o.flags.s.isDirty || u->o.flags.s.isNotOnMap) && !forceRedraw && !BitArray_Test(g_dirtyViewport, curPos)) continue;
 #endif
@@ -1602,8 +1542,14 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 	s_viewportSpriteFilterActive = false;
 #endif
 	if (updateDisplay) {
-		memset(g_dirtyMinimap,  0, sizeof(g_dirtyMinimap));
-		memset(g_dirtyViewport, 0, sizeof(g_dirtyViewport));
+#ifdef TOS
+		if (planarViewport) Map_ClearViewportDamage();
+		else
+#endif
+		{
+			memset(g_dirtyMinimap,  0, sizeof(g_dirtyMinimap));
+			memset(g_dirtyViewport, 0, sizeof(g_dirtyViewport));
+		}
 	}
 
 	if (g_changedTilesCount != 0

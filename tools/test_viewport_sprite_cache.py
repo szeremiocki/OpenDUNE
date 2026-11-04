@@ -676,6 +676,7 @@ int main(void) {
 
     def test_map_updates_without_unit_key_lookup(self):
         source_map = (ROOT / "src/map.c").read_text()
+        self.assertNotIn("Unit_", function(source_map, "Map_Update"))
         harness = r"""
 #include <assert.h>
 #include <stdbool.h>
@@ -717,7 +718,7 @@ int main(void) {
             source.write_text(harness)
             compiler = shlex.split(os.environ.get("CC", "cc"))
             subprocess.run([*compiler, "-std=c99", "-O2", "-Wall", "-Wextra", "-Werror",
-                            "-DTOS", str(source), "-o", str(binary)], check=True)
+                            str(source), "-o", str(binary)], check=True)
             subprocess.run([str(binary)], check=True)
 
     def test_viewport_bypasses_harvester_keys(self):

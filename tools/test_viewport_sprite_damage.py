@@ -156,8 +156,6 @@ int main(void) {
     def test_damage_snapshot_and_foreground_dependencies(self):
         viewport = (ROOT / "src/gui/viewport.c").read_text()
         production = "\n".join(function(viewport, name) for name in (
-            "GUI_Widget_Viewport_ReadRow",
-            "GUI_Widget_Viewport_LoadRepairRows",
             "GUI_Widget_Viewport_BeginSpriteDamage",
             "GUI_Widget_Viewport_SpriteDamageRect",
             "GUI_Widget_Viewport_ShouldDrawSprite",
@@ -176,15 +174,12 @@ typedef int16_t int16;
 #define max(a,b) ((a) > (b) ? (a) : (b))
 static bool s_viewportSpriteFilterActive, s_viewportSpriteNeedsRedraw;
 static uint16 s_viewportSpriteDamage[10], g_viewportPosition;
-static uint16 s_viewportRepairRows[10];
-static uint8 g_dirtyMinimap[512];
+static uint16 g_viewportTerrainDamage[10];
 /* PRODUCTION */
 static void tile(unsigned x, unsigned y) {
-    unsigned packed = g_viewportPosition + y * 64 + x;
-    g_dirtyMinimap[packed >> 3] |= 1u << (packed & 7);
+    g_viewportTerrainDamage[y] |= 1u << x;
 }
 static void begin(void) {
-    GUI_Widget_Viewport_LoadRepairRows();
     GUI_Widget_Viewport_BeginSpriteDamage(true);
     s_viewportSpriteNeedsRedraw = false;
 }
@@ -193,15 +188,14 @@ int main(void) {
     for (unsigned origin = 0; origin <= 49; origin++)
         for (unsigned row = 0; row < 10; row++)
             for (unsigned col = 0; col < 15; col++) {
-                memset(g_dirtyMinimap, 0, sizeof(g_dirtyMinimap));
+                memset(g_viewportTerrainDamage, 0, sizeof(g_viewportTerrainDamage));
                 g_viewportPosition = (54 << 6) + origin;
                 tile(col, row);
                 begin();
                 for (unsigned y = 0; y < 10; y++)
                     assert(s_viewportSpriteDamage[y] == (y == row ? 1u << col : 0));
                 /* Live repair consumption must not remove selection damage. */
-                memset(g_dirtyMinimap, 0, sizeof(g_dirtyMinimap));
-                memset(s_viewportRepairRows, 0, sizeof(s_viewportRepairRows));
+                memset(g_viewportTerrainDamage, 0, sizeof(g_viewportTerrainDamage));
                 int left = col * 16, top = 40 + row * 16;
                 assert(!GUI_Widget_Viewport_ShouldDrawSprite(left - 16, top, left, top + 16));
                 assert(!GUI_Widget_Viewport_ShouldDrawSprite(left + 16, top, left + 32, top + 16));
@@ -210,13 +204,12 @@ int main(void) {
                 assert(GUI_Widget_Viewport_ShouldDrawSprite(left + 15, top + 15, left + 16, top + 16));
             }
     g_viewportPosition = 0;
-    memset(g_dirtyMinimap, 0, sizeof(g_dirtyMinimap));
+    memset(g_viewportTerrainDamage, 0, sizeof(g_viewportTerrainDamage));
     tile(1, 0);
     begin();
     /* A intersects terrain; B only intersects A's publication; C only B's.
      * No live tile bits survive the first terrain repair. */
-    memset(g_dirtyMinimap, 0, sizeof(g_dirtyMinimap));
-    memset(s_viewportRepairRows, 0, sizeof(s_viewportRepairRows));
+    memset(g_viewportTerrainDamage, 0, sizeof(g_viewportTerrainDamage));
     assert(GUI_Widget_Viewport_ShouldDrawSprite(24, 40, 48, 56));
     assert(GUI_Widget_Viewport_ShouldDrawSprite(40, 40, 64, 56));
     assert(GUI_Widget_Viewport_ShouldDrawSprite(56, 40, 80, 56));
@@ -225,7 +218,7 @@ int main(void) {
     assert(!GUI_Widget_Viewport_ShouldDrawSprite(100, 40, 120, 56));
     /* Viewport-only invalidation does not imply pixels were damaged:
      * independently dirty actors still publish and propagate their writes. */
-    memset(g_dirtyMinimap, 0, sizeof(g_dirtyMinimap));
+    memset(g_viewportTerrainDamage, 0, sizeof(g_viewportTerrainDamage));
     begin();
     assert(!GUI_Widget_Viewport_ShouldDrawSprite(16, 40, 32, 56));
     s_viewportSpriteNeedsRedraw = true;

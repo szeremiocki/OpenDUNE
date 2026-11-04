@@ -86,6 +86,48 @@ extern uint8 g_displayedMinimap[512];
 extern uint8 g_dirtyViewport[512];
 extern uint8 g_displayedViewport[512];
 
+#ifdef TOS
+extern uint16 g_viewportDamagePosition;
+extern uint16 g_viewportTerrainDamage[10];
+/* Candidate centres include Map_IsPositionInViewport()'s offscreen border. */
+extern uint32 g_viewportCandidateDamage[13];
+extern uint32 g_viewportCandidateColumns[64];
+extern uint16 g_viewportCandidateTop;
+
+static inline uint32 Map_ViewportCandidateMask(uint16 packed, uint16 *row)
+{
+	uint32 columns = g_viewportCandidateColumns[packed & 63];
+	uint16 y = (packed >> 6) - g_viewportCandidateTop;
+
+	if (columns == 0 || y >= 13) return 0;
+	*row = y;
+	return columns;
+}
+
+static inline void Map_MarkViewportCandidate(uint16 packed)
+{
+	uint16 row;
+	uint32 columns = Map_ViewportCandidateMask(packed, &row);
+
+	if (columns != 0) g_viewportCandidateDamage[row] |= columns;
+}
+
+static inline bool Map_ViewportCandidateDirty(uint16 packed)
+{
+	uint16 row = (packed >> 6) - g_viewportCandidateTop;
+
+	return row < 13 && (g_viewportCandidateDamage[row] & g_viewportCandidateColumns[packed & 63]) != 0;
+}
+
+extern void Map_ClearViewportDamage(void);
+extern void Map_RebaseViewportDamage(uint16 packed);
+
+static inline void Map_SetViewportDamagePosition(uint16 packed)
+{
+	if (packed != g_viewportDamagePosition) Map_RebaseViewportDamage(packed);
+}
+#endif
+
 extern uint16 g_changedTilesCount;
 extern uint16 g_changedTiles[200];
 extern uint8 g_changedTilesMap[512];
