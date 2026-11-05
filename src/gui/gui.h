@@ -156,6 +156,20 @@ extern bool g_var_37B8;
 #define DRAWSPRITE_FLAG_PAL_DEFERRED 0x80000
 #endif
 
+#ifdef TOS
+/* Opaque bounds in the original canvas; right/bottom are exclusive. */
+typedef struct GUI_SpriteBounds {
+	uint8 left, top, right, bottom;
+} GUI_SpriteBounds;
+
+extern GUI_SpriteBounds g_viewportSpriteBounds[355][4];
+
+static inline const GUI_SpriteBounds *GUI_ViewportSpriteBounds(uint16 spriteID, int flags)
+{
+	return &g_viewportSpriteBounds[spriteID][flags & (DRAWSPRITE_FLAG_RTL | DRAWSPRITE_FLAG_BOTTOMUP)];
+}
+#endif
+
 #define GUI_ClearScreen(screenID) GFX_ClearScreen(screenID)
 extern void GUI_DrawScreen(Screen screenID);
 extern void GUI_InvalidateViewportMessage(void);

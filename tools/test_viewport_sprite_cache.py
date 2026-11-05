@@ -29,6 +29,12 @@ def blit_plan_type():
             header[start:end] + "\n" + header[code_start:code_end] + "\n#endif\n")
 
 
+def sprite_bounds_type():
+    header = (ROOT / "src/gui/gui.h").read_text()
+    start = header.index("typedef struct GUI_SpriteBounds {")
+    return header[start:header.index("\n#endif", start)]
+
+
 def inactive_protection():
     return """
 #define Video_Atari_ViewportProtectionOverlap(...) false
@@ -282,7 +288,7 @@ int main(void) {
         for (unsigned i = 0; i < groups * 17; i++)
             for (unsigned p = 0; p < 4; p++) masks[i * 4 + p] = compact[i];
         Video_Atari_SpriteBlitPlan plans[16];
-        Video_Atari_BuildSpriteBlitPlans(plans, stride, width);
+        Video_Atari_BuildSpriteBlitPlans(plans, stride, 0, width);
         const unsigned starts[] = {0, 1, 15, 16, width - 1};
         for (unsigned phase = 0; phase < 16; phase++)
         for (unsigned si = 0; si < sizeof(starts) / sizeof(starts[0]); si++)
@@ -385,6 +391,12 @@ typedef uint16_t uint16;
 typedef int16_t int16;
 typedef uint32_t uint32;
 #define READ_LE_UINT16(p) ((uint16)((p)[0] | ((uint16)(p)[1] << 8)))
+#define min(a,b) ((a) < (b) ? (a) : (b))
+#define max(a,b) ((a) > (b) ? (a) : (b))
+#define UNIT_INDEX_MAX 1
+#define Unit_Get_ByIndex(i) (i)
+#define Unit_ClearViewportKey(unit) ((void)(unit))
+#define GUI_Sidebar_Free() ((void)0)
 /* TYPES */
 typedef struct ViewportSpriteMask {
     const uint8 *sprite;
@@ -392,22 +404,15 @@ typedef struct ViewportSpriteMask {
     uint16 width, height;
 } ViewportSpriteMask;
 static ViewportSpriteMask s_viewportSpriteCache[355];
+GUI_SpriteBounds g_viewportSpriteBounds[355][4];
 static uint16 *s_viewportSpriteMasks;
 static bool s_viewportSpriteReady, s_viewportPlanar, direct = true;
 static uint8 *g_sprites[355];
 static unsigned allocations, failAt;
+static bool cropped;
+static unsigned opaqueLeft, opaqueTop, opaqueRight, opaqueBottom;
 /* CACHE */
-static void GUI_FreeViewportSpriteCache(void) {
-    free(s_viewportSpriteMasks); s_viewportSpriteMasks = NULL;
-    free(s_viewportPlanarSprites); s_viewportPlanarSprites = NULL;
-    free(s_viewportPlanarMasks); s_viewportPlanarMasks = NULL;
-    free(s_viewportPlanarComponents); s_viewportPlanarComponents = NULL;
-    memset(s_viewportSpriteCache, 0, sizeof(s_viewportSpriteCache));
-    memset(s_viewportPlanarKeys, 0, sizeof(s_viewportPlanarKeys));
-    s_viewportPlanarLastHitPosition = VIEWPORT_PLANAR_SPRITES;
-    s_viewportPlanarClock = s_viewportComponentClock = 0;
-    s_viewportSpriteReady = s_viewportPlanar = false;
-}
+/* FREE */
 static bool Video_Atari_CursorDirect(void) { return direct; }
 static bool Video_Atari_ViewportBlitter(void) { return false; }
 static void Error(const char *format, ...) {
@@ -425,8 +430,19 @@ static void *test_calloc(size_t count, size_t size) {
 #define calloc test_calloc
 static void GUI_DrawSpriteMask(uint8 *pixels, uint16 width, uint16 height,
                                const uint8 *sprite, int16 x, int16 y, int flags, ...) {
-    (void)sprite; (void)x; (void)y; (void)flags;
-    memset(pixels, 1, width * height);
+    (void)x; (void)y;
+    va_list ap; va_start(ap,flags);
+    const uint8 *mapping = va_arg(ap,const uint8 *);
+    assert(va_arg(ap,int) == 1 && mapping[0] == 1);
+    va_end(ap);
+    for (unsigned row = 0; row < height; row++)
+    for (unsigned col = 0; col < width; col++) {
+        unsigned sx = flags & DRAWSPRITE_FLAG_RTL ? width - 1 - col : col;
+        bool drawn = !cropped || (sprite[5] && sx >= opaqueLeft && sx < opaqueRight &&
+                                 row >= opaqueTop && row < opaqueBottom);
+        /* Logical black is opaque; only absent pixels are transparency. */
+        if (drawn) pixels[row * width + col] = mapping[0];
+    }
 }
 /* PRODUCTION */
 int main(int argc, char **argv) {
@@ -448,13 +464,43 @@ int main(int argc, char **argv) {
     assert(GUI_ViewportSpriteMaskSlot(111)->sprite == unit);
     assert(GUI_ViewportSpriteMaskSlot(6) != GUI_ViewportSpriteMaskSlot(111));
     assert(s_viewportPlanarSprites && s_viewportPlanarMasks && s_viewportPlanarComponents);
+    cropped = true;
+    unit[5] = 1;
+    unsigned widths[] = {5,24,31,32}, heights[] = {4,24,31,32};
+    for (unsigned w = 0; w < 4; w++) for (unsigned h = 0; h < 4; h++) {
+        unit[3] = widths[w]; unit[2] = heights[h];
+        opaqueLeft = 1; opaqueTop = 2;
+        opaqueRight = widths[w] - 2; opaqueBottom = heights[h] - 1;
+        uint8 original[10]; memcpy(original,unit,sizeof(original));
+        allocations = 0;
+        GUI_InitViewportSpriteCache();
+        assert(allocations == 4 && !memcmp(original,unit,sizeof(original)));
+        for (unsigned flags = 0; flags < 4; flags++) {
+            const GUI_SpriteBounds *b = GUI_ViewportSpriteBounds(111,flags);
+            unsigned l = flags & DRAWSPRITE_FLAG_RTL ? widths[w] - opaqueRight : opaqueLeft;
+            unsigned r = flags & DRAWSPRITE_FLAG_RTL ? widths[w] - opaqueLeft : opaqueRight;
+            unsigned t = flags & DRAWSPRITE_FLAG_BOTTOMUP ? heights[h] - opaqueBottom : opaqueTop;
+            unsigned bottom = flags & DRAWSPRITE_FLAG_BOTTOMUP ? heights[h] - opaqueTop : opaqueBottom;
+            assert(b->left == l && b->right == r && b->top == t && b->bottom == bottom);
+            const GUI_SpriteBounds *empty = GUI_ViewportSpriteBounds(6,flags);
+            assert(!empty->left && !empty->right && !empty->top && !empty->bottom);
+        }
+        assert(GUI_ViewportSpriteMaskSlot(111)->width == widths[w]);
+        assert(GUI_ViewportSpriteMaskSlot(111)->height == heights[h]);
+    }
     GUI_FreeViewportSpriteCache();
+    for (unsigned id = 0; id < 355; id++) for (unsigned flags = 0; flags < 4; flags++) {
+        const GUI_SpriteBounds *b = GUI_ViewportSpriteBounds(id,flags);
+        assert(!b->left && !b->right && !b->top && !b->bottom);
+    }
     return 0;
 }
 """
         types = (ROOT / "src/gui/viewport_key.h").read_text() + "\n" + blit_plan_type()
         harness = harness.replace("/* TYPES */", types + "\n" + flags)
+        harness = harness.replace("typedef struct ViewportSpriteMask {", sprite_bounds_type() + "\ntypedef struct ViewportSpriteMask {", 1)
         harness = harness.replace("/* CACHE */", cache)
+        harness = harness.replace("/* FREE */", function(gui, "GUI_FreeViewportSpriteCache"))
         harness = harness.replace("/* PRODUCTION */",
                                   function(gui, "GUI_ViewportSpriteMaskSlot") + "\n" +
                                   function(gui, "GUI_InitViewportSpriteCache"))
@@ -935,6 +981,7 @@ typedef struct { const uint8 *sprite; uint16 *rows; uint16 width, height; } View
 static WidgetProperties g_widgetProperties[3] = {{0}, {0}, {0, 40, 30, 160}};
 static uint8 sprites[70][26 + 23 * 27], palette[16], remap[256];
 static uint8 *g_sprites[355], *g_paletteMapping2 = remap;
+GUI_SpriteBounds g_viewportSpriteBounds[355][4];
 static ViewportSpriteMask slots[70];
 static uint16 maskStorage[70][2 * 2 * 27];
 static uint16 visible[16000], expected[16000];
@@ -1546,6 +1593,8 @@ int main(int argc, char **argv) {
                     maskStorage[id][mirror * 54 + y * 2 + (x >> 4)] |= 0x8000u >> (x & 15);
     }
     g_sprites[111] = sprites[0];
+    for (unsigned id = 0; id < 355; id++) for (unsigned flags = 0; flags < 4; flags++)
+        g_viewportSpriteBounds[id][flags] = (GUI_SpriteBounds){0,0,23,27};
     for (unsigned x = 0; x < 16; x++) palette[x] = x + 16;
     for (unsigned x = 0; x < 256; x++) remap[x] = x;
     for (unsigned x = 0x90; x <= 0xe8; x++) remap[x] = (x >> 4) ^ (x & 15);
@@ -1876,7 +1925,7 @@ int main(int argc, char **argv) {
             for (unsigned width = 1; width <= stride; width++) {
                 Video_Atari_SpriteBlitPlan plans[16];
                 unsigned builds = blitterPlanBuilds;
-                Video_Atari_BuildSpriteBlitPlans(plans, stride, width);
+                Video_Atari_BuildSpriteBlitPlans(plans, stride, 0, width);
                 assert(blitterPlanBuilds == builds + 16);
                 for (unsigned phase = 0; phase < 16; phase++) {
                     Video_Atari_SpriteBlitPlan calculated;
@@ -2192,7 +2241,7 @@ int main(int argc, char **argv) {
     return 0;
 }
 """
-        harness = harness.replace("/* FLAGS */", flags).replace("/* LAYER TYPES */", layer_types)
+        harness = harness.replace("/* FLAGS */", flags).replace("/* LAYER TYPES */", layer_types + "\n" + sprite_bounds_type())
         harness = harness.replace("/* KEY TYPE */", (ROOT / "src/gui/viewport_key.h").read_text())
         key_policy = next(line.strip() for line in (ROOT / "src/gui/viewport.c").read_text().splitlines()
                           if "ViewportCompositeKey *viewportKey =" in line)

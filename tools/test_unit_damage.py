@@ -469,7 +469,7 @@ void GUI_Widget_Viewport_DamageUnit(Unit *unit, uint16 parts) {
 }
 void Unit_PrepareSpriteChange(Unit *unit, uint16 parts) {
     assert(parts == UNIT_SPRITE_ALL); preparations++;
-    Map_UpdateSprite(10,unit->o.position,0,0,false);
+    Map_UpdateSprite(10,unit->o.position,0,0,0,false);
 }
 Unit *Unit_Get_ByPackedTile(uint16 packed) { assert(packed < 4096); return occupant; }
 void Unit_HouseUnitCount_Add(Unit *unit, uint8 house) { assert(unit && !house); }
@@ -501,7 +501,7 @@ int main(void) {
     g_map[oldPacked].hasUnit = true; g_map[oldPacked].index = u.o.index + 1;
     clearDamage();
     BitArray_Set(g_dirtyViewport,100); g_dirtyViewportCount = 7;
-    Map_UpdateSprite(10,u.o.position,0,0,false);
+    Map_UpdateSprite(10,u.o.position,0,0,0,false);
     uint8 candidates[512], terrain[512];
     memcpy(candidates,g_dirtyViewport,512); memcpy(terrain,g_dirtyMinimap,512);
     unsigned count = g_dirtyViewportCount;

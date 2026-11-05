@@ -3302,14 +3302,14 @@ static void Video_Atari_BuildSpriteBlitPlan(Video_Atari_SpriteBlitPlan *plan,
 }
 
 void Video_Atari_BuildSpriteBlitPlans(Video_Atari_SpriteBlitPlan plans[16],
-                                    uint16 sourceWidth, uint16 width)
+                                    uint16 sourceWidth, uint16 sourceX, uint16 width)
 {
 	uint16 phase;
 
 	assert(sourceWidth > 0 && sourceWidth <= 80 && (sourceWidth & 15) == 0);
-	assert(width > 0 && width <= sourceWidth);
+	assert(width > 0 && sourceX + width <= sourceWidth);
 	for (phase = 0; phase < 16; phase++)
-		Video_Atari_BuildSpriteBlitPlan(&plans[phase], sourceWidth, 0, width, phase);
+		Video_Atari_BuildSpriteBlitPlan(&plans[phase], sourceWidth, sourceX, width, phase);
 }
 
 static void Video_Atari_BlitOpaque(void)
@@ -3989,7 +3989,6 @@ void Video_Atari_PresentPlanarSpriteUnshifted(const uint16 *pixels, const uint16
 	assert(sourceWidth > 0 && sourceWidth <= 80 && (sourceWidth & 15) == 0);
 	assert(width > 0 && sourceX + width <= sourceWidth);
 	assert(height > 0 && height <= 64 && x + width <= 240 && y >= 40 && y + height <= 200);
-	assert(plan == NULL || sourceX == 0);
 	if (Video_Atari_ViewportProtectionOverlap(x, y, width, height)) {
 		Video_Atari_PresentProtectedSprite(pixels, masks, sourceWidth, sourceX,
 		    width, height, x, y, true, code);

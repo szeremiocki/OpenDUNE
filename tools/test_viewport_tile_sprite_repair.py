@@ -143,6 +143,7 @@ static bool s_viewportSpriteFilterActive, s_viewportSpriteNeedsRedraw;
 static uint16 screen[16000], expected[16000], ground[16000], displayed[16000], noCursor[16000];
 static uint16 pending[10], permitted[10], repaired[10], published[10];
 static unsigned publications, repairCalls, mergeGroups;
+static bool cropMargins;
 static bool awaitingSprite, restrictWrites;
 /* PROTECTION */
 /* LIMITS */
@@ -234,10 +235,18 @@ static void image(int16 left, unsigned width, unsigned height, bool blitter, uns
     entry.width = (pad + width + 15) & ~15;
     entry.extentWidth = pad + width;
     entry.boundsWidth = width;
+    entry.boundsHeight = height;
     entry.height = height;
     entry.masks = masks;
     unsigned groups = entry.width / 16;
+    if (cropMargins) {
+        entry.boundsOffsetX = 4;
+        entry.boundsOffsetY = 3;
+        entry.boundsWidth = width - 9;
+        entry.boundsHeight = height - 8;
+    }
     for (unsigned row = 0; row < height; row++) for (unsigned x = 0; x < width; x++) {
+        if (cropMargins && (x < 4 || x >= width - 5 || row < 3 || row >= height - 5)) continue;
         if ((x + row) % 5 == 0) continue;
         unsigned col = pad + x, group = row * groups + col / 16;
         uint16 bit = 0x8000u >> (col & 15);
@@ -253,7 +262,8 @@ static void image(int16 left, unsigned width, unsigned height, bool blitter, uns
         for (unsigned i = 0; i < groups * height; i++) compact[i] = masks[i * 4];
         Video_Atari_CompileSpriteBlitCode(&entry.blitCode,
             Video_Atari_BuildSpriteBlitRecipe(entry.pixels, compact, groups * height));
-        Video_Atari_BuildSpriteBlitPlans(entry.blitPlans, entry.width, entry.extentWidth);
+        Video_Atari_BuildSpriteBlitPlans(entry.blitPlans, entry.width,
+            pad + entry.boundsOffsetX, entry.boundsWidth);
     }
     memcpy(savedPixels, entry.pixels, sizeof(savedPixels));
     memcpy(savedMasks, masks, sizeof(savedMasks));
@@ -363,6 +373,25 @@ int main(void) {
     int16 tops[] = {8, 24, 39, 40, 185, 199, 200};
     for (unsigned mode = 0; mode < 2; mode++) {
         s_viewportBlitter = mode != 0;
+        /* Transparent margins retain the original source canvas/stride.
+         * Full-width draws reuse plans with a nonzero source origin. */
+        cropMargins = true;
+        for (unsigned phase = 0; phase < 16; phase++)
+        for (unsigned yp = 0; yp < 16; yp++)
+        for (unsigned full = 0; full < 2; full++)
+        for (unsigned pattern = 0; pattern < 6; pattern++) {
+            image(64 + phase, 49, 49, mode, pattern % 3);
+            reset(pattern);
+            check(64 + phase, 72 + yp, mode, full, 0);
+        }
+        for (unsigned xi = 0; xi < 6; xi++)
+        for (unsigned yi = 0; yi < 7; yi++)
+        for (unsigned full = 0; full < 2; full++) {
+            image(edges[xi],49,49,mode,0);
+            reset(2);
+            check(edges[xi],tops[yi],mode,full,0);
+        }
+        cropMargins = false;
         for (unsigned phase = 0; phase < 16; phase++) for (unsigned yphase = 0; yphase < 16; yphase++)
             for (unsigned w = 0; w < 5; w++) for (unsigned pattern = 0; pattern < 6; pattern++) {
                 int16 x = 64 + phase, y = 72 + yphase;
@@ -450,6 +479,7 @@ int main(void) {
         for (unsigned yp = 0; yp < 16; yp++)
         for (unsigned effect = 0; effect <= 9; effect++) {
             if (!mode && effect != 0 && effect != 2) continue;
+            cropMargins = (phase & 1) != 0;
             static uint16 fog[16], hidden[16];
             for (unsigned line = 0; line < 16; line++)
                 fog[line] = line & 1 ? 0x39a1 : 0xe50c;
@@ -467,6 +497,7 @@ int main(void) {
             image(64 + phase, 49, 49, mode, 0);
             check(64 + phase, 72 + yp, mode, true, effect);
         }
+        cropMargins = false;
         for (overlayMode = 0; overlayMode < 4; overlayMode++)
         for (unsigned target = 0; target < 2; target++)
         for (unsigned fogged = 0; fogged < 2; fogged++)

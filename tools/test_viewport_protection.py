@@ -8,6 +8,66 @@ from tools.test_viewport_sprite_cache import function
 
 
 class ViewportProtectionTest(unittest.TestCase):
+    def test_opaque_footprints_preserve_canvas_anchors_and_flips(self):
+        source = (ROOT / "src/map.c").read_text()
+        sprites = (ROOT / "src/sprites.c").read_text()
+        production = "\n".join(function(text, name) for text, name in (
+            (sprites, "Sprite_GetWidth"), (sprites, "Sprite_GetHeight"),
+            (source, "Map_UpdateViewportCandidateColumns"), (source, "Map_ClearViewportDamage"),
+            (source, "Map_RebaseViewportDamage"), (source, "Map_Update"),
+            (source, "Map_UpdateSprite"),
+        ))
+        harness = COMMON + r"""
+uint16 g_viewportPosition, g_minimapPosition;
+uint16 g_viewportDamagePosition = 0xffff, g_viewportTerrainDamage[10], g_viewportCandidateTop;
+uint32 g_viewportCandidateDamage[13], g_viewportCandidateColumns[64];
+bool g_viewportNoHaloDamage;
+/* PRODUCTION */
+int main(void) {
+    initSprites(); (void)expectedSprite;
+    g_minimapPosition = g_viewportPosition = Tile_PackXY(16,16);
+    unsigned shapes[][6] = {{24,24,4,1,19,22}, {24,24,2,4,23,22}, {17,15,1,2,16,12}};
+    for (unsigned shape = 0; shape < 3; shape++)
+    for (unsigned flags = 0; flags < 4; flags++)
+    for (unsigned px = 0; px < 16; px++)
+    for (unsigned py = 0; py < 16; py++) {
+        unsigned *s = shapes[shape], width = s[0], height = s[1];
+        images[248][3] = width; images[248][2] = height;
+        GUI_SpriteBounds b = {
+            flags & DRAWSPRITE_FLAG_RTL ? width - s[4] : s[2],
+            flags & DRAWSPRITE_FLAG_BOTTOMUP ? height - s[5] : s[3],
+            flags & DRAWSPRITE_FLAG_RTL ? width - s[2] : s[4],
+            flags & DRAWSPRITE_FLAG_BOTTOMUP ? height - s[3] : s[5]};
+        g_viewportSpriteBounds[248][flags] = b;
+        tile32 pos = {(20*16+px)*16, (20*16+py)*16};
+        int l = 20*16+px-width/2+b.left, t = 20*16+py-height/2+b.top;
+        int r = 20*16+px-width/2+b.right, bottom = 20*16+py-height/2+b.bottom;
+        uint16 expected[10] = {0};
+        for (int y = t; y < bottom; y++) for (int x = l; x < r; x++)
+            expected[y/16-16] |= 1u << (x/16-16);
+        uint8 header[10]; memcpy(header,images[248],sizeof(header));
+        clearDamage(); Map_ClearViewportDamage();
+        Map_UpdateSprite(248,pos,0,0,flags,MAP_SPRITE_DAMAGE_HARVESTER);
+        assert(!memcmp(expected,g_viewportTerrainDamage,sizeof(expected)));
+        assert(!memcmp(header,images[248],sizeof(header)));
+        /* North-facing opacity excludes both side columns at tile centre. */
+        if (!shape && !flags && px == 8)
+            for (unsigned row = 0; row < 10; row++) assert(!(expected[row] & ~(1u << 4)));
+        /* East-facing opacity starts below the transparent upper tile. */
+        if (shape == 1 && !flags && py == 8) assert(!expected[3]);
+    }
+    /* Empty frames must not enqueue terrain or discovery work. */
+    memset(g_viewportSpriteBounds[248],0,sizeof(g_viewportSpriteBounds[248]));
+    clearDamage(); Map_ClearViewportDamage();
+    Map_UpdateSprite(248,(tile32){0x1480,0x1480},0,0,0,MAP_SPRITE_DAMAGE_HARVESTER);
+    assert(!g_dirtyViewportCount);
+    for (unsigned row = 0; row < 10; row++) assert(!g_viewportTerrainDamage[row]);
+    for (unsigned row = 0; row < 13; row++) assert(!g_viewportCandidateDamage[row]);
+    return 0;
+}
+"""
+        run_harness(harness.replace("/* PRODUCTION */", production))
+
     def test_harvester_discovery_cap_preserves_terrain_and_registration(self):
         source = (ROOT / "src/map.c").read_text()
         sprites = (ROOT / "src/sprites.c").read_text()
@@ -60,6 +120,7 @@ int main(void) {
     initSprites();
     for (unsigned id = 248; id <= 252; id++) images[id][2] = images[id][3] = 24;
     for (unsigned id = 180; id <= 182; id++) images[id][2] = 24;
+    for (unsigned id = 0; id < 355; id++) fullBounds(id);
     g_viewportPosition = g_minimapPosition = Tile_PackXY(16,16);
     Unit u = {0}; u.o.type = UNIT_HARVESTER; u.o.flags.s.used = true;
     UnitInfo *ui = &g_table_unitInfo[UNIT_HARVESTER];
@@ -107,7 +168,7 @@ int main(void) {
         clearDamage(); Map_ClearViewportDamage(); adds = removes = 0;
         if (harvester) {
             uint32 expected[13];
-            Map_UpdateSprite(248,u.o.position,0,0,MAP_SPRITE_DAMAGE_HARVESTER);
+            Map_UpdateSprite(248,u.o.position,0,0,0,MAP_SPRITE_DAMAGE_HARVESTER);
             candidateSquare(expected,centre,1);
             assert(!memcmp(expected,g_viewportCandidateDamage,sizeof(expected)));
             assert(!g_viewportNoHaloDamage);
@@ -169,9 +230,10 @@ int main(void) {
         uint16 tile = Tile_PackXY(20,20);
         g_map[tile].overlayTileID = fog == 0 ? 0 : fog == 1 ? 97 : fog == 2 ? 98 : 99;
         images[10][3] = images[10][2] = size;
+        fullBounds(10);
         tile32 pos = {(20*16+px)*16, (20*16+py)*16};
         clearDamage(); Map_ClearViewportDamage();
-        Map_UpdateSprite(10,pos,0,0,small);
+        Map_UpdateSprite(10,pos,0,0,0,small);
         uint16 terrain[10] = {0};
         uint32 candidates[13] = {0};
         bool tight = small && size <= 16, touched = false;

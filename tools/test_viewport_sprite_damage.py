@@ -15,6 +15,105 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ViewportSpriteDamageTest(unittest.TestCase):
+    def test_composite_bounds_leave_storage_geometry_unchanged(self):
+        gui = (ROOT / "src/gui/gui.c").read_text()
+        cached = function(gui, "GUI_ViewportPlanarSprite")
+        geometry = cached[cached.index("\t\tViewportSpriteMask *masks[4];"):
+                          cached.index("\t\tfor (i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) {",
+                                       cached.index("\t\tViewportSpriteMask *masks[4];"))]
+        fields = cached[cached.index("\t\tentry->width = stride;"):
+                        cached.index("\t\tif (key->main &")]
+        mask_type = gui[gui.index("typedef struct ViewportSpriteMask {"):
+                        gui.index("} ViewportSpriteMask;") + len("} ViewportSpriteMask;")]
+        sprite_type = gui[gui.index("typedef struct ViewportPlanarSprite {"):
+                          gui.index("} ViewportPlanarSprite;") + len("} ViewportPlanarSprite;")]
+        harness = r"""
+#include <assert.h>
+#include <string.h>
+#include "types.h"
+#include "src/gui/viewport_key.h"
+#include "src/gui/gui.h"
+#include "src/video/video.h"
+#define min(a,b) ((a) < (b) ? (a) : (b))
+#define max(a,b) ((a) > (b) ? (a) : (b))
+/* TYPES */
+GUI_SpriteBounds g_viewportSpriteBounds[355][4];
+static ViewportSpriteMask slots[355];
+static uint8 images[355][10], *sprites[355];
+uint8 **g_sprites = sprites;
+static bool built;
+static ViewportSpriteMask *GUI_ViewportSpriteMaskSlot(uint16 id) { return &slots[id]; }
+static void geometry(ViewportPlanarSprite *entry, const GUI_SpriteLayers *layers,
+                     int16 x, int16 y, int flags, bool blitter, bool centered) {
+    ViewportSpriteMask *mask = &slots[111];
+    uint16 spriteID = 111, count = layers->count, i;
+    int16 centreX = centered ? mask->width / 2 : 0;
+    int16 centreY = centered ? mask->height / 2 : 0;
+    /* GEOMETRY */
+    (void)masks; (void)groups;
+    /* FIELDS */
+    built = true;
+}
+static void shape(unsigned id, unsigned width, unsigned height,
+                  unsigned l, unsigned t, unsigned r, unsigned b) {
+    slots[id].sprite = sprites[id] = images[id];
+    slots[id].width = images[id][3] = width;
+    slots[id].height = images[id][2] = height;
+    for (unsigned flags = 0; flags < 4; flags++)
+        g_viewportSpriteBounds[id][flags] = (GUI_SpriteBounds){
+            flags & DRAWSPRITE_FLAG_RTL ? width - r : l,
+            flags & DRAWSPRITE_FLAG_BOTTOMUP ? height - b : t,
+            flags & DRAWSPRITE_FLAG_RTL ? width - l : r,
+            flags & DRAWSPRITE_FLAG_BOTTOMUP ? height - t : b};
+}
+int main(void) {
+    shape(111,24,24,4,1,19,22);
+    shape(112,17,15,3,2,13,12);
+    shape(113,16,24,4,3,12,20);
+    shape(114,16,16,1,1,15,15);
+    GUI_SpriteLayers layers = {0};
+    layers.layer[0] = (GUI_SpriteLayer){.spriteID=112,.offsetX=-14,.offsetY=7};
+    layers.layer[1] = (GUI_SpriteLayer){.spriteID=113,.offsetY=-14};
+    layers.layer[2] = (GUI_SpriteLayer){.spriteID=114};
+    for (unsigned centered = 0; centered < 2; centered++)
+    for (unsigned blitter = 0; blitter < 2; blitter++)
+    for (unsigned phase = 0; phase < 16; phase++)
+    for (int flags = 0; flags < 4; flags++)
+    for (layers.count = 0; layers.count <= 3; layers.count++) {
+        ViewportPlanarSprite entry = {0}; built = false;
+        for (unsigned i = 0; i < 3; i++) layers.layer[i].flags = (flags + i) & 3;
+        int minX=0,minY=0,maxX=24,maxY=24,l=100,t=100,r=-100,b=-100;
+        for (unsigned i = 0; i <= layers.count; i++) {
+            unsigned id = i ? layers.layer[i-1].spriteID : 111;
+            int ox = i ? (centered ? 12 : 0) + layers.layer[i-1].offsetX - slots[id].width/2 : 0;
+            int oy = i ? (centered ? 12 : 0) + layers.layer[i-1].offsetY - slots[id].height/2 : 0;
+            const GUI_SpriteBounds *bounds = GUI_ViewportSpriteBounds(id,i ? layers.layer[i-1].flags : flags);
+            minX=min(minX,ox); minY=min(minY,oy);
+            maxX=max(maxX,ox+slots[id].width); maxY=max(maxY,oy+slots[id].height);
+            l=min(l,ox+bounds->left); t=min(t,oy+bounds->top);
+            r=max(r,ox+bounds->right); b=max(b,oy+bounds->bottom);
+        }
+        if (!blitter) minX -= (64+phase+minX)&15;
+        uint8 originals[355][10]; memcpy(originals,images,sizeof(originals));
+        geometry(&entry,&layers,64+phase,80,flags,blitter,centered);
+        assert(built && entry.offsetX==minX && entry.offsetY==minY);
+        assert(entry.width==((maxX-minX+15)&~15) && entry.height==maxY-minY);
+        assert(entry.extentWidth==maxX-minX);
+        assert(entry.boundsOffsetX==l && entry.boundsOffsetY==t);
+        assert(entry.boundsWidth==r-l && entry.boundsHeight==b-t);
+        assert(!memcmp(originals,images,sizeof(originals)));
+    }
+    memset(g_viewportSpriteBounds,0,sizeof(g_viewportSpriteBounds));
+    layers.count = 3;
+    ViewportPlanarSprite entry = {0}; built = false;
+    geometry(&entry,&layers,64,80,0,true,true);
+    assert(!built);
+    return 0;
+}
+"""
+        run_harness(harness.replace("/* TYPES */", mask_type + "\n" + sprite_type)
+                    .replace("/* GEOMETRY */", geometry).replace("/* FIELDS */", fields))
+
     def test_unit_footprint_cache_and_early_rejection(self):
         viewport = (ROOT / "src/gui/viewport.c").read_text()
         draw = function(viewport, "GUI_Widget_Viewport_Draw")
@@ -42,11 +141,13 @@ static uint16 s_viewportSpriteDamage[10];
 WidgetProperties g_widgetProperties[22];
 static uint8 images[4][5], *sprites[4];
 uint8 **g_sprites = sprites;
+GUI_SpriteBounds g_viewportSpriteBounds[355][4];
 static GUI_SpriteLayers currentLayers;
+static int currentFlags;
 static unsigned builds;
 static uint16 GUI_Widget_Viewport_GroundSprites(Unit *u, int *flags,
                                                 GUI_SpriteLayers *layers, uint16 parts) {
-    (void)u; (void)flags; assert(parts == UNIT_SPRITE_ALL);
+    (void)u; *flags = currentFlags; assert(parts == UNIT_SPRITE_ALL);
     builds++;
     *layers = currentLayers;
     return 0;
@@ -64,17 +165,31 @@ static bool candidate(Unit *u, int16 x, int16 y) {
 }
 static void dimensions(unsigned id, unsigned width, unsigned height) {
     images[id][3] = width; images[id][2] = height;
+    for (unsigned flags = 0; flags < 4; flags++)
+        g_viewportSpriteBounds[id][flags] = (GUI_SpriteBounds){0,0,width,height};
 }
 static void checkBox(Unit *u, int x, int y) {
-    int left = x - images[0][3] / 2, top = y - images[0][2] / 2;
-    int right = left + images[0][3], bottom = top + images[0][2];
+    const GUI_SpriteBounds *b = GUI_ViewportSpriteBounds(0,currentFlags);
+    bool visible = b->left != b->right && b->top != b->bottom;
+    int left = x - images[0][3] / 2 + b->left, top = y - images[0][2] / 2 + b->top;
+    int right = x - images[0][3] / 2 + b->right, bottom = y - images[0][2] / 2 + b->bottom;
     for (unsigned i = 0; i < currentLayers.count; i++) {
         GUI_SpriteLayer *layer = &currentLayers.layer[i];
         unsigned id = layer->spriteID;
+        b = GUI_ViewportSpriteBounds(id,layer->flags);
+        if (b->left == b->right || b->top == b->bottom) continue;
         int l = x + layer->offsetX - images[id][3] / 2;
         int t = y + layer->offsetY - images[id][2] / 2;
-        left = min(left,l); top = min(top,t);
-        right = max(right,l + images[id][3]); bottom = max(bottom,t + images[id][2]);
+        left = visible ? min(left,l + b->left) : l + b->left;
+        top = visible ? min(top,t + b->top) : t + b->top;
+        right = visible ? max(right,l + b->right) : l + b->right;
+        bottom = visible ? max(bottom,t + b->bottom) : t + b->bottom;
+        visible = true;
+    }
+    if (!visible) {
+        assert(!u->viewportBoundsWidth && !u->viewportBoundsHeight);
+        assert(GUI_Widget_Viewport_UnitDamageFree(u,x,y));
+        return;
     }
     x += g_widgetProperties[2].xBase << 3; y += g_widgetProperties[2].yBase;
     assert(x + u->viewportBoundsLeft == left + (g_widgetProperties[2].xBase << 3));
@@ -86,6 +201,14 @@ static void checkBox(Unit *u, int x, int y) {
         right + (g_widgetProperties[2].xBase << 3), bottom + g_widgetProperties[2].yBase);
     assert(GUI_Widget_Viewport_UnitDamageFree(u,x - (g_widgetProperties[2].xBase << 3),
                                                 y - g_widgetProperties[2].yBase) == expected);
+}
+static void opaqueBounds(unsigned id, unsigned l, unsigned t, unsigned r, unsigned b) {
+    for (unsigned flags = 0; flags < 4; flags++)
+        g_viewportSpriteBounds[id][flags] = (GUI_SpriteBounds){
+            flags & DRAWSPRITE_FLAG_RTL ? images[id][3] - r : l,
+            flags & DRAWSPRITE_FLAG_BOTTOMUP ? images[id][2] - b : t,
+            flags & DRAWSPRITE_FLAG_RTL ? images[id][3] - l : r,
+            flags & DRAWSPRITE_FLAG_BOTTOMUP ? images[id][2] - t : b};
 }
 int main(void) {
     Unit u = {0}; u.o.type = UNIT_TANK;
@@ -104,7 +227,7 @@ int main(void) {
         currentLayers.count = count;
         dimensions(0,width,height);
         dimensions(1,33-width,33-height);
-        GUI_Widget_Viewport_UpdateUnitBounds(&u,0,&currentLayers);
+        GUI_Widget_Viewport_UpdateUnitBounds(&u,0,0,&currentLayers);
         for (int pos = -32; pos <= 240; pos += 16) {
             memset(s_viewportSpriteDamage,0,sizeof(s_viewportSpriteDamage));
             s_viewportSpriteDamage[0] = 1;
@@ -148,6 +271,34 @@ int main(void) {
     assert(u.viewportBoundsWidth > 16);
     currentLayers.count = 0;
     assert(!candidate(&u,24,8) && builds == 8 && u.viewportBoundsWidth == 16);
+    /* Original centres are retained for asymmetric, mirrored, layered and
+     * entirely transparent frames; damage admission uses only opacity. */
+    dimensions(0,24,24); opaqueBounds(0,4,1,19,22);
+    dimensions(1,17,15); opaqueBounds(1,3,2,13,12);
+    dimensions(2,16,24); opaqueBounds(2,4,3,12,20);
+    dimensions(3,16,16); opaqueBounds(3,1,1,15,15);
+    for (currentFlags = 0; currentFlags < 4; currentFlags++)
+    for (unsigned count = 0; count <= 3; count++)
+    for (unsigned layerFlags = 0; layerFlags < 4; layerFlags++) {
+        currentLayers.count = count;
+        for (unsigned i = 0; i < 3; i++) currentLayers.layer[i].flags = layerFlags;
+        GUI_Widget_Viewport_UpdateUnitBounds(&u,0,currentFlags,&currentLayers);
+        for (unsigned px = 0; px < 16; px++) for (unsigned py = 0; py < 16; py++) {
+            memset(s_viewportSpriteDamage,0,sizeof(s_viewportSpriteDamage));
+            s_viewportSpriteDamage[2] = 1u << (px % 8);
+            checkBox(&u,64 + px,32 + py);
+        }
+    }
+    memset(g_viewportSpriteBounds[0],0,sizeof(g_viewportSpriteBounds[0]));
+    for (unsigned count = 0; count <= 3; count++) {
+        currentLayers.count = count;
+        GUI_Widget_Viewport_UpdateUnitBounds(&u,0,0,&currentLayers);
+        currentFlags = 0;
+        checkBox(&u,24,8);
+    }
+    memset(g_viewportSpriteBounds,0,sizeof(g_viewportSpriteBounds));
+    GUI_Widget_Viewport_UpdateUnitBounds(&u,0,0,&currentLayers);
+    checkBox(&u,24,8);
     return 0;
 }
 """

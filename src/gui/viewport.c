@@ -313,27 +313,41 @@ static bool GUI_Widget_Viewport_SpriteDamageFree(int16 left, int16 top, int16 ri
 
 /* Same bounds GUI_ViewportPlanarSprite() hands to ShouldDrawSprite() for a
  * centred, widget-positioned unit with layers. */
-static void GUI_Widget_Viewport_UpdateUnitBounds(Unit *unit, uint16 index,
+static void GUI_Widget_Viewport_UpdateUnitBounds(Unit *unit, uint16 index, int flags,
                                                  const GUI_SpriteLayers *layers)
 {
 	const uint8 *sprite = g_sprites[index];
 	int16 width = READ_LE_UINT16(sprite + 3), height = sprite[2];
 	int16 left, top, right, bottom, i;
+	const GUI_SpriteBounds *bounds = GUI_ViewportSpriteBounds(index, flags);
+	bool visible = bounds->left != bounds->right && bounds->top != bounds->bottom;
 
-	left = -width / 2;
-	top = -height / 2;
-	right = left + width;
-	bottom = top + height;
+	left = -width / 2 + bounds->left;
+	top = -height / 2 + bounds->top;
+	right = -width / 2 + bounds->right;
+	bottom = -height / 2 + bounds->bottom;
 	for (i = 0; i < layers->count; i++) {
 		const GUI_SpriteLayer *layer = &layers->layer[i];
 		const uint8 *layerSprite = g_sprites[layer->spriteID];
 		int16 layerWidth = READ_LE_UINT16(layerSprite + 3), layerHeight = layerSprite[2];
-		int16 layerLeft = layer->offsetX - layerWidth / 2;
-		int16 layerTop = layer->offsetY - layerHeight / 2;
-		left = min(left, layerLeft);
-		top = min(top, layerTop);
-		right = max(right, (int16)(layerLeft + layerWidth));
-		bottom = max(bottom, (int16)(layerTop + layerHeight));
+		int16 layerLeft, layerTop, layerRight, layerBottom;
+
+		bounds = GUI_ViewportSpriteBounds(layer->spriteID, layer->flags);
+		if (bounds->left == bounds->right || bounds->top == bounds->bottom) continue;
+		layerLeft = layer->offsetX - layerWidth / 2 + bounds->left;
+		layerTop = layer->offsetY - layerHeight / 2 + bounds->top;
+		layerRight = layer->offsetX - layerWidth / 2 + bounds->right;
+		layerBottom = layer->offsetY - layerHeight / 2 + bounds->bottom;
+		left = visible ? min(left, layerLeft) : layerLeft;
+		top = visible ? min(top, layerTop) : layerTop;
+		right = visible ? max(right, layerRight) : layerRight;
+		bottom = visible ? max(bottom, layerBottom) : layerBottom;
+		visible = true;
+	}
+	if (!visible) {
+		unit->viewportBoundsLeft = unit->viewportBoundsTop = 0;
+		unit->viewportBoundsWidth = unit->viewportBoundsHeight = 0;
+		return;
 	}
 	assert(left >= -128 && left <= 127 && top >= -128 && top <= 127);
 	assert(right > left && right - left <= 80 && bottom > top && bottom - top <= 64);
@@ -348,7 +362,7 @@ static bool GUI_Widget_Viewport_UnitDamageFree(const Unit *unit, int16 x, int16 
 	int16 left = x + (g_widgetProperties[2].xBase << 3) + unit->viewportBoundsLeft;
 	int16 top = y + g_widgetProperties[2].yBase + unit->viewportBoundsTop;
 
-	assert(unit->viewportBoundsWidth != 0);
+	if (unit->viewportBoundsWidth == 0) return true;
 	return GUI_Widget_Viewport_SpriteDamageFree(left, top,
 	    left + unit->viewportBoundsWidth, top + unit->viewportBoundsHeight);
 }
@@ -1073,16 +1087,16 @@ void GUI_Widget_Viewport_DamageUnit(Unit *unit, uint16 parts)
 		wobbleY = g_table_tilediff[0][unit->wobbleIndex].y;
 	}
 	if (parts & UNIT_SPRITE_BODY) {
-		Map_UpdateSprite(index, unit->o.position, wobbleX, wobbleY, damage);
+		Map_UpdateSprite(index, unit->o.position, wobbleX, wobbleY, flags, damage);
 		if (unit->o.type == UNIT_SANDWORM) {
-			Map_UpdateSprite(index, unit->targetLast, 0, 0, MAP_SPRITE_DAMAGE_NORMAL);
-			Map_UpdateSprite(index, unit->targetPreLast, 0, 0, MAP_SPRITE_DAMAGE_NORMAL);
+			Map_UpdateSprite(index, unit->targetLast, 0, 0, flags, MAP_SPRITE_DAMAGE_NORMAL);
+			Map_UpdateSprite(index, unit->targetPreLast, 0, 0, flags, MAP_SPRITE_DAMAGE_NORMAL);
 		}
 	}
 	for (i = 0; i < layers.count; i++) {
 		const GUI_SpriteLayer *layer = &layers.layer[i];
 		Map_UpdateSprite(layer->spriteID, unit->o.position, wobbleX + layer->offsetX, wobbleY + layer->offsetY,
-		    damage == MAP_SPRITE_DAMAGE_HARVESTER ? damage : MAP_SPRITE_DAMAGE_NORMAL);
+		    layer->flags, damage == MAP_SPRITE_DAMAGE_HARVESTER ? damage : MAP_SPRITE_DAMAGE_NORMAL);
 	}
 }
 #endif
@@ -1498,7 +1512,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 			index = GUI_Widget_Viewport_GroundSprites(u, &spriteFlags, &layers, UNIT_SPRITE_ALL);
 #ifdef TOS
 			if (!boundsReady) {
-				GUI_Widget_Viewport_UpdateUnitBounds(u, index, &layers);
+				GUI_Widget_Viewport_UpdateUnitBounds(u, index, spriteFlags, &layers);
 				if (GUI_Widget_Viewport_UnitDamageFree(u, x, y)) continue;
 			}
 #endif

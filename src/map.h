@@ -192,7 +192,7 @@ typedef enum MapSpriteDamage {
 	MAP_SPRITE_DAMAGE_SMALL_EFFECT,
 	MAP_SPRITE_DAMAGE_HARVESTER
 } MapSpriteDamage;
-extern void Map_UpdateSprite(uint16 spriteID, tile32 position, int16 offsetX, int16 offsetY, MapSpriteDamage damage);
+extern void Map_UpdateSprite(uint16 spriteID, tile32 position, int16 offsetX, int16 offsetY, int flags, MapSpriteDamage damage);
 extern void Map_DeviateArea(uint16 type, tile32 position, uint16 radius, uint8 houseID);
 extern void Map_Bloom_ExplodeSpice(uint16 packed, uint8 houseID);
 extern void Map_FillCircleWithSpice(uint16 packed, uint16 radius);

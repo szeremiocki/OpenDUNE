@@ -41,7 +41,7 @@ static void Explosion_Update(uint16 type, Explosion *e)
 
 #ifdef TOS
 	if (Video_Atari_CursorDirect()) {
-		if (type != 1) Map_UpdateSprite(e->spriteID, e->position, 0, 0, MAP_SPRITE_DAMAGE_SMALL_EFFECT);
+		if (type != 1) Map_UpdateSprite(e->spriteID, e->position, 0, 0, 0, MAP_SPRITE_DAMAGE_SMALL_EFFECT);
 		return;
 	}
 #endif

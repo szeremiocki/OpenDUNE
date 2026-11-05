@@ -697,7 +697,7 @@ Both directions retain unavailable-item remapping and the selection outline;
 outline removal also uses the retained colour rather than sampling SCREEN_0.
 The planar viewport defers dirty terrain publication until the first
 foreground draw touching each tile. Independently dirty sprites still publish
-their whole image and propagate its bounds to later foreground. Unchanged
+their whole visible bounds and propagate them to later foreground. Unchanged
 sprites admitted only for terrain/foreground repair publish just intersections
 with the retained tile-damage mask; admitting them no longer expands that mask
 to their whole bounds. Small bullets and explosion frames no larger than
@@ -721,6 +721,22 @@ repaired once; remaining tiles are repaired before aircraft are drawn. Forced
 redraws and scrolling retain whole-sprite publication. There is no command queue,
 per-unit image ownership or new framebuffer. See ATARI_PHASE_REVERSAL.md for the
 original repair-on-first-touch experiment.
+
+Battlefield sprite opacity bounds are now computed during eager mask loading,
+for both horizontal mirrors and both vertical orientations, including opaque
+logical black. Damage marking, cached unit admission and composite publication
+use these bounds instead of transparent canvas margins. Layered composites
+union their components' opaque bounds once on a cache miss; empty frames do
+not enqueue repairs or publish pixels. The north-facing harvester body is
+15x21 within its original 24x24 canvas; the east-facing body is 21x18.
+This can remove the transparent side columns or upper row from terrain damage
+at appropriate sub-tile positions without changing the 3x3 discovery policy.
+Raw SHP dimensions, original centres, layer offsets, source row strides and
+cache allocations remain unchanged: physical trimming is deferred. CPU draws
+skip outside groups/rows, while BLiTTER plans retain the original source stride
+and precompute the opaque source origin for all sixteen destination phases.
+Screen/tile clipping remains dynamic; there are no per-pass opacity scans.
+Legacy, TT and Falcon sprite geometry is unchanged.
 
 Fog/veil candidates are no longer promoted into terrain repairs merely for
 being hidden. Sprite-footprint marking skips fully hidden tiles; genuine

@@ -673,18 +673,32 @@ static bool Map_IsTileVisible(uint16 packed)
 }
 
 /** Queue tile-rounded repair of a centered sprite in world coordinates. */
-void Map_UpdateSprite(uint16 spriteID, tile32 position, int16 offsetX, int16 offsetY, MapSpriteDamage damage)
+void Map_UpdateSprite(uint16 spriteID, tile32 position, int16 offsetX, int16 offsetY, int flags, MapSpriteDamage damage)
 {
 	int16 left, top, right, bottom, row, column;
 	uint16 width, height, updateType = 0;
+	int16 trimLeft = 0, trimTop = 0, trimRight, trimBottom;
 
 	if (spriteID == 0 || (position.x == 0 && position.y == 0)) return;
 	assert(g_sprites[spriteID] != NULL);
 	width = Sprite_GetWidth(g_sprites[spriteID]);
 	height = Sprite_GetHeight(g_sprites[spriteID]);
 	assert(width != 0 && height != 0);
+	trimRight = width;
+	trimBottom = height;
 #ifdef TOS
 	bool native = Video_Atari_CursorDirect();
+	if (native) {
+		const GUI_SpriteBounds *bounds;
+
+		assert(spriteID < lengthof(g_viewportSpriteBounds));
+		bounds = GUI_ViewportSpriteBounds(spriteID, flags);
+		if (bounds->left == bounds->right || bounds->top == bounds->bottom) return;
+		trimLeft = bounds->left;
+		trimTop = bounds->top;
+		trimRight = bounds->right;
+		trimBottom = bounds->bottom;
+	}
 	if (native && damage == MAP_SPRITE_DAMAGE_HARVESTER) {
 		Map_MarkHarvesterCandidates(Tile_PackTile(position));
 		updateType = 5;
@@ -693,11 +707,14 @@ void Map_UpdateSprite(uint16 spriteID, tile32 position, int16 offsetX, int16 off
 	}
 #else
 	VARIABLE_NOT_USED(damage);
+	VARIABLE_NOT_USED(flags);
 #endif
 	left = (position.x >> 4) + offsetX - width / 2;
 	top = (position.y >> 4) + offsetY - height / 2;
-	right = min(1024, left + width);
-	bottom = min(1024, top + height);
+	right = min(1024, left + trimRight);
+	bottom = min(1024, top + trimBottom);
+	left += trimLeft;
+	top += trimTop;
 	left = max(0, left);
 	top = max(0, top);
 	if (left >= right || top >= bottom) return;

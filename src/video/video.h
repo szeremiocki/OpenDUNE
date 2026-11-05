@@ -225,9 +225,10 @@ typedef struct Video_Atari_SpriteBlitPlan {
 	uint8 skew;
 } Video_Atari_SpriteBlitPlan;
 /* Sixteen destination phases of the full, horizontally unclipped image.
- * sourceWidth is group-aligned; width excludes transparent right padding. */
+ * sourceWidth retains the group-aligned canvas stride; sourceX/width
+ * delimit the opaque horizontal bounds within that canvas. */
 extern void Video_Atari_BuildSpriteBlitPlans(Video_Atari_SpriteBlitPlan plans[16],
-                                            uint16 sourceWidth, uint16 width);
+                                           uint16 sourceWidth, uint16 sourceX, uint16 width);
 /* Bits 0-3 enable opacity clears; bits 4-7 enable colour ORs.
  * Classify the final image with one compact opacity word per four plane words. */
 extern uint8 Video_Atari_BuildSpriteBlitRecipe(const uint16 *pixels, const uint16 *masks,

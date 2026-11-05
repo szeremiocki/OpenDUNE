@@ -20,6 +20,7 @@ COMMON = r"""
 #include "src/table/tilediff.c"
 #define min(a,b) ((a) < (b) ? (a) : (b))
 #define max(a,b) ((a) > (b) ? (a) : (b))
+#define lengthof(a) (sizeof(a) / sizeof((a)[0]))
 #define BitArray_Set(a,n) ((a)[(n) >> 3] |= 1u << ((n) & 7))
 #define BitArray_Test(a,n) (((a)[(n) >> 3] >> ((n) & 7)) & 1)
 UnitInfo g_table_unitInfo[UNIT_MAX];
@@ -36,6 +37,13 @@ HouseType g_playerHouseID;
 Unit *g_unitSelected;
 static uint8 images[355][10], *sprites[355];
 uint8 **g_sprites = sprites;
+#ifdef TOS
+GUI_SpriteBounds g_viewportSpriteBounds[355][4];
+static void fullBounds(unsigned id) {
+    for (unsigned flags = 0; flags < 4; flags++)
+        g_viewportSpriteBounds[id][flags] = (GUI_SpriteBounds){0,0,images[id][3],images[id][2]};
+}
+#endif
 static bool direct = true, visible = true;
 bool Video_Atari_CursorDirect(void) { return direct; }
 static bool Map_IsTileVisible(uint16 packed) { assert(packed < 4096); return visible; }
@@ -46,6 +54,9 @@ static void clearDamage(void) {
 static void initSprites(void) {
     for (unsigned i = 0; i < 355; i++) {
         sprites[i] = images[i]; images[i][2] = images[i][3] = 16;
+#ifdef TOS
+        fullBounds(i);
+#endif
     }
 }
 static void expectedSprite(uint8 *expected, uint16 id, tile32 position, int dx, int dy) {
@@ -422,7 +433,7 @@ int main(void) {
     direct = false; legacyCalls = 0; e.isDirty = false;
     Explosion_Func_SetSpriteID(&e,10); Explosion_Func_MoveYPosition(&e,16);
     Explosion_Func_Stop(&e,0); assert(legacyCalls == 2);
-    clearDamage(); Map_UpdateSprite(0,e.position,0,0,true); assert(!g_dirtyViewportCount);
+    clearDamage(); Map_UpdateSprite(0,e.position,0,0,0,true); assert(!g_dirtyViewportCount);
     return 0;
 }
 """
