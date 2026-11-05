@@ -344,6 +344,8 @@ Tile g_map[4096];
 uint8 g_dirtyViewport[512], g_dirtyMinimap[512], g_displayedViewport[512];
 uint16 g_dirtyViewportCount;
 bool g_selectionRectangleNeedRepaint;
+uint8 g_playerHouseID = 2;
+bool Tile_IsUnveiled(uint16 id) { (void)id; return false; }
 static bool direct, visible, markViewport;
 static Unit *occupant;
 static unsigned updates[5], marks, unveils;
@@ -460,9 +462,14 @@ uint8 g_functions[3][3] = {{0,1,0},{2,3,0},{0,1,0}};
 static Unit *occupant;
 static unsigned preparations, marks, unveils;
 static uint16 fogTile = 0xffff;
+bool Tile_IsUnveiled(uint16 id) { (void)id; return false; }
+void GUI_Widget_Viewport_DamageUnit(Unit *unit, uint16 parts) {
+    assert(unit && parts == UNIT_SPRITE_ALL);
+    Unit_PrepareSpriteChange(unit,parts);
+}
 void Unit_PrepareSpriteChange(Unit *unit, uint16 parts) {
     assert(parts == UNIT_SPRITE_ALL); preparations++;
-    Map_UpdateSprite(10,unit->o.position,0,0);
+    Map_UpdateSprite(10,unit->o.position,0,0,false);
 }
 Unit *Unit_Get_ByPackedTile(uint16 packed) { assert(packed < 4096); return occupant; }
 void Unit_HouseUnitCount_Add(Unit *unit, uint8 house) { assert(unit && !house); }
@@ -494,7 +501,7 @@ int main(void) {
     g_map[oldPacked].hasUnit = true; g_map[oldPacked].index = u.o.index + 1;
     clearDamage();
     BitArray_Set(g_dirtyViewport,100); g_dirtyViewportCount = 7;
-    Map_UpdateSprite(10,u.o.position,0,0);
+    Map_UpdateSprite(10,u.o.position,0,0,false);
     uint8 candidates[512], terrain[512];
     memcpy(candidates,g_dirtyViewport,512); memcpy(terrain,g_dirtyMinimap,512);
     unsigned count = g_dirtyViewportCount;

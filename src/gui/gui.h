@@ -8,6 +8,9 @@
 struct Unit;
 #ifdef TOS
 extern void GUI_Widget_Viewport_DamageUnit(struct Unit *unit, uint16 parts);
+#ifdef VIEWPORT_DEBUG_DAMAGE
+extern bool GUI_Widget_Viewport_DebugInput(uint16 input);
+#endif
 #endif
 
 /**

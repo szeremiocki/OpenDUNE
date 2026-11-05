@@ -16,6 +16,7 @@ COMMON = r"""
 #include "src/house.h"
 #include "src/gui/gui.h"
 #include "src/explosion.h"
+#include "src/sprites.h"
 #include "src/table/tilediff.c"
 #define min(a,b) ((a) < (b) ? (a) : (b))
 #define max(a,b) ((a) > (b) ? (a) : (b))
@@ -27,6 +28,10 @@ uint16 g_mapTileID[4096];
 uint8 g_dirtyViewport[512], g_dirtyMinimap[512], g_displayedViewport[512];
 uint16 g_dirtyViewportCount, g_dirtyUnitCount, g_dirtyAirUnitCount;
 bool g_selectionRectangleNeedRepaint;
+bool g_debugScenario = true;
+uint16 g_veiledTileID;
+static uint16 fogIcons[64];
+uint16 *g_iconMap = fogIcons;
 HouseType g_playerHouseID;
 Unit *g_unitSelected;
 static uint8 images[355][10], *sprites[355];
@@ -61,7 +66,8 @@ def map_production():
     source = (ROOT / "src/map.c").read_text()
     sprites = (ROOT / "src/sprites.c").read_text()
     return world_damage_production(source, "Map_Update") + "\n" + "\n".join(
-        function(text, name) for text, name in [
+        (world_damage_production(text, name) if name == "Map_UpdateSprite" else function(text, name))
+        for text, name in [
         (sprites, "Sprite_GetWidth"), (sprites, "Sprite_GetHeight"),
         (source, "Map_UpdateSprite"),
     ])
@@ -380,6 +386,8 @@ int main(void) {
         harness = COMMON + r"""
 uint8 g_functions[3][3] = {{0,1,0},{2,3,0},{0,1,0}};
 static unsigned legacyCalls;
+Explosion g_explosions[EXPLOSION_MAX];
+uint8 g_explosionHigh;
 void Map_UpdateAround(uint16 radius, tile32 position, Unit *unit, uint8 fn, bool markViewport) {
     assert(radius == 24 && unit == NULL && fn <= 1 && markViewport); (void)position; legacyCalls++;
 }
@@ -414,7 +422,7 @@ int main(void) {
     direct = false; legacyCalls = 0; e.isDirty = false;
     Explosion_Func_SetSpriteID(&e,10); Explosion_Func_MoveYPosition(&e,16);
     Explosion_Func_Stop(&e,0); assert(legacyCalls == 2);
-    clearDamage(); Map_UpdateSprite(0,e.position,0,0); assert(!g_dirtyViewportCount);
+    clearDamage(); Map_UpdateSprite(0,e.position,0,0,true); assert(!g_dirtyViewportCount);
     return 0;
 }
 """
@@ -428,7 +436,6 @@ int main(void) {
         harness = COMMON + r"""
 #include "src/sprites.h"
 static uint16 icons[256];
-uint16 *g_iconMap = icons;
 static unsigned updates[4096], total, prepared;
 uint16 Map_GetLandscapeType(uint16 packed) {
     unsigned id = g_map[packed].groundTileID;
@@ -445,7 +452,7 @@ void Unit_PrepareSpriteChange(Unit *unit, uint16 parts) {
 void Unit_UpdateMap(uint16 mode, Unit *unit) { assert(mode == UNIT_UPDATE_MAP_REPAINT && unit); }
 /* PRODUCTION */
 int main(void) {
-    initSprites(); clearDamage();
+    initSprites(); clearDamage(); g_iconMap = icons;
     (void)expectedSprite;
     (void)Map_IsTileVisible;
     for (unsigned i = 0; i < 81; i++) icons[100 + i] = i;

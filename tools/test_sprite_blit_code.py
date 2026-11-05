@@ -86,7 +86,8 @@ int main(void) {
 }
 """
         production = blit_plan_type() + "\n" + "\n".join(function(video, name) for name in (
-            "Video_Atari_BuildSpriteBlitRecipe", "Video_Atari_CompileSpriteBlitCode",
+            "Video_Atari_BuildSpriteBlitRecipe", "Video_Atari_CompileSpriteBlit",
+            "Video_Atari_CompileSpriteBlitCode",
             "Video_Atari_PlanarMergePlain", "Video_Atari_ComposePlanarSprite"))
         with tempfile.TemporaryDirectory(prefix="sprite-layerless-copy-") as directory:
             source, binary = Path(directory) / "check.c", Path(directory) / "check"
@@ -130,9 +131,13 @@ void make_plan(Video_Atari_SpriteBlitPlan *out, uint16 stride, uint16 sourceX,
                uint16 width, uint16 phase) {
     Video_Atari_BuildSpriteBlitPlan(out, stride, sourceX, width, phase);
 }
+void make_masked(Video_Atari_SpriteBlitCode *out, uint8 passes, uint16 line) {
+    Video_Atari_CompileSpriteBlit(out, passes, 3, line);
+}
 """
         production = (blit_plan_type() + tables +
                       function(video, "Video_Atari_BuildSpriteBlitPlan") + "\n" +
+                      function(video, "Video_Atari_CompileSpriteBlit") + "\n" +
                       function(video, "Video_Atari_CompileSpriteBlitCode"))
         with tempfile.TemporaryDirectory(prefix="sprite-blit-code-") as directory:
             directory = Path(directory)
@@ -152,13 +157,15 @@ void make_plan(Video_Atari_SpriteBlitPlan *out, uint16 stride, uint16 sourceX,
 
             lib.make_plan.argtypes = [ctypes.POINTER(Plan)] + [ctypes.c_uint16] * 4
             lib.Video_Atari_CompileSpriteBlitCode.argtypes = [ctypes.c_void_p, ctypes.c_uint8]
+            lib.make_masked.argtypes = [ctypes.c_void_p, ctypes.c_uint8, ctypes.c_uint16]
             code_words = 8 * 17 + 2 * 3 + 1
             compiled = []
             for passes in range(256):
-                storage = (ctypes.c_uint16 * (code_words + 1))()
-                storage[code_words] = 0xdead
+                storage = (ctypes.c_uint16 * (code_words + 2))()
+                storage[code_words + 1] = 0xdead
                 lib.Video_Atari_CompileSpriteBlitCode(storage, passes)
-                self.assertEqual(storage[code_words], 0xdead)
+                self.assertEqual(ctypes.string_at(storage, code_words * 2 + 1)[-1], passes)
+                self.assertEqual(storage[code_words + 1], 0xdead)
                 compiled.append(ctypes.string_at(storage, code_words * 2))
             obj, binary = directory / "setup.o", directory / "setup.bin"
             subprocess.run([tools[1], "-m68000", "-Faout", "-quiet", "-o", str(obj),
@@ -189,7 +196,7 @@ void make_plan(Video_Atari_SpriteBlitPlan *out, uint16 stride, uint16 sourceX,
 
             def mmio(cpu, access, address, size, value, data):
                 nonlocal pending
-                if address == 0xffff8a3c and value == 0xc0:
+                if address == 0xffff8a3c and value & 0xf0 == 0xc0:
                     pending = True
 
             def instruction(cpu, address, size, data):
@@ -218,7 +225,8 @@ void make_plan(Video_Atari_SpriteBlitPlan *out, uint16 stride, uint16 sourceX,
                 src, dst = read(base + 0x24, 4), read(base + 0x32, 4)
                 words, rows = read(base + 0x36, 2), read(base + 0x38, 2)
                 skew, op = read(base + 0x3d, 1), read(base + 0x3b, 1)
-                self.assertEqual(read(base + 0x3a, 1), 2)
+                self.assertEqual(read(base + 0x3a, 1), 3 if protected else 2)
+                self.assertEqual(read(base + 0x3c, 1) & 15, first_line if protected else 0)
                 self.assertIn(op, (4, 7))
                 for row in range(rows):
                     if skew & 0x80:
@@ -233,6 +241,8 @@ void make_plan(Video_Atari_SpriteBlitPlan *out, uint16 stride, uint16 sourceX,
                         latch = ((latch >> 16) | (value << 16)) if sx < 0 else \
                             ((latch << 16) | value) & 0xffffffff
                         shifted = (latch >> (skew & 15)) & 0xffff
+                        if protected:
+                            shifted &= writable[(first_line + row) & 15]
                         result = old & ~shifted if op == 4 else old | shifted
                         mask = read(base + (0x28 if word == 0 else
                                            0x2c if word + 1 == words else 0x2a), 2)
@@ -254,6 +264,11 @@ void make_plan(Video_Atari_SpriteBlitPlan *out, uint16 stride, uint16 sourceX,
             cpu.hook_add(unicorn.UC_HOOK_CODE, instruction)
             background = bytes((i * 113 + 17) & 255 for i in range(160 * 4))
             for pattern in range(81):
+                protected = (pattern & 1) != 0
+                first_line = (pattern >> 1) & 15
+                writable = [((line * 977) ^ 0xa39f) & 0xffff for line in range(16)]
+                for line, word in enumerate(writable):
+                    write(0xffff8a00 + line * 2, word, 2)
                 states, value, passes = [], pattern, 0
                 for plane in range(4):
                     state = value % 3
@@ -278,7 +293,12 @@ void make_plan(Video_Atari_SpriteBlitPlan *out, uint16 stride, uint16 sourceX,
                                                  struct.unpack_from(">H", pixels, offset + plane * 2)[0] | bit)
                 cpu.mem_write(0x50000, bytes(pixels))
                 cpu.mem_write(0x60000, bytes(masks))
-                cpu.mem_write(0x20000, compiled[passes])
+                if protected:
+                    storage = (ctypes.c_uint16 * (code_words + 1))()
+                    lib.make_masked(storage, passes, first_line)
+                    cpu.mem_write(0x20000, ctypes.string_at(storage, code_words * 2))
+                else:
+                    cpu.mem_write(0x20000, compiled[passes])
                 cpu.ctl_remove_cache(0x20000, 0x20000 + code_words * 2)
                 for phase in range(16):
                     for source_x in (0, 1, 15, 16, 31):
@@ -298,6 +318,8 @@ void make_plan(Video_Atari_SpriteBlitPlan *out, uint16 stride, uint16 sourceX,
                                     sb = 0x8000 >> ((source_x + x) & 15)
                                     db = 0x8000 >> ((phase + x) & 15)
                                     if not struct.unpack_from(">H", masks, src)[0] & sb:
+                                        continue
+                                    if protected and not writable[(first_line + y) & 15] & db:
                                         continue
                                     for plane in range(4):
                                         dst = y * 160 + (phase + x) // 16 * 8 + plane * 2

@@ -89,6 +89,7 @@ extern uint8 g_displayedViewport[512];
 #ifdef TOS
 extern uint16 g_viewportDamagePosition;
 extern uint16 g_viewportTerrainDamage[10];
+extern bool g_viewportNoHaloDamage;
 /* Candidate centres include Map_IsPositionInViewport()'s offscreen border. */
 extern uint32 g_viewportCandidateDamage[13];
 extern uint32 g_viewportCandidateColumns[64];
@@ -110,6 +111,24 @@ static inline void Map_MarkViewportCandidate(uint16 packed)
 	uint32 columns = Map_ViewportCandidateMask(packed, &row);
 
 	if (columns != 0) g_viewportCandidateDamage[row] |= columns;
+}
+
+static inline void Map_MarkHarvesterCandidates(uint16 packed)
+{
+	uint16 x = packed & 63, y = packed >> 6;
+	uint32 columns = g_viewportCandidateColumns[x];
+	int16 dy;
+
+	if (x != 0) columns |= g_viewportCandidateColumns[x - 1];
+	if (x != 63) columns |= g_viewportCandidateColumns[x + 1];
+	if (columns == 0) return;
+	for (dy = -1; dy <= 1; dy++) {
+		uint16 row;
+
+		if (y + dy < 0 || y + dy >= 64) continue;
+		row = y + dy - g_viewportCandidateTop;
+		if (row < 13) g_viewportCandidateDamage[row] |= columns;
+	}
 }
 
 static inline bool Map_ViewportCandidateDirty(uint16 packed)
@@ -168,7 +187,12 @@ extern bool Map_IsPositionInViewport(tile32 position, uint16 *retX, uint16 *retY
 extern void Map_MakeExplosion(uint16 type, tile32 position, uint16 hitpoints, uint16 unitOriginEncoded);
 extern uint16 Map_GetLandscapeType(uint16 packed);
 extern void Map_Update(uint16 packed, uint16 type, bool ignoreInvisible);
-extern void Map_UpdateSprite(uint16 spriteID, tile32 position, int16 offsetX, int16 offsetY);
+typedef enum MapSpriteDamage {
+	MAP_SPRITE_DAMAGE_NORMAL,
+	MAP_SPRITE_DAMAGE_SMALL_EFFECT,
+	MAP_SPRITE_DAMAGE_HARVESTER
+} MapSpriteDamage;
+extern void Map_UpdateSprite(uint16 spriteID, tile32 position, int16 offsetX, int16 offsetY, MapSpriteDamage damage);
 extern void Map_DeviateArea(uint16 type, tile32 position, uint16 radius, uint8 houseID);
 extern void Map_Bloom_ExplodeSpice(uint16 packed, uint8 houseID);
 extern void Map_FillCircleWithSpice(uint16 packed, uint16 radius);

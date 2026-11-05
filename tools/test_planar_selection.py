@@ -47,6 +47,7 @@ static bool g_selectionRectangleNeedRepaint;
 static bool direct;
 #ifdef TOS
 static uint16 g_viewportDamagePosition = 20 * 64 + 20, g_viewportTerrainDamage[10];
+static bool g_viewportNoHaloDamage;
 static uint16 g_viewportCandidateTop;
 static uint32 g_viewportCandidateDamage[13], g_viewportCandidateColumns[64];
 static bool Video_Atari_CursorDirect(void);

@@ -57,6 +57,34 @@ mode after one Super(0L); it does not pass the game loop to Supexec.
 
 * Performance
 
+Build the optional ST/STE damage stepper with
+--CFLAGS="-DVIEWPORT_DEBUG_DAMAGE -DATARI_SUPERVISOR_RESIDENT=1"
+(omit the supervisor flag for the Supexec configuration).
+Pass OPENDUNE=damage.tos to make, and run bin/damage.tos on the Atari.
+Use distinct 8.3 executable names: longer host filenames can truncate to
+OPENDUNE.TOS and collide with the normal build.
+F9 toggles it during gameplay. Each viewport pass shows allowed-placement
+halftones on visible candidate-centre tiles, then waits for a fresh key or mouse
+press and release. It restores the clean screen, renders normally, and pauses
+with disallowed-placement halftones on terrain tiles actually repaired and on
+published sprite fragments (whole bounds for independently dirty sprites).
+Another press advances to the next pass. Esc disables stepping;
+F9 can enable it again.
+Candidate halos outside the visible 15x10 tiles are not displayed. Accepted
+sprite bounds can extend outside candidate-centre tiles; red outside green is
+not itself evidence of a filtering error.
+
+The overlays reuse the placement blit (including its CPU implementation), but
+XOR rather than OR the checkerboard. Repeating the same XOR removes each
+overlay exactly, without a framebuffer backup, damage-mask changes or extra
+repairs. Both game and GUI timers retain their previous enable states across
+waits. Video callbacks continue polling mouse
+input, but do not publish pixels or refresh cursors while an overlay is shown.
+Step presses are consumed, not dispatched as game commands. Recording/replay
+input is excluded. Without VIEWPORT_DEBUG_DAMAGE none of the instrumentation,
+shortcut handling or scratch storage is compiled in. Do not use stepper builds
+for performance captures.
+
 ST/STE currently uses an experimental Amiga-style timing policy: the shared
 game/UI/input tick runs at 50 Hz instead of 60 Hz, and unit scripts receive
 51 logical opcodes per batch on screen (or with scriptNoSlowdown), and 2
@@ -668,24 +696,63 @@ pixels per step (16 updates per item); other paths retain one-pixel steps.
 Both directions retain unavailable-item remapping and the selection outline;
 outline removal also uses the retained colour rather than sampling SCREEN_0.
 The planar viewport defers dirty terrain publication until the first
-foreground draw touching each tile. Cached sprites are published in
-tile-sized portions: repair one dirty tile, draw its intersecting sprite
-portion immediately, then continue. Portions over clean tiles are still
-drawn in painter order. Cached pixel/mask row strides are retained without
-copying or re-encoding the composed sprite; cursor/placement protection is
-unchanged. Each dirty tile is repaired once; remaining tiles are repaired
-before aircraft are drawn. Original uncached sprite paths retain whole-sprite
-repair/publication. Existing damage estimates and redraw eligibility are
-unchanged, with no command queue or new protection masks. See
-ATARI_PHASE_REVERSAL.md for the experiment and possible later damage tightening.
+foreground draw touching each tile. Independently dirty sprites still publish
+their whole image and propagate its bounds to later foreground. Unchanged
+sprites admitted only for terrain/foreground repair publish just intersections
+with the retained tile-damage mask; admitting them no longer expands that mask
+to their whole bounds. Small bullets and explosion frames no larger than
+16x16 mark only their actual footprint, including every touched tile when
+straddling boundaries, without an extra candidate ring. Such passes let the
+bounds filters discover overlapping sprites even when their centres lie
+outside that footprint. Larger effects retain the candidate halo.
+Harvesters instead use a fixed 3x3 discovery region around each marked unit
+position, including attachment, smoke, selection and destroyed frames.
+Forced/historical 5x5 registration traversals retain all callbacks but mark
+only their central 3x3 as candidates. Component terrain damage is unchanged,
+including portions outside that discovery region; this does not enable the
+pass-wide compact-effect discovery bypass. Old/new positions can contribute
+overlapping regions. Other units and structure animation halos are unchanged.
+Horizontal runs are combined, and matching runs extend through
+later tile rows, using a local 20-byte mask copy rather than changing live
+damage. This avoids launching separately for every affected tile.
+Cached pixel/mask row strides are retained without copying or re-encoding the
+composed sprite. Each dirty tile is
+repaired once; remaining tiles are repaired before aircraft are drawn. Forced
+redraws and scrolling retain whole-sprite publication. There is no command queue,
+per-unit image ownership or new framebuffer. See ATARI_PHASE_REVERSAL.md for the
+original repair-on-first-touch experiment.
+
+Fog/veil candidates are no longer promoted into terrain repairs merely for
+being hidden. Sprite-footprint marking skips fully hidden tiles; genuine
+terrain and fog changes still queue repairs normally. Shared 16-line writable
+masks are derived from the fog graphics, with per-viewport-cell references.
+Sprites intersecting partial fog preserve its opaque pixels; fully hidden
+fragments are skipped. The tile cursor contributes its own writable mask:
+terrain repairs preserve its frame, while sprites respect both frame and fog.
+Moving, changing or hiding the cursor still repairs its old footprint.
+Fog-mask references refresh on unveiling changes, with full refreshes for
+viewport moves, forced redraws and debug visibility changes; ordinary sprite
+or terrain damage does not rescan them. Cursor masks remain cached until their
+position, shape or underlying fog reference changes. Cursor-covered terrain
+uses saved-background-aware merging only when a mouse/placement backup
+actually overlaps; the frame's writable mask remains applied in either path.
+Clear rectangles retain the ordinary publishers. Only intersecting rectangles
+split into tile-row bands, combining adjacent clear cells. Protected CPU
+merges intersect opacity with the writable mask; BLiTTER fragments use HOP=3
+(source AND halftone) for both clearing and painting, retaining compiled
+plane recipes and tile-local mask row phase. Mouse and placement saved
+backgrounds receive only the effective writes. No source-cache copies or new
+framebuffer are needed. Net performance and visible flicker require a fresh
+hardware capture; the older fog timings are not predicted net savings.
 
 An optional `viewport_blitter=1` setting in `[opendune]` selects the
 unshifted-sprite BLiTTER experiment on ST/STE machines with a detected
 BLiTTER. The default is 0, retaining CPU publication and phase-keyed
 composites. Without a BLiTTER, a warning is logged and the CPU path remains
 active. The experiment keeps the tile cache, component cache, composition
-order and repair-on-first-touch bookkeeping. All needed terrain tiles under
-each sprite are repaired before publishing its whole visible rectangle.
+order and repair-on-first-touch bookkeeping. Each published rectangle repairs
+its pending terrain tiles first. Repair-only sprites use clipped rectangles;
+independently dirty sprites retain their whole visible rectangle.
 Composite keys omit screen X phase; layer offsets and flips still compose
 once into a canonical, unshifted image. Opacity is duplicated into four
 interleaved mask planes. The 64-entry composite cache is not resized:
@@ -700,7 +767,10 @@ one per destination X phase, including word counts, edge masks, skew and
 source/destination row increments. Horizontally unclipped hits reuse the
 matching plan, including vertically clipped draws; horizontal clipping
 uses the same plan builder for the visible portion. Addresses and height
-remain dynamic. The plans add 14 KiB across the 64 composite slots
+remain dynamic. Repair fragments reuse the same compiled plane/ROP recipe,
+with source offsets and clipped geometry; full-width fragments reuse the
+precomputed plan even when vertically clipped. The plans add 14 KiB across the
+64 composite slots
 (also reserved in CPU mode); they do not add phase-keyed pixel images.
 Eligible opaque terrain repairs use one BLiTTER copy from the existing
 tile cache, reusing setup until sprite publication changes it;

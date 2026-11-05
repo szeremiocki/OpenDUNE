@@ -20,6 +20,7 @@ class ViewportLocalDamageTest(unittest.TestCase):
 #include "types.h"
 #include "src/map.h"
 #include "src/tile.h"
+#include "src/unit.h"
 #include "src/table/tilediff.c"
 #define max(a,b) ((a) > (b) ? (a) : (b))
 #define BitArray_Set(a,n) ((a)[(n) >> 3] |= 1u << ((n) & 7))
@@ -30,9 +31,9 @@ uint16 g_viewportDamagePosition = 0xffff, g_viewportTerrainDamage[10];
 uint16 g_viewportCandidateTop;
 uint32 g_viewportCandidateDamage[13], g_viewportCandidateColumns[64];
 bool g_selectionRectangleNeedRepaint;
+bool g_viewportNoHaloDamage;
 static bool direct = true;
 bool Video_Atari_CursorDirect(void) { return direct; }
-typedef struct Unit Unit;
 static unsigned callbacks;
 static bool expectMarked;
 void Unit_AddToTile(Unit *unit, uint16 packed) {

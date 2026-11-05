@@ -170,7 +170,7 @@ typedef uint32_t uint32;
 typedef struct { uint16 overlayTileID; } Tile;
 static Tile g_map[4096];
 static uint8 g_dirtyViewport[512], g_dirtyMinimap[512];
-static uint16 g_viewportPosition, g_veiledTileID = 98;
+static uint16 g_viewportPosition;
 static bool g_debugScenario;
 static uint16 g_viewportTerrainDamage[10];
 static uint32 g_viewportCandidateDamage[13];
@@ -195,10 +195,8 @@ static bool reference(uint8 *viewport, uint8 *terrain) {
         for (unsigned x = 0; x < 15; x++) {
             unsigned packed = g_viewportPosition + y * 64 + x;
             bool v = test(viewport, packed), t = test(terrain, packed);
-            uint16 overlay = g_map[packed].overlayTileID;
             if (v) updated = true;
-            if (!t && (!v || g_debugScenario ||
-                (overlay != g_veiledTileID && overlay != 99))) continue;
+            if (!t) continue;
             set(viewport, packed, true);
             set(terrain, packed, true);
             updated = true;
@@ -259,7 +257,7 @@ int main(void) {
                         }
                     }
                     bool expected = reference(expectedViewport, expectedTerrain);
-                    assert(GUI_Widget_Viewport_PrepareRows(99) == expected);
+                    assert(GUI_Widget_Viewport_PrepareRows() == expected);
                     for (unsigned y = 0; y < 10; y++) {
                         uint16 expectedRow = 0, expectedCandidates = 0;
                         for (unsigned x = 0; x < 15; x++) {
@@ -334,6 +332,7 @@ static void GUI_DrawText_Wrapper(const char *text, int x, int y, int fg, int bg,
     assert(fg == 15 && bg == 0 && flags == 0x132);
     draws++;
 }
+#define GUI_DrawText_Planar GUI_DrawText_Wrapper
 static void check(bool drawToMainScreen, bool forceRedraw, bool hasScrolled, bool planarShifted) {
     bool expectedPlanar = false;
     (void)hasScrolled; (void)planarShifted;
@@ -702,7 +701,7 @@ int main(void) {
                     if (dirty & 2) BitArray_Set(g_dirtyMinimap, 0);
                     bool updated = scan(planar != 0, false);
                     bool hidden = tile >= 2 && !debug;
-                    bool restored = (dirty & 2) || (planar && hidden && (dirty & 1));
+                    bool restored = (dirty & 2) != 0;
                     assert(updated == (dirty != 0));
                     if (planar) {
                         assert(!fogDraws && !groundDraws && !partialDraws && !filledDraws);
@@ -730,12 +729,14 @@ int main(void) {
     assert(scan(true, true));
     GUI_Widget_Viewport_RepairTiles(0, 40, 240, 200);
     assert(fogDraws == 1 && groundDraws == 149 && !filledDraws);
-    /* Old sprite pixels in both hidden tiles; only viewport footprint damage. */
+    /* Genuine damage still repairs both hidden tiles exactly once. */
     reset();
     g_map[0].overlayTileID = 98;
     g_map[1].overlayTileID = 99;
     BitArray_Set(g_dirtyViewport, 0);
     BitArray_Set(g_dirtyViewport, 1);
+    BitArray_Set(g_dirtyMinimap, 0);
+    BitArray_Set(g_dirtyMinimap, 1);
     assert(scan(true, false));
     GUI_Widget_Viewport_RepairTiles(0, 40, 16, 56);
     screen[45][3] = 5; /* Current foreground after its background repair. */
@@ -750,6 +751,7 @@ int main(void) {
     g_map[1].groundTileID = g_map[2].groundTileID = 7;
     g_map[1].overlayTileID = 97;
     BitArray_Set(g_dirtyViewport, 0);
+    BitArray_Set(g_dirtyMinimap, 0);
     BitArray_Set(g_dirtyMinimap, 1);
     BitArray_Set(g_dirtyMinimap, 2);
     assert(scan(true, false));

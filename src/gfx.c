@@ -9,6 +9,9 @@
 
 #include "gui/widget.h"
 #include "house.h"
+#ifdef TOS
+#include "map.h"
+#endif
 #include "opendune.h"
 #include "sprites.h"
 #include "video/video.h"
@@ -79,6 +82,11 @@ uint16 *s_planarTileHouse[HOUSE_MAX];	/* per-house base of s_planarTileIndex */
 static uint16 s_planarTileCount, s_planarVariants;
 static uint16 s_viewportFogPixels[64], s_viewportFogMasks[16];
 static bool s_viewportFogReady;
+static uint16 s_fogWritable[17][16];
+static uint8 s_fogType[128];
+static uint16 s_protectionDirtyRows[10];
+static bool s_fogWritableReady, s_protectionDebug, s_protectionDirty;
+static uint16 s_protectionPosition = 0xffff;
 /* Ground + overlay composites are pinned to the map cell: the slot is
  * (x & 15) + 16 * (y mod 10), so a 15x10 viewport window never has two cells in
  * one slot and scrolling reuses slots without moving data (the cell entering
@@ -111,6 +119,11 @@ static const uint16 *GFX_PlanarTileCopySource(const uint16 *pixels, uint8 opacit
 
 void GFX_FreePlanarTiles(void)
 {
+	Video_Atari_ResetViewportProtection();
+	s_fogWritableReady = false;
+	s_protectionPosition = 0xffff;
+	s_protectionDirty = false;
+	memset(s_protectionDirtyRows, 0, sizeof(s_protectionDirtyRows));
 	s_viewportFogReady = false;
 	memset(s_selectionTiles, 0, sizeof(s_selectionTiles));
 	memset(s_planarCompositeReady, 0, sizeof(s_planarCompositeReady));
@@ -165,6 +178,57 @@ static inline uint16 GFX_GetPlanarTile(uint16 tileID, uint8 houseID)
 
 	if (s_planarTileReady[index]) return index;
 	return GFX_FillPlanarTile(tileID, houseID, index);
+}
+
+void GFX_InvalidateViewportProtection(uint16 packed)
+{
+	uint16 offset = packed - s_protectionPosition;
+	uint16 row = offset >> 6, col = offset & 63;
+
+	if (s_protectionPosition == 0xffff || row >= 10 || col >= 15) return;
+	s_protectionDirtyRows[row] |= 1u << col;
+	s_protectionDirty = true;
+}
+
+void GFX_PrepareViewportProtection(bool force)
+{
+	uint16 row, col;
+
+	if (!s_fogWritableReady) {
+		const uint16 *fog = &g_iconMap[g_iconMap[ICM_ICONGROUP_FOG_OF_WAR]];
+		uint16 i, line;
+		memset(s_fogType, 0, sizeof(s_fogType));
+		memset(s_fogWritable, 0, sizeof(s_fogWritable));
+		for (i = 1; i < 16; i++) {
+			uint16 id = fog[i];
+			assert(id < lengthof(s_fogType));
+			s_fogType[id] = i;
+			if (i == 15) continue;
+			GFX_GetPlanarTile(id, 0);
+			for (line = 0; line < 16; line++)
+				s_fogWritable[i][line] = (uint16)~s_planarTileMasks[id * 16 + line];
+		}
+		assert(g_veiledTileID < lengthof(s_fogType));
+		s_fogType[g_veiledTileID] = 16;
+		s_fogWritableReady = true;
+		force = true;
+	}
+	force |= s_protectionPosition != g_viewportPosition || s_protectionDebug != g_debugScenario;
+	if (!force && !s_protectionDirty) return;
+	for (row = 0; row < 10; row++) {
+		uint16 pending = force ? 0x7fff : s_protectionDirtyRows[row];
+		for (col = 0; pending != 0; col++, pending >>= 1) {
+			uint16 overlay, type;
+			if ((pending & 1) == 0) continue;
+			overlay = g_map[g_viewportPosition + (row << 6) + col].overlayTileID;
+			type = g_debugScenario ? 0 : s_fogType[overlay];
+			Video_Atari_SetViewportFog(col, row, type != 0 ? s_fogWritable[type] : NULL);
+		}
+		s_protectionDirtyRows[row] = 0;
+	}
+	s_protectionDirty = false;
+	s_protectionPosition = g_viewportPosition;
+	s_protectionDebug = g_debugScenario;
 }
 
 void GFX_DrawPlanarTile(uint16 tileID, uint16 x, uint16 y, uint8 houseID)

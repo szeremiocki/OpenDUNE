@@ -35,6 +35,10 @@
 #include "../unit.h"
 #include "../video/video.h"
 
+#if defined(TOS) && defined(VIEWPORT_DEBUG_DAMAGE)
+#include "../input/input.h"
+#endif
+
 /* ENHANCEMENT -- Minimum time (in game ticks, 120Hz) that a scroll cursor is
  * kept before it may revert to a non-scroll cursor. Absorbs the rapid
  * flip-flopping caused by the very narrow scroll edge widgets. */
@@ -44,7 +48,9 @@
 /* btst Dn,(An,Dm.w): the bit number is taken mod 8 on memory operands. */
 static inline __attribute__((always_inline)) bool Viewport_DirtyBitSet(uint16 packed, bool local)
 {
-	if (local) return Map_ViewportCandidateDirty(packed);
+	/* Tight effect footprints have no centre-discovery halo. Let the existing
+	 * sprite-bounds filters find overlapping foreground instead. */
+	if (local) return g_viewportNoHaloDamage || Map_ViewportCandidateDirty(packed);
 	__asm__ goto("btst %0,(%1,%2.w)\n\tbeq %l3" : : "d"(packed), "a"(g_dirtyViewport), "d"((uint16)(packed >> 3)) : "cc", "memory" : clear);
 	return true;
 clear:
@@ -95,6 +101,117 @@ static uint16 s_minimapAppearanceScale;
 static uint32 s_minimapLastUpdate;
 static bool s_minimapUpdateStarted;
 
+#ifdef VIEWPORT_DEBUG_DAMAGE
+static volatile bool s_damageDebugEnabled;
+static bool s_damageDebugShortcutDown;
+static bool s_damageDebugCollect;
+static uint16 s_damageDebugAccepted[10];
+
+bool GUI_Widget_Viewport_DebugInput(uint16 input)
+{
+	if (!Video_Atari_CursorDirect() || g_mouseMode != INPUT_MOUSE_MODE_NORMAL) return false;
+	if ((input & 0xff) != 0x78) return false; /* Dune keycode for F9. */
+	if ((input & 0x800) != 0) {
+		if (!s_damageDebugShortcutDown) return false;
+		s_damageDebugShortcutDown = false;
+		return true;
+	}
+	if (s_damageDebugShortcutDown) return true;
+	if ((input & 0x700) != 0 || g_gameMode != GM_NORMAL) return false;
+	s_damageDebugShortcutDown = true;
+	s_damageDebugEnabled = !s_damageDebugEnabled;
+	return true;
+}
+
+static bool GUI_Widget_Viewport_DebugKeyDown(void)
+{
+	uint16 key;
+
+	for (key = 1; key < 0x7f; key++) {
+		if (key != 0x2d && Input_Test(key) != 0) return true;
+	}
+	return false;
+}
+
+static void GUI_Widget_Viewport_DebugWait(void)
+{
+	Input_History_Clear();
+	while (s_damageDebugEnabled && GUI_Widget_Viewport_DebugKeyDown()) {
+		SleepAndProcessBackgroundTasks();
+		Input_History_Clear();
+	}
+	while (s_damageDebugEnabled) {
+		uint16 key;
+
+		if (!Input_IsInputAvailable()) {
+			SleepAndProcessBackgroundTasks();
+			continue;
+		}
+		key = Input_Wait();
+		if ((key & 0x800) != 0) continue;
+		key &= 0xff;
+		if (key == 0 || key == 0x2d || key >= 0x7f) continue;
+		if (key == 0x6e) s_damageDebugEnabled = false;
+		/* Consume the release too: this press must not skip the next phase
+		 * or become a gameplay click after leaving the debugger. */
+		while (GUI_Widget_Viewport_DebugKeyDown()) {
+			SleepAndProcessBackgroundTasks();
+			Input_History_Clear();
+		}
+		Input_History_Clear();
+		return;
+	}
+}
+
+static void GUI_Widget_Viewport_DebugPhase(const uint16 rows[10], bool accepted)
+{
+	bool gameTimer = Timer_SetTimer(TIMER_GAME, false);
+	bool guiTimer = Timer_SetTimer(TIMER_GUI, false);
+
+	Video_Atari_DebugDamageBegin(rows, accepted);
+	GUI_Widget_Viewport_DebugWait();
+	Video_Atari_DebugDamageEnd();
+	Timer_SetTimer(TIMER_GUI, guiTimer);
+	Timer_SetTimer(TIMER_GAME, gameTimer);
+}
+
+static void GUI_Widget_Viewport_DebugBegin(bool planar)
+{
+	uint16 candidates[10], y;
+
+	s_damageDebugCollect = planar && s_damageDebugEnabled &&
+	    g_gameMode == GM_NORMAL && g_mouseMode == INPUT_MOUSE_MODE_NORMAL;
+	memset(s_damageDebugAccepted, 0, sizeof(s_damageDebugAccepted));
+	if (!s_damageDebugCollect) return;
+	for (y = 0; y < 10; y++)
+		candidates[y] = (uint16)(g_viewportCandidateDamage[y + 1] >> 1) & 0x7fff;
+	GUI_Widget_Viewport_DebugPhase(candidates, false);
+	s_damageDebugCollect = s_damageDebugEnabled;
+}
+
+void GUI_Widget_Viewport_DebugRect(int16 left, int16 top, int16 right, int16 bottom)
+{
+	uint16 columns, y;
+
+	if (!s_damageDebugCollect) return;
+	left = max(left, 0);
+	top = max(top, 40);
+	right = min(right, 240);
+	bottom = min(bottom, 200);
+	if (left >= right || top >= bottom) return;
+	columns = (0x7fff >> (15 - ((right + 15) >> 4))) & (0x7fff << (left >> 4));
+	for (y = (top - 40) >> 4; y < (bottom - 40 + 15) >> 4; y++)
+		s_damageDebugAccepted[y] |= columns;
+}
+
+static void GUI_Widget_Viewport_DebugEnd(void)
+{
+	if (s_damageDebugCollect && s_damageDebugEnabled)
+		GUI_Widget_Viewport_DebugPhase(s_damageDebugAccepted, true);
+	s_damageDebugCollect = false;
+}
+#endif
+
 void GUI_Widget_Viewport_InvalidateMinimap(void)
 {
 	memset(s_minimapAppearanceValid, 0, sizeof(s_minimapAppearanceValid));
@@ -120,34 +237,18 @@ static bool GUI_Widget_Viewport_MinimapUpdateDue(void)
 	return true;
 }
 
-static bool __attribute__((noinline)) GUI_Widget_Viewport_PrepareRows(uint16 fullyFoggedTileID)
+static bool __attribute__((noinline)) GUI_Widget_Viewport_PrepareRows(void)
 {
-	uint16 packedRow = g_viewportPosition;
 	uint16 y;
 	bool updateDisplay = false;
 
-	for (y = 0; y < 10; y++, packedRow += 64) {
+	for (y = 0; y < 10; y++) {
 		uint16 viewport = (uint16)(g_viewportCandidateDamage[y + 1] >> 1) & 0x7fff;
 		uint16 terrain = g_viewportTerrainDamage[y];
-		uint16 promote = 0;
 
 		if ((viewport | terrain) == 0) continue;
 		updateDisplay = true;
-		if (!g_debugScenario) {
-			uint16 candidates = viewport & ~terrain;
-			uint16 column = 1;
-			const Tile *t = &g_map[packedRow];
-
-			/* Only footprint damage without pending terrain needs fog inspection. */
-			for (; candidates != 0; candidates >>= 1, column <<= 1, t++) {
-				if ((candidates & 1) != 0 &&
-				    (t->overlayTileID == g_veiledTileID || t->overlayTileID == fullyFoggedTileID)) {
-					promote |= column;
-				}
-			}
-		}
 		g_viewportCandidateDamage[y + 1] |= (uint32)terrain << 1;
-		g_viewportTerrainDamage[y] |= promote;
 	}
 	return updateDisplay;
 }
@@ -177,12 +278,12 @@ static bool GUI_Widget_Viewport_SpriteDamageRect(int16 left, int16 top, int16 ri
 	endRow = (bottom - 40 + 15) >> 4;
 	if (!redraw) {
 		for (y = firstRow; y < endRow; y++) {
-			if ((s_viewportSpriteDamage[y] & columns) != 0) break;
+			if ((s_viewportSpriteDamage[y] & columns) != 0) return true;
 		}
-		if (y == endRow) return false;
+		return false;
 	}
-	/* Earlier foreground writes can require later foreground recomposition,
-	 * even outside the initial terrain damage. */
+	/* Independently dirty foreground writes can require later recomposition.
+	 * Repair-only sprites stay inside the existing damage instead. */
 	for (y = firstRow; y < endRow; y++) s_viewportSpriteDamage[y] |= columns;
 	return true;
 }
@@ -254,8 +355,18 @@ static bool GUI_Widget_Viewport_UnitDamageFree(const Unit *unit, int16 x, int16 
 
 bool GUI_Widget_Viewport_ShouldDrawSprite(int16 left, int16 top, int16 right, int16 bottom)
 {
-	if (!s_viewportSpriteFilterActive) return true;
-	return GUI_Widget_Viewport_SpriteDamageRect(left, top, right, bottom, s_viewportSpriteNeedsRedraw);
+	bool draw = !s_viewportSpriteFilterActive ||
+	    GUI_Widget_Viewport_SpriteDamageRect(left, top, right, bottom, s_viewportSpriteNeedsRedraw);
+#ifdef VIEWPORT_DEBUG_DAMAGE
+	if (draw && (!s_viewportSpriteFilterActive || s_viewportSpriteNeedsRedraw))
+		GUI_Widget_Viewport_DebugRect(left, top, right, bottom);
+#endif
+	return draw;
+}
+
+const uint16 *GUI_Widget_Viewport_SpriteRepairMask(void)
+{
+	return s_viewportSpriteFilterActive && !s_viewportSpriteNeedsRedraw ? s_viewportSpriteDamage : NULL;
 }
 
 void GUI_Widget_Viewport_InvalidateSpriteDamage(void)
@@ -349,6 +460,9 @@ void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 b
 
 			/* Consume before drawing: later foreground must not restore
 			 * this tile again and erase an earlier foreground draw. */
+#ifdef VIEWPORT_DEBUG_DAMAGE
+			if (s_damageDebugCollect) s_damageDebugAccepted[y] |= column;
+#endif
 			g_viewportTerrainDamage[y] &= (uint16)~column;
 			t = &g_map[packed];
 			if (s_viewportSelectionTiles[y][x] != 0) {
@@ -947,6 +1061,8 @@ void GUI_Widget_Viewport_DamageUnit(Unit *unit, uint16 parts)
 	int flags;
 	uint16 index, i;
 	int16 wobbleX = 0, wobbleY = 0;
+	MapSpriteDamage damage = unit->o.type == UNIT_HARVESTER ? MAP_SPRITE_DAMAGE_HARVESTER :
+	    g_table_unitInfo[unit->o.type].flags.isBullet ? MAP_SPRITE_DAMAGE_SMALL_EFFECT : MAP_SPRITE_DAMAGE_NORMAL;
 
 	if (g_table_unitInfo[unit->o.type].movementType == MOVEMENT_WINGER) {
 		index = GUI_Widget_Viewport_AirSprite(unit, &flags);
@@ -957,15 +1073,16 @@ void GUI_Widget_Viewport_DamageUnit(Unit *unit, uint16 parts)
 		wobbleY = g_table_tilediff[0][unit->wobbleIndex].y;
 	}
 	if (parts & UNIT_SPRITE_BODY) {
-		Map_UpdateSprite(index, unit->o.position, wobbleX, wobbleY);
+		Map_UpdateSprite(index, unit->o.position, wobbleX, wobbleY, damage);
 		if (unit->o.type == UNIT_SANDWORM) {
-			Map_UpdateSprite(index, unit->targetLast, 0, 0);
-			Map_UpdateSprite(index, unit->targetPreLast, 0, 0);
+			Map_UpdateSprite(index, unit->targetLast, 0, 0, MAP_SPRITE_DAMAGE_NORMAL);
+			Map_UpdateSprite(index, unit->targetPreLast, 0, 0, MAP_SPRITE_DAMAGE_NORMAL);
 		}
 	}
 	for (i = 0; i < layers.count; i++) {
 		const GUI_SpriteLayer *layer = &layers.layer[i];
-		Map_UpdateSprite(layer->spriteID, unit->o.position, wobbleX + layer->offsetX, wobbleY + layer->offsetY);
+		Map_UpdateSprite(layer->spriteID, unit->o.position, wobbleX + layer->offsetX, wobbleY + layer->offsetY,
+		    damage == MAP_SPRITE_DAMAGE_HARVESTER ? damage : MAP_SPRITE_DAMAGE_NORMAL);
 	}
 }
 #endif
@@ -1172,6 +1289,8 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 		Map_SetViewportDamagePosition(g_viewportPosition);
 		GUI_Widget_Viewport_PrepareSelection();
 		GUI_Widget_Viewport_TileCursorPrepare(GUI_Widget_Viewport_PlacementPrepare());
+		GFX_PrepareViewportProtection(forceRedraw || hasScrolled);
+		Video_Atari_BeginViewportProtection(s_tileCursorShown, s_tileCursorCol, s_tileCursorRow, s_tileCursorTarget);
 	}
 #endif
 	if (g_dirtyViewportCount != 0 || forceRedraw) {
@@ -1182,7 +1301,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 					g_viewportTerrainDamage[y] = 0x7fff;
 					g_viewportCandidateDamage[y + 1] |= 0xfffeUL;
 				}
-			} else if (GUI_Widget_Viewport_PrepareRows(fullyFoggedTileID)) {
+			} else if (GUI_Widget_Viewport_PrepareRows()) {
 				updateDisplay = true;
 			}
 		} else
@@ -1243,6 +1362,9 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 	}
 
 #ifdef TOS
+	#ifdef VIEWPORT_DEBUG_DAMAGE
+	GUI_Widget_Viewport_DebugBegin(planarViewport);
+	#endif
 	GUI_Widget_Viewport_BeginSpriteDamage(planarViewport && !forceRedraw && !hasScrolled);
 #endif
 
@@ -1540,6 +1662,10 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 		Video_Atari_TileCursorFrame(s_tileCursorCol, s_tileCursorRow, s_tileCursorTarget);
 	}
 	s_viewportSpriteFilterActive = false;
+	#ifdef VIEWPORT_DEBUG_DAMAGE
+	GUI_Widget_Viewport_DebugEnd();
+	#endif
+	Video_Atari_EndViewportProtection();
 #endif
 	if (updateDisplay) {
 #ifdef TOS

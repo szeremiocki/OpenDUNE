@@ -17,6 +17,8 @@ class HalftoneCursorTest(unittest.TestCase):
         start = video.index("typedef struct PlacementTint {")
         end = video.index("static PlacementTint s_placeTint;", start)
         production = video[start:end + len("static PlacementTint s_placeTint;")]
+        production += "\n" + video[video.index("static const uint16 s_tileCursorPatterns"):
+                                  video.index("uint16 g_videoTileCursorTiles")]
         helper = function(video, "Video_Atari_SetHalftonePattern")
         helper = helper.replace("(volatile uint16 *)0xFFFF8A00UL", "halftoneRAM")
         helper = helper.replace("halftone[i] = pattern[i];",

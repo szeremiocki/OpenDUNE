@@ -44,6 +44,12 @@ extern void Video_Atari_TileCursorFrame(uint16 col, uint16 row, bool target);
 extern void Video_Atari_PlacementCursor(bool hidden);
 extern void Video_Atari_PlacementHide(void);
 
+#ifdef VIEWPORT_DEBUG_DAMAGE
+/* Reversible diagnostic overlays; Video_Tick keeps polling input only. */
+extern void Video_Atari_DebugDamageBegin(const uint16 rows[10], bool accepted);
+extern void Video_Atari_DebugDamageEnd(void);
+#endif
+
 /* Fast path for GUI_SetPaletteAnimated(): on ST/STE the expensive
  * full-screen fades in this game all have one endpoint that is a *uniform*
  * palette - every entry the same colour. Fades to/from all-black are the
@@ -178,6 +184,10 @@ extern void Video_Atari_DrawPlanarTile(const uint16 *pixels, const uint16 *masks
 extern void Video_Atari_DrawPlanarTileFogged(const uint16 *pixels, const uint16 *masks,
                                           const uint16 *fogPixels, const uint16 *fogMasks,
                                           uint16 x, uint16 y, const uint16 *copyPixels);
+extern void Video_Atari_ResetViewportProtection(void);
+extern void Video_Atari_SetViewportFog(uint16 col, uint16 row, const uint16 *writable);
+extern void Video_Atari_BeginViewportProtection(bool cursor, uint16 col, uint16 row, bool target);
+extern void Video_Atari_EndViewportProtection(void);
 extern void Video_Atari_PresentSprite(const uint8 *src, uint16 stride,
                                      uint16 x, uint16 y, uint16 width, uint16 height,
                                      const uint16 *masks);
@@ -227,6 +237,7 @@ extern uint8 Video_Atari_BuildSpriteBlitRecipe(const uint16 *pixels, const uint1
 #define VIDEO_ATARI_SPRITE_BLIT_CODE_WORDS (8 * 17 + 2 * 3 + 1)
 typedef struct Video_Atari_SpriteBlitCode {
 	uint16 words[VIDEO_ATARI_SPRITE_BLIT_CODE_WORDS];
+	uint8 passes;
 } Video_Atari_SpriteBlitCode;
 extern void Video_Atari_CompileSpriteBlitCode(Video_Atari_SpriteBlitCode *code, uint8 passes);
 /* Visible rectangle of an unshifted composite, up to 80x64. Masks duplicate

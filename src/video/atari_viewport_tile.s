@@ -7,6 +7,7 @@
 	xref	_g_videoPlanarBase
 	xref	_g_atariSupervisorResident
 	xref	_s_curViewportTiles
+	xref	_g_videoTileCursorTiles
 	xref	_s_planarTileHouse
 	xref	_s_planarTileReady
 	xref	_s_planarTiles
@@ -39,6 +40,8 @@ _GFX_DrawViewportTileFast:
 	add.w	d1,d1
 	lea	_s_curViewportTiles,a0
 	move.w	(a0,d1.w),d0
+	lea	_g_videoTileCursorTiles,a0
+	or.w	(a0,d1.w),d0
 	btst	d2,d0
 	bne	tile_fail
 	lea	tile_rows(pc),a0
@@ -101,6 +104,8 @@ _GFX_DrawViewportPixelsFast:
 	add.w	d1,d1
 	lea	_s_curViewportTiles,a0
 	move.w	(a0,d1.w),d0
+	lea	_g_videoTileCursorTiles,a0
+	or.w	(a0,d1.w),d0
 	btst	d2,d0
 	bne	tile_fail
 	lea	tile_rows(pc),a0

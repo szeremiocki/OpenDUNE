@@ -69,6 +69,7 @@ static uint16 s_curSave[CURSOR_MAX_H][CURSOR_MAX_GROUPS * 4];
 static uint16 s_curDrawnData[CURSOR_MAX_H][CURSOR_MAX_GROUPS * 4];
 static uint16 s_curDrawnMask[CURSOR_MAX_H][CURSOR_MAX_GROUPS];
 static uint16 s_curViewportTiles[10], s_placeViewportTiles[10];
+static uint16 g_videoTileCursorTiles[10], s_tileCursorWritable[16];
 static PlacementBlock s_placeBlocks[144];
 static uint16 s_placeBlockCount, s_placeDrawnWidth, s_placeDrawnHeight;
 static int16 s_placeDrawnX, s_placeDrawnY;

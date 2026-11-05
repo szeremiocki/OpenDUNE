@@ -29,7 +29,15 @@ def blit_plan_type():
             header[start:end] + "\n" + header[code_start:code_end] + "\n#endif\n")
 
 
-def blitter_model(video, tiles=False):
+def inactive_protection():
+    return """
+#define Video_Atari_ViewportProtectionOverlap(...) false
+#define Video_Atari_PresentProtectedSprite(pixels,masks,...) \
+    ((void)(pixels), (void)(masks), assert(false))
+"""
+
+
+def blitter_model(video, tiles=False, protected=False):
     """Execute production register setup against a persistent 32-bit latch."""
     model = r"""
 #define ST_PLANAR_LINE_BYTES 160
@@ -42,6 +50,7 @@ static int16 reg_src_x, reg_src_y, reg_dst_x, reg_dst_y;
 static uintptr_t reg_src, reg_dst;
 static uint16 reg_mask1, reg_mask2, reg_mask3, reg_x, reg_y;
 static uint8 reg_hop, reg_op, reg_ctrl, reg_skew;
+static uint16 halftoneRAM[16];
 #define BLITTER_SRC_XINC (&reg_src_x)
 #define BLITTER_SRC_YINC (&reg_src_y)
 #define BLITTER_SRC_ADDR (&reg_src)
@@ -73,7 +82,7 @@ static void Video_Atari_BlitterStart(void) {
     uintptr_t src = reg_src, dst = reg_dst;
     uintptr_t sourceBase = src >= blitterMasks && src < blitterMasks + blitterReadStride ?
                            blitterMasks : blitterPixels;
-    assert(!blitterLocks && reg_hop == 2 && words && rows);
+    assert(!blitterLocks && (reg_hop == 2 || reg_hop == 3) && words && rows);
     assert(reg_op == 3 || reg_op == 4 || reg_op == 7);
     assert(words != 1 || !(reg_skew & 0x40));
     blitterLaunches++;
@@ -95,6 +104,7 @@ static void Video_Atari_BlitterStart(void) {
             latch = reg_src_x < 0 ? (latch >> 16) | ((uint32)value << 16) :
                                    (latch << 16) | value;
             uint16 shifted = latch >> (reg_skew & 15);
+            if (reg_hop == 3) shifted &= halftoneRAM[(reg_ctrl + row) & 15];
             uint16 result = reg_op == 3 ? shifted :
                             reg_op == 4 ? old & (uint16)~shifted : old | shifted;
             uint16 mask = word == 0 ? reg_mask1 :
@@ -123,6 +133,7 @@ static void Video_Atari_BlitterStart(void) {
     production = setup + "\n" + block
     production += "\n" + builder + "\n" + function(video, "Video_Atari_BuildSpriteBlitPlans")
     production += "\n" + function(video, "Video_Atari_BuildSpriteBlitRecipe")
+    production += "\n" + function(video, "Video_Atari_CompileSpriteBlit")
     production += "\n" + function(video, "Video_Atari_CompileSpriteBlitCode")
     production += r"""
 static Video_Atari_SpriteBlitCode fullSpriteBlitCode;
@@ -161,7 +172,8 @@ static void Video_Atari_ExecuteSpriteBlitCode(const Video_Atari_SpriteBlitCode *
             uint16 value = test_be_word(*pc++), address = test_be_word(*pc++);
             if (address == 0x8a3b) reg_op = value;
             else {
-                assert(address == 0x8a3c && value == 0xc0);
+                assert(address == 0x8a3c && (value & 0xfff0) == 0xc0);
+                reg_ctrl = value;
                 Video_Atari_BlitterStart();
             }
         } else {
@@ -197,7 +209,8 @@ static bool Video_Atari_CursorRectOverlap(uint8 *base, uint16 first, uint16 end,
                 "    blitterPixels = (uintptr_t)pixels; blitterMasks = (uintptr_t)masks;\n"
                 "    blitterReadStride = sourceWidth / 2;\n", 1)
         production += "\n" + body
-    return blit_plan_type() + model + production.replace("(uint32)(size_t)", "(uintptr_t)")
+    return (("" if protected else inactive_protection()) + blit_plan_type() + model +
+            production.replace("(uint32)(size_t)", "(uintptr_t)"))
 
 
 class ViewportSpriteCacheTest(unittest.TestCase):
@@ -1036,6 +1049,7 @@ static bool GUI_Widget_Viewport_ShouldDrawSprite(int16 left, int16 top, int16 ri
     boundsLeft = left; boundsTop = top; boundsRight = right; boundsBottom = bottom;
     return !rejectSprite;
 }
+static const uint16 *GUI_Widget_Viewport_SpriteRepairMask(void) { return NULL; }
 static void GFX_Screen_SetDirtySource(unsigned source) { assert(source == DIRTY_SRC_SPRITE); }
 static void GFX_Screen_ClearDirtyRect(uint16 l, uint16 t, uint16 r, uint16 b) {
     assert(!(l & 15) && !(r & 15) && l < r && r <= 240 && t >= 40 && t < b && b <= 200);
@@ -2195,7 +2209,7 @@ int main(int argc, char **argv) {
                                   function(viewport, "PaletteHouseCache_Copy16") + "\n" + house_getter)
         composer = function(video, "Video_Atari_ComposePlanarSprite")
         composer = composer.replace("\n{\n", "\n{\n    compositions++;\n", 1)
-        harness = harness.replace("/* BLITTER */", composer + "\n" +
+        harness = harness.replace("/* BLITTER */", inactive_protection() + composer + "\n" +
                                   function(video, "Video_Atari_PlanarCopyGroup") + "\n" +
                                   function(video, "Video_Atari_PublishViewportCursorRect") + "\n" +
                                   function(video, "Video_Atari_PresentPlanarSpriteOverlays") + "\n" +
@@ -2231,6 +2245,7 @@ int main(int argc, char **argv) {
         lookup += function(gui, "GUI_ViewportBuildCompositeKeyCPU") + "\n"
         lookup += comparator + "\n" + finder + "\n" + indexer
         lookup += "\n" + function(gui, "GUI_ViewportDecodeLayer")
+        lookup += "\n" + function(gui, "GUI_ViewportPlanarSpriteRepair")
         for name, victim_check in (("GUI_ViewportPlanarComponent", "expected_component_victim"),
                                    ("GUI_ViewportPlanarSprite", "expected_sprite_victim")):
             body = function(gui, name)

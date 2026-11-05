@@ -406,6 +406,9 @@ void Input_HandleInput(uint16 input)
 	uint16 inputMouseY;
 	uint16 tempBuffer[4];
 	uint16 flags; /* Mask for allowed input types. See InputFlagsEnum. */
+#if defined(TOS) && defined(VIEWPORT_DEBUG_DAMAGE)
+	bool damageDebugInput;
+#endif
 
 	flags       = g_inputFlags;
 	inputMouseX = g_mouseX;
@@ -416,6 +419,10 @@ void Input_HandleInput(uint16 input)
 	}
 
 	if (input == 0) return;
+
+#if defined(TOS) && defined(VIEWPORT_DEBUG_DAMAGE)
+	damageDebugInput = GUI_Widget_Viewport_DebugInput(input);
+#endif
 
 	value = input & 0xFF;
 	if ((flags & INPUT_FLAG_MOUSE_EMUL) != 0 && (input & 0x400) == 0) {
@@ -541,6 +548,13 @@ void Input_HandleInput(uint16 input)
 	}
 	s_activeInputMap[index] &= (1 << (value & 7)) ^ 0xFF;	/* Clear bit */
 	s_activeInputMap[index] |= bit_value;					/* set bit */
+
+#if defined(TOS) && defined(VIEWPORT_DEBUG_DAMAGE)
+	if (damageDebugInput) {
+		s_historyTail = oldTail;
+		return;
+	}
+#endif
 
 	if (g_mouseMode != INPUT_MOUSE_MODE_RECORD || value == 0x7D) return;
 
@@ -738,4 +752,3 @@ uint16 Input_Keyboard_NextKey(void)
 
 	return value;
 }
-

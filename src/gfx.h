@@ -40,6 +40,8 @@ extern void GFX_FreeDecodedTiles(void);
 extern void GFX_InitPlanarTiles(uint32 tilesDataLength, const uint8 *palette);
 extern void GFX_FreePlanarTiles(void);
 extern bool GFX_PlanarTilesReady(void);
+extern void GFX_InvalidateViewportProtection(uint16 packed);
+extern void GFX_PrepareViewportProtection(bool force);
 extern void GFX_DrawPlanarTile(uint16 tileID, uint16 x, uint16 y, uint8 houseID);
 /* Cached ground + overlay composition, for partial fog and ordinary overlays. */
 extern void GFX_DrawPlanarTileFogged(uint16 tileID, uint16 fogTileID, uint16 x, uint16 y, uint8 houseID, uint16 packed);

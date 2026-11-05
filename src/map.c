@@ -45,6 +45,7 @@ uint8 g_displayedViewport[512];                             /*!< Displayed part 
 #ifdef TOS
 uint16 g_viewportDamagePosition = 0xffff;
 uint16 g_viewportTerrainDamage[10];
+bool g_viewportNoHaloDamage;
 uint32 g_viewportCandidateDamage[13];
 uint32 g_viewportCandidateColumns[64];
 uint16 g_viewportCandidateTop;
@@ -66,6 +67,7 @@ void Map_ClearViewportDamage(void)
 {
 	memset(g_viewportTerrainDamage, 0, sizeof(g_viewportTerrainDamage));
 	memset(g_viewportCandidateDamage, 0, sizeof(g_viewportCandidateDamage));
+	g_viewportNoHaloDamage = false;
 	Map_SetViewportDamagePosition(g_minimapPosition);
 }
 
@@ -671,16 +673,27 @@ static bool Map_IsTileVisible(uint16 packed)
 }
 
 /** Queue tile-rounded repair of a centered sprite in world coordinates. */
-void Map_UpdateSprite(uint16 spriteID, tile32 position, int16 offsetX, int16 offsetY)
+void Map_UpdateSprite(uint16 spriteID, tile32 position, int16 offsetX, int16 offsetY, MapSpriteDamage damage)
 {
 	int16 left, top, right, bottom, row, column;
-	uint16 width, height;
+	uint16 width, height, updateType = 0;
 
 	if (spriteID == 0 || (position.x == 0 && position.y == 0)) return;
 	assert(g_sprites[spriteID] != NULL);
 	width = Sprite_GetWidth(g_sprites[spriteID]);
 	height = Sprite_GetHeight(g_sprites[spriteID]);
 	assert(width != 0 && height != 0);
+#ifdef TOS
+	bool native = Video_Atari_CursorDirect();
+	if (native && damage == MAP_SPRITE_DAMAGE_HARVESTER) {
+		Map_MarkHarvesterCandidates(Tile_PackTile(position));
+		updateType = 5;
+	} else if (native && damage == MAP_SPRITE_DAMAGE_SMALL_EFFECT && width <= 16 && height <= 16) {
+		updateType = 4;
+	}
+#else
+	VARIABLE_NOT_USED(damage);
+#endif
 	left = (position.x >> 4) + offsetX - width / 2;
 	top = (position.y >> 4) + offsetY - height / 2;
 	right = min(1024, left + width);
@@ -690,7 +703,13 @@ void Map_UpdateSprite(uint16 spriteID, tile32 position, int16 offsetX, int16 off
 	if (left >= right || top >= bottom) return;
 	for (row = top >> 4; row <= (bottom - 1) >> 4; row++) {
 		for (column = left >> 4; column <= (right - 1) >> 4; column++) {
-			Map_Update(Tile_PackXY(column, row), 0, false);
+			uint16 packed = Tile_PackXY(column, row);
+#ifdef TOS
+			if (native && !g_debugScenario &&
+			    (g_map[packed].overlayTileID == g_veiledTileID ||
+			     g_map[packed].overlayTileID == g_iconMap[g_iconMap[ICM_ICONGROUP_FOG_OF_WAR] + 15])) continue;
+#endif
+			Map_Update(packed, updateType, false);
 		}
 	}
 }
@@ -758,9 +777,13 @@ void Map_Update(uint16 packed, uint16 type, bool ignoreInvisible)
 				break;
 
 			case 4:
+			case 5:
 				if (column == 0 || (g_viewportTerrainDamage[y] & column) != 0) return;
 				g_viewportTerrainDamage[y] |= column;
-				g_viewportCandidateDamage[y + 1] |= (uint32)column << 1;
+				if (type == 4) {
+					g_viewportCandidateDamage[y + 1] |= (uint32)column << 1;
+					g_viewportNoHaloDamage = true;
+				}
 				if (BitArray_Test(g_displayedViewport, packed)) g_selectionRectangleNeedRepaint = true;
 				break;
 		}
@@ -1245,6 +1268,10 @@ void Map_UpdateAround(uint16 radius, tile32 position, Unit *unit, uint8 function
 	if (radius >= 32) {
 		uint16 x = Tile_GetPosX(position);
 		uint16 y = Tile_GetPosY(position);
+#ifdef TOS
+		/* Keep the larger registration traversal; cap only discovery. */
+		bool harvesterHalo = nativeDamage && unit != NULL && unit->o.type == UNIT_HARVESTER;
+#endif
 
 		for (i = -2; i <= 2; i++) {
 			for (j = -2; j <= 2; j++) {
@@ -1253,7 +1280,11 @@ void Map_UpdateAround(uint16 radius, tile32 position, Unit *unit, uint8 function
 				if (x + i < 0 || x + i >= 64 || y + j < 0 || y + j >= 64) continue;
 
 				curPacked = Tile_PackXY(x + i, y + j);
-				if (markViewport) {
+				if (markViewport
+#ifdef TOS
+				    && (!harvesterHalo || (i >= -1 && i <= 1 && j >= -1 && j <= 1))
+#endif
+				   ) {
 #ifdef TOS
 					if (nativeDamage) Map_MarkViewportCandidate(curPacked);
 					else
@@ -1533,6 +1564,11 @@ static void Map_UnveilTile_Neighbour(uint16 packed)
 		tileID = g_iconMap[g_iconMap[ICM_ICONGROUP_FOG_OF_WAR] + tileID];
 	}
 
+#ifdef TOS
+	/* Other live overlay writers only replace already-unveiled graphics.
+	 * Loads and viewport moves rebuild protection through the forced path. */
+	if (t->overlayTileID != tileID) GFX_InvalidateViewportProtection(packed);
+#endif
 	t->overlayTileID = tileID;
 
 	Map_Update(packed, 0, false);

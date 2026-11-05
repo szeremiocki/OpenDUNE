@@ -159,6 +159,7 @@ int main(void) {
             "GUI_Widget_Viewport_BeginSpriteDamage",
             "GUI_Widget_Viewport_SpriteDamageRect",
             "GUI_Widget_Viewport_ShouldDrawSprite",
+            "GUI_Widget_Viewport_SpriteRepairMask",
             "GUI_Widget_Viewport_InvalidateSpriteDamage",
         ))
         harness = r"""
@@ -207,12 +208,14 @@ int main(void) {
     memset(g_viewportTerrainDamage, 0, sizeof(g_viewportTerrainDamage));
     tile(1, 0);
     begin();
-    /* A intersects terrain; B only intersects A's publication; C only B's.
-     * No live tile bits survive the first terrain repair. */
+    /* A repairs only its damaged tile. B/C must not be recruited by the
+     * undamaged part of A's bounding rectangle. */
     memset(g_viewportTerrainDamage, 0, sizeof(g_viewportTerrainDamage));
     assert(GUI_Widget_Viewport_ShouldDrawSprite(24, 40, 48, 56));
-    assert(GUI_Widget_Viewport_ShouldDrawSprite(40, 40, 64, 56));
-    assert(GUI_Widget_Viewport_ShouldDrawSprite(56, 40, 80, 56));
+    assert(GUI_Widget_Viewport_SpriteRepairMask() == s_viewportSpriteDamage);
+    assert(s_viewportSpriteDamage[0] == (1u << 1));
+    assert(!GUI_Widget_Viewport_ShouldDrawSprite(40, 40, 64, 56));
+    assert(!GUI_Widget_Viewport_ShouldDrawSprite(56, 40, 80, 56));
     assert(!GUI_Widget_Viewport_ShouldDrawSprite(96, 40, 112, 56));
     /* Rejection must not itself propagate foreground damage. */
     assert(!GUI_Widget_Viewport_ShouldDrawSprite(100, 40, 120, 56));
@@ -223,6 +226,7 @@ int main(void) {
     assert(!GUI_Widget_Viewport_ShouldDrawSprite(16, 40, 32, 56));
     s_viewportSpriteNeedsRedraw = true;
     assert(GUI_Widget_Viewport_ShouldDrawSprite(16, 40, 32, 56));
+    assert(GUI_Widget_Viewport_SpriteRepairMask() == NULL);
     s_viewportSpriteNeedsRedraw = false;
     assert(GUI_Widget_Viewport_ShouldDrawSprite(24, 40, 48, 56));
     /* Selection-outline writes participate in the same ordering. */
@@ -247,6 +251,7 @@ int main(void) {
     /* Forced redraw, scrolling and non-native modes disable the filter. */
     GUI_Widget_Viewport_BeginSpriteDamage(false);
     s_viewportSpriteNeedsRedraw = false;
+    assert(GUI_Widget_Viewport_SpriteRepairMask() == NULL);
     assert(GUI_Widget_Viewport_ShouldDrawSprite(96, 40, 112, 56));
     return 0;
 }

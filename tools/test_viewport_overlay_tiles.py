@@ -59,6 +59,7 @@ static uint16 cursorPixels[64 * 6 * 4], cursorMasks[64 * 6];
 static uint16 s_curSave[64][24], s_curDrawnData[64][24], s_curDrawnMask[64][6];
 static uint16 expectedSave[64][24];
 static uint16 s_curViewportTiles[10], s_placeViewportTiles[10];
+static uint16 g_videoTileCursorTiles[10], s_tileCursorWritable[16];
 static bool s_curVisible, s_curDrawn, s_curDirty;
 static uint8 *s_curDrawnBase;
 static uint16 s_curY, s_curH, s_curGroup, s_curGroups, s_curDrawStride;

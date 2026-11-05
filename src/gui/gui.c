@@ -2227,6 +2227,64 @@ static void GUI_ViewportIndexPlanarSprite(ViewportPlanarSprite *entry, uint16 po
 		s_viewportPlanarLastHitPosition++;
 }
 
+static void GUI_ViewportPlanarSpriteRepair(const ViewportPlanarSprite *entry, const uint16 *pixels,
+                                         int16 left, int16 top, bool blitter, const uint16 damage[10])
+{
+	int16 boundsLeft = left + entry->boundsOffsetX - entry->offsetX;
+	int16 start = max(0, boundsLeft), right = min(240, left + entry->extentWidth);
+	int16 firstLine = max(40, top), bottom = min(200, top + entry->height);
+	uint16 rows[10], first, end, firstRow, endRow, columns, groups, row;
+
+	if (start >= right || firstLine >= bottom) return;
+	first = start >> 4;
+	end = (right + 15) >> 4;
+	firstRow = (firstLine - 40) >> 4;
+	endRow = (bottom - 40 + 15) >> 4;
+	columns = (0x7fff >> (15 - end)) & (0x7fff << first);
+	groups = entry->width >> 4;
+	for (row = firstRow; row < endRow; row++) rows[row] = damage[row] & columns;
+	for (row = firstRow; row < endRow; row++) {
+		uint16 pending = rows[row] >> first, col = first;
+		while (pending != 0) {
+			uint16 run, mask, next;
+			int16 y, endY, x, endX;
+			uint16 offset;
+
+			while ((pending & 1) == 0) { pending >>= 1; col++; }
+			run = col;
+			do { pending >>= 1; col++; } while ((pending & 1) != 0);
+			mask = (0x7fff >> (15 - col)) & (0x7fff << run);
+			/* Consume matching columns in later rows to combine launches,
+			 * without modifying the live foreground damage mask. */
+			for (next = row + 1; next < endRow && (rows[next] & mask) == mask; next++)
+				rows[next] &= (uint16)~mask;
+			y = max(firstLine, 40 + (row << 4));
+			endY = min(bottom, 40 + (next << 4));
+			x = run << 4;
+			endX = col << 4;
+			GUI_Widget_Viewport_RepairTiles(x, y, endX, endY);
+			GFX_Screen_SetDirtySource(DIRTY_SRC_SPRITE);
+			if (blitter) {
+				x = max(x, start);
+				endX = min(endX, right);
+				offset = (y - top) * groups * 4;
+				Video_Atari_PresentPlanarSpriteUnshifted(pixels + offset,
+				    entry->masks + offset, entry->width, x - left,
+				    endX - x, endY - y, x, y,
+				    x == left && endX - x == entry->extentWidth ?
+				    &entry->blitPlans[x & 15] : NULL, &entry->blitCode);
+			} else {
+				offset = (y - top) * groups + ((x - left) >> 4);
+				Video_Atari_PresentPlanarSpriteStrided(pixels + offset * 4,
+				    entry->masks + offset, endX - x, endY - y, x, y, entry->width);
+			}
+#ifdef VIEWPORT_DEBUG_DAMAGE
+			GUI_Widget_Viewport_DebugRect(x, y, endX, endY);
+#endif
+		}
+	}
+}
+
 static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8 colourHouse,
                                     int16 x, int16 y, int flags, va_list *ap,
                                     const GUI_SpriteLayers *layers, ViewportCompositeKey *key)
@@ -2396,6 +2454,19 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 		int16 boundsLeft = x + entry->boundsOffsetX;
 		if (!GUI_Widget_Viewport_ShouldDrawSprite(boundsLeft, top,
 		    boundsLeft + entry->boundsWidth, top + entry->height)) return;
+		const uint16 *repair = GUI_Widget_Viewport_SpriteRepairMask();
+		if (!blitter && highlight != 0) {
+			static uint16 s_highlightPixels[5 * 64 * 4];
+			Video_Atari_HighlightPixels(s_highlightPixels, entry->pixels, entry->masks,
+			    groups * entry->height, highlight);
+			pixels = s_highlightPixels;
+		}
+		if (repair != NULL) {
+			if (blitter) Video_Atari_SetSpriteHighlight(highlight);
+			GUI_ViewportPlanarSpriteRepair(entry, pixels, left, top, blitter, repair);
+			if (blitter) Video_Atari_SetSpriteHighlight(0);
+			return;
+		}
 		if (blitter) {
 			int16 start = max(0, left), right = min(240, left + entry->extentWidth);
 			if (start < right && firstRow < bottom) {
@@ -2411,12 +2482,6 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 				Video_Atari_SetSpriteHighlight(0);
 			}
 			return;
-		}
-		if (highlight != 0) {
-			static uint16 s_highlightPixels[5 * 64 * 4];
-			Video_Atari_HighlightPixels(s_highlightPixels, entry->pixels, entry->masks,
-			    groups * entry->height, highlight);
-			pixels = s_highlightPixels;
 		}
 		for (i = 0; i < entry->width; i += 16) {
 			int16 column = left + i, row;
