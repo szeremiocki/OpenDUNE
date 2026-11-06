@@ -60,6 +60,9 @@ static Screen s_screenActiveID = SCREEN_0;
 static bool s_dirtySuppress, s_screen0_is_dirty, s_screen1_is_dirty;
 static bool s_screen0_battlefield_dirty, s_screen1_battlefield_dirty;
 static bool g_screenViewportPlanar, s_viewportPlanar;
+static bool s_viewportResidentsReady;
+#define Video_Atari_ViewportBlitter() false
+#define GUI_InitViewportResidentSprites() assert(false)
 static unsigned dirtyClearCalls;
 static struct dirty_area s_screen0_dirty_area, s_screen1_dirty_area;
 #ifdef GFX_DIRTY_SOURCE_STATS

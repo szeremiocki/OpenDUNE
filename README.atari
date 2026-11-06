@@ -738,6 +738,28 @@ and precompute the opaque source origin for all sixteen destination phases.
 Screen/tile clipping remains dynamic; there are no per-pass opacity scans.
 Legacy, TT and Falcon sprite geometry is unchanged.
 
+With viewport BLiTTER drawing enabled, bullets (both sizes), regular/anti-air/
+deviator rockets (shared images), mini rockets, and small impact/sand-burst
+sprites (153-154, 156-158, 183-184) use resident planar images instead of
+either sprite LRU. Both rocket animation banks and all requested heading/flip
+combinations are preloaded: 29 source frames, 69 images. Impact frames have
+one unflipped image each.
+The original canvases and load-time opaque bounds are retained. Each frame
+shares compiled launch code across its flips; vertical flips share phase
+plans. The resident arena is 35,528 bytes with the standard assets, plus a
+464-byte lookup directory and 1,536 bytes of persistent drawing descriptors
+in the existing composite cache. Images use the shared palette-mapping c2p
+encoder and are built once at first native viewport activation, after the
+game palette is installed, then freed with the sprite caches.
+Standalone residents bypass key construction, searches, ageing and eviction.
+They use the same tile-clipped repair, fog/cursor protection and highlight
+publisher as ordinary cached images. Both paths join at one publication call
+site, allowing the compiler to inline publication and repair without another
+register-save/restore boundary. Their stable descriptors can also serve
+a future display-list. CPU phase images, Death Hand missiles, Sonic Blast and
+layered composites retain their existing cache paths. Physical trimming and
+display-list execution are not part of this change.
+
 Fog/veil candidates are no longer promoted into terrain repairs merely for
 being hidden. Sprite-footprint marking skips fully hidden tiles; genuine
 terrain and fog changes still queue repairs normally. Shared 16-line writable

@@ -1025,6 +1025,29 @@ static uint16 GUI_Widget_Viewport_GroundSprites(Unit *u, int *flags, GUI_SpriteL
 	return index;
 }
 
+static const uint16 s_viewportRocketDirections[16][2] = {
+	{0, 0}, {1, 0}, {2, 0}, {3, 0},
+	{4, 0}, {3, 2}, {2, 2}, {1, 2},
+	{0, 2}, {3, 3}, {2, 3}, {3, 3},
+	{4, 1}, {3, 1}, {2, 1}, {1, 1}
+};
+
+#ifdef TOS
+uint8 GUI_Widget_Viewport_ProjectileFlipMask(uint16 spriteID)
+{
+	uint8 flips = 0;
+	uint16 i, direction;
+	if (spriteID == 174 || spriteID == 175) return 1;
+	assert(spriteID >= 258 && spriteID <= 277);
+	direction = (spriteID - 258) % 5;
+	for (i = 0; i < lengthof(s_viewportRocketDirections); i++) {
+		if (s_viewportRocketDirections[i][0] == direction)
+			flips |= 1u << s_viewportRocketDirections[i][1];
+	}
+	return flips;
+}
+#endif
+
 static uint16 GUI_Widget_Viewport_AirSprite(Unit *u, int *flags)
 {
 	static const uint16 directions[8][2] = {
@@ -1045,15 +1068,9 @@ static uint16 GUI_Widget_Viewport_AirSprite(Unit *u, int *flags)
 			*flags |= directions[orientation][1];
 			break;
 		case DISPLAYMODE_ROCKET: {
-			static const uint16 rockets[16][2] = {
-				{0, 0}, {1, 0}, {2, 0}, {3, 0},
-				{4, 0}, {3, 2}, {2, 2}, {1, 2},
-				{0, 2}, {3, 3}, {2, 3}, {3, 3},
-				{4, 1}, {3, 1}, {2, 1}, {1, 1}
-			};
 			orientation = Orientation_Orientation256ToOrientation16(orientation);
-			index += rockets[orientation][0];
-			*flags |= rockets[orientation][1];
+			index += s_viewportRocketDirections[orientation][0];
+			*flags |= s_viewportRocketDirections[orientation][1];
 		} break;
 		case DISPLAYMODE_ORNITHOPTER: {
 			static const uint16 frames[4] = {2, 1, 0, 1};

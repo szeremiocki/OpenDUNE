@@ -3,7 +3,7 @@
 import unittest
 
 from tools.test_unit_smoke_damage import ROOT, run_harness, world_damage_production
-from tools.test_viewport_sprite_cache import function
+from tools.test_viewport_sprite_cache import function, rocket_directions
 
 
 COMMON = r"""
@@ -91,7 +91,7 @@ class SpriteBoundsTest(unittest.TestCase):
         tile = (ROOT / "src/tile.c").read_text()
         loop = function(unit, "GameLoop_Unit")
         animation = loop[loop.index("if (tickUnknown5)"):loop.index("if (tickScript)")]
-        production = map_production() + "\n" + "\n".join([
+        production = map_production() + "\n" + rocket_directions(viewport) + "\n" + "\n".join([
             function(tile, "Orientation_Orientation256ToOrientation8"),
             function(tile, "Orientation_Orientation256ToOrientation16"),
             function(viewport, "GUI_Widget_Viewport_GroundSprites"),

@@ -35,6 +35,11 @@ def sprite_bounds_type():
     return header[start:header.index("\n#endif", start)]
 
 
+def rocket_directions(viewport):
+    start = viewport.index("static const uint16 s_viewportRocketDirections[")
+    return viewport[start:viewport.index("\n};", start) + 3]
+
+
 def inactive_protection():
     return """
 #define Video_Atari_ViewportProtectionOverlap(...) false

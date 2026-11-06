@@ -243,6 +243,7 @@ extern bool GUI_Widget_Viewport_IsPlanar(void);
 extern void GUI_Widget_Viewport_InvalidateMinimap(void);
 extern void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 bottom);
 extern bool GUI_Widget_Viewport_ShouldDrawSprite(int16 left, int16 top, int16 right, int16 bottom);
+extern uint8 GUI_Widget_Viewport_ProjectileFlipMask(uint16 spriteID);
 /* Non-NULL after admission means publish only these tile intersections. */
 extern const uint16 *GUI_Widget_Viewport_SpriteRepairMask(void);
 extern void GUI_Widget_Viewport_InvalidateSpriteDamage(void);

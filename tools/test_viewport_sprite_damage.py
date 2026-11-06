@@ -27,6 +27,8 @@ class ViewportSpriteDamageTest(unittest.TestCase):
                         gui.index("} ViewportSpriteMask;") + len("} ViewportSpriteMask;")]
         sprite_type = gui[gui.index("typedef struct ViewportPlanarSprite {"):
                           gui.index("} ViewportPlanarSprite;") + len("} ViewportPlanarSprite;")]
+        image_type = gui[gui.index("typedef struct ViewportPlanarImage {"):
+                         gui.index("} ViewportPlanarImage;") + len("} ViewportPlanarImage;")]
         harness = r"""
 #include <assert.h>
 #include <string.h>
@@ -111,7 +113,8 @@ int main(void) {
     return 0;
 }
 """
-        run_harness(harness.replace("/* TYPES */", mask_type + "\n" + sprite_type)
+        run_harness(harness.replace("/* TYPES */", mask_type + "\n" + image_type + "\n" +
+                                   sprite_type + "\n" + function(gui, "GUI_ViewportSetPlanarImage"))
                     .replace("/* GEOMETRY */", geometry).replace("/* FIELDS */", fields))
 
     def test_unit_footprint_cache_and_early_rejection(self):
@@ -433,8 +436,9 @@ int main(void) {
         self.assertLess(draw.index("g_dirtyAirUnitCount = 0"),
                         draw.index("s_viewportSpriteFilterActive = false"))
         cached = function(gui, "GUI_ViewportPlanarSprite")
-        self.assertLess(cached.index("GUI_Widget_Viewport_ShouldDrawSprite"),
-                        cached.index("GUI_Widget_Viewport_RepairTiles"))
+        publication = function(gui, "GUI_ViewportPresentPlanarSprite")
+        self.assertLess(publication.index("GUI_Widget_Viewport_ShouldDrawSprite"),
+                        publication.index("GUI_Widget_Viewport_RepairTiles"))
         dispatch = function(gui, "GUI_DrawSprite")
         self.assertNotIn("GUI_Widget_Viewport_InvalidateSpriteDamage", dispatch)
         self.assertNotIn("va_copy", dispatch)

@@ -4,7 +4,7 @@ import unittest
 
 from tools.test_sprite_bounds import COMMON
 from tools.test_unit_smoke_damage import ROOT, run_harness
-from tools.test_viewport_sprite_cache import function
+from tools.test_viewport_sprite_cache import function, rocket_directions
 
 
 class ViewportProtectionTest(unittest.TestCase):
@@ -73,7 +73,7 @@ int main(void) {
         sprites = (ROOT / "src/sprites.c").read_text()
         tile = (ROOT / "src/tile.c").read_text()
         viewport = (ROOT / "src/gui/viewport.c").read_text()
-        production = "\n".join(function(text, name) for text, name in (
+        production = rocket_directions(viewport) + "\n" + "\n".join(function(text, name) for text, name in (
             (sprites, "Sprite_GetWidth"), (sprites, "Sprite_GetHeight"),
             (tile, "Tile_AddTileDiff"), (tile, "Orientation_Orientation256ToOrientation8"),
             (tile, "Orientation_Orientation256ToOrientation16"),

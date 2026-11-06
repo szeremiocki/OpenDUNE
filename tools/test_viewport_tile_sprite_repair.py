@@ -17,9 +17,15 @@ class ViewportTileSpriteRepairTest(unittest.TestCase):
         video = (ROOT / "src/video/video_atari.c").read_text()
         cached = function(gui, "GUI_ViewportPlanarSprite")
         publication = cached[cached.index("\tentry->used = s_viewportPlanarClock;"):]
-        publication = publication[:publication.rfind("\n}")]
+        publication = publication[:publication.rfind("\n}")].replace("\npresent:\n", "\n")
         sprite_type = gui[gui.index("typedef struct ViewportPlanarSprite {"):
                           gui.index("} ViewportPlanarSprite;") + len("} ViewportPlanarSprite;")]
+        header = (ROOT / "src/gui/gui.h").read_text()
+        bounds_type = header[header.index("typedef struct GUI_SpriteBounds {"):
+                             header.index("} GUI_SpriteBounds;") + len("} GUI_SpriteBounds;")]
+        image_type = gui[gui.index("typedef struct ViewportPlanarImage {"):
+                         gui.index("} ViewportPlanarImage;") + len("} ViewportPlanarImage;")]
+        sprite_type = bounds_type + "\n" + image_type + "\n" + sprite_type
         damage = "\n".join(function(viewport, name) for name in (
             "GUI_Widget_Viewport_DebugRect",
             "GUI_Widget_Viewport_BeginSpriteDamage",
@@ -203,7 +209,7 @@ static void GUI_Widget_Viewport_RepairTiles(int16 l, int16 t, int16 r, int16 b) 
 /* REPAIR */
 static void drawCached(ViewportPlanarSprite *entry, int16 x, int16 y,
                        bool blitter, uint16 highlight) {
-    uint16 i;
+    const ViewportPlanarImage *image;
     /* PUBLICATION */
 }
 static ViewportPlanarSprite entry;
@@ -265,6 +271,7 @@ static void image(int16 left, unsigned width, unsigned height, bool blitter, uns
         Video_Atari_BuildSpriteBlitPlans(entry.blitPlans, entry.width,
             pad + entry.boundsOffsetX, entry.boundsWidth);
     }
+    GUI_ViewportSetPlanarImage(&entry);
     memcpy(savedPixels, entry.pixels, sizeof(savedPixels));
     memcpy(savedMasks, masks, sizeof(savedMasks));
 }
@@ -555,7 +562,10 @@ int main(void) {
         harness = harness.replace("/* PLACEMENT */", placement).replace("/* LIMITS */", limits)
         harness = harness.replace("/* SPRITE TYPE */", sprite_type)
         harness = harness.replace("/* DAMAGE */", damage)
-        harness = harness.replace("/* REPAIR */", function(gui, "GUI_ViewportPlanarSpriteRepair"))
+        harness = harness.replace("/* REPAIR */",
+                                  function(gui, "GUI_ViewportSetPlanarImage") + "\n" +
+                                  function(gui, "GUI_ViewportPlanarSpriteRepair") + "\n" +
+                                  function(gui, "GUI_ViewportPresentPlanarSprite"))
         harness = harness.replace("/* PUBLICATION */", publication)
         run_harness(harness)
 
