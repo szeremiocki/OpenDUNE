@@ -210,6 +210,8 @@ video/video_fps.c
 video/c2p1x1_8.s
 video/atari_viewport_tile.s
 video/atari_sprite_blit.s
+video/atari_display_list.c
+video/atari_display_list_runner.s
 video/atari_copyrows.s
 video/atari_cursor.s
 gui/planar_rows.s

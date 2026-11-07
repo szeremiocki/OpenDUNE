@@ -1193,6 +1193,7 @@ bool Video_Init(int screen_magnification, VideoScaleFilter filter)
  */
 void Video_Uninit(void)
 {
+	Video_Atari_DisplayListFree();
 	(void)Cursconf(1, 0);	/* switch cursor On */
 	if(s_machine_type == MCH_FALCON) {
 		long saddr;
@@ -1868,6 +1869,7 @@ static const uint16 s_cursorAllOnes[CURSOR_MAX_GROUPS] = {
  * Ordinary drawing updates it synchronously instead. */
 static void Video_Atari_CursorEraseFull(void)
 {
+	Video_Atari_DisplayListFlush();
 	uint16 *p;
 
 	if (!s_curDrawn) return;
@@ -1882,6 +1884,7 @@ static void Video_Atari_CursorEraseFull(void)
 /** Save the planar background and composite the cursor over it. */
 static void Video_Atari_CursorDraw(uint8 *base)
 {
+	Video_Atari_DisplayListFlush();
 	uint16 *p;
 
 	if (s_curDrawn || !s_curVisible) return;
@@ -2110,6 +2113,7 @@ static void Video_Atari_RefreshViewportCursor(uint8 *base, uint16 first, uint16 
 
 	assert(first < end && end <= 15 && top >= 40 && top < bottom && bottom <= 200);
 	if (!s_curDrawn || base != s_curDrawnBase) return;
+	Video_Atari_DisplayListFlush();
 	first = max(first, s_curDrawnGroup);
 	end = min(end, s_curDrawnGroup + s_curDrawnGroups);
 	top = max(top, s_curDrawnY);
@@ -2183,6 +2187,81 @@ typedef struct PlacementTint {
 
 static PlacementTint s_placeTint;
 
+extern void Video_Atari_RunDisplayList(const uint16 *stream);
+extern void Video_Atari_BlitPlaneCode(void);
+static const uint16 *s_displayStream;
+
+static void Video_Atari_DisplayExecute(void)
+{
+	Video_Atari_RunDisplayList(s_displayStream);
+}
+
+void Video_Atari_ExecuteDisplayList(const uint16 *stream)
+{
+	s_displayStream = stream;
+	s_blitterTileSetup = false;
+	s_blitterHalftonePattern = NULL;
+	Atari_SupervisorExec(Video_Atari_DisplayExecute);
+	s_blitterTileSetup = false;
+	s_blitterHalftonePattern = NULL;
+}
+
+static uint16 *Video_Atari_DisplayMoveLong(uint16 *out, uint16 opcode, uint32 value)
+{
+	*out++ = HTOBE16(opcode);
+	*out++ = HTOBE16(value >> 16);
+	*out++ = HTOBE16(value);
+	return out;
+}
+
+static uint16 *Video_Atari_DisplayGeometry(uint16 *out, const Video_Atari_SpriteBlitPlan *plan)
+{
+	out = Video_Atari_DisplayMoveLong(out, 0x21fc,
+	    ((uint32)(uint16)plan->sourceXinc << 16) | (uint16)plan->sourceYinc);
+	*out++ = HTOBE16(0x8a20);
+	out = Video_Atari_DisplayMoveLong(out, 0x21fc,
+	    ((uint32)plan->firstMask << 16) | plan->middleMask);
+	*out++ = HTOBE16(0x8a28);
+	out = Video_Atari_DisplayMoveLong(out, 0x21fc,
+	    ((uint32)plan->lastMask << 16) | (uint16)plan->destinationXinc);
+	*out++ = HTOBE16(0x8a2c);
+	*out++ = HTOBE16(0x31fc);
+	*out++ = HTOBE16(plan->destinationYinc);
+	*out++ = HTOBE16(0x8a30);
+	*out++ = HTOBE16(0x31fc);
+	*out++ = HTOBE16(plan->words);
+	*out++ = HTOBE16(0x8a36);
+	*out++ = HTOBE16(0x11fc);
+	*out++ = HTOBE16(plan->skew);
+	*out++ = HTOBE16(0x8a3d);
+	return Video_Atari_DisplayMoveLong(out, 0x4239, (uint32)(size_t)&s_blitterTileSetup);
+}
+
+static uint16 *Video_Atari_DisplayPattern(uint16 *out, const uint16 *pattern)
+{
+	uint16 i;
+	for (i = 0; i < 16; i++) {
+		*out++ = HTOBE16(0x31fc);
+		*out++ = HTOBE16(pattern[i]);
+		*out++ = HTOBE16(0x8a00 + i * 2);
+	}
+	return out;
+}
+
+static uint16 *Video_Atari_DisplayPlane(uint16 *out, const uint16 *pixels, uint16 *dst,
+                                      uint16 height, uint16 operation, uint16 start)
+{
+	out = Video_Atari_DisplayMoveLong(out, 0x207c, (uint32)(size_t)pixels);
+	out = Video_Atari_DisplayMoveLong(out, 0x247c, (uint32)(size_t)dst);
+	*out++ = HTOBE16(0x303c);
+	*out++ = HTOBE16(height);
+	*out++ = HTOBE16(0x323c);
+	*out++ = HTOBE16(operation);
+	*out++ = HTOBE16(0x343c);
+	*out++ = HTOBE16(start);
+	return Video_Atari_DisplayMoveLong(out, 0x4eb9, (uint32)(size_t)Video_Atari_BlitPlaneCode);
+}
+
 /* Halftone users share ownership; source-only blits leave this RAM intact. */
 static void Video_Atari_SetHalftonePattern(const uint16 *pattern)
 {
@@ -2194,6 +2273,21 @@ static void Video_Atari_SetHalftonePattern(const uint16 *pattern)
 	s_blitterHalftonePattern = pattern;
 }
 
+static void Video_Atari_QueueTintBlit(const uint16 *pattern, uint16 operation)
+{
+	Video_Atari_SpriteBlitPlan plan = {
+		8, 8, 0xffff, 0xffff, 0xffff, 8,
+		ST_PLANAR_LINE_BYTES - (s_placeTint.words - 1) * 8, s_placeTint.words, 0
+	};
+	uint16 *out = g_videoDisplayListNext;
+	assert(g_videoDisplayListLimit - out >= VIDEO_ATARI_DISPLAY_TINT_BYTES / 2);
+	out = Video_Atari_DisplayGeometry(out, &plan);
+	out = Video_Atari_DisplayPattern(out, pattern);
+	out = Video_Atari_DisplayPlane(out, NULL, (uint16 *)s_placeTint.dst,
+	    s_placeTint.height, operation, 0xc0);
+	g_videoDisplayListNext = out;
+}
+
 static void Video_Atari_PlacementTintBlit(void)
 {
 	static const uint16 checkerboard[16] = {
@@ -2201,6 +2295,15 @@ static void Video_Atari_PlacementTintBlit(void)
 		0xaaaa, 0x5555, 0xaaaa, 0x5555, 0xaaaa, 0x5555, 0xaaaa, 0x5555
 	};
 
+	if (g_videoDisplayListActive) {
+		uint16 operation = 0x0107;
+#ifdef VIEWPORT_DEBUG_DAMAGE
+		if (s_damageDebugOverlay) operation = 0x0106;
+#endif
+		Video_Atari_QueueTintBlit(
+		    s_placeTint.pattern != NULL ? s_placeTint.pattern : checkerboard, operation);
+		return;
+	}
 	while ((*BLITTER_CTRL & 0x80) != 0) {}
 	Video_Atari_SetHalftonePattern(s_placeTint.pattern != NULL ? s_placeTint.pattern : checkerboard);
 	*BLITTER_ENDMASK1 = 0xffff;
@@ -2486,6 +2589,7 @@ static void Video_Atari_PlacementEnd(uint8 *base)
 {
 	uint16 i, line, group, plane;
 
+	Video_Atari_DisplayListFlush();
 	for (i = 0; i < s_placeBlockCount; i++) {
 		const PlacementBlock *block = &s_placeBlocks[i];
 		const uint16 *p = Video_Atari_CursorBackground(s_placeDrawnBase, block->y, block->group);
@@ -2591,6 +2695,7 @@ uint16 *Video_Atari_LiveBegin(uint16 x, uint16 y, uint16 width, uint16 height)
 {
 	uint8 *base = Video_Atari_PlanarBase();
 
+	Video_Atari_DisplayListFlush();
 	if (Video_Atari_CursorRectOverlap(base, x >> 4, (x + width + 15) >> 4, y, height))
 		Video_Atari_CursorEraseFull();
 	return (uint16 *)(base + (uint32)y * ST_PLANAR_LINE_BYTES + (uint32)(x >> 4) * 8);
@@ -2613,6 +2718,7 @@ static void Video_Atari_PlanarFill(uint16 x, uint16 y, uint16 w, uint16 h, uint8
 	uint16 *row = (uint16 *)(base + (uint32)y * ST_PLANAR_LINE_BYTES + first * 8);
 	uint16 g, line, plane;
 
+	Video_Atari_DisplayListFlush();
 	for (line = 0; line < h; line++) {
 		uint16 *dst = row;
 		for (g = first; g < last; g++) {
@@ -2643,6 +2749,7 @@ static void Video_Atari_PresentRun(const uint8 *src, uint16 srcStride,
 	uint8 *base = Video_Atari_PlanarBase();
 	uint8 *dst = base + (uint32)y * ST_PLANAR_LINE_BYTES + (x >> 1);
 
+	Video_Atari_DisplayListFlush();
 	if (srcStride == SCREEN_WIDTH) {
 		/* c2p1x1_4_st walks whole scanlines itself, with the chunky and
 		 * planar strides hardcoded to 320/160 -- one call for the lot. */
@@ -2705,6 +2812,7 @@ static void Video_Atari_PresentGroupMasked(const uint8 *srcRow, uint16 gx,
 static void Video_Atari_PresentRunMasked(const uint8 *src, uint16 srcStride,
                                          uint16 x, uint16 y, uint16 w, uint16 h)
 {
+	Video_Atari_DisplayListFlush();
 	uint16 x1 = (uint16)(x + w);
 	int gLeft = (int)(x >> 4);
 	int gRight = (int)((x1 - 1) >> 4);	/* group holding the last pixel */
@@ -2807,6 +2915,7 @@ static uint16 Video_Atari_ConvertGroupTransparent(const uint8 *srcRow, uint16 gx
 static void Video_Atari_PresentTransparent(const uint8 *src, uint16 srcStride,
                                            uint16 x, uint16 y, uint16 w, uint16 h)
 {
+	Video_Atari_DisplayListFlush();
 	uint16 x1 = (uint16)(x + w);
 	int gLeft = (int)(x >> 4);
 	int gRight = (int)((x1 - 1) >> 4);
@@ -2883,6 +2992,7 @@ bool Video_Atari_PresentSave(int16 x, int16 y, uint16 width, uint16 height, uint
 	if (right > SCREEN_WIDTH) right = SCREEN_WIDTH;
 	bytesPerLine = (uint16)(((right - left) >> 4) << 3);
 
+	Video_Atari_DisplayListFlush();
 	src = base + (uint32)y * ST_PLANAR_LINE_BYTES + (uint32)(left >> 4) * 8;
 
 	while (height-- != 0) {
@@ -2941,6 +3051,7 @@ bool Video_Atari_PresentRestoreStrided(int16 x, int16 y, uint16 width, uint16 he
 	if (srcStride == 0) srcStride = bytesPerLine;
 	if (srcStride < bytesPerLine) return false;
 
+	Video_Atari_DisplayListFlush();
 	dst = base + (uint32)y * ST_PLANAR_LINE_BYTES + (uint32)(left >> 4) * 8;
 
 	{
@@ -3010,6 +3121,7 @@ void Video_Atari_PresentPlanarWindow(const uint16 *pixels, uint16 x, uint16 y,
 	assert((uint32)x + width <= SCREEN_WIDTH && (uint32)y + height <= SCREEN_HEIGHT);
 	overlays = Video_Atari_PlanarOverlaysOverlap(base, x, y, width, height);
 
+	Video_Atari_DisplayListFlush();
 	if (endFull > firstFull) {
 		for (line = 0; line < height; line++) {
 			memcpy(base + (uint32)(y + line) * ST_PLANAR_LINE_BYTES + firstFull * 8,
@@ -3047,6 +3159,7 @@ bool Video_Atari_PresentPlanarSubRect(const uint16 *pixels, uint16 srcStride, ui
 	if (pixels == NULL || width == 0 || height == 0 || (srcStride & 1) != 0 ||
 	    (uint32)x + width > SCREEN_WIDTH || (uint32)y + height > SCREEN_HEIGHT ||
 	    ((uint32)srcX + width + 15) / 16 * 8 > srcStride) return false;
+	Video_Atari_DisplayListFlush();
 	base = Video_Atari_PlanarBase();
 	overlays = Video_Atari_PlanarOverlaysOverlap(base, first * 16, y, (end - first) * 16, height);
 	for (line = 0; line < height; line++) {
@@ -3091,6 +3204,7 @@ bool Video_Atari_PresentPlanarRect(const uint16 *pixels, uint16 srcStride,
 	if (full != 0 && !Video_Atari_PresentRestoreStrided(x, y, full, height,
 	        (const uint8 *)pixels, srcStride)) return false;
 	if (tail == 0) return true;
+	Video_Atari_DisplayListFlush();
 	base = Video_Atari_PlanarBase();
 	overlays = Video_Atari_PlanarOverlaysOverlap(base, x + full, y, 16, height);
 	for (line = 0; line < height; line++) {
@@ -3218,6 +3332,7 @@ typedef struct PlanarBlit {
 	uint16 *dst;
 	const uint16 *pixels, *masks;
 	const Video_Atari_SpriteBlitPlan *plan;
+	const Video_Atari_SpriteBlitGeometry *geometry;
 	const Video_Atari_SpriteBlitCode *code;
 	uint16 height;
 	const uint16 *writable;
@@ -3312,6 +3427,23 @@ void Video_Atari_BuildSpriteBlitPlans(Video_Atari_SpriteBlitPlan plans[16],
 		Video_Atari_BuildSpriteBlitPlan(&plans[phase], sourceWidth, sourceX, width, phase);
 }
 
+void Video_Atari_BuildSpriteBlitGeometry(Video_Atari_SpriteBlitGeometry geometry[16],
+                                       uint16 sourceWidth, uint16 sourceX, uint16 width)
+{
+	uint16 phase;
+
+	assert(sourceWidth > 0 && sourceWidth <= 80 && (sourceWidth & 15) == 0);
+	assert(width > 0 && sourceX + width <= sourceWidth);
+	for (phase = 0; phase < 16; phase++) {
+		Video_Atari_SpriteBlitPlan plan;
+		uint16 *out;
+		Video_Atari_BuildSpriteBlitPlan(&plan, sourceWidth, sourceX, width, phase);
+		out = Video_Atari_DisplayGeometry(geometry[phase].words, &plan);
+		*out++ = HTOBE16(0x4ed4); /* jmp (a4) */
+		assert(out == geometry[phase].words + VIDEO_ATARI_SPRITE_BLIT_GEOMETRY_WORDS);
+	}
+}
+
 static void Video_Atari_BlitOpaque(void)
 {
 	static const Video_Atari_SpriteBlitPlan tilePlan = {
@@ -3319,6 +3451,10 @@ static void Video_Atari_BlitOpaque(void)
 		.firstMask = 0xffff, .middleMask = 0xffff, .lastMask = 0xffff,
 		.destinationXinc = 2, .destinationYinc = 154, .words = 4, .skew = 0
 	};
+	if (g_videoDisplayListActive) {
+		Video_Atari_QueueTile(s_planarBlit.pixels, s_planarBlit.dst);
+		return;
+	}
 	/* uint16 status = Video_Atari_BlitterLock(); */
 	if (!s_blitterTileSetup) {
 		Video_Atari_BlitterSetup(&tilePlan, 2);
@@ -3384,10 +3520,8 @@ static void Video_Atari_CompileSpriteBlit(Video_Atari_SpriteBlitCode *code, uint
 			*out++ = HTOBE16(0x11fc);
 			*out++ = HTOBE16(0x00c0 | firstLine);
 			*out++ = HTOBE16(0x8a3c);
-			*out++ = HTOBE16(0x0838); /* btst #7,BLITTER_CTRL; bne back */
-			*out++ = HTOBE16(7);
-			*out++ = HTOBE16(0x8a3c);
-			*out++ = HTOBE16(0x66f8);
+			if ((planes >> (plane + 1)) != 0 || (pass == 0 && (passes >> 4) != 0))
+				*out++ = HTOBE16(0x4e71); /* HOG launch boundary; final launch returns directly. */
 		}
 	}
 	*out++ = HTOBE16(0x4e75);
@@ -3418,10 +3552,63 @@ static inline void Video_Atari_ExecuteSpriteBlitCode(const Video_Atari_SpriteBli
 	    : "cc", "memory");
 }
 
+static inline void Video_Atari_ExecuteSpriteBlitGeometry(const Video_Atari_SpriteBlitCode *code,
+                                                        const uint16 *pixels, const uint16 *masks,
+                                                        uint16 *dst, uint16 height,
+                                                        const Video_Atari_SpriteBlitGeometry *geometry)
+{
+	register const uint16 *sourcePixels __asm__("a0") = pixels;
+	register const uint16 *sourceMasks __asm__("a1") = masks;
+	register uint16 *destination __asm__("a2") = dst;
+	register const Video_Atari_SpriteBlitGeometry *phaseCode __asm__("a3") = geometry;
+	register const Video_Atari_SpriteBlitCode *recipe __asm__("a4") = code;
+	register uint32 rows __asm__("d0") = height;
+
+	__asm__ volatile ("jsr _Video_Atari_BlitSpriteGeometry"
+	    : "+a" (phaseCode)
+	    : "a" (sourcePixels), "a" (sourceMasks), "a" (destination), "a" (recipe), "d" (rows)
+	    : "cc", "memory");
+}
+
 static void Video_Atari_BlitCompiledSprite(void)
 {
-	Video_Atari_ExecuteSpriteBlitCode(s_planarBlit.code, s_planarBlit.pixels,
-	    s_planarBlit.masks, s_planarBlit.dst, s_planarBlit.height, s_planarBlit.plan);
+	if (s_planarBlit.geometry != NULL) {
+		Video_Atari_ExecuteSpriteBlitGeometry(s_planarBlit.code, s_planarBlit.pixels,
+		    s_planarBlit.masks, s_planarBlit.dst, s_planarBlit.height, s_planarBlit.geometry);
+	} else {
+		Video_Atari_ExecuteSpriteBlitCode(s_planarBlit.code, s_planarBlit.pixels,
+		    s_planarBlit.masks, s_planarBlit.dst, s_planarBlit.height, s_planarBlit.plan);
+	}
+}
+
+static void Video_Atari_QueueMaskedBlit(bool protected)
+{
+	uint16 launches = 0, pass, plane;
+	uint8 passes = s_spriteHighlight != NULL ? 0xff : s_planarBlit.code->passes;
+	uint16 *out = g_videoDisplayListNext;
+
+	for (pass = 0; pass < 2; pass++)
+		for (plane = 0; plane < 4; plane++)
+			if ((passes & (1u << (pass * 4 + plane))) != 0 &&
+			    (pass == 0 || s_spriteHighlight == NULL || s_spriteHighlight[plane] != HL_ZERO))
+				launches++;
+	if (launches == 0) return;
+	assert(g_videoDisplayListLimit - out >= (48 + (protected ? 96 : 0) + launches * 30) / 2);
+	out = Video_Atari_DisplayGeometry(out, s_planarBlit.plan);
+	if (protected) out = Video_Atari_DisplayPattern(out, s_planarBlit.writable);
+	for (pass = 0; pass < 2; pass++) {
+		for (plane = 0; plane < 4; plane++) {
+			uint8 source = pass == 0 ? plane + 4 :
+			    s_spriteHighlight != NULL ? s_spriteHighlight[plane] : plane;
+			const uint16 *pixels;
+			if ((passes & (1u << (pass * 4 + plane))) == 0 || source == HL_ZERO) continue;
+			pixels = source < 4 ? s_planarBlit.pixels + source : s_planarBlit.masks + source - 4;
+			out = Video_Atari_DisplayPlane(out, pixels, s_planarBlit.dst + plane,
+			    s_planarBlit.height, ((protected ? 3 : 2) << 8) | (pass == 0 ? 4 : 7),
+			    0xc0 | (protected ? s_planarBlit.firstLine : 0));
+		}
+	}
+	g_videoDisplayListNext = out;
 }
 
 static void Video_Atari_BlitMaskedHighlight(void)
@@ -3429,6 +3616,10 @@ static void Video_Atari_BlitMaskedHighlight(void)
 	const uint8 *recipe = s_spriteHighlight;
 	uint16 pass, plane;
 
+	if (g_videoDisplayListActive) {
+		Video_Atari_QueueMaskedBlit(false);
+		return;
+	}
 	s_blitterTileSetup = false;
 	Video_Atari_BlitterSetup(s_planarBlit.plan, 8);
 	for (pass = 0; pass < 2; pass++) {
@@ -3463,6 +3654,10 @@ static void Video_Atari_BlitProtectedSprite(void)
 	uint16 next = ((uint16)s_planarBlit.code->passes << 4) | s_planarBlit.firstLine;
 	uint16 pass, plane;
 
+	if (g_videoDisplayListActive) {
+		Video_Atari_QueueMaskedBlit(true);
+		return;
+	}
 	s_blitterTileSetup = false;
 	Video_Atari_SetHalftonePattern(s_planarBlit.writable);
 	if (s_spriteHighlight == NULL) {
@@ -3511,6 +3706,10 @@ bool Video_Atari_BlitViewportTile(const uint16 *pixels, uint16 col, uint16 row)
 
 	if (!s_viewportBlitter || (((s_curViewportTiles[row] | g_videoTileCursorTiles[row]) >> col) & 1) != 0) return false;
 	dst = Video_Atari_PlanarBase() + rowOffsets[row] + (col << 3);
+	if (g_videoDisplayListActive) {
+		Video_Atari_QueueTile(pixels, (uint16 *)dst);
+		return true;
+	}
 #if ATARI_SUPERVISOR_RESIDENT
 	if (g_atariSupervisorResident && s_blitterTileSetup) {
 		*BLITTER_SRC_ADDR = (uint32)(size_t)pixels;
@@ -3535,6 +3734,7 @@ static void __attribute__((noinline)) Video_Atari_PublishViewportCursorRect(
 	uint16 line, group;
 	uint16 *dstRow = (uint16 *)(base + (uint32)top * 160 + first * 8);
 
+	Video_Atari_DisplayListFlush();
 	for (line = top; line < bottom; line++, dstRow += 80) {
 		for (group = first; group < end; group++) {
 			uint16 index = group - first, mask = masks != NULL ? masks[index] : 0xffff;
@@ -3605,6 +3805,7 @@ void Video_Atari_DrawPlanarTile(const uint16 *pixels, const uint16 *masks, uint1
 		    copyPixels != NULL ? NULL : masks, 1, x >> 4, (x >> 4) + 1, y, y + 16, false);
 		return;
 	}
+	Video_Atari_DisplayListFlush();
 	if (copyPixels != NULL) pixels = copyPixels;
 	for (line = 0; line < 16; line++, pixels += 4) {
 		uint16 mask = copyPixels != NULL ? 0xffff : masks[line];
@@ -3651,6 +3852,7 @@ void Video_Atari_DrawPlanarTileFogged(const uint16 *pixels, const uint16 *masks,
 		Video_Atari_DrawPlanarTileFoggedCursor(base, pixels, masks, fogPixels, fogMasks, x, y, copyPixels);
 		return;
 	}
+	Video_Atari_DisplayListFlush();
 	if (copyPixels != NULL) {
 		for (line = 0; line < 16; line++, copyPixels += 4) {
 			uint16 *dst = (uint16 *)(base + (uint32)(y + line) * 160 + (x >> 1));
@@ -3715,6 +3917,7 @@ void Video_Atari_PresentSprite(const uint8 *src, uint16 stride,
 
 	assert((x & 15) == 0 && (width & 15) == 0 && width <= 48);
 	assert(x + width <= 240 && y >= 40 && y + height <= SCREEN_HEIGHT);
+	Video_Atari_DisplayListFlush();
 	if (overlays && !Video_Atari_PlacementRectOverlap(base, x, x + width, y, height)) {
 		Video_Atari_PresentSpriteCursor(base, src, stride, x, y, width, height, masks);
 		return;
@@ -3780,6 +3983,46 @@ void Video_Atari_ComposePlanarSprite(uint16 *dstPixels, uint16 *dstMasks,
 	}
 }
 
+void Video_Atari_ComposePlanarSpriteClipped(uint16 *dstPixels, uint16 *dstMasks,
+                                          uint16 dstWidth, uint16 dstHeight,
+                                          const uint16 *pixels, const uint16 *masks,
+                                          uint16 width, uint16 height, int16 x, int16 y)
+{
+	uint16 dstGroups = dstWidth >> 4, groups = width >> 4;
+	uint16 shift = (uint16)x & 15;
+	int16 first = x >= 0 ? x >> 4 : -((15 - x) >> 4);
+	int16 firstRow = max(0, -y), endRow = min(height, (int)dstHeight - y), row;
+	uint16 group;
+
+	assert(dstWidth > 0 && (dstWidth & 15) == 0 && width > 0 && (width & 15) == 0);
+	assert(dstHeight > 0 && height > 0);
+	for (row = firstRow; row < endRow; row++) {
+		uint16 *dstRow = dstPixels + (uint32)(y + row) * dstGroups * 4;
+		uint16 *maskRow = dstMasks + (uint32)(y + row) * dstGroups;
+		const uint16 *srcRow = pixels + (uint32)row * groups * 4;
+		const uint16 *srcMasks = masks + (uint32)row * groups;
+		for (group = 0; group < groups; group++) {
+			int16 column = first + group;
+			uint16 mask = srcMasks[group], words[4], part, plane;
+			const uint16 *src = srcRow + group * 4;
+			if (mask == 0 || column < -1 || column >= dstGroups) continue;
+			part = mask >> shift;
+			if (column >= 0 && part != 0) {
+				for (plane = 0; plane < 4; plane++) words[plane] = src[plane] >> shift;
+				Video_Atari_PlanarMergePlain(dstRow + column * 4, part, words);
+				maskRow[column] |= part;
+			}
+			if (shift == 0) continue;
+			part = (uint16)(mask << (16 - shift));
+			if (column + 1 >= 0 && column + 1 < dstGroups && part != 0) {
+				for (plane = 0; plane < 4; plane++) words[plane] = src[plane] << (16 - shift);
+				Video_Atari_PlanarMergePlain(dstRow + (column + 1) * 4, part, words);
+				maskRow[column + 1] |= part;
+			}
+		}
+	}
+}
+
 /* As Video_Atari_ComposePlanarSprite() but into any planar surface: `dst` is its row 0, group 0
  * and no mask is accumulated. Source rows are group-aligned; groups past dstGroups are clipped. */
 void Video_Atari_BlitPlanarSprite(uint16 *dst, uint16 dstStride, uint16 dstGroups,
@@ -3835,6 +4078,7 @@ static void __attribute__((noinline)) Video_Atari_PublishPlanarSpritePlain(
 {
 	uint16 padding = stride - groups;
 
+	Video_Atari_DisplayListFlush();
 	while (true) {
 		const uint16 *end = masks + groups;
 		uint16 *dst = dstRow;
@@ -3949,6 +4193,7 @@ static void __attribute__((noinline)) Video_Atari_PresentPlanarSpriteUnshiftedCP
 	uint16 firstMask = s_blitterLeftMasks[destinationPhase];
 	uint16 lastMask = s_blitterRightMasks[(x + width) & 15];
 
+	Video_Atari_DisplayListFlush();
 	for (row = 0; row < height; row++) {
 		for (group = 0; group < words; group++) {
 			uint16 colours[4], plane, phase = group == 0 ? destinationPhase : 0;
@@ -3977,13 +4222,13 @@ static void __attribute__((noinline)) Video_Atari_PresentPlanarSpriteUnshiftedCP
 void Video_Atari_PresentPlanarSpriteUnshifted(const uint16 *pixels, const uint16 *masks,
                                             uint16 sourceWidth, uint16 sourceX,
                                             uint16 width, uint16 height, uint16 x, uint16 y,
-                                            const Video_Atari_SpriteBlitPlan *plan,
+                                            const Video_Atari_SpriteBlitGeometry *geometry,
                                             const Video_Atari_SpriteBlitCode *code)
 {
 	uint8 *base = Video_Atari_PlanarBase();
 	uint16 destinationPhase = x & 15;
 	uint16 first = x >> 4;
-	uint16 words = plan != NULL ? plan->words : (destinationPhase + width + 15) >> 4;
+	uint16 words = (destinationPhase + width + 15) >> 4;
 	bool cursor, placement;
 
 	assert(sourceWidth > 0 && sourceWidth <= 80 && (sourceWidth & 15) == 0);
@@ -3998,16 +4243,22 @@ void Video_Atari_PresentPlanarSpriteUnshifted(const uint16 *pixels, const uint16
 	placement = Video_Atari_PlacementRectOverlap(base, first * 16, (first + words) * 16, y, height);
 	if (s_viewportBlitter && !placement) {
 		Video_Atari_SpriteBlitPlan clippedPlan;
-		if (plan == NULL) {
+		const Video_Atari_SpriteBlitPlan *plan = NULL;
+		if (geometry == NULL || s_spriteHighlight != NULL) {
 			Video_Atari_BuildSpriteBlitPlan(&clippedPlan, sourceWidth, sourceX, width, destinationPhase);
 			plan = &clippedPlan;
 		}
 		s_blitterTileSetup = false;
 #if ATARI_SUPERVISOR_RESIDENT
 		if (g_atariSupervisorResident && s_spriteHighlight == NULL) {
-			Video_Atari_ExecuteSpriteBlitCode(code, pixels + (sourceX >> 4) * 4,
-			    masks + (sourceX >> 4) * 4,
-			    (uint16 *)(base + (uint32)y * ST_PLANAR_LINE_BYTES + first * 8), height, plan);
+			uint16 *dst = (uint16 *)(base + (uint32)y * ST_PLANAR_LINE_BYTES + first * 8);
+			if (geometry != NULL) {
+				Video_Atari_ExecuteSpriteBlitGeometry(code, pixels + (sourceX >> 4) * 4,
+				    masks + (sourceX >> 4) * 4, dst, height, geometry);
+			} else {
+				Video_Atari_ExecuteSpriteBlitCode(code, pixels + (sourceX >> 4) * 4,
+				    masks + (sourceX >> 4) * 4, dst, height, plan);
+			}
 		} else
 #endif
 		{
@@ -4015,6 +4266,7 @@ void Video_Atari_PresentPlanarSpriteUnshifted(const uint16 *pixels, const uint16
 			s_planarBlit.pixels = pixels + (sourceX >> 4) * 4;
 			s_planarBlit.masks = masks + (sourceX >> 4) * 4;
 			s_planarBlit.plan = plan;
+			s_planarBlit.geometry = geometry;
 			s_planarBlit.height = height;
 			s_planarBlit.code = code;
 			Atari_SupervisorExec(s_spriteHighlight != NULL ?
@@ -4083,6 +4335,7 @@ static void Video_Atari_PresentProtectedSprite(const uint16 *pixels, const uint1
 				}
 				if (!hardware || cursor) {
 					uint16 written[16];
+					Video_Atari_DisplayListFlush();
 					for (line = 0; line < bottom - top; line++) {
 						const uint16 *p = srcPixels + line * groups * 4;
 						const uint16 *m = srcMasks + line * groups * (expanded ? 4 : 1);
@@ -4409,6 +4662,7 @@ static void Video_Atari_C2P_ConvertBlocks(uint8 *screen, uint8 *data, const uint
  */
 void Video_Tick(void)
 {
+	Video_Atari_DisplayListFlush();
 	/* EXPERIMENT: on ST/STE direct-cursor builds, GFX_Screen_Copy()/Copy2()
 	 * skip the chunky SCREEN_0 write and convert straight from their
 	 * (SCREEN_1) source instead, so SCREEN_0 itself may be stale wherever

@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import unittest
 
-from tools.test_viewport_sprite_cache import function
+from tools.test_viewport_sprite_cache import function, inactive_display_list
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,7 +16,7 @@ class HalftoneCursorTest(unittest.TestCase):
         video = (ROOT / "src/video/video_atari.c").read_text()
         start = video.index("typedef struct PlacementTint {")
         end = video.index("static PlacementTint s_placeTint;", start)
-        production = video[start:end + len("static PlacementTint s_placeTint;")]
+        production = inactive_display_list() + video[start:end + len("static PlacementTint s_placeTint;")]
         production += "\n" + video[video.index("static const uint16 s_tileCursorPatterns"):
                                   video.index("uint16 g_videoTileCursorTiles")]
         helper = function(video, "Video_Atari_SetHalftonePattern")

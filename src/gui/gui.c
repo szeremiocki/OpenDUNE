@@ -1782,12 +1782,14 @@ static uint16 *s_viewportSpriteMasks;
 static bool s_viewportSpriteReady, s_viewportPlanar;
 
 enum { VIEWPORT_PLANAR_SPRITES = 64, VIEWPORT_PLANAR_COMPONENTS = 64 };
+enum { VIEWPORT_PLANAR_WIDTH = 48, VIEWPORT_PLANAR_HEIGHT = 48,
+       VIEWPORT_PLANAR_MASK_WORDS = VIEWPORT_PLANAR_WIDTH / 16 * VIEWPORT_PLANAR_HEIGHT };
 enum { VIEWPORT_RESIDENT_PROJECTILES = 22, VIEWPORT_RESIDENT_SPRITES = 29 };
 typedef struct ViewportPlanarImage {
 	uint16 width, height;
 	GUI_SpriteBounds bounds;
 	const uint16 *pixels, *masks;
-	const Video_Atari_SpriteBlitPlan *blitPlans;
+	const Video_Atari_SpriteBlitGeometry *blitGeometry;
 	const Video_Atari_SpriteBlitCode *blitCode;
 } ViewportPlanarImage;
 
@@ -1809,9 +1811,9 @@ typedef struct ViewportPlanarSprite {
 	uint16 boundsWidth;
 	int16 boundsOffsetY;
 	uint16 boundsHeight;
-	Video_Atari_SpriteBlitPlan blitPlans[16];
+	Video_Atari_SpriteBlitGeometry blitGeometry[16];
 	Video_Atari_SpriteBlitCode blitCode;
-	uint16 pixels[80 * 64 / 4];
+	uint16 pixels[VIEWPORT_PLANAR_WIDTH * VIEWPORT_PLANAR_HEIGHT / 4];
 	uint16 *masks;
 	ViewportPlanarImage image;
 } ViewportPlanarSprite;
@@ -1835,6 +1837,7 @@ void GUI_FreeViewportSpriteCache(void)
 {
 	uint16 i;
 
+	Video_Atari_DisplayListFlush();
 	GUI_Sidebar_Free();
 	for (i = 0; i < UNIT_INDEX_MAX; i++) Unit_ClearViewportKey(Unit_Get_ByIndex(i));
 	free(s_viewportResidentStorage);
@@ -1971,14 +1974,14 @@ void GUI_InitViewportSpriteCache(void)
 		}
 	}
 	s_viewportPlanarSprites = calloc(VIEWPORT_PLANAR_SPRITES, sizeof(*s_viewportPlanarSprites));
-	s_viewportPlanarMasks = calloc(VIEWPORT_PLANAR_SPRITES * 5 * 64 *
+	s_viewportPlanarMasks = calloc(VIEWPORT_PLANAR_SPRITES * VIEWPORT_PLANAR_MASK_WORDS *
 	    (Video_Atari_ViewportBlitter() ? 4 : 1), sizeof(*s_viewportPlanarMasks));
 	s_viewportPlanarComponents = calloc(VIEWPORT_PLANAR_COMPONENTS, sizeof(*s_viewportPlanarComponents));
 	if (s_viewportPlanarSprites == NULL || s_viewportPlanarMasks == NULL || s_viewportPlanarComponents == NULL) {
 		Error("Out of memory for mandatory planar viewport sprite images\n");
 		exit(1);
 	} else {
-		uint16 maskWords = 5 * 64 * (Video_Atari_ViewportBlitter() ? 4 : 1);
+		uint16 maskWords = VIEWPORT_PLANAR_MASK_WORDS * (Video_Atari_ViewportBlitter() ? 4 : 1);
 		for (id = 0; id < VIEWPORT_PLANAR_SPRITES; id++) {
 			s_viewportPlanarSprites[id].masks = s_viewportPlanarMasks + id * maskWords;
 			s_viewportPlanarKeys[id].sprite = &s_viewportPlanarSprites[id];
@@ -2038,7 +2041,7 @@ static void GUI_InitViewportResidentSprites(void)
 			if (!plan[mirror]) {
 				if (!mirror || !plan[0] ||
 				    bounds->left != GUI_ViewportSpriteBounds(id, 0)->left)
-					bytes += sizeof(Video_Atari_SpriteBlitPlan) * 16;
+					bytes += sizeof(Video_Atari_SpriteBlitGeometry) * 16;
 				plan[mirror] = true;
 			}
 		}
@@ -2058,7 +2061,7 @@ static void GUI_InitViewportResidentSprites(void)
 		const ViewportSpriteMask *mask = GUI_ViewportSpriteMaskSlot(id);
 		uint8 flips = slot < VIEWPORT_RESIDENT_PROJECTILES ? GUI_Widget_Viewport_ProjectileFlipMask(id) : 1;
 		uint16 stride = (mask->width + 15) & ~15, groups = stride >> 4;
-		Video_Atari_SpriteBlitPlan *plans[2] = {NULL, NULL};
+		Video_Atari_SpriteBlitGeometry *plans[2] = {NULL, NULL};
 		Video_Atari_SpriteBlitCode *code;
 		union { uint32 aligned; uint8 bytes[32 * 32]; } scratch;
 		uint16 compact[2 * 32];
@@ -2085,9 +2088,9 @@ static void GUI_InitViewportResidentSprites(void)
 				    bounds->left == GUI_ViewportSpriteBounds(id, 0)->left) {
 					plans[mirror] = plans[0];
 				} else {
-					plans[mirror] = (Video_Atari_SpriteBlitPlan *)next;
+					plans[mirror] = (Video_Atari_SpriteBlitGeometry *)next;
 					next += sizeof(*plans[mirror]) * 16;
-					Video_Atari_BuildSpriteBlitPlans(plans[mirror], stride,
+					Video_Atari_BuildSpriteBlitGeometry(plans[mirror], stride,
 					    bounds->left, bounds->right - bounds->left);
 				}
 			}
@@ -2121,7 +2124,7 @@ static void GUI_InitViewportResidentSprites(void)
 			image->bounds = *bounds;
 			image->pixels = pixels;
 			image->masks = masks;
-			image->blitPlans = plans[mirror];
+			image->blitGeometry = plans[mirror];
 			image->blitCode = code;
 			s_viewportResidentSprites[slot][flags] = image;
 		}
@@ -2429,7 +2432,7 @@ static void GUI_ViewportSetPlanarImage(ViewportPlanarSprite *entry)
 	image->bounds.bottom = image->bounds.top + entry->boundsHeight;
 	image->pixels = entry->pixels;
 	image->masks = entry->masks;
-	image->blitPlans = entry->blitPlans;
+	image->blitGeometry = entry->blitGeometry;
 	image->blitCode = &entry->blitCode;
 }
 
@@ -2480,7 +2483,7 @@ static void GUI_ViewportPlanarSpriteRepair(const ViewportPlanarImage *entry, con
 				    entry->masks + offset, entry->width, x - left,
 				    endX - x, endY - y, x, y,
 				    x == boundsLeft && endX - x == boundsWidth ?
-				    &entry->blitPlans[x & 15] : NULL, entry->blitCode);
+				    &entry->blitGeometry[x & 15] : NULL, entry->blitCode);
 			} else {
 				offset = (y - top) * groups + ((x - left) >> 4);
 				Video_Atari_PresentPlanarSpriteStrided(pixels + offset * 4,
@@ -2507,7 +2510,7 @@ static void GUI_ViewportPresentPlanarSprite(const ViewportPlanarImage *entry,
 	    !GUI_Widget_Viewport_ShouldDrawSprite(boundsLeft, boundsTop, boundsRight, boundsBottom)) return;
 	repair = GUI_Widget_Viewport_SpriteRepairMask();
 	if (!blitter && highlight != 0) {
-		static uint16 s_highlightPixels[5 * 64 * 4];
+		static uint16 s_highlightPixels[VIEWPORT_PLANAR_MASK_WORDS * 4];
 		Video_Atari_HighlightPixels(s_highlightPixels, entry->pixels, entry->masks,
 		    groups * entry->height, highlight);
 		pixels = s_highlightPixels;
@@ -2529,7 +2532,7 @@ static void GUI_ViewportPresentPlanarSprite(const ViewportPlanarImage *entry,
 			    entry->masks + offset, entry->width, start - left,
 			    right - start, bottom - firstRow, start, firstRow,
 			    start == boundsLeft && right == boundsRight ?
-			    &entry->blitPlans[start & 15] : NULL, entry->blitCode);
+			    &entry->blitGeometry[start & 15] : NULL, entry->blitCode);
 			Video_Atari_SetSpriteHighlight(0);
 		}
 		return;
@@ -2636,7 +2639,7 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 		int16 maxX = mask->width, maxY = mask->height;
 		int16 boundsLeft = 0, boundsTop = 0, boundsRight = 0, boundsBottom = 0;
 		uint16 stride, height, groups;
-		bool visible = false;
+		bool visible = false, cropped = false;
 		masks[0] = mask;
 		left[0] = top[0] = 0;
 		for (i = 0; i < count; i++) {
@@ -2672,7 +2675,21 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 		if (!blitter) minX -= (uint16)(x + minX) & 15;
 		stride = (maxX - minX + 15) & ~15;
 		height = maxY - minY;
-		assert(stride <= 80 && height <= 64);
+		if (stride > VIEWPORT_PLANAR_WIDTH || height > VIEWPORT_PLANAR_HEIGHT) {
+			minX = boundsLeft;
+			minY = boundsTop;
+			maxX = boundsRight;
+			maxY = boundsBottom;
+			if (!blitter) minX -= (uint16)(x + minX) & 15;
+			stride = (maxX - minX + 15) & ~15;
+			height = maxY - minY;
+			cropped = true;
+		}
+		if (stride > VIEWPORT_PLANAR_WIDTH || height > VIEWPORT_PLANAR_HEIGHT) {
+			Error("Planar composite %u exceeds %ux%u cache canvas (%ux%u)\n",
+			    spriteID, VIEWPORT_PLANAR_WIDTH, VIEWPORT_PLANAR_HEIGHT, stride, height);
+			exit(1);
+		}
 		if (x + boundsLeft >= 240 || x + boundsRight <= 0 || y + boundsTop >= 200 || y + boundsBottom <= 40) return;
 		groups = stride >> 4;
 		for (i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) {
@@ -2680,8 +2697,9 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 			if (victim == NULL || (victim->key.main != 0 &&
 			    (candidate->key.main == 0 || candidate->used < victim->used))) victim = candidate;
 		}
+		if (victim->key.main != 0) Video_Atari_DisplayListFlush();
 		entry = victim;
-		if (count != 0 || !blitter) {
+		if (count != 0 || !blitter || cropped) {
 			memset(entry->pixels, 0, stride * height / 2);
 			memset(entry->masks, 0, groups * height * sizeof(*entry->masks));
 		}
@@ -2695,11 +2713,15 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 			    i == 0 ? spriteID : layers->layer[i - 1].spriteID,
 			    i == 0 ? colourHouse : layers->layer[i - 1].colourHouse,
 			    layerFlags, layerPalette);
-			if (count == 0 && blitter) {
+			if (count == 0 && blitter && !cropped) {
 				assert(stride == component->width && height == component->height);
 				memcpy(entry->pixels, component->pixels, stride * height / 2);
 				memcpy(entry->masks, component->masks, groups * height * sizeof(*entry->masks));
 				Video_Atari_CompileSpriteBlitCode(&entry->blitCode, component->blitPasses);
+			} else if (cropped) {
+				Video_Atari_ComposePlanarSpriteClipped(entry->pixels, entry->masks, stride, height,
+				    component->pixels, component->masks, component->width, component->height,
+				    left[i] - minX, top[i] - minY);
 			} else {
 				Video_Atari_ComposePlanarSprite(entry->pixels, entry->masks, stride, height,
 				    component->pixels, component->masks, component->width, component->height,
@@ -2708,7 +2730,7 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 		}
 		if (blitter) {
 			uint16 word = groups * height;
-			if (count != 0) {
+			if (count != 0 || cropped) {
 				uint8 passes = Video_Atari_BuildSpriteBlitRecipe(entry->pixels, entry->masks, word);
 				Video_Atari_CompileSpriteBlitCode(&entry->blitCode, passes);
 			}
@@ -2717,7 +2739,7 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 				for (plane = 0; plane < 4; plane++)
 					entry->masks[word * 4 + plane] = opacity;
 			}
-			Video_Atari_BuildSpriteBlitPlans(entry->blitPlans, stride,
+			Video_Atari_BuildSpriteBlitGeometry(entry->blitGeometry, stride,
 			    boundsLeft - minX, boundsRight - boundsLeft);
 		}
 		entry->width = stride;

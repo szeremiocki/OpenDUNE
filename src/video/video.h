@@ -197,6 +197,11 @@ extern void Video_Atari_ComposePlanarSprite(uint16 *dstPixels, uint16 *dstMasks,
                                           uint16 dstWidth, uint16 dstHeight,
                                           const uint16 *pixels, const uint16 *masks,
                                           uint16 width, uint16 height, uint16 x, uint16 y);
+/* Signed placement with clipping on all edges, for conditionally cropped canvases. */
+extern void Video_Atari_ComposePlanarSpriteClipped(uint16 *dstPixels, uint16 *dstMasks,
+                                                 uint16 dstWidth, uint16 dstHeight,
+                                                 const uint16 *pixels, const uint16 *masks,
+                                                 uint16 width, uint16 height, int16 x, int16 y);
 extern void Video_Atari_BlitPlanarSprite(uint16 *dst, uint16 dstStride, uint16 dstGroups,
                                          const uint16 *pixels, const uint16 *masks,
                                          uint16 width, uint16 height, uint16 x);
@@ -216,6 +221,22 @@ extern void Video_Atari_PresentPlanarSpriteStrided(const uint16 *pixels, const u
                                                  uint16 sourceWidth);
 extern bool g_videoViewportBlitter;
 #define Video_Atari_ViewportBlitter() (g_videoViewportBlitter)
+extern bool g_videoDisplayListActive;
+extern uint16 *g_videoDisplayListNext, *g_videoDisplayListLimit;
+/* A <=48x48 cached sprite covers at most 4x4 cells, including phase edges.
+ * Each cell needs at most 384 launch bytes and one 18-byte tile repair. */
+enum {
+	VIDEO_ATARI_DISPLAY_SPRITE_BYTES = 16 * (384 + 18),
+	VIDEO_ATARI_DISPLAY_TILE_ROW_BYTES = 15 * 18,
+	VIDEO_ATARI_DISPLAY_TINT_BYTES = 174
+};
+extern void Video_Atari_DisplayListBegin(void);
+extern void Video_Atari_DisplayListCheck(uint16 bytes);
+extern void Video_Atari_DisplayListFlush(void);
+extern void Video_Atari_DisplayListEnd(void);
+extern void Video_Atari_DisplayListFree(void);
+extern void Video_Atari_ExecuteDisplayList(const uint16 *stream);
+extern void Video_Atari_QueueTile(const uint16 *pixels, uint16 *dst);
 typedef struct Video_Atari_SpriteBlitPlan {
 	/* Hardware order for paired longword writes in atari_sprite_blit.s. */
 	int16 sourceXinc, sourceYinc;
@@ -240,15 +261,22 @@ typedef struct Video_Atari_SpriteBlitCode {
 	uint16 words[VIDEO_ATARI_SPRITE_BLIT_CODE_WORDS];
 	uint8 passes;
 } Video_Atari_SpriteBlitCode;
+/* Geometry writes, tile-setup invalidation, then JMP (a4) to the plane recipe. */
+#define VIDEO_ATARI_SPRITE_BLIT_GEOMETRY_WORDS 25
+typedef struct Video_Atari_SpriteBlitGeometry {
+	uint16 words[VIDEO_ATARI_SPRITE_BLIT_GEOMETRY_WORDS];
+} Video_Atari_SpriteBlitGeometry;
+extern void Video_Atari_BuildSpriteBlitGeometry(Video_Atari_SpriteBlitGeometry geometry[16],
+                                              uint16 sourceWidth, uint16 sourceX, uint16 width);
 extern void Video_Atari_CompileSpriteBlitCode(Video_Atari_SpriteBlitCode *code, uint8 passes);
 /* Visible rectangle of an unshifted composite, up to 80x64. Masks duplicate
  * opacity across four interleaved planes; colour bits outside opacity are zero.
- * sourceX and x are pixel offsets. plan is NULL for calculated geometry, or
- * the matching full-image phase plan (sourceX == 0); vertical clipping is OK. */
+ * sourceX and x are pixel offsets. geometry is NULL for calculated geometry,
+ * or matching full-image phase code; vertical clipping is OK. */
 extern void Video_Atari_PresentPlanarSpriteUnshifted(const uint16 *pixels, const uint16 *masks,
                                                    uint16 sourceWidth, uint16 sourceX,
                                                    uint16 width, uint16 height, uint16 x, uint16 y,
-                                                   const Video_Atari_SpriteBlitPlan *plan,
+                                                   const Video_Atari_SpriteBlitGeometry *geometry,
                                                    const Video_Atari_SpriteBlitCode *code);
 /* Cheap target-highlight effects done on bitplanes instead of a palette remap.
  * effect 0 is off, 1..VIDEO_ATARI_HIGHLIGHT_EFFECTS select a plane recipe. */

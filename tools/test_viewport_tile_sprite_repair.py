@@ -4,7 +4,7 @@ from pathlib import Path
 import unittest
 
 from tools.test_unit_smoke_damage import run_harness
-from tools.test_viewport_sprite_cache import blit_plan_type, blitter_model, function
+from tools.test_viewport_sprite_cache import blit_plan_type, blitter_model, function, inactive_display_list
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,7 +33,7 @@ class ViewportTileSpriteRepairTest(unittest.TestCase):
             "GUI_Widget_Viewport_ShouldDrawSprite",
             "GUI_Widget_Viewport_SpriteRepairMask",
         ))
-        cpu = "\n".join(function(video, name) for name in (
+        cpu = inactive_display_list() + "\n".join(function(video, name) for name in (
             "Video_Atari_CursorRectOverlap",
             "Video_Atari_PlacementRectOverlap",
             "Video_Atari_PlanarOverlaysOverlap",
@@ -83,7 +83,7 @@ static void Video_Atari_PresentProtectedSprite(const uint16 *, const uint16 *,
     const Video_Atari_SpriteBlitCode *);
 void Video_Atari_PresentPlanarSpriteUnshifted(const uint16 *, const uint16 *,
     uint16, uint16, uint16, uint16, uint16, uint16,
-    const Video_Atari_SpriteBlitPlan *, const Video_Atari_SpriteBlitCode *);
+    const Video_Atari_SpriteBlitGeometry *, const Video_Atari_SpriteBlitCode *);
 """ + protection)
         model = blitter_model(video, protected=True)
         stub_start = model.index("static bool Video_Atari_CursorRectOverlap(")
@@ -268,7 +268,7 @@ static void image(int16 left, unsigned width, unsigned height, bool blitter, uns
         for (unsigned i = 0; i < groups * height; i++) compact[i] = masks[i * 4];
         Video_Atari_CompileSpriteBlitCode(&entry.blitCode,
             Video_Atari_BuildSpriteBlitRecipe(entry.pixels, compact, groups * height));
-        Video_Atari_BuildSpriteBlitPlans(entry.blitPlans, entry.width,
+        Video_Atari_BuildSpriteBlitGeometry(entry.blitGeometry, entry.width,
             pad + entry.boundsOffsetX, entry.boundsWidth);
     }
     GUI_ViewportSetPlanarImage(&entry);

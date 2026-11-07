@@ -2,8 +2,14 @@
 ; a4 compiled recipe, d0 height. Only a3 and condition codes are clobbered.
 ; JSR here, JMP to the recipe, then its RTS returns directly to the caller.
 	xdef	_Video_Atari_BlitSpriteCode
+	xdef	_Video_Atari_BlitSpriteGeometry
+	xref	_g_videoDisplayListActive
+	xref	_Video_Atari_QueueSpriteBlit
+	xref	_Video_Atari_QueueSpriteGeometry
 
 _Video_Atari_BlitSpriteCode:
+	tst.b	_g_videoDisplayListActive
+	bne	_Video_Atari_QueueSpriteBlit
 .wait:
 	btst	#7,$ffff8a3c.w
 	bne.s	.wait
@@ -14,3 +20,10 @@ _Video_Atari_BlitSpriteCode:
 	move.w	14(a3),$ffff8a36.w
 	move.b	16(a3),$ffff8a3d.w
 	jmp	(a4)
+
+; Same ABI, but a3 points to immutable cached geometry instructions.
+; Drawing kernels return with the blitter idle.
+_Video_Atari_BlitSpriteGeometry:
+	tst.b	_g_videoDisplayListActive
+	bne	_Video_Atari_QueueSpriteGeometry
+	jmp	(a3)

@@ -365,8 +365,8 @@ int main(void) {
     assert(blitterLaunches == launches + 11 && blitterSetups == setups + 2);
     /* Whole-sprite hardware writes refresh cursor backups; placement retains
      * the CPU fallback. Repeated publications must not save cursor pixels. */
-    Video_Atari_SpriteBlitPlan plans[16];
-    Video_Atari_BuildSpriteBlitPlans(plans, 80, 0, 80);
+    Video_Atari_SpriteBlitGeometry plans[16];
+    Video_Atari_BuildSpriteBlitGeometry(plans, 80, 0, 80);
     for (unsigned place = 0; place < 2; place++) for (unsigned phase = 0; phase < 16; phase++) {
         reset(4, 74, 2, place);
         launches = blitterLaunches;

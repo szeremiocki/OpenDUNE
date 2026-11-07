@@ -556,7 +556,8 @@ Component lookup still scans from slot zero; its key format is unchanged.
 The smaller directory and image-entry keys save 512 bytes across both 64-slot
 arrays compared with the previous five-word composite identity.
 Hits publish the complete unit in one overlay-safe blit; the selection marker
-is not drawn separately. Entries accommodate aligned composites up to 80x64.
+is not drawn separately. Entries accommodate aligned composites up to 48x48;
+oversized canvases are cropped to existing opaque bounds only on cache misses.
 Each tier retains global least-recently-used
 replacement, with integer-key comparisons and
 independent 16-bit usage clocks resetting timestamps on wrap.
@@ -759,6 +760,19 @@ register-save/restore boundary. Their stable descriptors can also serve
 a future display-list. CPU phase images, Death Hand missiles, Sonic Blast and
 layered composites retain their existing cache paths. Physical trimming and
 display-list execution are not part of this change.
+
+The separate ST/STE display-list experiment now redirects existing BLiTTER
+launch boundaries into one flat executable stream. Commands load immediate
+arguments and call assembly kernels; geometry and fog patterns are embedded
+in the stream for dynamic fragments, with no separate argument frames or cache
+pins. Full-width ordinary sprites instead select cached executable phase
+geometry: 40 stream bytes instead of 76, at the cost of 32 KiB extra for the
+64 composite phase tables plus enlarged resident tables. The viewport
+checks capacity before sprite draws and dirty terrain rows. Cache evictions
+and immediate CPU screen writes drain the ordered prefix first. An affected
+tile-snapped cursor frame is redrawn after final playback; CPU viewport cursor
+protection is unchanged. This is synchronous, not VBL-submitted. See
+ATARI_DISPLAY_LIST.md for command sizes, bounds and lifetime rules.
 
 Fog/veil candidates are no longer promoted into terrain repairs merely for
 being hidden. Sprite-footprint marking skips fully hidden tiles; genuine

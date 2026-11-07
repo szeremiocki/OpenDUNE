@@ -119,6 +119,7 @@ static const uint16 *GFX_PlanarTileCopySource(const uint16 *pixels, uint8 opacit
 
 void GFX_FreePlanarTiles(void)
 {
+	Video_Atari_DisplayListFlush();
 	Video_Atari_ResetViewportProtection();
 	s_fogWritableReady = false;
 	s_protectionPosition = 0xffff;
@@ -271,6 +272,7 @@ static uint16 GFX_PlanarCompositeSlot(uint16 tileID, uint16 fogTileID, uint8 hou
 	uint32 tag = ((uint32)index << 16) | fogIndex;
 
 	if (s_planarCompositeReady[slot] != 0 && s_planarCompositeTag[slot] == tag) return slot;
+	if (s_planarCompositeReady[slot] != 0) Video_Atari_DisplayListFlush();
 	if (s_planarTileReady[index] == 0) GFX_FillPlanarTile(tileID, houseID, index);
 	if (s_planarTileReady[fogIndex] == 0) GFX_FillPlanarTile(fogTileID, houseID, fogIndex);
 	s_planarCompositeReady[slot] = GFX_ComposePlanarTile(
@@ -358,6 +360,7 @@ void GFX_DrawPlanarSelectionTile(uint16 tileID, uint16 overlayID, uint16 x, uint
 	if (s_selectionTiles[slot].tiles != tiles || s_selectionTiles[slot].style != style) {
 		const uint16 *pixels, *masks, *overlay = NULL, *overlayMasks = NULL;
 		uint16 row, plane, allMask = 0xffff;
+		if (s_selectionTiles[slot].style != 0) Video_Atari_DisplayListFlush();
 		if (overlayID == 0xffff) {
 			GFX_PreparePlanarFogTile();
 			pixels = s_viewportFogPixels;

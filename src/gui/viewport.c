@@ -464,6 +464,7 @@ void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 b
 
 		remaining = (g_viewportTerrainDamage[y] & endMask) >> first;
 		if (remaining == 0) continue;
+		Video_Atari_DisplayListCheck(VIDEO_ATARI_DISPLAY_TILE_ROW_BYTES);
 
 		for (x = first; remaining != 0; x++, remaining >>= 1, column <<= 1) {
 			uint16 packed;
@@ -1321,7 +1322,8 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 		GUI_Widget_Viewport_PrepareSelection();
 		GUI_Widget_Viewport_TileCursorPrepare(GUI_Widget_Viewport_PlacementPrepare());
 		GFX_PrepareViewportProtection(forceRedraw || hasScrolled);
-		Video_Atari_BeginViewportProtection(s_tileCursorShown, s_tileCursorCol, s_tileCursorRow, s_tileCursorTarget);
+		Video_Atari_BeginViewportProtection(s_tileCursorShown && !Video_Atari_ViewportBlitter(),
+		    s_tileCursorCol, s_tileCursorRow, s_tileCursorTarget);
 	}
 #endif
 	if (g_dirtyViewportCount != 0 || forceRedraw) {
@@ -1396,6 +1398,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 	#ifdef VIEWPORT_DEBUG_DAMAGE
 	GUI_Widget_Viewport_DebugBegin(planarViewport);
 	#endif
+	if (planarViewport) Video_Atari_DisplayListBegin();
 	GUI_Widget_Viewport_BeginSpriteDamage(planarViewport && !forceRedraw && !hasScrolled);
 #endif
 
@@ -1430,15 +1433,27 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 		sprite = g_sprites[g_table_unitInfo[u->o.type].groundSpriteID];
 
 		if (Map_IsPositionInViewport(u->o.position, &x, &y)) {
+#ifdef TOS
+			if (planarViewport) Video_Atari_DisplayListCheck(VIDEO_ATARI_DISPLAY_SPRITE_BYTES);
+#endif
 			GUI_DrawSprite(SCREEN_ACTIVE, sprite, g_table_unitInfo[u->o.type].groundSpriteID, GUI_SPRITE_COLOUR_EMBEDDED, x, y, 2, DRAWSPRITE_FLAG_BLUR | DRAWSPRITE_FLAG_WIDGETPOS | DRAWSPRITE_FLAG_CENTER);
 		}
 		if (Map_IsPositionInViewport(u->targetLast, &x, &y)) {
+#ifdef TOS
+			if (planarViewport) Video_Atari_DisplayListCheck(VIDEO_ATARI_DISPLAY_SPRITE_BYTES);
+#endif
 			GUI_DrawSprite(SCREEN_ACTIVE, sprite, g_table_unitInfo[u->o.type].groundSpriteID, GUI_SPRITE_COLOUR_EMBEDDED, x, y, 2, DRAWSPRITE_FLAG_BLUR | DRAWSPRITE_FLAG_WIDGETPOS | DRAWSPRITE_FLAG_CENTER);
 		}
 		if (Map_IsPositionInViewport(u->targetPreLast, &x, &y)) {
+#ifdef TOS
+			if (planarViewport) Video_Atari_DisplayListCheck(VIDEO_ATARI_DISPLAY_SPRITE_BYTES);
+#endif
 			GUI_DrawSprite(SCREEN_ACTIVE, sprite, g_table_unitInfo[u->o.type].groundSpriteID, GUI_SPRITE_COLOUR_EMBEDDED, x, y, 2, DRAWSPRITE_FLAG_BLUR | DRAWSPRITE_FLAG_WIDGETPOS | DRAWSPRITE_FLAG_CENTER);
 		}
 		if (u == g_unitSelected && Map_IsPositionInViewport(u->o.position, &x, &y)) {
+#ifdef TOS
+			if (planarViewport) Video_Atari_DisplayListCheck(VIDEO_ATARI_DISPLAY_SPRITE_BYTES);
+#endif
 			GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[6], 6, GUI_SPRITE_COLOUR_EMBEDDED, x, y, 2, DRAWSPRITE_FLAG_WIDGETPOS | DRAWSPRITE_FLAG_CENTER);
 		}
 	}
@@ -1547,6 +1562,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 			/* Harvesting layers depend on terrain outside the unit's state. */
 			ViewportCompositeKey *viewportKey = u->o.type == UNIT_HARVESTER ? NULL : &u->viewportKey;
 			spriteFlags |= DRAWSPRITE_FLAG_VIEWPORT_KEY;
+			if (planarViewport) Video_Atari_DisplayListCheck(VIDEO_ATARI_DISPLAY_SPRITE_BYTES);
 #endif
 			if (spriteFlags & DRAWSPRITE_FLAG_PAL) {
 				GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[index], index, bodyHouse, x, y, 2,
@@ -1597,6 +1613,9 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 		if (!g_map[curPos].isUnveiled && !g_debugScenario) continue;
 		if (!Map_IsPositionInViewport(e->position, &x, &y)) continue;
 
+#ifdef TOS
+		if (planarViewport) Video_Atari_DisplayListCheck(VIDEO_ATARI_DISPLAY_SPRITE_BYTES);
+#endif
 		GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[e->spriteID], e->spriteID, GUI_SPRITE_COLOUR_EMBEDDED, x, y, 2, DRAWSPRITE_FLAG_WIDGETPOS | DRAWSPRITE_FLAG_CENTER);
 	}
 	}
@@ -1670,6 +1689,9 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 			if (ui->o.flags.blurTile) spriteFlags |= DRAWSPRITE_FLAG_BLUR;
 
 			int paletteFlags = GUI_Widget_Viewport_HousePaletteFlags(index, Unit_GetHouseID(u), paletteHouse);
+#ifdef TOS
+			if (planarViewport) Video_Atari_DisplayListCheck(VIDEO_ATARI_DISPLAY_SPRITE_BYTES);
+#endif
 			if (paletteFlags != 0) {
 				GUI_DrawSprite(SCREEN_ACTIVE, sprite, index, Unit_GetHouseID(u), x, y, 2, spriteFlags | paletteFlags, paletteHouse);
 			} else {
@@ -1684,8 +1706,10 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 	if (planarViewport && s_placeTintShown &&
 	    GUI_Widget_Viewport_SpriteDamageRect(s_placeTintX, s_placeTintY, s_placeTintX + s_placeTintW,
 	                                         s_placeTintY + s_placeTintH, !s_viewportSpriteFilterActive)) {
+		Video_Atari_DisplayListCheck(VIDEO_ATARI_DISPLAY_TINT_BYTES);
 		Video_Atari_PlacementTint(s_placeTintX, s_placeTintY, s_placeTintW, s_placeTintH, s_placeTintInvalid);
 	}
+	if (planarViewport) Video_Atari_DisplayListEnd();
 	if (planarViewport && s_tileCursorShown &&
 	    GUI_Widget_Viewport_SpriteDamageRect((int16)(s_tileCursorCol << 4), (int16)((s_tileCursorRow << 4) + 40),
 	                                         (int16)((s_tileCursorCol << 4) + 16), (int16)((s_tileCursorRow << 4) + 56),

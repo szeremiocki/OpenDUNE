@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 from tools.test_unit_smoke_damage import run_harness
-from tools.test_viewport_sprite_cache import function, rocket_directions
+from tools.test_viewport_sprite_cache import function, inactive_display_list, rocket_directions
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,7 +30,7 @@ class ViewportProjectileTest(unittest.TestCase):
     fallthroughs++;
     return;
 """ + cached[cached.index("\npresent:"):]
-        functions = "\n".join(function(gui, name) for name in (
+        functions = inactive_display_list() + "\n".join(function(gui, name) for name in (
             "GUI_FreeViewportSpriteCache", "GUI_ViewportSpriteMaskSlot",
             "GUI_InitViewportSpriteCache", "GUI_ViewportDecodeLayer",
             "GUI_ViewportResidentSpriteID", "GUI_InitViewportResidentSprites",
@@ -39,7 +39,9 @@ class ViewportProjectileTest(unittest.TestCase):
         compile_code = function(video, "Video_Atari_CompileSpriteBlitCode").replace(
             "\n{", "\n{\n    compiles++;", 1)
         production_video = "\n".join(function(video, name) for name in (
+            "Video_Atari_DisplayMoveLong", "Video_Atari_DisplayGeometry",
             "Video_Atari_BuildSpriteBlitPlan", "Video_Atari_BuildSpriteBlitPlans",
+            "Video_Atari_BuildSpriteBlitGeometry",
             "Video_Atari_BuildSpriteBlitRecipe", "Video_Atari_CompileSpriteBlit",
         )) + "\n" + compile_code
         harness = r"""
@@ -70,6 +72,7 @@ static uint8 images[355][10 + 32 * 32], *sprites[355];
 uint8 **g_sprites = sprites;
 WidgetProperties g_widgetProperties[22];
 bool g_videoViewportBlitter;
+static bool s_blitterTileSetup;
 uint8 *g_paletteMapping2;
 static uint16 g_blinkEffect;
 static unsigned allocations, encodes, compiles, fallthroughs, published;
@@ -174,7 +177,25 @@ int main(int argc, char **argv) {
     failAllocation = argc > 1;
     GUI_SetViewportPlanar(true);
     assert(allocations == 5 && encodes == 69 && compiles == 29);
-    assert(residentBytes < 40 * 1024 && s_viewportResidentsReady);
+    assert(s_viewportResidentsReady);
+    size_t expectedBytes = VIEWPORT_RESIDENT_SPRITES * sizeof(Video_Atari_SpriteBlitCode);
+    const Video_Atari_SpriteBlitGeometry *uniqueGeometry[VIEWPORT_RESIDENT_SPRITES * 2];
+    unsigned geometryCount = 0;
+    for (unsigned slot = 0; slot < VIEWPORT_RESIDENT_SPRITES; slot++)
+        for (unsigned flags = 0; flags < 4; flags++) {
+            const ViewportPlanarImage *image = s_viewportResidentSprites[slot][flags];
+            if (!image) continue;
+            expectedBytes += sizeof(*image) + image->width * image->height;
+            if (!image->blitGeometry) continue;
+            unsigned i = 0;
+            while (i < geometryCount && uniqueGeometry[i] != image->blitGeometry) i++;
+            if (i == geometryCount) {
+                assert(geometryCount < VIEWPORT_RESIDENT_SPRITES * 2);
+                uniqueGeometry[geometryCount++] = image->blitGeometry;
+                expectedBytes += sizeof(Video_Atari_SpriteBlitGeometry) * 16;
+            }
+        }
+    assert(residentBytes == expectedBytes);
     for (unsigned slot = 0; slot < VIEWPORT_RESIDENT_SPRITES; slot++) {
         unsigned id = GUI_ViewportResidentSpriteID(slot);
         uint8 *sprite = sprites[id];
@@ -202,7 +223,7 @@ int main(int argc, char **argv) {
             }
             if (flags & 2) {
                 const ViewportPlanarImage *other = GUI_ViewportResidentSprite(id,flags & 1);
-                assert(image->blitPlans == other->blitPlans);
+                assert(image->blitGeometry == other->blitGeometry);
             }
         }
     }

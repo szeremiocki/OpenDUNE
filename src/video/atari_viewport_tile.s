@@ -11,6 +11,8 @@
 	xref	_s_planarTileHouse
 	xref	_s_planarTileReady
 	xref	_s_planarTiles
+	xref	_g_videoDisplayListActive
+	xref	_Video_Atari_QueueTileBlit
 	;code
 
 ; prototype:
@@ -62,7 +64,14 @@ _GFX_DrawViewportTileFast:
 	bne	tile_fail
 	lsl.l	#7,d2
 	add.l	_s_planarTiles,d2
-tile_blit:	tst.b	_g_videoBlitterTileSetup
+tile_blit:	tst.b	_g_videoDisplayListActive
+	beq.s	.immediate
+	jsr	_Video_Atari_QueueTileBlit
+	moveq	#1,d0
+	move.l	(sp)+,d2
+	rts
+.immediate:
+	tst.b	_g_videoBlitterTileSetup
 	bne	.ready
 .idle:	tst.b	$ffff8a3c.w
 	bmi	.idle

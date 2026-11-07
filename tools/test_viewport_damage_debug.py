@@ -3,7 +3,7 @@
 import unittest
 
 from tools.test_unit_smoke_damage import ROOT, run_harness
-from tools.test_viewport_sprite_cache import function
+from tools.test_viewport_sprite_cache import function, inactive_display_list
 
 
 class ViewportDamageDebugTest(unittest.TestCase):
@@ -79,7 +79,7 @@ int main(void) {
 
     def test_collection_and_acceptance(self):
         source = (ROOT / "src/gui/viewport.c").read_text()
-        production = "\n".join(function(source, name) for name in (
+        production = inactive_display_list() + "\n".join(function(source, name) for name in (
             "GUI_Widget_Viewport_DebugInput",
             "GUI_Widget_Viewport_DebugBegin",
             "GUI_Widget_Viewport_DebugRect",
@@ -285,7 +285,7 @@ int main(void) {
         video = (ROOT / "src/video/video_atari.c").read_text()
         start = video.index("typedef struct PlacementTint {")
         end = video.index("static PlacementTint s_placeTint;", start)
-        production = video[start:end + len("static PlacementTint s_placeTint;")]
+        production = inactive_display_list() + video[start:end + len("static PlacementTint s_placeTint;")]
         helper = function(video, "Video_Atari_SetHalftonePattern").replace(
             "(volatile uint16 *)0xFFFF8A00UL", "halftoneRAM")
         production += "\n" + helper

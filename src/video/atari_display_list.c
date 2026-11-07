@@ -1,0 +1,58 @@
+#include <assert.h>
+#include <stdlib.h>
+#include "../../include/types.h"
+#include "../os/endian.h"
+#include "../os/error.h"
+#include "video.h"
+
+enum { DISPLAY_LIST_BYTES = 65536 };
+bool g_videoDisplayListActive;
+uint16 *g_videoDisplayListNext, *g_videoDisplayListLimit;
+static uint16 *s_storage;
+
+void Video_Atari_DisplayListFlush(void)
+{
+	if (!g_videoDisplayListActive || g_videoDisplayListNext == s_storage) return;
+	*g_videoDisplayListNext = HTOBE16(0x4e75);
+	g_videoDisplayListActive = false;
+	Video_Atari_ExecuteDisplayList(s_storage);
+	g_videoDisplayListNext = s_storage;
+	g_videoDisplayListActive = true;
+}
+
+void Video_Atari_DisplayListBegin(void)
+{
+	assert(!g_videoDisplayListActive);
+	if (!Video_Atari_ViewportBlitter()) return;
+	if (s_storage == NULL) {
+		s_storage = malloc(DISPLAY_LIST_BYTES);
+		if (s_storage == NULL) {
+			Error("Out of memory for Atari display list\n");
+			exit(1);
+		}
+	}
+	g_videoDisplayListNext = s_storage;
+	g_videoDisplayListLimit = s_storage + DISPLAY_LIST_BYTES / 2 - 1;
+	g_videoDisplayListActive = true;
+}
+
+void Video_Atari_DisplayListCheck(uint16 bytes)
+{
+	assert(bytes != 0 && !(bytes & 1) && bytes <= DISPLAY_LIST_BYTES - 2);
+	if (g_videoDisplayListActive &&
+	    (uint32)(g_videoDisplayListLimit - g_videoDisplayListNext) * 2 < bytes)
+		Video_Atari_DisplayListFlush();
+}
+
+void Video_Atari_DisplayListEnd(void)
+{
+	Video_Atari_DisplayListFlush();
+	g_videoDisplayListActive = false;
+}
+
+void Video_Atari_DisplayListFree(void)
+{
+	Video_Atari_DisplayListEnd();
+	free(s_storage);
+	s_storage = g_videoDisplayListNext = g_videoDisplayListLimit = NULL;
+}
