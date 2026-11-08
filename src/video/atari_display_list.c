@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <stdlib.h>
+#include <string.h>
 #include "../../include/types.h"
 #include "../os/endian.h"
 #include "../os/error.h"
@@ -10,9 +11,14 @@ bool g_videoDisplayListActive;
 uint16 *g_videoDisplayListNext, *g_videoDisplayListLimit;
 static uint16 *s_storage;
 
+bool Video_Atari_DisplayListPending(void)
+{
+	return g_videoDisplayListActive && g_videoDisplayListNext != s_storage;
+}
+
 void Video_Atari_DisplayListFlush(void)
 {
-	if (!g_videoDisplayListActive || g_videoDisplayListNext == s_storage) return;
+	if (!Video_Atari_DisplayListPending()) return;
 	*g_videoDisplayListNext = HTOBE16(0x4e75);
 	g_videoDisplayListActive = false;
 	Video_Atari_ExecuteDisplayList(s_storage);
@@ -42,6 +48,19 @@ void Video_Atari_DisplayListCheck(uint16 bytes)
 	if (g_videoDisplayListActive &&
 	    (uint32)(g_videoDisplayListLimit - g_videoDisplayListNext) * 2 < bytes)
 		Video_Atari_DisplayListFlush();
+}
+
+void Video_Atari_QueueTileCursor(void)
+{
+	uint16 *out = g_videoDisplayListNext;
+	uint32 address = HTOBE32((uint32)(size_t)g_videoTileCursorTail);
+
+	assert(g_videoDisplayListActive && g_videoTileCursorTail != NULL);
+	assert(g_videoDisplayListLimit - out >= 3);
+	*out++ = HTOBE16(0x4eb9);
+	/* Longword operands in the instruction stream are word-aligned. */
+	memcpy(__builtin_assume_aligned(out, 2), &address, sizeof(address));
+	g_videoDisplayListNext = out + 2;
 }
 
 void Video_Atari_DisplayListEnd(void)

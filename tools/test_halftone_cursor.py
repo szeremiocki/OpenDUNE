@@ -25,7 +25,7 @@ class HalftoneCursorTest(unittest.TestCase):
                                 "{ halftone[i] = pattern[i]; uploads++; }")
         production += "\n" + helper
         for name in ("Video_Atari_PlacementTintBlit", "Video_Atari_PlacementTint",
-                     "Video_Atari_TileCursorBlit", "Video_Atari_TileCursorFrame"):
+                     "Video_Atari_TileCursorFrame"):
             production += "\n" + function(video, name)
         harness = r"""
 #include <assert.h>
@@ -39,6 +39,13 @@ typedef int16_t int16;
 #define ST_PLANAR_LINE_BYTES 160
 #define Atari_SupervisorExec(callback) (callback)()
 static bool s_viewportBlitter = true, s_blitterTileSetup;
+static void (*g_videoTileCursorTail)(void);
+static uint16 s_tileCursorCol, s_tileCursorTop;
+static bool g_videoTileCursorRestored;
+typedef struct Video_Atari_TileCursorBlit {
+    uint8 *dst; const uint16 *pattern; const uint8 *operations;
+} Video_Atari_TileCursorBlit;
+static Video_Atari_TileCursorBlit g_videoTileCursorBlit;
 static const uint16 *s_blitterHalftonePattern;
 static uint16 halftoneRAM[16], screen[16000];
 static unsigned uploads, launches;
@@ -76,6 +83,20 @@ static void Video_Atari_BlitterStart(void) {
     launches++;
     ctrl = 0;
 }
+static void Video_Atari_TileCursorTail(void) {
+    const uint16 *pattern = g_videoTileCursorBlit.pattern;
+    const uint8 *operations = g_videoTileCursorBlit.operations;
+    uint8 *dst = g_videoTileCursorBlit.dst;
+    memcpy(halftoneRAM,pattern,sizeof(halftoneRAM)); uploads += 16;
+    mask1=mask2=mask3=0xffff; xinc=8; yinc=160; xcount=1; hop=1; skew=0;
+    s_blitterTileSetup=false;
+    for (unsigned p=0; p<4; p++) {
+        op=operations[p]; destination=(uint32)(uintptr_t)dst+p*2; ycount=16;
+        Video_Atari_BlitterStart();
+    }
+    hop=2;
+    g_videoTileCursorRestored=true;
+}
 /* PRODUCTION */
 static void cursor(unsigned col, unsigned row, bool target, unsigned expectedUploads) {
     unsigned before = launches;
@@ -105,22 +126,22 @@ static void placement(bool invalid, unsigned expectedUploads) {
 }
 int main(void) {
     cursor(1, 1, false, 16);
-    cursor(2, 2, false, 16);
+    cursor(2, 2, false, 32);
     /* Source-only sprite/tile operations change controls, not halftone RAM. */
     hop = 2; op = 3; xinc = 2; yinc = 154; xcount = 4;
-    cursor(3, 3, false, 16);
-    cursor(3, 3, true, 32);
+    cursor(3, 3, false, 48);
+    cursor(3, 3, true, 64);
     g_tileCursorTargetPen = 15;
-    cursor(4, 4, true, 32);
-    placement(false, 48);
-    placement(true, 48);
-    cursor(5, 5, true, 64);
-    cursor(5, 5, false, 80);
+    cursor(4, 4, true, 80);
+    placement(false, 96);
+    placement(true, 96);
+    cursor(5, 5, true, 112);
+    cursor(5, 5, false, 128);
     s_blitterHalftonePattern = NULL;
-    cursor(5, 5, false, 96);
+    cursor(5, 5, false, 144);
     unsigned before = launches;
     Video_Atari_TileCursorFrame(15, 0, false);
-    assert(uploads == 96 && launches == before);
+    assert(uploads == 144 && launches == before);
     return 0;
 }
 """

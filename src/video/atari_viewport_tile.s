@@ -13,6 +13,7 @@
 	xref	_s_planarTiles
 	xref	_g_videoDisplayListActive
 	xref	_Video_Atari_QueueTileBlit
+	xref	_Video_Atari_RestoreTileCursor
 	;code
 
 ; prototype:
@@ -89,6 +90,7 @@ tile_blit:	tst.b	_g_videoDisplayListActive
 	move.b	#$c0,$ffff8a3c.w	; start, hog
 .wait:	tst.b	$ffff8a3c.w
 	bmi	.wait
+	jsr	_Video_Atari_RestoreTileCursor
 	moveq	#1,d0
 	move.l	(sp)+,d2
 	rts

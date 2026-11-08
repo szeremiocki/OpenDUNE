@@ -303,7 +303,7 @@ int main(void) {
 #endif
     updateDisplay = forceRedraw;
 """)
-        first = viewport.index("\tif ((g_viewportMessageCounter & 1)")
+        first = viewport.rindex("\tif ((g_viewportMessageCounter & 1)")
         last = viewport.index("\n\tif (updateDisplay && !drawToMainScreen", first)
         message = viewport[first:last]
         publication = viewport[last:viewport.index("{", last) + 1]
@@ -351,6 +351,9 @@ static void check(bool drawToMainScreen, bool forceRedraw, bool hasScrolled, boo
 #endif
     }
     draws = 0;
+#ifdef TOS
+    if (planarViewport && visible) GUI_DrawText_Planar(g_viewportMessageText,112,139,15,0,0x132);
+#endif
     /* MESSAGE */
     assert(draws == visible);
     for (unsigned row = 0; row < 10; row++) {

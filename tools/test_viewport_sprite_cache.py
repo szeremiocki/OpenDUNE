@@ -56,6 +56,7 @@ def inactive_display_list():
 #define g_videoDisplayListActive false
 #define Video_Atari_DisplayListFlush() ((void)0)
 #define Video_Atari_DisplayListCheck(bytes) ((void)(bytes))
+#define Video_Atari_RestoreTileCursor() ((void)0)
 #define VIDEO_ATARI_DISPLAY_TILE_ROW_BYTES (15 * 18)
 #define Video_Atari_QueueTile(pixels,dst) ((void)(pixels), (void)(dst))
 #define Video_Atari_QueueMaskedBlit(protected) ((void)(protected))
@@ -258,7 +259,8 @@ static bool Video_Atari_CursorRectOverlap(uint8 *base, uint16 first, uint16 end,
                 "    blitterPixels = (uintptr_t)pixels; blitterMasks = (uintptr_t)masks;\n"
                 "    blitterReadStride = sourceWidth / 2;\n", 1)
         production += "\n" + body
-    return (inactive_display_list() + ("" if protected else inactive_protection()) + blit_plan_type() + model +
+    return (inactive_display_list() + ("" if protected else
+            inactive_protection()) + blit_plan_type() + model +
             production.replace("(uint32)(size_t)", "(uintptr_t)"))
 
 

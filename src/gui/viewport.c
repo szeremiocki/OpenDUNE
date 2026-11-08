@@ -206,8 +206,10 @@ void GUI_Widget_Viewport_DebugRect(int16 left, int16 top, int16 right, int16 bot
 
 static void GUI_Widget_Viewport_DebugEnd(void)
 {
-	if (s_damageDebugCollect && s_damageDebugEnabled)
+	if (s_damageDebugCollect && s_damageDebugEnabled) {
+		Video_Atari_DisplayListFlush();
 		GUI_Widget_Viewport_DebugPhase(s_damageDebugAccepted, true);
+	}
 	s_damageDebugCollect = false;
 }
 #endif
@@ -1322,7 +1324,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 		GUI_Widget_Viewport_PrepareSelection();
 		GUI_Widget_Viewport_TileCursorPrepare(GUI_Widget_Viewport_PlacementPrepare());
 		GFX_PrepareViewportProtection(forceRedraw || hasScrolled);
-		Video_Atari_BeginViewportProtection(s_tileCursorShown && !Video_Atari_ViewportBlitter(),
+		Video_Atari_BeginViewportProtection(s_tileCursorShown,
 		    s_tileCursorCol, s_tileCursorRow, s_tileCursorTarget);
 	}
 #endif
@@ -1709,18 +1711,27 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 		Video_Atari_DisplayListCheck(VIDEO_ATARI_DISPLAY_TINT_BYTES);
 		Video_Atari_PlacementTint(s_placeTintX, s_placeTintY, s_placeTintW, s_placeTintH, s_placeTintInvalid);
 	}
-	if (planarViewport) Video_Atari_DisplayListEnd();
+	#ifdef VIEWPORT_DEBUG_DAMAGE
+	GUI_Widget_Viewport_DebugEnd();
+	#endif
 	if (planarViewport && s_tileCursorShown &&
 	    GUI_Widget_Viewport_SpriteDamageRect((int16)(s_tileCursorCol << 4), (int16)((s_tileCursorRow << 4) + 40),
 	                                         (int16)((s_tileCursorCol << 4) + 16), (int16)((s_tileCursorRow << 4) + 56),
 	                                         !s_viewportSpriteFilterActive)) {
-		Video_Atari_TileCursorFrame(s_tileCursorCol, s_tileCursorRow, s_tileCursorTarget);
+		if (g_videoDisplayListActive) {
+			Video_Atari_DisplayListCheck(VIDEO_ATARI_DISPLAY_CURSOR_BYTES);
+			Video_Atari_QueueTileCursor();
+		} else {
+			Video_Atari_TileCursorFrame(s_tileCursorCol, s_tileCursorRow, s_tileCursorTarget);
+		}
 	}
 	s_viewportSpriteFilterActive = false;
-	#ifdef VIEWPORT_DEBUG_DAMAGE
-	GUI_Widget_Viewport_DebugEnd();
-	#endif
 	Video_Atari_EndViewportProtection();
+	if (planarViewport) {
+		if ((g_viewportMessageCounter & 1) != 0 && g_viewportMessageText != NULL)
+			GUI_DrawText_Planar(g_viewportMessageText, 112, 139, 15, 0, 0x132);
+		Video_Atari_DisplayListEnd();
+	}
 #endif
 	if (updateDisplay) {
 #ifdef TOS
@@ -1813,7 +1824,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 
 	if ((g_viewportMessageCounter & 1) != 0 && g_viewportMessageText != NULL) {
 #ifdef TOS
-		GUI_DrawText_Planar(g_viewportMessageText, 112, 139, 15, 0, 0x132);
+		if (!planarViewport) GUI_DrawText_Planar(g_viewportMessageText, 112, 139, 15, 0, 0x132);
 #else
 		GUI_DrawText_Wrapper(g_viewportMessageText, 112, 139, 15, 0, 0x132);
 #endif

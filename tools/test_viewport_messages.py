@@ -8,17 +8,237 @@ import tempfile
 import unittest
 
 from tools.test_viewport_sprite_cache import function
+from tools.test_unit_smoke_damage import run_harness
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class ViewportMessagesTest(unittest.TestCase):
+    def test_queued_cache_lifetimes_cursor_order_and_glyph_fallback(self):
+        gui = (ROOT / "src/gui/gui.c").read_text()
+        video = (ROOT / "src/video/video_atari.c").read_text()
+        draw = function((ROOT / "src/gui/viewport.c").read_text(), "GUI_Widget_Viewport_Draw")
+        start = draw.index("\tif (planarViewport && s_tileCursorShown")
+        finish = draw.index("\n#endif\n\tif (updateDisplay)", start)
+        tail = draw[start:finish]
+        cache = gui[gui.index("#define TEXT_PLANAR_ENTRIES"):
+                    gui.index("\n#endif", gui.index("#define TEXT_PLANAR_ENTRIES"))]
+        production = "\n".join(function(video, name) for name in (
+            "Video_Atari_PlanarMergePlain", "Video_Atari_PlanarCopyGroup",
+            "Video_Atari_PublishViewportCursorRect", "Video_Atari_PresentPlanarText"))
+        production += "\n" + function(gui, "GUI_TextPlanar_PresentGlyph")
+        production += "\n" + cache + "\n" + function(gui, "GUI_DrawText_Planar")
+        harness = r"""
+#include <assert.h>
+#include <stdlib.h>
+#include <string.h>
+#include "types.h"
+#include "src/gfx.h"
+#include "src/gui/font.h"
+#include "src/gui/glyph.h"
+#include "src/video/video.h"
+#include "src/os/endian.h"
+#define ST_PLANAR_LINE_BYTES 160
+#define min(a,b) ((a)<(b)?(a):(b))
+bool g_videoViewportBlitter = true;
+bool g_screenViewportPlanar = true;
+static uint16 screen[16000], saved[16000];
+static bool overlays, s_textPlanarAllowed, cursorDamaged = true;
+static uint16 *s_planarTarget;
+static unsigned executions, commands, tails, rasterizations, restores, refreshed;
+static uint8 fontData;
+static FontChar chars[256];
+static Font font = { .height = 6, .chars = chars };
+Font *g_fontCurrent = &font;
+int8 g_fontCharOffset;
+static uint8 g_colours[16];
+static const char *g_viewportMessageText;
+static uint16 g_viewportMessageCounter, s_tileCursorCol = 4, s_tileCursorRow = 6;
+static bool s_tileCursorShown = true, s_tileCursorTarget, s_viewportSpriteFilterActive;
+static uint8 *Video_Atari_PlanarBase(void) { return (uint8 *)screen; }
+bool Video_Atari_CursorDirect(void) { return true; }
+static bool GUI_Sidebar_Active(void) { return false; }
+bool GFX_Screen_IsActive(Screen screenID) { return screenID == SCREEN_0; }
+static bool Video_Atari_PlanarOverlaysOverlap(uint8 *base, uint16 x, uint16 y, uint16 w, uint16 h) {
+    (void)base; (void)x; (void)y; (void)w; (void)h; return overlays;
+}
+static void Video_Atari_PlanarMergeGroup(uint8 *base, uint16 y, uint16 group,
+                                        uint16 mask, const uint16 *pixels) {
+    assert(base == (uint8 *)screen);
+    for (unsigned p=0;p<4;p++) {
+        unsigned offset=y*80+group*4+p;
+        saved[offset]=(saved[offset] & (uint16)~mask) | (pixels[p] & mask);
+        screen[offset]=saved[offset]; /* backup-aware compatibility publication */
+    }
+}
+static void Video_Atari_RefreshViewportCursor(uint8 *base, uint16 first, uint16 end,
+    uint16 top, uint16 bottom, const uint16 *masks, uint16 stride) {
+    (void)base; (void)first; (void)end; (void)top; (void)bottom; (void)masks; (void)stride;
+    refreshed++;
+}
+void GFX_Screen_ClearDirtyRect_(uint16 x, uint16 y, uint16 right, uint16 bottom) {
+    assert(x < right && right <= 320 && y < bottom && bottom <= 200);
+}
+void (*g_videoTileCursorTail)(void);
+void Video_Atari_RestoreTileCursor(void) { if (g_videoTileCursorTail != NULL) restores++; }
+static void cursor(void) {
+    tails++;
+    for (unsigned p=0;p<4;p++) screen[139*80+16+p] = p == 2 ? 0xffff : 0;
+}
+void Video_Atari_TileCursorFrame(uint16 col, uint16 row, bool target) {
+    (void)col; (void)row; (void)target; cursor();
+}
+void Video_Atari_EndViewportProtection(void) { g_videoTileCursorTail = NULL; }
+static bool GUI_Widget_Viewport_SpriteDamageRect(int16 l, int16 t, int16 r, int16 b, bool redraw) {
+    assert(l == 64 && t == 136 && r == 80 && b == 152);
+    return redraw || cursorDamaged;
+}
+uint16 endian_bswap16(uint16 v) { return (v >> 8) | (v << 8); }
+uint32 endian_bswap32(uint32 v) { return __builtin_bswap32(v); }
+void Error(const char *fmt, ...) { (void)fmt; abort(); }
+static struct { const uint16 *pixels, *masks; uint16 *dst; uint16 groups, rows; } queued[64];
+static unsigned next;
+void Video_Atari_QueueMaskedRect(const uint16 *pixels, const uint16 *masks, uint16 *dst,
+                                uint16 groups, uint16 rows) {
+    assert(next < 64);
+    queued[next].pixels=pixels; queued[next].masks=masks; queued[next].dst=dst;
+    queued[next].groups=groups; queued[next].rows=rows;
+    *g_videoDisplayListNext++=HTOBE16(0x4e70);
+    *g_videoDisplayListNext++=HTOBE16(next++);
+    for (unsigned i=0;i<14;i++) *g_videoDisplayListNext++=0;
+}
+void Video_Atari_ExecuteDisplayList(const uint16 *stream) {
+    assert(!g_videoDisplayListActive); executions++;
+    while (true) {
+        uint16 op=BETOH16(*stream++);
+        if (op == 0x4e75) break;
+        if (op == 0x4e71) continue;
+        if (op == 0x4eb9) {
+            uint32 address=(uint32)BETOH16(stream[0]) << 16 | BETOH16(stream[1]);
+            assert(address == (uint32)(size_t)cursor);
+            stream+=2; cursor(); continue;
+        }
+        assert(op == 0x4e70);
+        unsigned index=BETOH16(*stream++); stream+=14; commands++;
+        for (unsigned row=0;row<queued[index].rows;row++)
+            for (unsigned group=0;group<queued[index].groups;group++)
+                for (unsigned p=0;p<4;p++) {
+                    uint16 *dst=queued[index].dst+row*80+group*4+p;
+                    unsigned source=row*queued[index].groups+group;
+                    uint16 mask=queued[index].masks[source];
+                    *dst=(*dst & (uint16)~mask) | (queued[index].pixels[source*4+p] & mask);
+                }
+    }
+}
+#include "src/video/atari_display_list.c"
+bool GUI_Glyph_Usable(const Font *f) { return f == &font; }
+uint16 GUI_Glyph_Line(const Font *f, const uint8 colours[16], const char *text,
+    uint16 phase, uint16 maxGroups, uint16 rows, uint16 *pixels, uint16 pixelStride,
+    uint16 *masks, uint16 maskStride) {
+    (void)colours; (void)phase; assert(f == &font && rows == f->height);
+    uint16 groups=text[0] == 'W' ? 8 : 2; assert(groups <= maxGroups);
+    rasterizations++;
+    for (unsigned row=0;row<rows;row++) for (unsigned group=0;group<groups;group++) {
+        masks[row*maskStride+group]=(row+group)%3 == 0 ? 0 : 0xa55a;
+        for (unsigned p=0;p<4;p++)
+            pixels[row*pixelStride+group*4+p]=text[0]*137+row*31+group*17+p;
+    }
+    return groups;
+}
+void Video_Atari_EncodePlanar(const uint8 *src, uint16 *pixels, uint16 width, uint16 height) {
+    unsigned groups=width/16;
+    memset(pixels,0,(size_t)groups*height*8);
+    for (unsigned row=0;row<height;row++) for (unsigned col=0;col<width;col++) {
+        unsigned pen=(src[row*width+col]*7)&15;
+        for (unsigned p=0;p<4;p++) if (pen & (1u<<p))
+            pixels[row*groups*4+(col/16)*4+p] |= 0x8000u>>(col&15);
+    }
+}
+void GUI_DrawText_Wrapper(const char *text, int16 left, int16 top, uint8 fg, uint8 bg, int flags, ...);
+/* PRODUCTION */
+void GUI_DrawText_Wrapper(const char *text, int16 left, int16 top, uint8 fg, uint8 bg, int flags, ...) {
+    assert(left == 112 && top == 139 && fg == 15 && bg == 0 && flags == 0x132);
+    assert(GUI_DrawTextPlanarCached(text,64,top));
+}
+static void finish(bool planarViewport) {
+    /* RENDERER */
+}
+int main(void) {
+    static const char *strings[]={"A","B","C","D","E","Wide"};
+    for (unsigned i=0;i<256;i++) { chars[i].width=1; chars[i].data=&fontData; }
+    for (unsigned i=0;i<16000;i++) screen[i]=saved[i]=0x2468;
+    Video_Atari_DisplayListBegin();
+    for (unsigned i=0;i<4;i++) GUI_DrawText_Planar(strings[i],112,139,15,0,0x132);
+    assert(rasterizations == 4 && !executions && !commands);
+    Video_Atari_DisplayListFlush();
+    unsigned before=executions;
+    GUI_DrawText_Planar(strings[0],112,139,15,0,0x132);
+    GUI_DrawText_Planar(strings[4],112,139,15,0,0x132);
+    assert(executions == before+1); /* occupied victim drains before mutation */
+    Video_Atari_DisplayListFlush();
+    before=rasterizations;
+    g_viewportMessageCounter=1; g_viewportMessageText=strings[4];
+    g_videoTileCursorTail=cursor; s_viewportSpriteFilterActive=true;
+    finish(true);
+    assert(rasterizations == before && tails == 1 && !restores && !g_videoDisplayListActive);
+    const TextPlanarEntry *entry=&s_textPlanar[0];
+    for (unsigned p=0;p<4;p++) {
+        uint16 mask=entry->store[entry->height*2*4];
+        uint16 old=p == 2 ? 0xffff : 0;
+        assert(screen[139*80+16+p] == ((old & (uint16)~mask) | (entry->store[p] & mask)));
+    }
+    /* A warm wide message is two commands; capacity drains do not inject cursors. */
+    Video_Atari_DisplayListBegin();
+    GUI_DrawText_Planar(strings[5],112,139,15,0,0x132);
+    Video_Atari_DisplayListFlush();
+    unsigned oldCommands=commands; before=rasterizations;
+    while (g_videoDisplayListNext != g_videoDisplayListLimit) *g_videoDisplayListNext++=HTOBE16(0x4e71);
+    g_videoTileCursorTail=cursor;
+    GUI_DrawText_Planar(strings[5],112,139,15,0,0x132);
+    assert(tails == 1 && rasterizations == before);
+    Video_Atari_EndViewportProtection(); Video_Atari_DisplayListEnd();
+    assert(commands == oldCommands+2 && tails == 1);
+    /* Stack glyph data are consumed offscreen, never referenced by the list. */
+    uint8 glyph[32*32], original[32*32];
+    for (unsigned i=0;i<sizeof(glyph);i++) glyph[i]=i%5 == 0 ? 0 : i%31+1;
+    memcpy(original,glyph,sizeof(glyph));
+    Video_Atari_DisplayListBegin();
+    GUI_TextPlanar_PresentGlyph(glyph,32,32,79,150);
+    memset(glyph,0,sizeof(glyph));
+    assert(Video_Atari_DisplayListPending());
+    GUI_TextPlanar_PresentGlyph(glyph,1,1,200,150); /* reuse drains old glyph */
+    for (unsigned row=0;row<32;row++) for (unsigned col=0;col<32;col++) {
+        unsigned colour=original[row*32+col], x=79+col;
+        if (colour == 0) continue;
+        for (unsigned p=0;p<4;p++)
+            assert(!!(screen[(150+row)*80+(x/16)*4+p] & (0x8000u>>(x&15))) ==
+                   !!(((colour*7)&15) & (1u<<p)));
+    }
+    Video_Atari_DisplayListEnd();
+    /* Non-list publication and real backup overlaps retain the immediate path. */
+    uint16 pixel[4]={0xffff,0,0xffff,0}, mask=0xa55a;
+    overlays=true; before=commands;
+    Video_Atari_DisplayListBegin();
+    Video_Atari_PresentPlanarText(pixel,&mask,16,1,64,139);
+    assert(!Video_Atari_DisplayListPending() && commands == before);
+    for (unsigned p=0;p<4;p++)
+        assert(screen[139*80+16+p] == saved[139*80+16+p]);
+    Video_Atari_DisplayListEnd();
+    overlays=false; before=refreshed;
+    Video_Atari_PresentPlanarText(pixel,&mask,16,1,64,139);
+    assert(refreshed == before+1 && !restores);
+    Video_Atari_DisplayListFree();
+    return 0;
+}
+"""
+        run_harness(harness.replace("/* PRODUCTION */", production).replace("/* RENDERER */", tail))
+
     def test_message_lifecycle(self):
         gui = (ROOT / "src/gui/gui.c").read_text()
         viewport = function(
             (ROOT / "src/gui/viewport.c").read_text(), "GUI_Widget_Viewport_Draw")
-        start = viewport.index("\tif ((g_viewportMessageCounter & 1)")
+        start = viewport.rindex("\tif ((g_viewportMessageCounter & 1)")
         message = viewport[start:viewport.index(
             "\n\tif (updateDisplay && !drawToMainScreen", start)]
         harness = r"""
@@ -59,6 +279,8 @@ static Screen activeScreen;
 static bool s_viewportMessageDrawn, direct;
 static bool Video_Atari_CursorDirect(void) { return direct; }
 static bool GUI_Widget_Viewport_IsPlanar(void) { return direct; }
+static bool GUI_Widget_Viewport_TileCursorActive(void) { return false; }
+static void Map_SetViewportDamagePosition(uint16 p) { (void)p; }
 static void Video_Atari_PlacementSet(int16 x, int16 y, uint16 w, uint16 h, bool valid) {
     (void)x; (void)y; (void)w; (void)h; (void)valid;
 }
@@ -88,7 +310,14 @@ static unsigned count(const uint8 *bits) {
     for (unsigned p = 0; p < 4096; p++) n += BitArray_Test(bits, p);
     return n;
 }
+#ifdef TOS
+#define TEST_NATIVE_VIEWPORT
+#undef TOS
+#endif
 /* UPDATE */
+#ifdef TEST_NATIVE_VIEWPORT
+#define TOS
+#endif
 /* INVALIDATE */
 static Screen GFX_Screen_SetActive(Screen screen) {
     Screen previous = activeScreen; activeScreen = screen; return previous;
@@ -113,6 +342,7 @@ static void GUI_DrawText_Wrapper(const char *text, int x, int y, int fg, int bg,
         memset(pixels[row] + 112 - width / 2, 15, width);
     messages++;
 }
+#define GUI_DrawText_Planar GUI_DrawText_Wrapper
 static void GUI_Widget_Viewport_Draw(bool force, bool hasScrolled, bool planarShifted,
                                      bool drawToMainScreen) {
     bool trackCopyDamage = false;
@@ -132,6 +362,9 @@ static void GUI_Widget_Viewport_Draw(bool force, bool hasScrolled, bool planarSh
     memset(g_dirtyMinimap, 0, sizeof(g_dirtyMinimap));
     memset(g_dirtyViewport, 0, sizeof(g_dirtyViewport));
     g_dirtyViewportCount = 0;
+#ifdef TOS
+    bool planarViewport = false; /* This fixture models the legacy message boundary. */
+#endif
     /* MESSAGE */
 }
 /* SCREEN */

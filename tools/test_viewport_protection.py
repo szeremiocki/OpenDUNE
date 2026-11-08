@@ -294,7 +294,15 @@ static uint16 *s_planarTileMasks = tileMasks;
 static bool g_debugScenario;
 static const uint16 *s_blitterHalftonePattern;
 static unsigned metadataUpdates, cursorBuilds;
+#define ST_PLANAR_LINE_BYTES 160
+typedef struct Video_Atari_TileCursorBlit {
+    uint8 *dst; const uint16 *pattern; const uint8 *operations;
+} Video_Atari_TileCursorBlit;
+static bool s_viewportBlitter;
+static uint16 g_tileCursorPen, g_tileCursorTargetPen;
+static uint8 *Video_Atari_PlanarBase(void) { return NULL; }
 void Video_Atari_EndViewportProtection(void);
+static void Video_Atari_TileCursorTail(void) { assert(false); }
 /* VIDEO STATE */
 void Video_Atari_SetViewportFog(uint16 col, uint16 row, const uint16 *writable) {
     metadataUpdates++;

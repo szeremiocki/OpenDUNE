@@ -214,6 +214,10 @@ extern void Video_Atari_LiveEnd(uint16 x, uint16 y, uint16 width, uint16 height)
  * are multiples of 16. Clipping preserves cursor/placement backgrounds. */
 extern void Video_Atari_PresentPlanarSprite(const uint16 *pixels, const uint16 *masks,
                                           uint16 width, uint16 height, int16 x, int16 y);
+/* Aligned UI text, using only its own packed masks, not battlefield fog.
+ * Referenced pixels/masks must stay unchanged until the next display-list drain. */
+extern void Video_Atari_PresentPlanarText(const uint16 *pixels, const uint16 *masks,
+                                        uint16 width, uint16 height, uint16 x, uint16 y);
 /* Source pointers select the first group; sourceWidth retains the full
  * cached row width when publishing a clipped portion. */
 extern void Video_Atari_PresentPlanarSpriteStrided(const uint16 *pixels, const uint16 *masks,
@@ -223,12 +227,26 @@ extern bool g_videoViewportBlitter;
 #define Video_Atari_ViewportBlitter() (g_videoViewportBlitter)
 extern bool g_videoDisplayListActive;
 extern uint16 *g_videoDisplayListNext, *g_videoDisplayListLimit;
+/* Native tail reads these frame-stable pointers at offsets 0/4/8 on TOS. */
+typedef struct Video_Atari_TileCursorBlit {
+	uint8 *dst;
+	const uint16 *pattern;
+	const uint8 *operations;
+} Video_Atari_TileCursorBlit;
+extern Video_Atari_TileCursorBlit g_videoTileCursorBlit;
+extern bool g_videoTileCursorRestored;
+extern void Video_Atari_TileCursorTail(void);
+extern void (*g_videoTileCursorTail)(void);
+extern void Video_Atari_RestoreTileCursor(void);
+extern bool Video_Atari_DisplayListPending(void);
 /* A <=48x48 cached sprite covers at most 4x4 cells, including phase edges.
- * Each cell needs at most 384 launch bytes and one 18-byte tile repair. */
+ * Each cell needs at most 384 launch bytes and one 24-byte tile repair. */
 enum {
-	VIDEO_ATARI_DISPLAY_SPRITE_BYTES = 16 * (384 + 18),
-	VIDEO_ATARI_DISPLAY_TILE_ROW_BYTES = 15 * 18,
-	VIDEO_ATARI_DISPLAY_TINT_BYTES = 174
+	VIDEO_ATARI_DISPLAY_SPRITE_BYTES = 16 * (384 + 24),
+	VIDEO_ATARI_DISPLAY_TILE_ROW_BYTES = 15 * 24,
+	VIDEO_ATARI_DISPLAY_TINT_BYTES = 174,
+	VIDEO_ATARI_DISPLAY_TEXT_BYTES = 32,
+	VIDEO_ATARI_DISPLAY_CURSOR_BYTES = 6
 };
 extern void Video_Atari_DisplayListBegin(void);
 extern void Video_Atari_DisplayListCheck(uint16 bytes);
@@ -237,6 +255,11 @@ extern void Video_Atari_DisplayListEnd(void);
 extern void Video_Atari_DisplayListFree(void);
 extern void Video_Atari_ExecuteDisplayList(const uint16 *stream);
 extern void Video_Atari_QueueTile(const uint16 *pixels, uint16 *dst);
+/* Cached pixels and masks must remain unchanged until the next drain. */
+extern void Video_Atari_QueueMaskedTile(const uint16 *pixels, const uint16 *masks, uint16 *dst);
+extern void Video_Atari_QueueMaskedRect(const uint16 *pixels, const uint16 *masks, uint16 *dst,
+                                      uint16 groups, uint16 rows);
+extern void Video_Atari_QueueTileCursor(void);
 typedef struct Video_Atari_SpriteBlitPlan {
 	/* Hardware order for paired longword writes in atari_sprite_blit.s. */
 	int16 sourceXinc, sourceYinc;

@@ -2402,34 +2402,15 @@ void Video_Atari_DebugDamageEnd(void)
 }
 #endif
 
-/* One pass per plane: OR the pattern where the pen has the plane's bit,
- * clear it (~S & D) where it does not, so the frame is the exact pen. */
-static void Video_Atari_TileCursorBlit(void)
-{
-	uint16 plane;
-
-	while ((*BLITTER_CTRL & 0x80) != 0) {}
-	Video_Atari_SetHalftonePattern(s_placeTint.pattern);
-	*BLITTER_ENDMASK1 = 0xffff;
-	*BLITTER_ENDMASK2 = 0xffff;
-	*BLITTER_ENDMASK3 = 0xffff;
-	*BLITTER_DST_XINC = 8;
-	*BLITTER_DST_YINC = ST_PLANAR_LINE_BYTES;
-	*BLITTER_XCOUNT = 1;
-	*BLITTER_HOP = 1;
-	*BLITTER_SKEW = 0;
-	for (plane = 0; plane < 4; plane++) {
-		*BLITTER_OP = (s_placeTint.pen & (1u << plane)) != 0 ? 7 : 4;
-		*BLITTER_DST_ADDR = (uint32)(size_t)(s_placeTint.dst + plane * 2);
-		*BLITTER_YCOUNT = 16;
-		Video_Atari_BlitterStart();
-	}
-	*BLITTER_HOP = 2;
-}
-
 static const uint16 s_tileCursorPatterns[2][16] = {
 	{ 0xf00f, 0x8001, 0x8001, 0x8001, 0, 0, 0, 0, 0, 0, 0, 0, 0x8001, 0x8001, 0x8001, 0xf00f },
 	{ 0xfc3f, 0x8001, 0x8001, 0x8001, 0x8001, 0x8001, 0, 0x0180, 0x0180, 0, 0x8001, 0x8001, 0x8001, 0x8001, 0x8001, 0xfc3f }
+};
+static const uint8 s_tileCursorOperations[16][4] = {
+	{4,4,4,4}, {7,4,4,4}, {4,7,4,4}, {7,7,4,4},
+	{4,4,7,4}, {7,4,7,4}, {4,7,7,4}, {7,7,7,4},
+	{4,4,4,7}, {7,4,4,7}, {4,7,4,7}, {7,7,4,7},
+	{4,4,7,7}, {7,4,7,7}, {4,7,7,7}, {7,7,7,7}
 };
 uint16 g_videoTileCursorTiles[10]; /* also checked by atari_viewport_tile.s */
 static const uint16 *s_viewportFogWritable[10][15];
@@ -2438,6 +2419,10 @@ static uint16 s_tileCursorWritable[16], s_tileCursorFogWritable[16];
 static bool s_viewportProtectionActive;
 static uint16 s_tileCursorMaskKey = 0xffff, s_tileCursorActiveRow = 0xffff;
 static const uint16 *s_tileCursorMaskFog;
+void (*g_videoTileCursorTail)(void);
+Video_Atari_TileCursorBlit g_videoTileCursorBlit;
+bool g_videoTileCursorRestored;
+static uint16 s_tileCursorCol, s_tileCursorTop;
 
 void Video_Atari_ResetViewportProtection(void)
 {
@@ -2478,8 +2463,22 @@ void Video_Atari_BeginViewportProtection(bool cursor, uint16 col, uint16 row, bo
 	if (s_tileCursorActiveRow != 0xffff) g_videoTileCursorTiles[s_tileCursorActiveRow] = 0;
 	s_tileCursorActiveRow = 0xffff;
 	s_viewportProtectionActive = true;
+	g_videoTileCursorTail = NULL;
+	g_videoTileCursorRestored = false;
 	if (!cursor) return;
 	assert(col < 15 && row < 10);
+	if (s_viewportBlitter) {
+		uint16 pen = target ? g_tileCursorTargetPen : g_tileCursorPen;
+		assert(pen < 16);
+		s_tileCursorCol = col;
+		s_tileCursorTop = 40 + row * 16;
+		g_videoTileCursorBlit.dst = Video_Atari_PlanarBase() +
+		    (uint32)s_tileCursorTop * ST_PLANAR_LINE_BYTES + col * 8;
+		g_videoTileCursorBlit.pattern = s_tileCursorPatterns[target ? 1 : 0];
+		g_videoTileCursorBlit.operations = s_tileCursorOperations[pen];
+		g_videoTileCursorTail = Video_Atari_TileCursorTail;
+		return;
+	}
 	s_tileCursorActiveRow = row;
 	g_videoTileCursorTiles[row] = 1u << col;
 	key = (row << 5) | (col << 1) | (target ? 1 : 0);
@@ -2498,6 +2497,7 @@ void Video_Atari_BeginViewportProtection(bool cursor, uint16 col, uint16 row, bo
 
 void Video_Atari_EndViewportProtection(void)
 {
+	g_videoTileCursorTail = NULL;
 	s_viewportProtectionActive = false;
 	if (s_tileCursorActiveRow != 0xffff) g_videoTileCursorTiles[s_tileCursorActiveRow] = 0;
 	s_tileCursorActiveRow = 0xffff;
@@ -2532,15 +2532,24 @@ void Video_Atari_TileCursorFrame(uint16 col, uint16 row, bool target)
 	uint16 line;
 
 	if (col >= 15 || row >= 10) return;
+	if (g_videoTileCursorTail != NULL && col == s_tileCursorCol &&
+	    40 + row * 16 == s_tileCursorTop) {
+		if (!g_videoTileCursorRestored) Video_Atari_RestoreTileCursor();
+		return;
+	}
 	dst = Video_Atari_PlanarBase() + (uint32)(40 + (row << 4)) * ST_PLANAR_LINE_BYTES + (col << 3);
 	if (s_viewportBlitter) {
-		s_placeTint.dst = dst;
-		s_placeTint.pattern = pattern;
-		s_placeTint.words = 1;
-		s_placeTint.height = 16;
-		s_placeTint.pen = pen;
-		s_blitterTileSetup = false;
-		Atari_SupervisorExec(Video_Atari_TileCursorBlit);
+		/* Standalone draws must not replace a pending viewport's tail state. */
+		Video_Atari_TileCursorBlit saved = g_videoTileCursorBlit;
+		bool restored = g_videoTileCursorRestored;
+		assert(pen < 16);
+		g_videoTileCursorBlit.dst = dst;
+		g_videoTileCursorBlit.pattern = pattern;
+		g_videoTileCursorBlit.operations = s_tileCursorOperations[pen];
+		s_blitterHalftonePattern = NULL;
+		Atari_SupervisorExec(Video_Atari_TileCursorTail);
+		g_videoTileCursorBlit = saved;
+		g_videoTileCursorRestored = restored;
 		return;
 	}
 	for (line = 0; line < 16; line++) {
@@ -2551,6 +2560,14 @@ void Video_Atari_TileCursorFrame(uint16 col, uint16 row, bool target)
 			else row[plane] &= (uint16)~pattern[line];
 		}
 	}
+}
+
+void Video_Atari_RestoreTileCursor(void)
+{
+	if (g_videoTileCursorTail == NULL) return;
+	assert(!Video_Atari_DisplayListPending());
+	s_blitterHalftonePattern = NULL;
+	Atari_SupervisorExec(Video_Atari_TileCursorTail);
 }
 
 /* While placing, the software cursor stays off the viewport (no restore bookkeeping). */
@@ -2703,6 +2720,7 @@ uint16 *Video_Atari_LiveBegin(uint16 x, uint16 y, uint16 width, uint16 height)
 
 void Video_Atari_LiveEnd(uint16 x, uint16 y, uint16 width, uint16 height)
 {
+	Video_Atari_RestoreTileCursor();
 	GFX_Screen_ClearDirtyRect(x & ~15, y, (x + width + 15) & ~15, y + height);
 }
 
@@ -2740,6 +2758,7 @@ static void Video_Atari_PlanarFill(uint16 x, uint16 y, uint16 w, uint16 h, uint8
 		}
 		row += ST_PLANAR_LINE_BYTES / sizeof(uint16);
 	}
+	Video_Atari_RestoreTileCursor();
 }
 
 static void Video_Atari_PresentRun(const uint8 *src, uint16 srcStride,
@@ -3067,6 +3086,7 @@ bool Video_Atari_PresentRestoreStrided(int16 x, int16 y, uint16 width, uint16 he
 	}
 	Video_Atari_PlanarFinishRun(base, left, (uint16)y, (uint16)(right - left), height);
 
+	Video_Atari_RestoreTileCursor();
 	GFX_Screen_ClearDirtyRect(left, (uint16)y, right, (uint16)(y + height));
 	return true;
 }
@@ -3146,6 +3166,7 @@ void Video_Atari_PresentPlanarWindow(const uint16 *pixels, uint16 x, uint16 y,
 			else Video_Atari_PlanarMergePlain(dst, mask, pixels + last * 4);
 		}
 	}
+	Video_Atari_RestoreTileCursor();
 	GFX_Screen_ClearDirtyRect(first << 4, y, (last + 1) << 4, y + height);
 }
 
@@ -3185,6 +3206,7 @@ bool Video_Atari_PresentPlanarSubRect(const uint16 *pixels, uint16 srcStride, ui
 			    (uint16 *)(base + (uint32)(y + line) * ST_PLANAR_LINE_BYTES + group * 8), mask, words);
 		}
 	}
+	Video_Atari_RestoreTileCursor();
 	GFX_Screen_ClearDirtyRect(first * 16, y, end * 16, y + height);
 	return true;
 }
@@ -3217,6 +3239,7 @@ bool Video_Atari_PresentPlanarRect(const uint16 *pixels, uint16 srcStride,
 			Video_Atari_PlanarMergePlain(dst, mask, src);
 		}
 	}
+	Video_Atari_RestoreTileCursor();
 	GFX_Screen_ClearDirtyRect(x + full, y, x + full + 16, y + height);
 	return true;
 }
@@ -3248,6 +3271,7 @@ bool Video_Atari_PresentChunkyTransparent(const void *src, uint16 srcStride,
 	left = (uint16)(x & ~0xf);
 	right = (uint16)((x + width + 0xf) & ~0xf);
 	if (right > SCREEN_WIDTH) right = SCREEN_WIDTH;
+	Video_Atari_RestoreTileCursor();
 	GFX_Screen_ClearDirtyRect(left, (uint16)y, right, (uint16)(y + height));
 
 	return true;
@@ -3687,9 +3711,16 @@ static void Video_Atari_BlitProtectedSprite(void)
 
 static void Video_Atari_BlitTile(const uint16 *pixels, uint8 *base, uint16 x, uint16 y)
 {
-	s_planarBlit.dst = (uint16 *)(base + (uint32)y * ST_PLANAR_LINE_BYTES + (x >> 1));
+	uint16 *dst = (uint16 *)(base + (uint32)y * ST_PLANAR_LINE_BYTES + (x >> 1));
+
+	if (g_videoDisplayListActive) {
+		Video_Atari_QueueTile(pixels, dst);
+		return;
+	}
+	s_planarBlit.dst = dst;
 	s_planarBlit.pixels = pixels;
 	Atari_SupervisorExec(Video_Atari_BlitOpaque);
+	Video_Atari_RestoreTileCursor();
 }
 
 /* Lean opaque-tile blit for the viewport repair loop; false means "use the general path".
@@ -3716,12 +3747,14 @@ bool Video_Atari_BlitViewportTile(const uint16 *pixels, uint16 col, uint16 row)
 		*BLITTER_DST_ADDR = (uint32)(size_t)dst;
 		*BLITTER_YCOUNT = 16;
 		Video_Atari_BlitterStart();
+		Video_Atari_RestoreTileCursor();
 		return true;
 	}
 #endif
 	s_planarBlit.dst = (uint16 *)dst;
 	s_planarBlit.pixels = pixels;
 	Atari_SupervisorExec(Video_Atari_BlitOpaque);
+	Video_Atari_RestoreTileCursor();
 	return true;
 }
 
@@ -3751,6 +3784,7 @@ static void __attribute__((noinline)) Video_Atari_PublishViewportCursorRect(
 		}
 	}
 	if (!protected) Video_Atari_RefreshViewportCursor(base, first, end, top, bottom, written, stride);
+	Video_Atari_RestoreTileCursor();
 	GFX_Screen_ClearDirtyRect(first * 16, top, end * 16, bottom);
 }
 
@@ -3799,6 +3833,13 @@ void Video_Atari_DrawPlanarTile(const uint16 *pixels, const uint16 *masks, uint1
 		GFX_Screen_ClearDirtyRect(x, y, x + 16, y + 16);
 		return;
 	}
+	if (g_videoDisplayListActive && !overlays && copyPixels == NULL && x < 240 && y >= 40) {
+		assert(g_videoDisplayListLimit - g_videoDisplayListNext >= 12);
+		Video_Atari_QueueMaskedTile(pixels, masks,
+		    (uint16 *)(base + (uint32)y * ST_PLANAR_LINE_BYTES + (x >> 1)));
+		GFX_Screen_ClearDirtyRect(x, y, x + 16, y + 16);
+		return;
+	}
 	if (overlays && x < 240 && y >= 40 &&
 	    !Video_Atari_PlacementRectOverlap(base, x, x + 16, y, 16)) {
 		Video_Atari_PublishViewportCursorRect(base, copyPixels != NULL ? copyPixels : pixels,
@@ -3815,6 +3856,7 @@ void Video_Atari_DrawPlanarTile(const uint16 *pixels, const uint16 *masks, uint1
 		else if (mask == 0xffff) Video_Atari_PlanarCopyGroup(dst, pixels);
 		else Video_Atari_PlanarMergePlain(dst, mask, pixels);
 	}
+	Video_Atari_RestoreTileCursor();
 	GFX_Screen_ClearDirtyRect(x, y, x + 16, y + 16);
 }
 
@@ -3880,6 +3922,7 @@ void Video_Atari_DrawPlanarTileFogged(const uint16 *pixels, const uint16 *masks,
 			else Video_Atari_PlanarMergePlain(dst, mask, src);
 		}
 	}
+	Video_Atari_RestoreTileCursor();
 	GFX_Screen_ClearDirtyRect(x, y, x + 16, y + 16);
 }
 
@@ -3902,6 +3945,7 @@ static void __attribute__((noinline)) Video_Atari_PresentSpriteCursor(
 		}
 	}
 	Video_Atari_RefreshViewportCursor(base, x >> 4, (x >> 4) + groups, y, y + height, written, groups);
+	Video_Atari_RestoreTileCursor();
 	GFX_Screen_ClearDirtyRect(x, y, x + width, y + height);
 }
 
@@ -3934,6 +3978,7 @@ void Video_Atari_PresentSprite(const uint8 *src, uint16 stride,
 			else Video_Atari_PlanarMergePlain(dst, mask, p);
 		}
 	}
+	Video_Atari_RestoreTileCursor();
 	GFX_Screen_ClearDirtyRect(x, y, x + width, y + height);
 }
 
@@ -4096,6 +4141,7 @@ static void __attribute__((noinline)) Video_Atari_PublishPlanarSpritePlain(
 		masks += padding;
 		dstRow += 80;
 	}
+	Video_Atari_RestoreTileCursor();
 }
 
 static void Video_Atari_PresentProtectedSprite(const uint16 *pixels, const uint16 *masks,
@@ -4145,6 +4191,28 @@ void Video_Atari_PresentPlanarSprite(const uint16 *pixels, const uint16 *masks,
                                    uint16 width, uint16 height, int16 x, int16 y)
 {
 	Video_Atari_PresentPlanarSpriteStrided(pixels, masks, width, height, x, y, width);
+}
+
+void Video_Atari_PresentPlanarText(const uint16 *pixels, const uint16 *masks,
+                                  uint16 width, uint16 height, uint16 x, uint16 y)
+{
+	uint8 *base = Video_Atari_PlanarBase();
+	uint16 groups = width >> 4, first = x >> 4;
+	bool overlays;
+
+	assert(pixels != NULL && masks != NULL && width != 0 && height != 0);
+	assert((width & 15) == 0 && (x & 15) == 0 &&
+	       (uint32)x + width <= SCREEN_WIDTH && (uint32)y + height <= SCREEN_HEIGHT);
+	overlays = Video_Atari_PlanarOverlaysOverlap(base, x, y, width, height);
+	if (g_videoDisplayListActive && !overlays) {
+		Video_Atari_DisplayListCheck(VIDEO_ATARI_DISPLAY_TEXT_BYTES);
+		Video_Atari_QueueMaskedRect(pixels, masks,
+		    (uint16 *)(base + (uint32)y * ST_PLANAR_LINE_BYTES + first * 8), groups, height);
+		GFX_Screen_ClearDirtyRect(x, y, x + width, y + height);
+		return;
+	}
+	Video_Atari_PublishViewportCursorRect(base, pixels, masks, groups,
+	    first, first + groups, y, y + height, overlays);
 }
 
 static uint16 Video_Atari_ShiftSpriteWord(const uint16 *row, uint16 groups,
@@ -4280,6 +4348,8 @@ void Video_Atari_PresentPlanarSpriteUnshifted(const uint16 *pixels, const uint16
 		Video_Atari_PresentPlanarSpriteUnshiftedCPU(base, pixels, masks, sourceWidth, sourceX,
 		    width, height, x, y, cursor, placement);
 	}
+	if (cursor || placement || !s_viewportBlitter || !g_videoDisplayListActive)
+		Video_Atari_RestoreTileCursor();
 	GFX_Screen_ClearDirtyRect(first * 16, y, (first + words) * 16, y + height);
 }
 
@@ -4358,6 +4428,7 @@ static void Video_Atari_PresentProtectedSprite(const uint16 *pixels, const uint1
 					if (hardware && cursor)
 						Video_Atari_RefreshViewportCursor(base, col, col + 1, top, bottom, written, 1);
 				}
+				if (!hardware || cursor || !g_videoDisplayListActive) Video_Atari_RestoreTileCursor();
 				GFX_Screen_ClearDirtyRect(col * 16, top, (col + 1) * 16, bottom);
 			}
 			left = end;
@@ -4441,6 +4512,7 @@ bool Video_Atari_PresentChunky(const void *src, uint16 srcStride,
 
 		Video_Atari_PresentRunMasked((const uint8 *)src, srcStride,
 		                             (uint16)x, (uint16)y, width, height);
+		Video_Atari_RestoreTileCursor();
 		/* Widen the clear to the enclosing 16px block(s), same as the
 		 * fast unmasked path above: Video_Atari_PresentGroupMasked()
 		 * (via PresentRunMasked) merges into whatever a partially
@@ -4456,6 +4528,7 @@ bool Video_Atari_PresentChunky(const void *src, uint16 srcStride,
 
 	Video_Atari_PresentRun((const uint8 *)src, srcStride,
 	                       (uint16)x, (uint16)y, width, height);
+	Video_Atari_RestoreTileCursor();
 	GFX_Screen_ClearDirtyRect((uint16)x, (uint16)y,
 	                          (uint16)(x + width), (uint16)(y + height));
 	return true;

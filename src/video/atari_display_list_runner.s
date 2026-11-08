@@ -3,10 +3,17 @@
 	xdef	_Video_Atari_QueueSpriteGeometry
 	xdef	_Video_Atari_QueueTileBlit
 	xdef	_Video_Atari_QueueTile
+	xdef	_Video_Atari_QueueMaskedTile
+	xdef	_Video_Atari_MaskedTileCode
+	xdef	_Video_Atari_QueueMaskedRect
+	xdef	_Video_Atari_MaskedRectCode
 	xdef	_Video_Atari_BlitTileCode
 	xdef	_Video_Atari_BlitPlaneCode
+	xdef	_Video_Atari_TileCursorTail
 	xref	_g_videoDisplayListNext
 	xref	_g_videoBlitterTileSetup
+	xref	_g_videoTileCursorBlit
+	xref	_g_videoTileCursorRestored
 	xref	_Video_Atari_BlitSpriteGeometry
 
 ; C ABI: stream. Generated commands use a private register ABI and RTS.
@@ -103,6 +110,98 @@ _Video_Atari_QueueTile:
 	move.l	(sp)+,d2
 	rts
 
+; C ABI: cached pixels, 16 mask words, destination. One 24-byte command.
+_Video_Atari_QueueMaskedTile:
+	move.l	a5,-(sp)
+	move.l	_g_videoDisplayListNext,a5
+	move.w	#$207c,(a5)+
+	move.l	8(sp),(a5)+
+	move.w	#$227c,(a5)+
+	move.l	12(sp),(a5)+
+	move.w	#$247c,(a5)+
+	move.l	16(sp),(a5)+
+	move.w	#$4eb9,(a5)+
+	move.l	#_Video_Atari_MaskedTileCode,(a5)+
+	move.l	a5,_g_videoDisplayListNext
+	move.l	(sp)+,a5
+	rts
+
+; a0 pixels, a1 masks, a2 destination; private playback ABI, d0-d3 scratch.
+; Two longword merges per row, preserving pixels outside the 16-bit mask.
+_Video_Atari_MaskedTileCode:
+	moveq	#15,d3
+.row:
+	move.w	(a1)+,d0
+	move.w	d0,d1
+	swap	d0
+	move.w	d1,d0
+	rept	2
+	move.l	(a2),d2
+	move.l	(a0)+,d1
+	eor.l	d2,d1
+	and.l	d0,d1
+	eor.l	d1,d2
+	move.l	d2,(a2)+
+	endr
+	lea	152(a2),a2
+	dbra	d3,.row
+	rts
+
+; C ABI: pixels, packed masks, destination, groups, rows. One 32-byte command.
+_Video_Atari_QueueMaskedRect:
+	move.l	a5,-(sp)
+	move.l	_g_videoDisplayListNext,a5
+	move.w	#$207c,(a5)+
+	move.l	8(sp),(a5)+
+	move.w	#$227c,(a5)+
+	move.l	12(sp),(a5)+
+	move.w	#$247c,(a5)+
+	move.l	16(sp),(a5)+
+	move.w	#$363c,(a5)+
+	move.w	22(sp),(a5)+
+	move.w	#$383c,(a5)+
+	move.w	26(sp),(a5)+
+	move.w	#$4eb9,(a5)+
+	move.l	#_Video_Atari_MaskedRectCode,(a5)+
+	move.l	a5,_g_videoDisplayListNext
+	move.l	(sp)+,a5
+	rts
+
+; a0 pixels, a1 masks, a2 destination, d3 groups, d4 rows.
+; Contiguous sources, 160-byte screen rows; d0-d6 scratch, no BLITTER state.
+_Video_Atari_MaskedRectCode:
+	move.w	d3,d6
+	lsl.w	#3,d6
+	neg.w	d6
+	add.w	#160,d6
+	subq.w	#1,d3
+	subq.w	#1,d4
+.row:
+	move.w	d3,d5
+.group:
+	move.w	(a1)+,d0
+	beq.s	.empty
+	move.w	d0,d1
+	swap	d0
+	move.w	d1,d0
+	rept	2
+	move.l	(a2),d2
+	move.l	(a0)+,d1
+	eor.l	d2,d1
+	and.l	d0,d1
+	eor.l	d1,d2
+	move.l	d2,(a2)+
+	endr
+	bra.s	.next
+.empty:
+	addq.l	#8,a0
+	addq.l	#8,a2
+.next:
+	dbra	d5,.group
+	adda.w	d6,a2
+	dbra	d4,.row
+	rts
+
 ; a0 pixels, a2 destination. Retain the existing opaque-tile setup cache.
 _Video_Atari_BlitTileCode:
 	tst.b	_g_videoBlitterTileSetup
@@ -138,4 +237,47 @@ _Video_Atari_BlitPlaneCode:
 .wait:
 	btst	#7,$ffff8a3c.w
 	bne.s	.wait
+	rts
+
+; No arguments: frame-stable destination/pattern/OP pointers at 0/4/8.
+; Fixed four-plane geometry; only caller-saved d0-d1/a0-a1 are clobbered.
+_Video_Atari_TileCursorTail:
+.idle:
+	tst.b	$ffff8a3c.w
+	bmi.s	.idle
+	clr.b	_g_videoBlitterTileSetup
+	move.l	_g_videoTileCursorBlit+4,a0
+	movem.l	(a0)+,d0-d1
+	movem.l	d0-d1,$ffff8a00.w
+	movem.l	(a0)+,d0-d1
+	movem.l	d0-d1,$ffff8a08.w
+	movem.l	(a0)+,d0-d1
+	movem.l	d0-d1,$ffff8a10.w
+	movem.l	(a0)+,d0-d1
+	movem.l	d0-d1,$ffff8a18.w
+	move.l	_g_videoTileCursorBlit+8,a1
+	move.l	_g_videoTileCursorBlit,a0
+	move.l	#$ffffffff,$ffff8a28.w
+	move.l	#$ffff0008,$ffff8a2c.w
+	move.w	#160,$ffff8a30.w
+	move.w	#1,$ffff8a36.w
+	move.b	#1,$ffff8a3a.w
+	clr.b	$ffff8a3d.w
+	rept	3
+	move.b	(a1)+,$ffff8a3b.w
+	move.l	a0,$ffff8a32.w
+	addq.l	#2,a0
+	move.w	#16,$ffff8a38.w
+	move.b	#$c0,$ffff8a3c.w
+	nop
+	endr
+	move.b	(a1)+,$ffff8a3b.w
+	move.l	a0,$ffff8a32.w
+	move.w	#16,$ffff8a38.w
+	move.b	#$c0,$ffff8a3c.w
+.wait:
+	tst.b	$ffff8a3c.w
+	bmi.s	.wait
+	move.b	#2,$ffff8a3a.w
+	move.b	#1,_g_videoTileCursorRestored
 	rts

@@ -274,6 +274,7 @@ void GUI_DrawFilledRectangle(int16 left, int16 top, int16 right, int16 bottom, u
 #ifdef TOS
 /* While set, GUI_DrawChar() composes glyph cells into this planar buffer instead of drawing chunky. */
 static uint16 *s_planarTarget;
+static bool s_textPlanarAllowed;
 static uint16 s_planarTargetStride;  /*!< Words per row. */
 static uint16 s_planarTargetRows;
 
@@ -695,6 +696,33 @@ static void GUI_RenderGlyph(const FontChar *fc, uint8 *screen, uint16 x, uint16 
 	}
 }
 
+#ifdef TOS
+/* Unsupported whole-line cache cases still queue persistent, phase-baked glyphs. */
+static void GUI_TextPlanar_PresentGlyph(const uint8 *src, uint16 width, uint16 height,
+                                       uint16 x, uint16 y)
+{
+	static union { uint32 aligned; uint8 bytes[48 * 32]; } chunky;
+	static uint16 pixels[3 * 32 * 4], masks[3 * 32];
+	uint16 phase = x & 15, alignedWidth = (phase + width + 15) & ~15;
+	uint16 groups = alignedWidth >> 4, row, col;
+
+	assert(width <= 32 && height <= 32);
+	Video_Atari_DisplayListFlush();
+	memset(chunky.bytes, 0, (size_t)alignedWidth * height);
+	memset(masks, 0, (size_t)groups * height * sizeof(*masks));
+	for (row = 0; row < height; row++) {
+		memcpy(chunky.bytes + row * alignedWidth + phase, src + row * width, width);
+		for (col = 0; col < width; col++) {
+			uint16 bit = phase + col;
+			if (src[row * width + col] != 0)
+				masks[row * groups + (bit >> 4)] |= 0x8000u >> (bit & 15);
+		}
+	}
+	Video_Atari_EncodePlanar(chunky.bytes, pixels, alignedWidth, height);
+	Video_Atari_PresentPlanarText(pixels, masks, alignedWidth, height, x & ~15, y);
+}
+#endif
+
 /**
  * Draw a char on the screen.
  *
@@ -776,8 +804,12 @@ static void GUI_DrawChar(unsigned char c, uint16 x, uint16 y)
 
 #ifdef TOS
 	if (toPlanar) {
-		Video_Atari_PresentChunkyTransparent(glyphBuf, fc->width,
-		                                     startX, startY, fc->width, g_fontCurrent->height);
+		if (s_textPlanarAllowed && g_videoDisplayListActive) {
+			GUI_TextPlanar_PresentGlyph(glyphBuf, fc->width, g_fontCurrent->height, startX, startY);
+		} else {
+			Video_Atari_PresentChunkyTransparent(glyphBuf, fc->width,
+			                                     startX, startY, fc->width, g_fontCurrent->height);
+		}
 	}
 #endif
 	return;
@@ -800,7 +832,6 @@ typedef struct TextPlanarEntry {
 
 static TextPlanarEntry s_textPlanar[TEXT_PLANAR_ENTRIES];
 static uint16 s_textPlanarNext;
-static bool s_textPlanarAllowed;
 static const char *s_textPlanarKey;
 
 static bool GUI_TextPlanar_Usable(void)
@@ -816,8 +847,8 @@ static void GUI_TextPlanar_Present(const TextPlanarEntry *entry)
 		uint16 stripWidth = min(TEXT_PLANAR_STRIP_WIDTH, entry->width - i * TEXT_PLANAR_STRIP_WIDTH);
 		const uint16 *pixels = entry->store + i * TEXT_PLANAR_STRIP_WORDS;
 
-		Video_Atari_PresentPlanarSprite(pixels, pixels + (stripWidth >> 4) * entry->height * 4,
-		                                stripWidth, entry->height, entry->x + i * TEXT_PLANAR_STRIP_WIDTH, entry->top);
+		Video_Atari_PresentPlanarText(pixels, pixels + (stripWidth >> 4) * entry->height * 4,
+		                              stripWidth, entry->height, entry->x + i * TEXT_PLANAR_STRIP_WIDTH, entry->top);
 	}
 }
 
@@ -859,6 +890,7 @@ static bool GUI_DrawTextPlanarCached(const char *string, int16 left, int16 top)
 		width *= 16;
 
 		victim = &s_textPlanar[s_textPlanarNext];
+		if (victim->text != NULL) Video_Atari_DisplayListFlush();
 		s_textPlanarNext = (s_textPlanarNext + 1) % TEXT_PLANAR_ENTRIES;
 
 		strips = (width + TEXT_PLANAR_STRIP_WIDTH - 1) / TEXT_PLANAR_STRIP_WIDTH;

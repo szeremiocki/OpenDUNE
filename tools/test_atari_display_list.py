@@ -15,6 +15,24 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DisplayListTest(unittest.TestCase):
+    def test_native_cursor_tail_longword_store(self):
+        compiler = shutil.which("m68k-atari-mint-gcc")
+        if compiler is None:
+            self.skipTest("m68k-atari-mint-gcc is unavailable")
+        assembly = subprocess.check_output([
+            compiler, "-m68000", "-msoft-float", "-Ofast", "-fno-split-paths",
+            "-fomit-frame-pointer", "-std=gnu17", "-DNDEBUG", "-DTOS",
+            "-I" + str(ROOT / "include"), "-S", "-o", "-",
+            str(ROOT / "src/video/atari_display_list.c")], text=True)
+        for name in ("_Video_Atari_QueueTileCursor",):
+            start = assembly.index(name + ":")
+            end = assembly.find("\n\t.even", start)
+            self.assertGreater(end, start)
+            body = assembly[start:end]
+            self.assertNotIn("%d2", body, name)
+            self.assertRegex(body, r"move\.l (?:%[da][01]|_g_videoTileCursorTail),2\(%a[01]\)")
+            self.assertNotIn("jsr _memcpy", body, name)
+
     def test_arena_capacity_and_cpu_barrier(self):
         video = (ROOT / "src/video/video_atari.c").read_text()
         harness = r"""
@@ -30,7 +48,10 @@ bool g_videoViewportBlitter;
 static unsigned executions, commands;
 static uint16 screen[8], source = 0x5678;
 uint16 endian_bswap16(uint16 v) { return (v >> 8) | (v << 8); }
+uint32 endian_bswap32(uint32 v) { return __builtin_bswap32(v); }
 void Error(const char *fmt, ...) { (void)fmt; abort(); }
+void (*g_videoTileCursorTail)(void);
+void Video_Atari_RestoreTileCursor(void) {}
 void Video_Atari_ExecuteDisplayList(const uint16 *stream) {
     assert(!g_videoDisplayListActive);
     executions++;
@@ -102,7 +123,9 @@ static unsigned executions;
 static const uint16 *queued;
 static uint16 displayed;
 uint16 endian_bswap16(uint16 v) { return (v >> 8) | (v << 8); }
+uint32 endian_bswap32(uint32 v) { return __builtin_bswap32(v); }
 void Error(const char *fmt, ...) { (void)fmt; abort(); }
+void (*g_videoTileCursorTail)(void);
 void Video_Atari_ExecuteDisplayList(const uint16 *stream) {
     assert(!g_videoDisplayListActive && *stream == HTOBE16(0x4e71));
     displayed = *queued; executions++;
@@ -176,9 +199,14 @@ int main(void) {
         draw = function(viewport, "GUI_Widget_Viewport_Draw")
         self.assertLess(draw.index("GUI_Widget_Viewport_DebugBegin"),
                         draw.index("Video_Atari_DisplayListBegin"))
-        self.assertLess(draw.index("Video_Atari_DisplayListEnd"),
-                        draw.index("Video_Atari_TileCursorFrame"))
-        self.assertIn("s_tileCursorShown && !Video_Atari_ViewportBlitter()", draw)
+        self.assertLess(draw.index("Video_Atari_QueueTileCursor"),
+                        draw.index("Video_Atari_EndViewportProtection"))
+        self.assertLess(draw.index("Video_Atari_EndViewportProtection"),
+                        draw.index("GUI_DrawText_Planar"))
+        self.assertLess(draw.index("GUI_DrawText_Planar"),
+                        draw.index("Video_Atari_DisplayListEnd"))
+        self.assertNotIn("g_videoTileCursorTail", function(backend, "Video_Atari_DisplayListFlush"))
+        self.assertIn("Video_Atari_BeginViewportProtection(s_tileCursorShown,", draw)
         self.assertIn("DisplayListCheck(VIDEO_ATARI_DISPLAY_TILE_ROW_BYTES)",
                       function(viewport, "GUI_Widget_Viewport_RepairTiles"))
         cache = function(gui, "GUI_ViewportPlanarSprite")
@@ -219,6 +247,8 @@ int main(void) {
             "Video_Atari_CompileSpriteBlit", "Video_Atari_CompileSpriteBlitCode",
             "Video_Atari_SetHalftonePattern", "Video_Atari_BlitterStart",
             "Video_Atari_QueueTintBlit", "Video_Atari_PlacementTintBlit"))
+        production += "\n" + video[video.index("static const uint8 s_tileCursorOperations"):
+                                  video.index("uint16 g_videoTileCursorTiles")]
         macros = video[video.index("#define BLITTER_SRC_XINC"):video.index("#define BLITTER_SKEW")]
         macros += video[video.index("#define BLITTER_SKEW"):video.index("\n", video.index("#define BLITTER_SKEW"))]
         source = r"""
@@ -229,6 +259,15 @@ int main(void) {
 #include "src/os/endian.h"
 #define ST_PLANAR_LINE_BYTES 160
 bool g_videoDisplayListActive, g_videoBlitterTileSetup;
+bool g_videoViewportBlitter, g_atariSupervisorResident;
+uint8 *g_videoPlanarBase;
+uint16 s_curViewportTiles[10], g_videoTileCursorTiles[10];
+uint16 *s_planarTileHouse[6], *s_planarTiles;
+uint8 *s_planarTileReady;
+uint32 restoredCursor;
+void Video_Atari_RestoreTileCursor(void) {
+    restoredCursor++;
+}
 uint16 *g_videoDisplayListNext, *g_videoDisplayListLimit;
 #define s_blitterTileSetup g_videoBlitterTileSetup
 static const uint16 *s_blitterHalftonePattern;
@@ -237,6 +276,8 @@ typedef struct PlacementTint {
     uint8 *dst; const uint16 *pattern; uint16 words,height,pen;
 } PlacementTint;
 static PlacementTint s_placeTint;
+Video_Atari_TileCursorBlit g_videoTileCursorBlit;
+bool g_videoTileCursorRestored;
 /* MACROS */
 /* BLOCK */
 /* FUNCTIONS */
@@ -257,6 +298,11 @@ void TestTint(uint16 *dst, const uint16 *pattern) {
     s_placeTint.words=2; s_placeTint.height=4;
     Video_Atari_PlacementTintBlit();
 }
+void TestCursorFrame(uint8 *dst, const uint16 *pattern, uint16 pen) {
+    g_videoTileCursorBlit.dst=dst; g_videoTileCursorBlit.pattern=pattern;
+    g_videoTileCursorBlit.operations=s_tileCursorOperations[pen];
+    Video_Atari_TileCursorTail();
+}
 """
         source = source.replace("/* MACROS */", macros).replace("/* BLOCK */", block)
         source = source.replace("/* FUNCTIONS */", production)
@@ -268,7 +314,7 @@ void TestTint(uint16 *dst, const uint16 *pattern) {
                             "-fomit-frame-pointer", "-I" + str(ROOT), "-I" + str(ROOT / "include"),
                             "-c", str(cfile), "-o", str(cobj)], check=True)
             objects = [cobj]
-            for name in ("atari_display_list_runner", "atari_sprite_blit"):
+            for name in ("atari_display_list_runner", "atari_sprite_blit", "atari_viewport_tile"):
                 obj = directory / (name + ".o")
                 subprocess.run([tools[4], "-m68000", "-Faout", "-quiet", "-o", str(obj),
                                 str(ROOT / "src/video" / (name + ".s"))], check=True)
@@ -316,6 +362,8 @@ void TestTint(uint16 *dst, const uint16 *pattern) {
                 if address == 0xffff8a3c and value & 0xf0 == 0xc0:
                     pending = True
 
+            hardware_launches = []
+
             def complete():
                 nonlocal pending, latch
                 pending = False
@@ -325,6 +373,7 @@ void TestTint(uint16 *dst, const uint16 *pattern) {
                 src, dst = read(b + 0x24, 4), read(b + 0x32, 4)
                 words, rows = read(b + 0x36, 2), read(b + 0x38, 2)
                 skew, hop, op, line = (read(b + off, 1) for off in (0x3d, 0x3a, 0x3b, 0x3c))
+                hardware_launches.append((dst, words, rows, hop, op))
                 self.assertIn(hop, (1, 2, 3))
                 for y in range(rows):
                     if hop != 1 and skew & 0x80:
@@ -375,6 +424,10 @@ void TestTint(uint16 *dst, const uint16 *pattern) {
                 (i * 137 + 0x369c) & ((i // 4 * 971 + 0xa39f) & 0xffff)) for i in range(32))
             masks = b"".join(struct.pack(">H", (i // 4 * 971 + 0xa39f) & 0xffff) for i in range(32))
             tile = bytes((i * 71 + 3) & 255 for i in range(128))
+            masked_tile = bytes((i * 157 + 19) & 255 for i in range(128))
+            tile_masks = (0, 0xffff, 0x8001, 0x0180, 0xf00f, 0xfc3f, 0x5555, 0xaaaa) * 2
+            cpu.mem_write(0x54002, masked_tile)
+            cpu.mem_write(0x55002, struct.pack(">16H", *tile_masks))
             pattern = [((i * 977) ^ 0xa39f) & 0xffff for i in range(16)]
             recipes = ((0,1,2,7),(3,1,2,0),(0,2,1,3),(4,1,2,3),(3,2,1,0),
                        (1,2,3,0),(0,1,2,8),(0,5,2,3),(0,1,6,3))
@@ -488,6 +541,172 @@ void TestTint(uint16 *dst, const uint16 *pattern) {
                 call("_Video_Atari_QueueTile",(0x52000,0x40000))
                 call("_TestMasked",(0x50000,0x60000,0x40000,0x30000,0x20000,0,1,0,0x30020))
             self.assertEqual(read(symbols["_g_videoDisplayListNext"],4)-0x70000,16*(384+18))
+            write(symbols["_g_videoDisplayListNext"],0x70000,4)
+            for cell in range(16):
+                call("_Video_Atari_QueueMaskedTile",(0x54002,0x55002,0x40000))
+                call("_TestMasked",(0x50000,0x60000,0x40000,0x30000,0x20000,0,1,0,0x30020))
+            self.assertEqual(read(symbols["_g_videoDisplayListNext"],4)-0x70000,16*(384+24))
+            write(symbols["_g_videoPlanarBase"],0x40000-40*160,4)
+            write(symbols["_g_videoViewportBlitter"],1,1)
+            write(symbols["_g_atariSupervisorResident"],1,1)
+            write(symbols["_g_videoDisplayListNext"],0x70000,4)
+            call("_GFX_DrawViewportPixelsFast",(0x52000,0,0),{"D2":0x12345678})
+            self.assertEqual(cpu.reg_read(reg("D0")),1)
+            self.assertEqual(cpu.reg_read(reg("D2")),0x12345678)
+            self.assertEqual(read(symbols["_restoredCursor"],4),0)
+            self.assertEqual(read(symbols["_g_videoDisplayListNext"],4),0x70012)
+            write(symbols["_g_videoDisplayListActive"],0,1)
+            call("_GFX_DrawViewportPixelsFast",(0x52000,0,0),{"D2":0x12345678})
+            self.assertEqual(cpu.reg_read(reg("D0")),1)
+            self.assertEqual(cpu.reg_read(reg("D2")),0x12345678)
+            self.assertEqual(read(symbols["_restoredCursor"],4),1)
+
+            saved = {name: 0x123400+i for i, name in enumerate(
+                ("D2","D3","D4","D5","D6","D7","A2","A3","A4","A5","A6"))}
+            patterns = (
+                (0xf00f,0x8001,0x8001,0x8001,0,0,0,0,0,0,0,0,0x8001,0x8001,0x8001,0xf00f),
+                (0xfc3f,0x8001,0x8001,0x8001,0x8001,0x8001,0,0x0180,
+                 0x0180,0,0x8001,0x8001,0x8001,0x8001,0x8001,0xfc3f),
+                tuple(pattern))
+            for pen in range(16):
+                for cursor_pattern in patterns:
+                    cpu.mem_write(0x30020, struct.pack(">16H", *cursor_pattern))
+                    cpu.mem_write(0x40000, background)
+                    expected = bytearray(background)
+                    for y in range(16):
+                        for p in range(4):
+                            old = struct.unpack_from(">H", expected, y*160+p*2)[0]
+                            value = (old & ~cursor_pattern[y]) | (
+                                cursor_pattern[y] if pen & (1 << p) else 0)
+                            struct.pack_into(">H", expected, y*160+p*2, value)
+                    hardware_launches.clear()
+                    write(symbols["_g_videoBlitterTileSetup"],1,1)
+                    write(symbols["_g_videoTileCursorRestored"],0,1)
+                    call("_TestCursorFrame", (0x40000,0x30020,pen), saved)
+                    self.assertEqual(bytes(cpu.mem_read(0x40000,len(expected))), bytes(expected))
+                    self.assertEqual(bytes(cpu.mem_read(0xffff8a00,32)),
+                                     struct.pack(">16H",*cursor_pattern))
+                    self.assertEqual(hardware_launches, [
+                        (0x40000+p*2,1,16,1,7 if pen & (1 << p) else 4) for p in range(4)])
+                    self.assertEqual(read(symbols["_g_videoBlitterTileSetup"],1),0)
+                    self.assertEqual(read(symbols["_g_videoTileCursorRestored"],1),1)
+                    self.assertEqual(read(0xffff8a3a,1),2)
+                    for name, value in saved.items():
+                        self.assertEqual(cpu.reg_read(reg(name)),value,name)
+                    # A queued opaque tile must reload geometry after the frame.
+                    write(symbols["_g_videoDisplayListActive"],1,1)
+                    write(symbols["_g_videoDisplayListNext"],0x70000,4)
+                    call("_Video_Atari_QueueTile",(0x52000,0x40000))
+                    before = read(symbols["_g_videoDisplayListNext"],4)
+                    call("_Video_Atari_QueueMaskedTile",(0x54002,0x55002,0x40000),saved)
+                    self.assertEqual(read(symbols["_g_videoDisplayListNext"],4)-before,24)
+                    self.assertEqual(bytes(cpu.mem_read(0x40000,len(expected))),bytes(expected))
+                    for name,value in saved.items():
+                        self.assertEqual(cpu.reg_read(reg(name)),value,name)
+                    call("_Video_Atari_QueueTile",(0x52000,0x40008))
+                    end=read(symbols["_g_videoDisplayListNext"],4)
+                    cpu.mem_write(end,struct.pack(">HI",0x4eb9,symbols["_Video_Atari_TileCursorTail"]))
+                    write(symbols["_g_videoDisplayListNext"],end+6,4)
+                    call("_Video_Atari_QueueMaskedRect",(0x54002,0x55002,0x40000,1,16),saved)
+                    self.assertEqual(read(symbols["_g_videoDisplayListNext"],4)-end,6+32)
+                    end=read(symbols["_g_videoDisplayListNext"],4)
+                    write(end,0x4e75,2)
+                    state = bytes(cpu.mem_read(symbols["_g_videoTileCursorBlit"],12))
+                    write(symbols["_g_videoTileCursorRestored"],0,1)
+                    write(symbols["_g_videoDisplayListActive"],0,1)
+                    cpu.ctl_remove_cache(0x70000,end+2)
+                    call("_Video_Atari_RunDisplayList",(0x70000,),saved)
+                    self.assertEqual(bytes(cpu.mem_read(symbols["_g_videoTileCursorBlit"],12)),state)
+                    self.assertEqual(read(symbols["_g_videoTileCursorRestored"],1),1)
+                    for y in range(16):
+                        for p in range(4):
+                            old=struct.unpack_from(">H",tile,y*8+p*2)[0]
+                            source=struct.unpack_from(">H",masked_tile,y*8+p*2)[0]
+                            old=(old & ~tile_masks[y]) | (source & tile_masks[y])
+                            value=(old & ~cursor_pattern[y]) | (
+                                cursor_pattern[y] if pen & (1 << p) else 0)
+                            value=(value & ~tile_masks[y]) | (source & tile_masks[y])
+                            struct.pack_into(">H",expected,y*160+p*2,value)
+                        expected[y*160+8:y*160+16]=tile[y*8:y*8+8]
+                    self.assertEqual(bytes(cpu.mem_read(0x40000,len(expected))),bytes(expected))
+                    for name,value in saved.items():
+                        self.assertEqual(cpu.reg_read(reg(name)),value,name)
+
+            # Variable-width CPU text uses its own masks and preserves BLITTER state.
+            for groups in (1, 3, 5, 8, 20):
+                for rows in (1, 6, 16, 32):
+                    for fill in (0, 0xffff, None):
+                        image = bytes((i * 157 + 19) & 255 for i in range(groups*rows*8))
+                        opacity = tuple(fill if fill is not None else tile_masks[i % 16]
+                                        for i in range(groups*rows))
+                        packed = struct.pack(">" + "H"*len(opacity), *opacity)
+                        initial = bytes((i * 113 + 17) & 255 for i in range(160*rows))
+                        destination = 0x44002
+                        cpu.mem_write(destination-2,b"\x13\x57"+initial+b"\x24\x68")
+                        cpu.mem_write(0x58002,image); cpu.mem_write(0x62002,packed)
+                        expected = bytearray(initial)
+                        for y in range(rows):
+                            for group in range(groups):
+                                mask = opacity[y*groups+group]
+                                for p in range(4):
+                                    offset = y*160+group*8+p*2
+                                    old = struct.unpack_from(">H",expected,offset)[0]
+                                    source = struct.unpack_from(">H",image,(y*groups+group)*8+p*2)[0]
+                                    struct.pack_into(">H",expected,offset,(old & ~mask) | (source & mask))
+                        hardware = bytes(cpu.mem_read(0xffff8a00,64))
+                        write(symbols["_g_videoBlitterTileSetup"],1,1)
+                        hardware_launches.clear()
+                        write(symbols["_g_videoDisplayListNext"],0x70000,4)
+                        call("_Video_Atari_QueueMaskedRect",(0x58002,0x62002,destination,groups,rows),saved)
+                        self.assertEqual(read(symbols["_g_videoDisplayListNext"],4),0x70020)
+                        self.assertEqual(bytes(cpu.mem_read(destination,len(initial))),initial)
+                        write(0x70020,0x4e75,2)
+                        cpu.ctl_remove_cache(0x70000,0x70022)
+                        call("_Video_Atari_RunDisplayList",(0x70000,),saved)
+                        self.assertEqual(bytes(cpu.mem_read(destination,len(expected))),bytes(expected),
+                                         (groups,rows,fill))
+                        self.assertEqual(bytes(cpu.mem_read(destination-2,2)),b"\x13\x57")
+                        self.assertEqual(bytes(cpu.mem_read(destination+len(expected),2)),b"\x24\x68")
+                        self.assertEqual(bytes(cpu.mem_read(0xffff8a00,64)),hardware)
+                        self.assertEqual(read(symbols["_g_videoBlitterTileSetup"],1),1)
+                        self.assertEqual(hardware_launches,[])
+                        self.assertEqual(bytes(cpu.mem_read(0x58002,len(image))),image)
+                        self.assertEqual(bytes(cpu.mem_read(0x62002,len(packed))),packed)
+                        for name,value in saved.items():
+                            self.assertEqual(cpu.reg_read(reg(name)),value,name)
+
+            # CPU-only playback needs no BLITTER hardware state or backend selection.
+            for destination in (0x40002, 0x48072):
+                for mask_rows in ((0,) * 16, (0xffff,) * 16, tile_masks):
+                    cpu.mem_write(destination-2, b"\x13\x57" + background + b"\x24\x68")
+                    cpu.mem_write(0x55002, struct.pack(">16H", *mask_rows))
+                    expected = bytearray(background)
+                    for y in range(16):
+                        for p in range(4):
+                            old = struct.unpack_from(">H",expected,y*160+p*2)[0]
+                            source = struct.unpack_from(">H",masked_tile,y*8+p*2)[0]
+                            struct.pack_into(">H",expected,y*160+p*2,
+                                             (old & ~mask_rows[y]) | (source & mask_rows[y]))
+                    write(symbols["_g_videoViewportBlitter"],0,1)
+                    write(symbols["_g_videoBlitterTileSetup"],1,1)
+                    hardware = bytes(cpu.mem_read(0xffff8a00,64))
+                    hardware_launches.clear()
+                    write(symbols["_g_videoDisplayListNext"],0x70000,4)
+                    call("_Video_Atari_QueueMaskedTile",(0x54002,0x55002,destination),saved)
+                    end = read(symbols["_g_videoDisplayListNext"],4)
+                    cpu.mem_write(end,b"\x4e\x75")
+                    cpu.ctl_remove_cache(0x70000,end+2)
+                    call("_Video_Atari_RunDisplayList",(0x70000,),saved)
+                    self.assertEqual(bytes(cpu.mem_read(destination,len(expected))),bytes(expected))
+                    self.assertEqual(bytes(cpu.mem_read(destination-2,2)),b"\x13\x57")
+                    self.assertEqual(bytes(cpu.mem_read(destination+len(expected),2)),b"\x24\x68")
+                    self.assertEqual(bytes(cpu.mem_read(0xffff8a00,64)),hardware)
+                    self.assertEqual(read(symbols["_g_videoBlitterTileSetup"],1),1)
+                    self.assertEqual(hardware_launches,[])
+                    self.assertEqual(bytes(cpu.mem_read(0x54002,128)),masked_tile)
+                    self.assertEqual(bytes(cpu.mem_read(0x55002,32)),struct.pack(">16H",*mask_rows))
+                    for name,value in saved.items():
+                        self.assertEqual(cpu.reg_read(reg(name)),value,name)
 
 
 if __name__ == "__main__":

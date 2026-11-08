@@ -769,9 +769,32 @@ pins. Full-width ordinary sprites instead select cached executable phase
 geometry: 40 stream bytes instead of 76, at the cost of 32 KiB extra for the
 64 composite phase tables plus enlarged resident tables. The viewport
 checks capacity before sprite draws and dirty terrain rows. Cache evictions
-and immediate CPU screen writes drain the ordered prefix first. An affected
-tile-snapped cursor frame is redrawn after final playback; CPU viewport cursor
-protection is unchanged. This is synchronous, not VBL-submitted. See
+and immediate CPU screen writes drain the ordered prefix first. A visible
+tile-snapped cursor frame is appended explicitly by the renderer when its
+damage test requires it, before the viewport message. Flush only terminates
+and executes the stream; eviction/capacity drains do not inject cursor draws.
+The six-byte command calls the fixed 68000 cursor
+kernel directly, using destination, pattern and predecoded plane-operation
+pointers prepared once per viewport, without a C wrapper or backup merging.
+Tile-cursor mode suppresses the classic battlefield pointer and excludes
+placement mode. Halftone upload/reuse policy is unchanged. Immediate
+compatibility writers restore it before returning and invalidate
+halftone cache knowledge. CPU viewport cursor protection is unchanged.
+Masked viewport tiles, including cached structure-selection borders, use a
+24-byte command calling a fixed aligned CPU merge kernel in the same list as
+BLITTER launches. They no longer force an immediate draw or cursor repair.
+The kernel preserves BLITTER setup and halftone RAM; selection-cache retags
+still drain before replacing referenced data.
+Opaque selection tiles enqueue the existing BLITTER tile command directly,
+without the redundant post-enqueue cursor redraw.
+Cached viewport messages use one or two 32-byte CPU masked-rectangle commands.
+They use their own transparency masks, not battlefield fog, and remain above
+the cursor. Text-cache replacement drains before mutation. Uncached up-to-32x32
+glyphs phase-bake into persistent scratch storage, draining before reuse, rather
+than queueing pointers to stack buffers. Backup overlaps retain the ordered
+immediate compatibility path. Only the terminal RTS is reserved in the arena,
+leaving 65,534 bytes for commands.
+This is synchronous, not VBL-submitted. See
 ATARI_DISPLAY_LIST.md for command sizes, bounds and lifetime rules.
 
 Fog/veil candidates are no longer promoted into terrain repairs merely for
@@ -779,7 +802,7 @@ being hidden. Sprite-footprint marking skips fully hidden tiles; genuine
 terrain and fog changes still queue repairs normally. Shared 16-line writable
 masks are derived from the fog graphics, with per-viewport-cell references.
 Sprites intersecting partial fog preserve its opaque pixels; fully hidden
-fragments are skipped. The tile cursor contributes its own writable mask:
+fragments are skipped. In the CPU viewport, the tile cursor contributes its own writable mask:
 terrain repairs preserve its frame, while sprites respect both frame and fog.
 Moving, changing or hiding the cursor still repairs its old footprint.
 Fog-mask references refresh on unveiling changes, with full refreshes for
@@ -787,7 +810,7 @@ viewport moves, forced redraws and debug visibility changes; ordinary sprite
 or terrain damage does not rescan them. Cursor masks remain cached until their
 position, shape or underlying fog reference changes. Cursor-covered terrain
 uses saved-background-aware merging only when a mouse/placement backup
-actually overlaps; the frame's writable mask remains applied in either path.
+actually overlaps; the CPU frame's writable mask remains applied in either path.
 Clear rectangles retain the ordinary publishers. Only intersecting rectangles
 split into tile-row bands, combining adjacent clear cells. Protected CPU
 merges intersect opacity with the writable mask; BLiTTER fragments use HOP=3
