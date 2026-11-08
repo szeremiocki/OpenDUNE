@@ -443,19 +443,29 @@ int main(void) {
 #include "src/map.h"
 #include "src/unit.h"
 #include "src/sprites.h"
+#ifdef TOS
+#define SAME_FOG_REDRAW 0
+#define FOG_CACHE_ACTIVE 1
+#else
+#define SAME_FOG_REDRAW 1
+#define FOG_CACHE_ACTIVE 0
+#endif
 Tile g_map[4096];
 static uint16 icons[128];
 uint16 *g_iconMap = icons;
 const int16 g_table_mapDiff[4] = {-64,1,64,-1};
 uint16 g_validateStrictIfZero;
-static unsigned invalidations, updates;
+static unsigned invalidations, updates, visibilityUpdates;
 static uint16 changed;
-bool Tile_IsUnveiled(uint16 id) { return id == 0; }
-Unit *Unit_Get_ByPackedTile(uint16 packed) { (void)packed; return NULL; }
-void Unit_HouseUnitCount_Add(Unit *unit, uint8 house) {
-    (void)unit; (void)house; assert(false);
-}
+static bool direct = true;
+static Unit occupant;
 uint8 g_playerHouseID;
+bool Video_Atari_CursorDirect(void) { return direct; }
+bool Tile_IsUnveiled(uint16 id) { return id == 0; }
+Unit *Unit_Get_ByPackedTile(uint16 packed) { (void)packed; return &occupant; }
+void Unit_HouseUnitCount_Add(Unit *unit, uint8 house) {
+    assert(unit == &occupant && house == g_playerHouseID); visibilityUpdates++;
+}
 void GFX_InvalidateViewportProtection(uint16 packed) { invalidations++; changed = packed; }
 void Map_Update(uint16 packed, uint16 type, bool invisible) {
     assert(packed < 4096 && type == 0 && !invisible); updates++;
@@ -467,24 +477,36 @@ int main(void) {
     uint16 tile = 20*64+20;
     g_map[tile].overlayTileID = 98;
     Map_UnveilTile_Neighbour(tile);
-    assert(invalidations == 1 && changed == tile && g_map[tile].overlayTileID == 15);
+    assert(invalidations == FOG_CACHE_ACTIVE && changed == (FOG_CACHE_ACTIVE ? tile : 0) &&
+           g_map[tile].overlayTileID == 15);
     Map_UnveilTile_Neighbour(tile);
-    assert(invalidations == 1 && updates == 2);
+    assert(invalidations == FOG_CACHE_ACTIVE && updates == 1 + SAME_FOG_REDRAW);
     g_map[tile].isUnveiled = true;
     g_map[tile-64].isUnveiled = true;
     Map_UnveilTile_Neighbour(tile);
-    assert(invalidations == 2 && g_map[tile].overlayTileID == 14);
+    assert(invalidations == 2*FOG_CACHE_ACTIVE && g_map[tile].overlayTileID == 14);
+    Map_UnveilTile_Neighbour(tile);
+    assert(invalidations == 2*FOG_CACHE_ACTIVE && visibilityUpdates == 2 &&
+           updates == 2 + 2*SAME_FOG_REDRAW);
     for (unsigned i = 0; i < 4; i++) g_map[tile+g_table_mapDiff[i]].isUnveiled = true;
     Map_UnveilTile_Neighbour(tile);
-    assert(invalidations == 3 && g_map[tile].overlayTileID == 0);
+    assert(invalidations == 3*FOG_CACHE_ACTIVE && g_map[tile].overlayTileID == 0);
     Map_UnveilTile_Neighbour(tile);
     Map_UnveilTile_Neighbour(0xffff);
-    assert(invalidations == 3 && updates == 4);
+    assert(invalidations == 3*FOG_CACHE_ACTIVE && updates == 3 + 2*SAME_FOG_REDRAW);
+    /* Non-planar backends retain their existing redraw notification. */
+    direct = false;
+    g_map[tile].isUnveiled = false;
+    g_map[tile].overlayTileID = 15;
+    Map_UnveilTile_Neighbour(tile);
+    assert(invalidations == 3*FOG_CACHE_ACTIVE && updates == 4 + 2*SAME_FOG_REDRAW);
     return 0;
 }
 """
-        run_harness(harness.replace("/* PRODUCTION */",
-                                   function(source, "Map_UnveilTile_Neighbour")))
+        production = harness.replace("/* PRODUCTION */",
+                                     function(source, "Map_UnveilTile_Neighbour"))
+        run_harness(production)
+        run_harness(production, tos=False)
 
 
 if __name__ == "__main__":

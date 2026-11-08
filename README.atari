@@ -564,6 +564,17 @@ arrays compared with the previous five-word composite identity.
 Hits publish the complete unit in one overlay-safe blit; the selection marker
 is not drawn separately. Entries accommodate aligned composites up to 48x48;
 oversized canvases are cropped to existing opaque bounds only on cache misses.
+Loaded sprites retain their original canvases and ordinary drawing anchors.
+Smoke animation damage is handled only by Unit_UpdateSmokeDamage(), using the
+standard frames' opaque union and the unit's position/wobble. Tile-centred smoke
+needs one column by two rows; boundary crossings expand to two columns and/or
+three rows. It needs no smoke geometry table or load-time damage measurement.
+Harvester candidate discovery remains capped at 3x3 independently of image dimensions.
+Native viewport damage from structure ground animations, state changes and
+animation cleanup is suppressed beneath fully opaque fog. Partial fog and
+debug reveal still redraw; animation timing, tile state and minimap bookkeeping
+are unchanged. Unveiled tiles reuse the existing visibility branch without an
+extra fog check. Fog transitions and cursor/scroll repair remain unfiltered.
 Each tier retains global least-recently-used
 replacement, with integer-key comparisons and
 independent 16-bit usage clocks resetting timestamps on wrap.
@@ -814,7 +825,10 @@ Moving, changing or hiding the cursor still repairs its old footprint.
 Fog-mask references refresh on unveiling changes, with full refreshes for
 viewport moves, forced redraws and debug visibility changes; ordinary sprite
 or terrain damage does not rescan them. Cursor masks remain cached until their
-position, shape or underlying fog reference changes. Cursor-covered terrain
+position, shape or underlying fog reference changes. On ST/STE, unchanged
+fog-neighbour overlay IDs no longer request terrain repair or its candidate
+halo; visibility bookkeeping still runs. Changed IDs and non-planar backends
+retain their redraw notifications. Cursor-covered terrain
 uses saved-background-aware merging only when a mouse/placement backup
 actually overlaps; the CPU frame's writable mask remains applied in either path.
 Clear rectangles retain the ordinary publishers. Only intersecting rectangles

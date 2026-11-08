@@ -172,6 +172,7 @@ int main(void) {
         int wx = (int16)g_table_tilediff[0][wobble].x, wy = (int16)g_table_tilediff[0][wobble].y;
         uint16 harvest = 223 + direction[angle] * 3 + frame;
         images[harvest][3] = 17 + frame * 3; images[harvest][2] = 19 - frame;
+        fullBounds(harvest);
         check(&u,UNIT_SPRITE_HARVEST,harvest,wx + hx[angle],wy + hy[angle]);
         check(&u,UNIT_SPRITE_SELECTION,6,wx,wy);
         GUI_SpriteLayers layers; int flags;
@@ -217,12 +218,14 @@ int main(void) {
     u.orientation[0].current = 0; u.spriteOffset = 1; u.speed = 1;
     u.o.flags.s.isSmoking = false; ui->movementType = MOVEMENT_FOOT;
     images[51][3] = 31; images[51][2] = 31;
+    fullBounds(51);
     uint8 expected[512] = {0};
     expectedSprite(expected,51,u.o.position,0,0);
     clearDamage(); advanceAnimation(&u);
     assert(u.spriteOffset == 2 && !memcmp(expected,g_dirtyMinimap,512));
     /* Explicit death-frame changes cover old pixels; identical requests do not. */
     u.spriteOffset = -2; images[91][3] = images[91][2] = 31;
+    fullBounds(91);
     memset(expected,0,512); expectedSprite(expected,91,u.o.position,0,0);
     expectedSprite(expected,6,u.o.position,0,0);
     g_scriptCurrentUnit = &u;
@@ -234,6 +237,7 @@ int main(void) {
     u.o.type = UNIT_HARVESTER; u.actionID = ACTION_HARVEST;
     u.speed = 0; u.timer = 0; u.spriteOffset = 2;
     images[225][3] = 31; images[225][2] = 29;
+    fullBounds(225);
     memset(expected,0,512); expectedSprite(expected,225,u.o.position,0,7);
     clearDamage(); advanceAnimation(&u);
     assert(u.spriteOffset == 3 && !memcmp(expected,g_dirtyMinimap,512));
@@ -254,6 +258,7 @@ int main(void) {
     }
     /* Odd dimensions, clipping and no-op positions/backends. */
     images[50][3] = 31; images[50][2] = 23;
+    fullBounds(50);
     u.orientation[0].current = 0;
     for (unsigned edge = 0; edge < 4; edge++) {
         u.o.position = (tile32){edge & 1 ? 0x3fff : 1, edge & 2 ? 0x3fff : 1};
@@ -406,6 +411,9 @@ void Map_UpdateAround(uint16 radius, tile32 position, Unit *unit, uint8 fn, bool
 int main(void) {
     initSprites(); images[10][3] = 32; images[10][2] = 31;
     images[11][3] = 8; images[11][2] = 9;
+#ifdef TOS
+    fullBounds(10);fullBounds(11);
+#endif
     static const ExplosionCommandStruct commands[] = {{EXPLOSION_STOP,0}};
     Explosion e = {0}; e.commands = commands; e.position = (tile32){0x1400,0x1480};
     e.timeOut = 123; e.current = 7;

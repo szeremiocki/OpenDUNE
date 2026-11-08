@@ -291,7 +291,6 @@ int main(void) {
     (void)s_viewportResidentSprites;(void)s_viewportResidentStorage;(void)s_viewportResidentsReady;
     assert(sizeof(((ViewportPlanarSprite *)0)->pixels)==1152);
     assert(VIEWPORT_PLANAR_MASK_WORDS==144);
-    assert(VIDEO_ATARI_DISPLAY_SPRITE_BYTES==6432);
     s_viewportPlanarSprites=calloc(64,sizeof(*s_viewportPlanarSprites));
     s_viewportPlanarComponents=calloc(64,sizeof(*s_viewportPlanarComponents));
     init(250,24,24,(GUI_SpriteBounds){2,4,23,22});

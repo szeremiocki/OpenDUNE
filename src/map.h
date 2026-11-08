@@ -70,6 +70,8 @@ struct Unit;
 extern uint16 g_mapTileID[64 * 64];
 extern Tile g_map[64 * 64];
 
+extern bool Map_IsGroundVisibleUnderFog(uint16 packed);
+
 /** True if a unit or structure is registered on the tile; same as Object_GetByPackedTile() != NULL. */
 static inline bool Map_HasObject(uint16 packed)
 {

@@ -1828,9 +1828,12 @@ void Structure_UpdateMap(Structure *s)
 
 		t->groundTileID = iconMap[i] + s->rotationSpriteDiff;
 
-		if (Tile_IsUnveiled(t->overlayTileID)) t->overlayTileID = 0;
-
-		Map_Update(position, 0, false);
+		if (Tile_IsUnveiled(t->overlayTileID)) {
+			t->overlayTileID = 0;
+			Map_Update(position, 0, false);
+		} else if (Map_IsGroundVisibleUnderFog(position)) {
+			Map_Update(position, 0, false);
+		}
 	}
 
 	s->o.flags.s.isDirty = true;

@@ -144,7 +144,7 @@ static void Unit_UpdateSmokeDamage(Unit *unit)
 {
 #ifdef TOS
 	if (Video_Atari_CursorDirect()) {
-		uint16 packed, width = 0, height = 0, spriteID;
+		uint16 packed;
 		int16 x, y, left, top, right, bottom, column, row;
 
 		Unit_ClearViewportKey(unit);
@@ -160,19 +160,14 @@ static void Unit_UpdateSmokeDamage(Unit *unit)
 		g_dirtyUnitCount++;
 		if (unit->o.position.x == 0 && unit->o.position.y == 0) return;
 
-		/* All smoke phases cover the previous frame too, including expiration. */
-		for (spriteID = 180; spriteID <= 182; spriteID++) {
-			assert(g_sprites[spriteID] != NULL);
-			width = max(width, Sprite_GetWidth(g_sprites[spriteID]));
-			height = max(height, Sprite_GetHeight(g_sprites[spriteID]));
-		}
-		assert(width != 0 && height != 0);
+		/* Opaque union of smoke 180-182 in the original 16x24 canvases:
+		 * x=1..13, y=4..23. Include old phases and expiration, without a halo. */
 		x = (unit->o.position.x >> 4) + g_table_tilediff[0][unit->wobbleIndex].x;
-		y = (unit->o.position.y >> 4) + g_table_tilediff[0][unit->wobbleIndex].y - 14;
-		left = max(0, x - width / 2);
-		top = max(0, y - height / 2);
-		right = min(1024, x - width / 2 + width);
-		bottom = min(1024, y - height / 2 + height);
+		y = (unit->o.position.y >> 4) + g_table_tilediff[0][unit->wobbleIndex].y;
+		left = max(0, x - 7);
+		top = max(0, y - 22);
+		right = min(1024, x + 6);
+		bottom = min(1024, y - 2);
 		if (left >= right || top >= bottom) return;
 		for (row = top >> 4; row <= (bottom - 1) >> 4; row++) {
 			for (column = left >> 4; column <= (right - 1) >> 4; column++) {

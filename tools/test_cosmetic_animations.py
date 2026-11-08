@@ -76,7 +76,10 @@ static const uint8 structureAnimations[ICM_ICONGROUP_EOF][3] = {
 /* MAPPINGS */
 };
 static bool g_enableCosmeticAnimations = true;
+static bool unveiled = true;
 static uint16 g_announcementPhase, g_creditsPhase;
+static uint16 g_blinkEffect, g_placementValidPlane, g_placementInvalidPlane;
+static uint16 g_tileCursor, g_tileCursorPen, g_tileCursorTargetPen;
 static int16 s_viewportFade = -1;
 static const char *option;
 static unsigned warnings, updates, terrainUpdates, flagUpdates, voices, randomCalls;
@@ -87,7 +90,10 @@ static char *IniFile_GetString(const char *key, const char *fallback, char *out,
     assert(fallback == NULL);
     if (strcmp(key, "cosmetic_animations")) {
         assert(!strcmp(key, "phase_announcement") || !strcmp(key, "phase_credits") ||
-               !strcmp(key, "viewport_fade"));
+               !strcmp(key, "viewport_fade") || !strcmp(key, "blink_effect") ||
+               !strcmp(key, "placement_valid_plane") || !strcmp(key, "placement_invalid_plane") ||
+               !strcmp(key, "tile_cursor") || !strcmp(key, "tile_cursor_pen") ||
+               !strcmp(key, "tile_cursor_target_pen"));
         return NULL;
     }
     if (option == NULL) return NULL;
@@ -97,7 +103,7 @@ static char *IniFile_GetString(const char *key, const char *fallback, char *out,
 #define Warning(...) (warnings++)
 /* CONFIG */
 static uint16 Tile_PackTile(tile32 tile) { return (tile.y >> 8) * 64 + (tile.x >> 8); }
-static bool Map_IsPositionUnveiled(uint16 packed) { assert(packed < 4096); return true; }
+static bool Map_IsPositionUnveiled(uint16 packed) { assert(packed < 4096); return unveiled; }
 static void Map_Update(uint16 packed, unsigned mode, bool ignore) {
     assert(packed < 4096 && mode == 0 && !ignore);
     updates++;
@@ -125,6 +131,7 @@ static void reset(uint8 group, uint16 layout, uint16 mask, bool enabled) {
     memset(g_map, 0, sizeof(g_map));
     g_timerGUI = s_animationTimer = 0;
     g_enableCosmeticAnimations = enabled;
+    unveiled = true;
     watchedPacked = Tile_PackTile(tile); watchedLayout = layout; watchedMask = mask;
     updates = terrainUpdates = flagUpdates = voices = randomCalls = 0;
     randomState = 123456789;
@@ -186,9 +193,14 @@ static void test_sequences(void) {
         for (unsigned state = 0; state < 3; state++) {
             const AnimationCommandStruct *commands =
                 g_table_animation_structure[structureAnimations[group][state]];
-            unsigned originalUpdates = 0, originalRandomCalls = 0;
-            for (unsigned mode = 0; mode < 2; mode++) {
-                reset(group, layout, mask, mode == 0);
+            unsigned originalUpdates = 0, originalRandomCalls = 0, originalTerrainUpdates = 0;
+            for (unsigned mode = 0; mode < 3; mode++) {
+                reset(group, layout, mask, mode != 1);
+                if (mode == 2) {
+                    unveiled = false;
+                    for (unsigned i = 0; i < count; i++)
+                        g_map[watchedPacked + layouts[layout][i]].overlayTileID = 127;
+                }
                 Animation_Start(commands, tile, layout, 2, group);
                 assert(g_map[watchedPacked].hasAnimation && g_animations[0].commands == commands);
                 for (unsigned tick = 0; tick < TICKS; tick++) {
@@ -197,7 +209,7 @@ static void test_sequences(void) {
                     for (unsigned i = 0; i < count; i++) {
                         uint16 value = g_map[watchedPacked + layouts[layout][i]].groundTileID;
                         if (mode == 0) original[tick][i] = value;
-                        else assert(value == ((mask & (1u << i)) ?
+                        else assert(value == ((mode == 1 && (mask & (1u << i))) ?
                             g_iconMap[g_iconMap[group] + count * 2 + i] : original[tick][i]));
                     }
                     if (mode == 0) {
@@ -214,11 +226,20 @@ static void test_sequences(void) {
                 if (mode == 0) {
                     assert(flagUpdates > 0);
                     originalUpdates = updates; originalRandomCalls = randomCalls;
-                } else {
+                    originalTerrainUpdates = terrainUpdates;
+                } else if (mode == 1) {
                     assert(flagUpdates == 0 && updates < originalUpdates);
                     assert(randomCalls == originalRandomCalls);
                     if (group == ICM_ICONGROUP_RADAR_OUTPOST) assert(terrainUpdates > 0);
                     if (group == ICM_ICONGROUP_CONSTRUCTION_YARD) assert(updates == 0);
+                } else {
+#ifdef TOS
+                    assert(updates == 0);
+#else
+                    assert(updates == originalUpdates);
+#endif
+                    assert(randomCalls == originalRandomCalls &&
+                           terrainUpdates == originalTerrainUpdates);
                 }
             }
         }
@@ -288,6 +309,14 @@ int main(void) {
                 "Config_ReadAnimationOption", "Config_ReadAnimationPhase",
                 "Config_LoadAnimationPhases")))
         harness = harness.replace("/* TABLE */", table[table.index("const AnimationCommandStruct"):])
+        map_source = (ROOT / "src/map.c").read_text()
+        harness = harness.replace("/* ANIMATION */", """
+#ifdef TOS
+static bool g_debugScenario;
+static uint16 g_veiledTileID = 127;
+static bool Video_Atari_CursorDirect(void) { return true; }
+#endif
+""" + function(map_source, "Map_IsGroundVisibleUnderFog") + "\n/* ANIMATION */")
         harness = harness.replace("/* ANIMATION */", animation[animation.index("enum {"):])
         with tempfile.TemporaryDirectory(prefix="cosmetic-animations-") as directory:
             source = Path(directory) / "test.c"

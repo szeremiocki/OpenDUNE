@@ -59,9 +59,10 @@ static void Animation_Func_Stop(Animation *animation, int16 parameter)
 
 		if (Map_IsPositionUnveiled(position)) {
 			t->overlayTileID = 0;
+			Map_Update(position, 0, false);
+		} else if (Map_IsGroundVisibleUnderFog(position)) {
+			Map_Update(position, 0, false);
 		}
-
-		Map_Update(position, 0, false);
 	}
 }
 
@@ -79,7 +80,7 @@ static void Animation_Func_Abort(Animation *animation, int16 parameter)
 	g_map[packed].hasAnimation = false;
 	animation->commands = NULL;
 
-	Map_Update(packed, 0, false);
+	if (Map_IsGroundVisibleUnderFog(packed)) Map_Update(packed, 0, false);
 }
 
 /**
@@ -191,9 +192,10 @@ static void Animation_Func_SetGroundTile(Animation *animation, int16 parameter)
 
 		if (Map_IsPositionUnveiled(position)) {
 			t->overlayTileID = 0;
+			Map_Update(position, 0, false);
+		} else if (Map_IsGroundVisibleUnderFog(position)) {
+			Map_Update(position, 0, false);
 		}
-
-		Map_Update(position, 0, false);
 
 		Map_MarkTileDirty(position);
 	}

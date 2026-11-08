@@ -33,6 +33,18 @@ def run_harness(harness, tos=True):
 
 class UnitSmokeDamageTest(unittest.TestCase):
     def test_damage_bounds_and_legacy_path(self):
+        from tools.analyze_harvester_planes import load_sprites, read_pak
+
+        pak = ROOT / "DUNE.PAK"
+        if not pak.exists():
+            self.skipTest("DUNE.PAK required to verify the smoke damage rule against artwork")
+        frames = load_sprites(read_pak(pak))
+        points = [(i % frames[sid].width - frames[sid].width // 2,
+                   i // frames[sid].width - frames[sid].height // 2 - 14)
+                  for sid in range(180, 183)
+                  for i, pixel in enumerate(frames[sid].pixels) if pixel is not None]
+        bounds = (min(x for x, y in points), min(y for x, y in points),
+                  max(x for x, y in points) + 1, max(y for x, y in points) + 1)
         unit = (ROOT / "src/unit.c").read_text()
         map_source = (ROOT / "src/map.c").read_text()
         sprites = (ROOT / "src/sprites.c").read_text()
@@ -95,7 +107,7 @@ static void clear(void) {
     g_dirtyUnitCount = g_dirtyViewportCount = 0;
     g_selectionRectangleNeedRepaint = false;
 }
-static void check(Unit *u, unsigned width, unsigned height) {
+static void check(Unit *u) {
     clear();
     u->viewportKey.main = 123;
     u->viewportBoundsWidth = 16;
@@ -105,9 +117,10 @@ static void check(Unit *u, unsigned width, unsigned height) {
     assert(!u->viewportBoundsWidth);
     assert(!occupancy);
     int cx = (u->o.position.x >> 4) + (int16)g_table_tilediff[0][u->wobbleIndex].x;
-    int cy = (u->o.position.y >> 4) + (int16)g_table_tilediff[0][u->wobbleIndex].y - 14;
-    int left = cx - (int)width / 2, top = cy - (int)height / 2;
-    int right = left + width, bottom = top + height;
+    int cy = (u->o.position.y >> 4) + (int16)g_table_tilediff[0][u->wobbleIndex].y;
+    const int opaque[] = {/* ARTWORK BOUNDS */};
+    int left = cx + opaque[0], top = cy + opaque[1];
+    int right = cx + opaque[2], bottom = cy + opaque[3];
     unsigned count = 0;
     for (unsigned y = 0; y < 64; y++) {
         for (unsigned x = 0; x < 64; x++) {
@@ -128,25 +141,24 @@ int main(void) {
     g_table_unitInfo[UNIT_TANK].movementType = MOVEMENT_TRACKED;
     g_table_unitInfo[UNIT_TANK].dimension = 16;
     for (unsigned i = 0; i < 3; i++) sprites[180 + i] = smoke[i];
-    /* Different and odd frame dimensions: union must cover every old frame. */
-    smoke[0][3] = 16; smoke[0][2] = 17;
-    smoke[1][3] = 19; smoke[1][2] = 16;
-    smoke[2][3] = 17; smoke[2][2] = 23;
+    /* No geometry initialization: damage is entirely position-dependent. */
+    for (unsigned i = 0; i < 3; i++) {
+        smoke[i][3] = 16; smoke[i][2] = 24;
+    }
     for (unsigned wobble = 0; wobble < 4; wobble++) {
         u.wobbleIndex = wobble;
         for (unsigned y = 0; y < 16; y++)
             for (unsigned x = 0; x < 16; x++) {
                 u.o.position.x = (320 + x) << 4;
                 u.o.position.y = (320 + y) << 4;
-                check(&u, 19, 23);
+                check(&u);
             }
     }
     assert(added == 1024);
-    for (unsigned i = 0; i < 3; i++) smoke[i][3] = smoke[i][2] = 32;
     for (unsigned edge = 0; edge < 4; edge++) {
         u.o.position.x = (edge & 1 ? 1023 : 1) << 4;
         u.o.position.y = (edge & 2 ? 1023 : 1) << 4;
-        check(&u, 32, 32);
+        check(&u);
     }
     /* No explicit or implicit neighbour halo is added to smoke damage. */
     u.o.position.x = u.o.position.y = 0x1480;
@@ -156,6 +168,29 @@ int main(void) {
     assert(!memcmp(g_dirtyViewport, g_dirtyMinimap, sizeof(g_dirtyViewport)));
     assert(!BitArray_Test(g_dirtyViewport, Tile_PackXY(20,23)));
     assert(!BitArray_Test(g_dirtyMinimap, Tile_PackXY(20,22)));
+    /* A centred unit and its wobble need one column by two rows. */
+    for (unsigned wobble = 0; wobble < 4; wobble++) {
+        u.o.position.x = u.o.position.y = 0x1480;
+        u.wobbleIndex = wobble;
+        clear();
+        Unit_UpdateSmokeDamage(&u);
+        for (unsigned row = 0; row < 64; row++)
+        for (unsigned col = 0; col < 64; col++)
+            assert(!!BitArray_Test(g_dirtyMinimap, Tile_PackXY(col,row)) ==
+                   (col == 20 && (row == 19 || row == 20)));
+        assert(!memcmp(g_dirtyViewport,g_dirtyMinimap,sizeof(g_dirtyViewport)));
+    }
+    /* Horizontal movement can need two columns; vertical movement three rows. */
+    const unsigned phases[][3] = {{15,8,4}, {8,5,3}, {15,5,6}};
+    u.wobbleIndex = 0;
+    for (unsigned i = 0; i < 3; i++) {
+        u.o.position.x = (320 + phases[i][0]) << 4;
+        u.o.position.y = (320 + phases[i][1]) << 4;
+        check(&u);
+        unsigned count = 0;
+        for (unsigned n = 0; n < 4096; n++) count += !!BitArray_Test(g_dirtyMinimap,n);
+        assert(count == phases[i][2]);
+    }
     /* Fog/counter side effects survive; no occupancy changes are introduced. */
     u.o.houseID = 1;
     Unit_UpdateSmokeDamage(&u);
@@ -185,7 +220,8 @@ int main(void) {
     return 0;
 }
 """
-        run_harness(harness.replace("/* PRODUCTION */", production))
+        run_harness(harness.replace("/* PRODUCTION */", production)
+                    .replace("/* ARTWORK BOUNDS */", ",".join(map(str, bounds))))
 
     def test_animation_cadence(self):
         source = (ROOT / "src/unit.c").read_text()

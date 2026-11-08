@@ -731,6 +731,19 @@ void Map_UpdateSprite(uint16 spriteID, tile32 position, int16 offsetX, int16 off
 	}
 }
 
+/** Ground changes cannot affect native pixels beneath an opaque fog overlay. */
+bool Map_IsGroundVisibleUnderFog(uint16 packed)
+{
+#ifdef TOS
+	if ((g_map[packed].overlayTileID == g_veiledTileID ||
+	     g_map[packed].overlayTileID == g_iconMap[g_iconMap[ICM_ICONGROUP_FOG_OF_WAR] + 15]) &&
+	    !g_debugScenario && Video_Atari_CursorDirect()) return false;
+#else
+	VARIABLE_NOT_USED(packed);
+#endif
+	return true;
+}
+
 /**
  * Updates ??.
  *
@@ -1584,7 +1597,11 @@ static void Map_UnveilTile_Neighbour(uint16 packed)
 #ifdef TOS
 	/* Other live overlay writers only replace already-unveiled graphics.
 	 * Loads and viewport moves rebuild protection through the forced path. */
-	if (t->overlayTileID != tileID) GFX_InvalidateViewportProtection(packed);
+	if (t->overlayTileID != tileID) {
+		GFX_InvalidateViewportProtection(packed);
+	} else if (Video_Atari_CursorDirect()) {
+		return;
+	}
 #endif
 	t->overlayTileID = tileID;
 

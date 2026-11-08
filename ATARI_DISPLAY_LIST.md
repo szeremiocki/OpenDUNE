@@ -159,6 +159,9 @@ canvas when it fits; oversized canvases are cropped to existing opaque bounds,
 with CPU phase padding reapplied. Clipped composition discards only transparent
 margins. A still-oversized composite reports an error rather than overrunning
 its reservation. Resident images and the general blitting API are unchanged.
+Sprites retain their original loaded canvases and ordinary drawing anchors.
+Smoke's dedicated updater calculates position-dependent tile damage from its
+opaque union, including lateral and vertical boundary crossings.
 The 64 composite pixel/mask reservations save 176 KiB in BLITTER mode
 (110 KiB in CPU mode); the highlight scratch buffer saves another 1,408 bytes.
 
