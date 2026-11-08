@@ -2402,9 +2402,13 @@ void Video_Atari_DebugDamageEnd(void)
 }
 #endif
 
-static const uint16 s_tileCursorPatterns[2][16] = {
+static const uint16 s_tileCursorPatterns[6][16] = {
 	{ 0xf00f, 0x8001, 0x8001, 0x8001, 0, 0, 0, 0, 0, 0, 0, 0, 0x8001, 0x8001, 0x8001, 0xf00f },
-	{ 0xfc3f, 0x8001, 0x8001, 0x8001, 0x8001, 0x8001, 0, 0x0180, 0x0180, 0, 0x8001, 0x8001, 0x8001, 0x8001, 0x8001, 0xfc3f }
+	{ 0xfc3f, 0x8001, 0x8001, 0x8001, 0x8001, 0x8001, 0, 0x0180, 0x0180, 0, 0x8001, 0x8001, 0x8001, 0x8001, 0x8001, 0xfc3f },
+	{ 0xf00f, 0x8001, 0x8001, 0x8001, 0x0180, 0x03c0, 0x07e0, 0x0ff0, 0x0180, 0x0180, 0x0180, 0x0180, 0x8001, 0x8001, 0x8001, 0xf00f },
+	{ 0xf00f, 0x8001, 0x8001, 0x8001, 0x0080, 0x00c0, 0x00e0, 0x0ff0, 0x0ff0, 0x00e0, 0x00c0, 0x0080, 0x8001, 0x8001, 0x8001, 0xf00f },
+	{ 0xf00f, 0x8001, 0x8001, 0x8001, 0x0180, 0x0180, 0x0180, 0x0180, 0x0ff0, 0x07e0, 0x03c0, 0x0180, 0x8001, 0x8001, 0x8001, 0xf00f },
+	{ 0xf00f, 0x8001, 0x8001, 0x8001, 0x0100, 0x0300, 0x0700, 0x0ff0, 0x0ff0, 0x0700, 0x0300, 0x0100, 0x8001, 0x8001, 0x8001, 0xf00f }
 };
 static const uint8 s_tileCursorOperations[16][4] = {
 	{4,4,4,4}, {7,4,4,4}, {4,7,4,4}, {7,7,4,4},
@@ -2455,7 +2459,7 @@ void Video_Atari_SetViewportFog(uint16 col, uint16 row, const uint16 *writable)
 	if (any == 0) s_viewportHiddenRows[row] |= bit;
 }
 
-void Video_Atari_BeginViewportProtection(bool cursor, uint16 col, uint16 row, bool target)
+void Video_Atari_BeginViewportProtection(bool cursor, uint16 col, uint16 row, VideoAtariTileCursorShape shape)
 {
 	uint16 line, key;
 	const uint16 *fog;
@@ -2467,27 +2471,28 @@ void Video_Atari_BeginViewportProtection(bool cursor, uint16 col, uint16 row, bo
 	g_videoTileCursorRestored = false;
 	if (!cursor) return;
 	assert(col < 15 && row < 10);
+	assert(shape >= TILE_CURSOR_NORMAL && shape <= TILE_CURSOR_SCROLL_LEFT);
 	if (s_viewportBlitter) {
-		uint16 pen = target ? g_tileCursorTargetPen : g_tileCursorPen;
+		uint16 pen = shape == TILE_CURSOR_TARGET ? g_tileCursorTargetPen : g_tileCursorPen;
 		assert(pen < 16);
 		s_tileCursorCol = col;
 		s_tileCursorTop = 40 + row * 16;
 		g_videoTileCursorBlit.dst = Video_Atari_PlanarBase() +
 		    (uint32)s_tileCursorTop * ST_PLANAR_LINE_BYTES + col * 8;
-		g_videoTileCursorBlit.pattern = s_tileCursorPatterns[target ? 1 : 0];
+		g_videoTileCursorBlit.pattern = s_tileCursorPatterns[shape];
 		g_videoTileCursorBlit.operations = s_tileCursorOperations[pen];
 		g_videoTileCursorTail = Video_Atari_TileCursorTail;
 		return;
 	}
 	s_tileCursorActiveRow = row;
 	g_videoTileCursorTiles[row] = 1u << col;
-	key = (row << 5) | (col << 1) | (target ? 1 : 0);
+	key = (row << 7) | (col << 3) | shape;
 	fog = s_viewportFogWritable[row][col];
 	if (s_tileCursorMaskKey == key && s_tileCursorMaskFog == fog) return;
 	s_tileCursorMaskKey = key;
 	s_tileCursorMaskFog = fog;
 	for (line = 0; line < 16; line++) {
-		s_tileCursorWritable[line] = (uint16)~s_tileCursorPatterns[target ? 1 : 0][line];
+		s_tileCursorWritable[line] = (uint16)~s_tileCursorPatterns[shape][line];
 		s_tileCursorFogWritable[line] = s_tileCursorWritable[line] & (fog != NULL ? fog[line] : 0xffff);
 	}
 	/* These arrays keep their addresses when the cursor moves. */
@@ -2524,14 +2529,16 @@ static const uint16 *Video_Atari_ViewportWritable(uint16 col, uint16 row)
  * runs from line 0 of the halftone RAM on every start, so the 16 words are
  * the tile's lines. Idempotent like the placement tint; the tile is redrawn
  * to remove it. */
-void Video_Atari_TileCursorFrame(uint16 col, uint16 row, bool target)
+void Video_Atari_TileCursorFrame(uint16 col, uint16 row, VideoAtariTileCursorShape shape)
 {
-	uint16 pen = target ? g_tileCursorTargetPen : g_tileCursorPen;
-	const uint16 *pattern = s_tileCursorPatterns[target ? 1 : 0];
+	uint16 pen = shape == TILE_CURSOR_TARGET ? g_tileCursorTargetPen : g_tileCursorPen;
+	const uint16 *pattern;
 	uint8 *dst;
 	uint16 line;
 
 	if (col >= 15 || row >= 10) return;
+	assert(shape >= TILE_CURSOR_NORMAL && shape <= TILE_CURSOR_SCROLL_LEFT);
+	pattern = s_tileCursorPatterns[shape];
 	if (g_videoTileCursorTail != NULL && col == s_tileCursorCol &&
 	    40 + row * 16 == s_tileCursorTop) {
 		if (!g_videoTileCursorRestored) Video_Atari_RestoreTileCursor();

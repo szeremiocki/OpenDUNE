@@ -55,7 +55,8 @@ int8 g_fontCharOffset;
 static uint8 g_colours[16];
 static const char *g_viewportMessageText;
 static uint16 g_viewportMessageCounter, s_tileCursorCol = 4, s_tileCursorRow = 6;
-static bool s_tileCursorShown = true, s_tileCursorTarget, s_viewportSpriteFilterActive;
+static bool s_tileCursorShown = true, s_viewportSpriteFilterActive;
+static VideoAtariTileCursorShape s_tileCursorShape;
 static uint8 *Video_Atari_PlanarBase(void) { return (uint8 *)screen; }
 bool Video_Atari_CursorDirect(void) { return true; }
 static bool GUI_Sidebar_Active(void) { return false; }
@@ -86,8 +87,8 @@ static void cursor(void) {
     tails++;
     for (unsigned p=0;p<4;p++) screen[139*80+16+p] = p == 2 ? 0xffff : 0;
 }
-void Video_Atari_TileCursorFrame(uint16 col, uint16 row, bool target) {
-    (void)col; (void)row; (void)target; cursor();
+void Video_Atari_TileCursorFrame(uint16 col, uint16 row, VideoAtariTileCursorShape shape) {
+    (void)col; (void)row; (void)shape; cursor();
 }
 void Video_Atari_EndViewportProtection(void) { g_videoTileCursorTail = NULL; }
 static bool GUI_Widget_Viewport_SpriteDamageRect(int16 l, int16 t, int16 r, int16 b, bool redraw) {

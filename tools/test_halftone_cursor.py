@@ -19,6 +19,10 @@ class HalftoneCursorTest(unittest.TestCase):
         production = inactive_display_list() + video[start:end + len("static PlacementTint s_placeTint;")]
         production += "\n" + video[video.index("static const uint16 s_tileCursorPatterns"):
                                   video.index("uint16 g_videoTileCursorTiles")]
+        header = (ROOT / "src/video/video.h").read_text()
+        production = header[header.index("typedef enum VideoAtariTileCursorShape"):
+                            header.index("} VideoAtariTileCursorShape;") +
+                            len("} VideoAtariTileCursorShape;")] + "\n" + production
         helper = function(video, "Video_Atari_SetHalftonePattern")
         helper = helper.replace("(volatile uint16 *)0xFFFF8A00UL", "halftoneRAM")
         helper = helper.replace("halftone[i] = pattern[i];",
@@ -98,16 +102,16 @@ static void Video_Atari_TileCursorTail(void) {
     g_videoTileCursorRestored=true;
 }
 /* PRODUCTION */
-static void cursor(unsigned col, unsigned row, bool target, unsigned expectedUploads) {
+static void cursor(unsigned col, unsigned row, VideoAtariTileCursorShape shape, unsigned expectedUploads) {
     unsigned before = launches;
     memset(screen, 0x5a, sizeof(screen));
-    Video_Atari_TileCursorFrame(col, row, target);
+    Video_Atari_TileCursorFrame(col, row, shape);
     assert(uploads == expectedUploads && launches == before + 4 && hop == 2);
     unsigned offset = (40 + row * 16) * 80 + col * 4;
     for (unsigned y = 0; y < 16; y++)
     for (unsigned p = 0; p < 4; p++) {
         uint16 pattern = halftoneRAM[y];
-        uint16 pen = target ? g_tileCursorTargetPen : g_tileCursorPen;
+        uint16 pen = shape == TILE_CURSOR_TARGET ? g_tileCursorTargetPen : g_tileCursorPen;
         uint16 expected = pen & (1u << p) ? 0x5a5a | pattern :
                                                         0x5a5a & (uint16)~pattern;
         assert(screen[offset + y * 80 + p] == expected);

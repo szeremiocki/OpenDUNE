@@ -75,7 +75,11 @@ static void Video_Atari_RefreshViewportCursor(uint8 *base, uint16 first, uint16 
         ))
         protection = video[video.index("static const uint16 s_tileCursorPatterns"):
                            video.index("/* Battlefield tile cursor:")]
-        protection = (blit_plan_type() + """
+        header = (ROOT / "src/video/video.h").read_text()
+        shape_type = header[header.index("typedef enum VideoAtariTileCursorShape"):
+                            header.index("} VideoAtariTileCursorShape;") +
+                            len("} VideoAtariTileCursorShape;")]
+        protection = (shape_type + "\n" + blit_plan_type() + """
 static const uint16 *s_blitterHalftonePattern;
 void Video_Atari_EndViewportProtection(void);
 static void Video_Atari_PresentProtectedSprite(const uint16 *, const uint16 *,
@@ -123,7 +127,7 @@ static bool Video_Atari_TileOverlaysOverlap(uint8 *base, uint16 x, uint16 y) {
             "Video_Atari_DrawPlanarTile", "Video_Atari_DrawPlanarTileFogged"))
         placement = video[video.index("typedef struct PlacementBlock"):
                           video.index("} PlacementBlock;") + len("} PlacementBlock;")]
-        limits = "\n".join(line for line in (ROOT / "src/video/video.h").read_text().splitlines()
+        limits = "\n".join(line for line in header.splitlines()
                            if line.startswith(("#define VIDEO_ATARI_CURSOR_MAX_WIDTH",
                                                "#define VIDEO_ATARI_CURSOR_MAX_HEIGHT")))
         harness = r"""

@@ -19,11 +19,12 @@ API or a display-listed CPU-only viewport.
 | Fixed CPU masked-tile kernel, mixed with BLITTER commands | Done; native-tested |
 | Direct native tile-cursor kernel with frame-stable arguments | Done |
 | Explicit renderer ordering: scene, cursor, message; no implicit flush cursor | Done |
+| Tile-aligned scroll arrows combined with the cursor frame in one halftone command | Done; host-side visual confirmation pending |
 | Queued CPU text strips and persistent uncached-glyph storage | Done |
 | Capacity reservations and cache replacement/teardown lifetime barriers | Done |
 | Opaque selection publication without redundant immediate cursor repair | Done |
 
-The final implementation passed 16 focused fixtures and seven ASan/UBSan
+The message-list implementation passed 16 focused fixtures and seven ASan/UBSan
 fixtures, and built in normal and damage-debug plain-68000 configurations.
 Capture 87 validates the frozen `viewport-message-list` normal test delivery:
 43,604 executed instruction encodings matched, with zero mismatches. It records
@@ -85,6 +86,31 @@ and capacity drains never insert drawing commands. A drain between the cursor
 and message preserves their order. Immediate compatibility writers retain
 their restoration hooks.
 The CPU viewport retains its original cursor protection.
+
+With `tile_cursor=1`, scroll arrows are cursor shapes, not separate sprite
+publications. Four additional static 16-line patterns (128 bytes) combine the
+normal brackets with a single-colour directional arrow. Top/bottom arrows
+follow the mouse's tile column; left/right arrows follow its tile row, clamped
+to the nearest battlefield edge tile. The top/right activation strips outside
+the battlefield are included. Shape changes participate in the existing
+old/new tile damage tracking; the same damage gate queues one six-byte command
+only when the tile requires it. The CPU viewport uses the same shape and its
+existing protected immediate draw. Placement remains separate, and disabling
+tile-cursor mode retains the pixel-positioned software scroll arrows.
+
+The scroll-shape extension passes 15 focused fixtures and five ASan/UBSan
+fixtures, including edge-strip positioning, stationary damage gating,
+same-tile shape changes, CPU/BLITTER drawing and fog-mask invalidation.
+Normal and damage-debug plain-68000 deliveries are frozen in
+`objs/viewport-tile-clipped-repair/tile-scroll-shapes/`; gameplay and appearance
+still require host-side confirmation.
+
+Capture 88 matches that normal delivery: 41,156 instruction encodings checked,
+zero mismatches. All 14,995 terrain repairs were queued, with no backup-aware
+immediate repairs or native software-cursor restore/compose/refresh executions.
+It records 970 cursor commands/kernel entries and 33 bottom-arrow preparations;
+the other arrow directions were not sampled. Cursor kernel cost remained
+essentially unchanged at 1,384 cycles/draw versus 1,387 in capture 87.
 
 The JSR enters the native cursor kernel directly, using dedicated destination,
 pattern and predecoded-operation pointers prepared once per viewport. There is

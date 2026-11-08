@@ -275,6 +275,10 @@ int main(void) {
         video = (ROOT / "src/video/video_atari.c").read_text()
         state = video[video.index("static const uint16 s_tileCursorPatterns"):
                       video.index("/* Battlefield tile cursor:")]
+        header = (ROOT / "src/video/video.h").read_text()
+        state = header[header.index("typedef enum VideoAtariTileCursorShape"):
+                       header.index("} VideoAtariTileCursorShape;") +
+                       len("} VideoAtariTileCursorShape;")] + "\n" + state
         state = state.replace("void Video_Atari_SetViewportFog(",
                               "static void SetViewportFogRaw(")
         state = state.replace("s_tileCursorMaskKey = key;",
@@ -406,6 +410,22 @@ int main(void) {
                !g_videoTileCursorTiles[row]);
     Video_Atari_BeginViewportProtection(true,4,3,true);
     assert(cursorBuilds == 4);
+    uint16 fog[16];
+    for (unsigned line = 0; line < 16; line++) fog[line] = 0x5a5a ^ (line * 117);
+    Video_Atari_SetViewportFog(4,3,fog);
+    for (VideoAtariTileCursorShape shape = TILE_CURSOR_SCROLL_UP;
+         shape <= TILE_CURSOR_SCROLL_LEFT; shape++) {
+        s_blitterHalftonePattern = s_tileCursorFogWritable;
+        unsigned before = cursorBuilds;
+        Video_Atari_BeginViewportProtection(true,4,3,shape);
+        assert(cursorBuilds == before+1 && s_blitterHalftonePattern == NULL);
+        for (unsigned line = 0; line < 16; line++)
+            assert(s_tileCursorFogWritable[line] ==
+                   (fog[line] & (uint16)~s_tileCursorPatterns[shape][line]));
+        Video_Atari_EndViewportProtection();
+        Video_Atari_BeginViewportProtection(true,4,3,shape);
+        assert(cursorBuilds == before+1);
+    }
     return 0;
 }
 """

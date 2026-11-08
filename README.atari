@@ -242,7 +242,13 @@ marks the tile under the mouse with a frame instead (corner brackets, or a
 heavier frame in target mode). The frame is drawn in an exact palette pen (all four planes, blitter, no source
 reads), so no cursor backup or refresh is needed. tile_cursor_pen (default 4,
 white) and tile_cursor_target_pen (default 2, red) select the pens, 0-15.
-Scroll edges, the sidebar, minimap and menus keep the normal pointer:
+Scroll edges use the same frame with a directional arrow in its centre, in
+tile_cursor_pen. It snaps to the edge tile nearest the mouse, including the
+top/right activation strips outside the battlefield. Frame and arrow are one
+halftone draw through the display list in BLITTER mode; unchanged, undamaged
+tiles need no cursor redraw. Moving, changing or hiding it repairs its old
+tile. The sidebar, minimap and menus keep the normal pointer. With tile_cursor=0,
+scroll arrows retain pixel-precise software-cursor positioning:
 
 [opendune]
 tile_cursor=1

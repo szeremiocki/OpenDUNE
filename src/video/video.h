@@ -37,10 +37,19 @@ extern void Video_Atari_CursorHide(void);
 extern void Video_Atari_CursorPreloadIcons(void);
 extern bool Video_Atari_CursorUseIcon(uint16 iconIndex, int16 left, int16 top);
 
+typedef enum VideoAtariTileCursorShape {
+	TILE_CURSOR_NORMAL,
+	TILE_CURSOR_TARGET,
+	TILE_CURSOR_SCROLL_UP,
+	TILE_CURSOR_SCROLL_RIGHT,
+	TILE_CURSOR_SCROLL_DOWN,
+	TILE_CURSOR_SCROLL_LEFT
+} VideoAtariTileCursorShape;
+
 /* Grid-aligned placement preview, below the planar cursor and above the
  * scene. Coordinates are screen pixels; clipping is to the battlefield. */
 extern void Video_Atari_PlacementTint(int16 x, int16 y, uint16 width, uint16 height, bool invalid);
-extern void Video_Atari_TileCursorFrame(uint16 col, uint16 row, bool target);
+extern void Video_Atari_TileCursorFrame(uint16 col, uint16 row, VideoAtariTileCursorShape shape);
 extern void Video_Atari_PlacementCursor(bool hidden);
 extern void Video_Atari_PlacementHide(void);
 
@@ -186,7 +195,7 @@ extern void Video_Atari_DrawPlanarTileFogged(const uint16 *pixels, const uint16 
                                           uint16 x, uint16 y, const uint16 *copyPixels);
 extern void Video_Atari_ResetViewportProtection(void);
 extern void Video_Atari_SetViewportFog(uint16 col, uint16 row, const uint16 *writable);
-extern void Video_Atari_BeginViewportProtection(bool cursor, uint16 col, uint16 row, bool target);
+extern void Video_Atari_BeginViewportProtection(bool cursor, uint16 col, uint16 row, VideoAtariTileCursorShape shape);
 extern void Video_Atari_EndViewportProtection(void);
 extern void Video_Atari_PresentSprite(const uint8 *src, uint16 stride,
                                      uint16 x, uint16 y, uint16 width, uint16 height,

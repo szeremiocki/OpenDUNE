@@ -389,6 +389,25 @@ int main(void) {
     GFX_DrawPlanarSelectionTile(1,0,64,72,0,GFX_SELECTION_LEFT,15);
     assert(immediateTiles == 1 && frameLaunches == before+4);
     Video_Atari_EndViewportProtection();
+    queuedCursorTile = true;
+    for (VideoAtariTileCursorShape shape = TILE_CURSOR_SCROLL_UP;
+         shape <= TILE_CURSOR_SCROLL_LEFT; shape++) {
+        Video_Atari_BeginViewportProtection(true,4,2,shape);
+        Video_Atari_DisplayListBegin();
+        append(); Video_Atari_QueueTileCursor(); Video_Atari_DisplayListEnd();
+        checkFrame(s_tileCursorPatterns[shape],g_tileCursorPen,false);
+        Video_Atari_EndViewportProtection();
+        g_videoViewportBlitter = false;
+        Video_Atari_BeginViewportProtection(true,4,2,shape);
+        for (unsigned y = 0; y < 16; y++) {
+            assert(s_tileCursorWritable[y] == (uint16)~s_tileCursorPatterns[shape][y]);
+            memcpy(screen+(72+y)*80+16,tile+y*4,8);
+        }
+        Video_Atari_TileCursorFrame(4,2,shape);
+        checkFrame(s_tileCursorPatterns[shape],g_tileCursorPen,false);
+        Video_Atari_EndViewportProtection();
+        g_videoViewportBlitter = true;
+    }
     Video_Atari_DisplayListFree();
     return 0;
 }
@@ -407,10 +426,18 @@ int main(void) {
         production += "\n" + function(viewport, "GUI_Widget_Viewport_PlacementDirty")
         production += "\n" + state
         production += "\n" + function(viewport, "GUI_Widget_Viewport_PlacementPrepare")
+        production += "\n" + function(viewport, "GUI_Widget_Viewport_SpriteDamageRect")
+        draw = function(viewport, "GUI_Widget_Viewport_Draw")
+        cursor = draw[draw.index("\tif (planarViewport && s_tileCursorShown &&"):
+                      draw.index("\ts_viewportSpriteFilterActive = false;")]
         harness = r"""
 #include <assert.h>
+#include <string.h>
 #include "types.h"
 #include "src/tile.h"
+#include "src/video/video.h"
+#define min(a,b) ((a)<(b)?(a):(b))
+#define max(a,b) ((a)>(b)?(a):(b))
 #define SELECTIONTYPE_PLACE 1
 static bool s_curSuppress, s_curDrawn = true, s_curDirty;
 static uint16 s_curDrawnGroup = 4, s_curDrawnY = 72, s_curDrawnH = 16;
@@ -422,12 +449,28 @@ static uint16 g_selectionType, g_selectionRectanglePosition, g_minimapPosition;
 static uint16 g_selectionWidth = 1, g_selectionHeight = 1, g_selectionState = 1;
 static unsigned erases, repairs;
 static uint16 repaired[16];
+static uint16 s_viewportSpriteDamage[10];
+static bool s_viewportSpriteFilterActive = true;
+bool g_videoDisplayListActive = true;
+static unsigned queued, immediate;
+void Video_Atari_DisplayListCheck(uint16 bytes) { assert(bytes == VIDEO_ATARI_DISPLAY_CURSOR_BYTES); }
+void Video_Atari_QueueTileCursor(void) { queued++; }
+void Video_Atari_TileCursorFrame(uint16 col, uint16 row, VideoAtariTileCursorShape shape) {
+    (void)col; (void)row; (void)shape; immediate++;
+}
 static void Video_Atari_CursorEraseFull(void) { erases++; s_curDrawn = false; }
 static void Map_Update(uint16 tile, uint16 type, bool ignoreInvisible) {
     assert(type == 0 && ignoreInvisible && repairs < 16);
     repaired[repairs++] = tile;
+    uint16 offset = tile - g_viewportPosition;
+    if ((offset >> 6) < 10 && (offset & 63) < 15)
+        s_viewportSpriteDamage[offset >> 6] |= 1u << (offset & 63);
 }
 /* PRODUCTION */
+static void publish(void) {
+    bool planarViewport = true;
+    /* CURSOR */
+}
 static void prepare(void) {
     GUI_Widget_Viewport_TileCursorPrepare(GUI_Widget_Viewport_PlacementPrepare());
 }
@@ -446,17 +489,85 @@ int main(void) {
     assert(s_tileCursorShown && !s_placeTintShown && s_curSuppress);
     g_mouseX = 250; prepare();
     assert(!s_tileCursorShown && !GUI_Widget_Viewport_TileCursorActive() && !s_curSuppress);
-    g_mouseX = 64;
-    for (g_cursorSpriteID = 1; g_cursorSpriteID <= 4; g_cursorSpriteID++) {
-        prepare(); assert(!s_tileCursorShown && !s_curSuppress);
+    repairs = 0; memset(s_viewportSpriteDamage,0,sizeof(s_viewportSpriteDamage));
+    g_mouseX = 64; g_mouseY = 24; g_cursorSpriteID = 1;
+    prepare();
+    assert(s_tileCursorShown && s_curSuppress && s_tileCursorCol == 4 &&
+           s_tileCursorRow == 0 && s_tileCursorShape == TILE_CURSOR_SCROLL_UP);
+    publish(); assert(queued == 1 && !immediate);
+    repairs = 0; memset(s_viewportSpriteDamage,0,sizeof(s_viewportSpriteDamage));
+    g_mouseX = 65; g_mouseY = 30;
+    prepare(); publish(); assert(!repairs && queued == 1);
+    g_mouseX = 80; prepare(); publish();
+    assert(s_tileCursorCol == 5 && repairs == 2 && queued == 2 &&
+           s_viewportSpriteDamage[0] == ((1u<<4) | (1u<<5)));
+    repairs = 0; memset(s_viewportSpriteDamage,0,sizeof(s_viewportSpriteDamage));
+    g_mouseY = 40; g_cursorSpriteID = 0;
+    prepare(); publish();
+    assert(s_tileCursorCol == 5 && s_tileCursorRow == 0 &&
+           s_tileCursorShape == TILE_CURSOR_NORMAL && queued == 3 &&
+           s_viewportSpriteDamage[0] == (1u<<5));
+    /* Direction changes at a corner must damage even an unchanged tile. */
+    g_mouseX = 0; g_cursorSpriteID = 4; repairs = 0; prepare();
+    repairs = 0; memset(s_viewportSpriteDamage,0,sizeof(s_viewportSpriteDamage));
+    g_cursorSpriteID = 1; prepare(); publish();
+    assert(repairs && s_tileCursorCol == 0 && s_tileCursorRow == 0 &&
+           s_tileCursorShape == TILE_CURSOR_SCROLL_UP &&
+           s_viewportSpriteDamage[0] == 1);
+    /* External top/right strips, bottom/left edges and end tiles. */
+    static const struct {
+        uint16 icon, x, y, col, row; VideoAtariTileCursorShape shape;
+    } edges[] = {
+        {1,239,24,14,0,TILE_CURSOR_SCROLL_UP},
+        {2,240,60,14,1,TILE_CURSOR_SCROLL_RIGHT},
+        {2,249,199,14,9,TILE_CURSOR_SCROLL_RIGHT},
+        {3,239,199,14,9,TILE_CURSOR_SCROLL_DOWN},
+        {4,1,199,0,9,TILE_CURSOR_SCROLL_LEFT},
+        {4,0,40,0,0,TILE_CURSOR_SCROLL_LEFT},
+    };
+    for (unsigned i = 0; i < sizeof(edges)/sizeof(edges[0]); i++) {
+        repairs = 0;
+        g_cursorSpriteID = edges[i].icon; g_mouseX = edges[i].x; g_mouseY = edges[i].y;
+        prepare();
+        assert(s_tileCursorShown && s_curSuppress &&
+               s_tileCursorCol == edges[i].col && s_tileCursorRow == edges[i].row &&
+               s_tileCursorShape == edges[i].shape);
+        repairs = 0; prepare(); assert(!repairs);
     }
-    prepare(); assert(s_tileCursorShown && s_tileCursorTarget && s_curSuppress);
+    /* A stationary arrow still redraws after scene damage or full redraw. */
+    memset(s_viewportSpriteDamage,0,sizeof(s_viewportSpriteDamage));
+    unsigned before = queued;
+    publish(); assert(queued == before);
+    s_viewportSpriteDamage[0] = 1;
+    publish(); assert(queued == before+1);
+    memset(s_viewportSpriteDamage,0,sizeof(s_viewportSpriteDamage));
+    s_viewportSpriteFilterActive = false;
+    publish(); assert(queued == before+2);
+    s_viewportSpriteFilterActive = true;
+    g_videoDisplayListActive = false; publish(); assert(immediate == 1);
+    g_videoDisplayListActive = true;
+    /* CPU-only/classic configuration and placement retain their own modes. */
+    g_tileCursor = 0;
+    for (g_cursorSpriteID = 1; g_cursorSpriteID <= 4; g_cursorSpriteID++) {
+        repairs = 0; prepare(); assert(!s_tileCursorShown && !s_curSuppress);
+    }
+    g_tileCursor = 1; g_cursorSpriteID = 2; g_mouseX = 240; g_mouseY = 72;
+    repairs = 0; prepare(); assert(s_tileCursorShown && s_curSuppress);
+    g_selectionType = SELECTIONTYPE_PLACE;
+    repairs = 0; prepare(); assert(!s_tileCursorShown && s_curSuppress && s_placeTintShown);
+    g_selectionType = 0;
+    repairs = 0; prepare(); assert(s_tileCursorShown && s_curSuppress);
+    g_mouseX = 250; repairs = 0; prepare(); assert(!s_tileCursorShown && !s_curSuppress);
+    g_mouseX = 64; g_mouseY = 23; repairs = 0; prepare(); assert(!s_tileCursorShown);
+    g_mouseY = 72; g_cursorSpriteID = 5;
+    repairs = 0; prepare();
+    assert(s_tileCursorShown && s_tileCursorShape == TILE_CURSOR_TARGET && s_curSuppress);
     g_mouseDisabled = 1; prepare();
     assert(!s_tileCursorShown && !s_curSuppress);
     return 0;
 }
 """
-        run_harness(harness.replace("/* PRODUCTION */", production))
+        run_harness(harness.replace("/* PRODUCTION */", production).replace("/* CURSOR */", cursor))
 
 
 if __name__ == "__main__":
