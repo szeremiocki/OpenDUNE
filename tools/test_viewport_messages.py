@@ -91,6 +91,8 @@ void Video_Atari_TileCursorFrame(uint16 col, uint16 row, VideoAtariTileCursorSha
     (void)col; (void)row; (void)shape; cursor();
 }
 void Video_Atari_EndViewportProtection(void) { g_videoTileCursorTail = NULL; }
+bool g_videoScrollPending;
+void Video_Atari_FinishScroll(void) { assert(false); }
 static bool GUI_Widget_Viewport_SpriteDamageRect(int16 l, int16 t, int16 r, int16 b, bool redraw) {
     assert(l == 64 && t == 136 && r == 80 && b == 152);
     return redraw || cursorDamaged;

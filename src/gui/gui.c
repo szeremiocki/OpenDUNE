@@ -7462,11 +7462,9 @@ void GUI_DrawScreen(Screen screenID)
 			for (x = 0; x < 15; x++) {
 				if (x >= xOffset && (xOffset + xOverlap) > x && y >= yOffset && (yOffset + yOverlap) > y && !g_viewport_forceRedraw) continue;
 
-				/* This tile is the vacated edge: Video_Atari_ShiftPlanar()
-				 * above already blanked it (proper move semantics), so no
-				 * separate clear is needed here -- just redraw it. Once
-				 * the planar shift has already moved every other visible
-				 * tile to its correct new position, use the narrow update
+				/* Reconstruct the vacated edge without clearing it first.
+				 * Once the planar shift moves every other visible tile
+				 * to its correct new position, use the narrow update
 				 * (type 4) so marking this one tile dirty does not also
 				 * widen the SCREEN_1->SCREEN_0 copy range into the still-
 				 * correct neighbouring column via type 0's 8-neighbour

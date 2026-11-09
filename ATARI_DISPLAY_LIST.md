@@ -23,6 +23,7 @@ API or a display-listed CPU-only viewport.
 | Queued CPU text strips and persistent uncached-glyph storage | Done |
 | Capacity reservations and cache replacement/teardown lifetime barriers | Done |
 | Opaque selection publication without redundant immediate cursor repair | Done |
+| Shared-bus retained scroll copy with one-shot HOG completion barrier | Done; capture 93 profiled |
 
 The message-list implementation passed 16 focused fixtures and seven ASan/UBSan
 fixtures, and built in normal and damage-debug plain-68000 configurations.
@@ -33,7 +34,7 @@ and 31 message draws through 62 CPU rectangle commands. The masked-tile kernel
 is covered by native fixtures but was not exercised by that capture.
 
 **Retained intentionally:** software-cursor/legacy-placement backup-aware
-compatibility paths, immediate bulk scrolling, unsupported-input fallbacks,
+compatibility paths, CPU scrolling when BLITTER is disabled, unsupported-input fallbacks,
 and the original immediate CPU-only viewport. The list is synchronous, not
 VBL-submitted or guaranteed tear-free. Cache-enabled Mega STE launch behaviour
 still needs separate hardware confirmation.
@@ -51,6 +52,25 @@ and return directly to the following command. Flush writes one terminal RTS,
 executes the prefix, and resets the write pointer without clearing storage.
 There is no separate call stream, packet chain, backward allocation region,
 argument frame, or cache-pin registry.
+
+The overlap-safe retained scroll rectangle starts as one shared-bus BLITTER
+copy before construction. The first flush (including an empty-list CPU access
+barrier) promotes any remaining copy to HOG, waits for completion and clears
+the scroll-pending flag. Subsequent drains execute normally. Immediate BLITTER
+writers also finish the pending scroll before changing hardware registers.
+No exposed-strip clear is performed: edge tiles, including opaque fog, are
+reconstructed normally. Visible legacy overlays require an immediate barrier
+to restore their backups safely; a hidden mouse and absent legacy placement
+overlay leave construction free to overlap the copy.
+Reverse traversal uses FXSR plus NFSR at zero skew: negative source XINC
+loads the source latch's high half, so one prefetch and a suppressed final
+fetch deliver the correct word without changing the source-access count.
+
+Capture 93 matches the corrected normal delivery: 40,706 instruction encodings
+checked, zero mismatches. Its 15 retained scrolls complete at four early flushes
+and eleven normal list ends, with one BUSY read each and no polling-loop repeats.
+No capacity-triggered drains occur. Copy bus costs overlap construction, so
+launch/completion function timings are not end-to-end scroll timings.
 
 Ordinary full-width sprites now cache sixteen executable geometry prefixes
 instead of sixteen data plans. Each 50-byte prefix sets geometry, clears the

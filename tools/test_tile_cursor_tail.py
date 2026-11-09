@@ -66,6 +66,8 @@ static int16 s_placeDrawnX, s_placeDrawnY;
 static uint8 s_placePen;
 static const uint16 *s_blitterHalftonePattern;
 static bool s_blitterTileSetup;
+bool g_videoScrollPending;
+void Video_Atari_FinishScroll(void) { assert(false); }
 static uint16 g_tileCursorPen = 4, g_tileCursorTargetPen = 15;
 enum { PLANAR_TILE_MIXED = 1, PLANAR_TILE_EMPTY, PLANAR_TILE_OPAQUE };
 static uint16 selectionPixels[128], selectionMasks[32];

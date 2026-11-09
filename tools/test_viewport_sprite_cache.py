@@ -54,6 +54,8 @@ def inactive_protection():
 def inactive_display_list():
     return """
 #define g_videoDisplayListActive false
+#define g_videoScrollPending false
+#define Video_Atari_FinishScroll() assert(false)
 #define Video_Atari_DisplayListFlush() ((void)0)
 #define Video_Atari_DisplayListCheck(bytes) ((void)(bytes))
 #define Video_Atari_RestoreTileCursor() ((void)0)

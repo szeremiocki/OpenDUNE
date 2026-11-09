@@ -12,6 +12,7 @@
 	xref	_s_planarTileReady
 	xref	_s_planarTiles
 	xref	_g_videoDisplayListActive
+	xref	_g_videoScrollPending
 	xref	_Video_Atari_QueueTileBlit
 	xref	_Video_Atari_RestoreTileCursor
 	;code
@@ -72,6 +73,8 @@ tile_blit:	tst.b	_g_videoDisplayListActive
 	move.l	(sp)+,d2
 	rts
 .immediate:
+	tst.b	_g_videoScrollPending
+	bne	tile_fail		; C fallback completes the scroll first
 	tst.b	_g_videoBlitterTileSetup
 	bne	.ready
 .idle:	tst.b	$ffff8a3c.w

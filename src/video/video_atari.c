@@ -63,6 +63,7 @@ static uint16 s_damageDebugRows[10];
 #endif
 bool g_videoViewportBlitter = false;
 #define s_viewportBlitter g_videoViewportBlitter
+bool g_videoScrollPending;
 bool g_videoBlitterTileSetup = false;	/* read by atari_viewport_tile.s */
 #define s_blitterTileSetup g_videoBlitterTileSetup
 
@@ -2198,6 +2199,7 @@ static void Video_Atari_DisplayExecute(void)
 
 void Video_Atari_ExecuteDisplayList(const uint16 *stream)
 {
+	if (g_videoScrollPending) Video_Atari_FinishScroll();
 	s_displayStream = stream;
 	s_blitterTileSetup = false;
 	s_blitterHalftonePattern = NULL;
@@ -2338,6 +2340,7 @@ void Video_Atari_PlacementTint(int16 x, int16 y, uint16 width, uint16 height, bo
 	if (right > 240) right = 240;
 	if (bottom > 200) bottom = 200;
 	if (x >= right || y >= bottom) return;
+	if (!g_videoDisplayListActive && g_videoScrollPending) Video_Atari_FinishScroll();
 	words = (uint16)((right - x) >> 4);
 	lines = (uint16)(bottom - y);
 	dst = Video_Atari_PlanarBase() + (uint32)y * ST_PLANAR_LINE_BYTES + (x >> 1) + plane * 2;
@@ -2386,7 +2389,6 @@ void Video_Atari_DebugDamageBegin(const uint16 rows[10], bool accepted)
 	s_damageDebugAccepted = accepted;
 	memcpy(s_damageDebugRows, rows, sizeof(s_damageDebugRows));
 	GUI_Mouse_Hide();
-	if (s_viewportBlitter) while ((*BLITTER_CTRL & 0x80) != 0) {}
 	Video_Atari_CursorEraseFull();
 	Video_Atari_DebugDamageTint();
 }
@@ -2538,6 +2540,7 @@ void Video_Atari_TileCursorFrame(uint16 col, uint16 row, VideoAtariTileCursorSha
 
 	if (col >= 15 || row >= 10) return;
 	assert(shape >= TILE_CURSOR_NORMAL && shape <= TILE_CURSOR_SCROLL_LEFT);
+	if (g_videoScrollPending) Video_Atari_FinishScroll();
 	pattern = s_tileCursorPatterns[shape];
 	if (g_videoTileCursorTail != NULL && col == s_tileCursorCol &&
 	    40 + row * 16 == s_tileCursorTop) {
@@ -2573,6 +2576,7 @@ void Video_Atari_RestoreTileCursor(void)
 {
 	if (g_videoTileCursorTail == NULL) return;
 	assert(!Video_Atari_DisplayListPending());
+	if (g_videoScrollPending) Video_Atari_FinishScroll();
 	s_blitterHalftonePattern = NULL;
 	Atari_SupervisorExec(Video_Atari_TileCursorTail);
 }
@@ -3343,6 +3347,14 @@ static void Video_Atari_BlitterStart(void)
 	while ((*BLITTER_CTRL & 0x80) != 0) {}
 }
 
+void __attribute__((noinline)) Video_Atari_FinishScroll(void)
+{
+	assert(g_videoScrollPending);
+	/* Resume the remaining copy in HOG mode without reloading geometry. */
+	Atari_SupervisorExec(Video_Atari_BlitterStart);
+	g_videoScrollPending = false;
+}
+
 static void Video_Atari_BlitterSetup(const Video_Atari_SpriteBlitPlan *plan,
                                     int16 destinationXinc)
 {
@@ -3473,6 +3485,18 @@ void Video_Atari_BuildSpriteBlitGeometry(Video_Atari_SpriteBlitGeometry geometry
 		*out++ = HTOBE16(0x4ed4); /* jmp (a4) */
 		assert(out == geometry[phase].words + VIDEO_ATARI_SPRITE_BLIT_GEOMETRY_WORDS);
 	}
+}
+
+static void Video_Atari_BlitScroll(void)
+{
+	s_blitterTileSetup = false;
+	Video_Atari_BlitterSetup(s_planarBlit.plan, s_planarBlit.plan->destinationXinc);
+	*BLITTER_OP = 3;
+	*BLITTER_SRC_ADDR = (uint32)(size_t)s_planarBlit.pixels;
+	*BLITTER_DST_ADDR = (uint32)(size_t)s_planarBlit.dst;
+	*BLITTER_YCOUNT = s_planarBlit.height;
+	g_videoScrollPending = true;
+	*BLITTER_CTRL = 0x80;
 }
 
 static void Video_Atari_BlitOpaque(void)
@@ -3724,6 +3748,7 @@ static void Video_Atari_BlitTile(const uint16 *pixels, uint8 *base, uint16 x, ui
 		Video_Atari_QueueTile(pixels, dst);
 		return;
 	}
+	if (g_videoScrollPending) Video_Atari_FinishScroll();
 	s_planarBlit.dst = dst;
 	s_planarBlit.pixels = pixels;
 	Atari_SupervisorExec(Video_Atari_BlitOpaque);
@@ -3748,6 +3773,7 @@ bool Video_Atari_BlitViewportTile(const uint16 *pixels, uint16 col, uint16 row)
 		Video_Atari_QueueTile(pixels, (uint16 *)dst);
 		return true;
 	}
+	if (g_videoScrollPending) Video_Atari_FinishScroll();
 #if ATARI_SUPERVISOR_RESIDENT
 	if (g_atariSupervisorResident && s_blitterTileSetup) {
 		*BLITTER_SRC_ADDR = (uint32)(size_t)pixels;
@@ -4309,6 +4335,7 @@ void Video_Atari_PresentPlanarSpriteUnshifted(const uint16 *pixels, const uint16
 	assert(sourceWidth > 0 && sourceWidth <= 80 && (sourceWidth & 15) == 0);
 	assert(width > 0 && sourceX + width <= sourceWidth);
 	assert(height > 0 && height <= 64 && x + width <= 240 && y >= 40 && y + height <= 200);
+	if (!g_videoDisplayListActive && g_videoScrollPending) Video_Atari_FinishScroll();
 	if (Video_Atari_ViewportProtectionOverlap(x, y, width, height)) {
 		Video_Atari_PresentProtectedSprite(pixels, masks, sourceWidth, sourceX,
 		    width, height, x, y, true, code);
@@ -4570,18 +4597,17 @@ bool Video_Atari_PresentFill(int16 x, int16 y, uint16 width, uint16 height, uint
 
 /**
  * Shift a rectangle of the ST/STE planar screen buffer in place by
- * (dx, dy) pixels, without touching the chunky shadow or running c2p, then
- * blank whatever the shift exposed (the source/destination bounding
- * rectangle outside the destination goes to black, it does not keep
- * showing the pre-shift picture until some later, unrelated redraw
- * happens to reach it).
+ * (dx, dy) pixels, without touching the chunky shadow or running c2p.
+ * The caller must reconstruct the exposed tiles; they are not cleared.
  *
  * This is for the gameplay viewport scroll: it is always a whole number
  * of 16 pixel tiles in each direction, so x, width and dx are always a
- * multiple of 16 (one c2p group = one interleaved-plane word = exactly
- * one tile). That means the shift is a plain memmove of 8-byte group
- * chunks per scanline -- no bit-level shifting across word boundaries
- * is ever needed, unlike a general pixel-granular planar scroll would.
+ * multiple of 16 (one c2p group = four interleaved plane words).
+ * The enabled viewport BLiTTER copies the rectangle in shared-bus mode,
+ * allowing display-list construction to overlap the copy. The first
+ * flush or immediate screen access finishes it in HOG mode. Otherwise
+ * the copy uses memmove per scanline.
+ * No bit-level shifting across word boundaries is needed.
  * The already-converted pixels being moved need no further c2p work;
  * only whatever the caller newly draws at the exposed edge does.
  *
@@ -4620,7 +4646,7 @@ bool Video_Atari_ShiftPlanar(int16 x, int16 y, uint16 width, uint16 height, int1
 	if ((int)dstY + (int)height > SCREEN_HEIGHT) return false;
 
 	base = Video_Atari_PlanarBase();
-	/* Neither overlay may be copied as scene content by the memmove. */
+	/* Neither overlay may be copied as scene content. */
 	Video_Atari_CursorEraseFull();
 	placementVisible = s_placeVisible;
 	s_placeVisible = false;
@@ -4631,7 +4657,31 @@ bool Video_Atari_ShiftPlanar(int16 x, int16 y, uint16 width, uint16 height, int1
 	src = base + (uint32)srcY * ST_PLANAR_LINE_BYTES + ((uint16)srcX >> 1);
 	dst = base + (uint32)dstY * ST_PLANAR_LINE_BYTES + ((uint16)dstX >> 1);
 
-	if (dstY > srcY) {
+	if (s_viewportBlitter) {
+		int16 increment = 2;
+		int16 rowIncrement = ST_PLANAR_LINE_BYTES - bytes + 2;
+
+		if (dst > src) {
+			uint32 last = (uint32)(rows - 1) * ST_PLANAR_LINE_BYTES + bytes - 2;
+			src += last;
+			dst += last;
+			increment = -increment;
+			rowIncrement = -rowIncrement;
+		}
+		Video_Atari_SpriteBlitPlan plan = {
+			.sourceXinc = increment, .sourceYinc = rowIncrement,
+			.firstMask = 0xffff, .middleMask = 0xffff, .lastMask = 0xffff,
+			.destinationXinc = increment, .destinationYinc = rowIncrement,
+			/* Reverse reads enter the high latch half; prefetch then drain it. */
+			.words = bytes / 2, .skew = increment < 0 ? 0xc0 : 0
+		};
+		s_planarBlit.pixels = (const uint16 *)src;
+		s_planarBlit.dst = (uint16 *)dst;
+		s_planarBlit.height = rows;
+		s_planarBlit.plan = &plan;
+		Atari_SupervisorExec(Video_Atari_BlitScroll);
+		s_planarBlit.plan = NULL;
+	} else if (dstY > srcY) {
 		/* Destination rows are below source rows: copy bottom row first
 		 * so a lower destination row never clobbers a source row a
 		 * higher iteration still needs to read. memmove() per row
@@ -4651,25 +4701,9 @@ bool Video_Atari_ShiftPlanar(int16 x, int16 y, uint16 width, uint16 height, int1
 		}
 	}
 
-	/* The source/destination bounding rectangle is the scrolled viewport.
-	 * Clear it minus the destination, including diagonal corners outside
-	 * the source rectangle. The two exposed strips do not overlap. */
-	if (dx != 0) {
-		uint16 freeW = (uint16)((dx > 0) ? dx : -dx);
-		int16 freeX = (int16)((dx > 0) ? x : (x + width + dx));
-
-		Video_Atari_PlanarFill((uint16)freeX, (uint16)min(srcY, dstY),
-		                      freeW, (uint16)(height + abs(dy)), 0);
-	}
-	if (dy != 0) {
-		uint16 freeH = (uint16)((dy > 0) ? dy : -dy);
-		int16 freeY = (int16)((dy > 0) ? y : (y + height + dy));
-
-		Video_Atari_PlanarFill((uint16)dstX, (uint16)freeY, width, freeH, 0);
-	}
 	s_placeVisible = placementVisible;
-	Video_Atari_PlacementEnd(base);
-	Video_Atari_CursorSync(base);
+	if (s_placeVisible) Video_Atari_PlacementEnd(base);
+	if (s_curVisible) Video_Atari_CursorSync(base);
 	return true;
 }
 

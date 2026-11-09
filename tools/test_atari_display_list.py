@@ -45,6 +45,8 @@ class DisplayListTest(unittest.TestCase):
 #include "src/video/video.h"
 #include "src/os/endian.h"
 bool g_videoViewportBlitter;
+bool g_videoScrollPending;
+void Video_Atari_FinishScroll(void) { assert(false); }
 static unsigned executions, commands;
 static uint16 screen[8], source = 0x5678;
 uint16 endian_bswap16(uint16 v) { return (v >> 8) | (v << 8); }
@@ -119,6 +121,8 @@ int main(void) {
 #include "src/video/video.h"
 #include "src/os/endian.h"
 bool g_videoViewportBlitter = true;
+bool g_videoScrollPending;
+void Video_Atari_FinishScroll(void) { assert(false); }
 static unsigned executions;
 static const uint16 *queued;
 static uint16 displayed;
@@ -259,6 +263,7 @@ int main(void) {
 #include "src/os/endian.h"
 #define ST_PLANAR_LINE_BYTES 160
 bool g_videoDisplayListActive, g_videoBlitterTileSetup;
+bool g_videoScrollPending;
 bool g_videoViewportBlitter, g_atariSupervisorResident;
 uint8 *g_videoPlanarBase;
 uint16 s_curViewportTiles[10], g_videoTileCursorTiles[10];
@@ -550,12 +555,20 @@ void TestCursorFrame(uint8 *dst, const uint16 *pattern, uint16 pen) {
             write(symbols["_g_videoViewportBlitter"],1,1)
             write(symbols["_g_atariSupervisorResident"],1,1)
             write(symbols["_g_videoDisplayListNext"],0x70000,4)
+            write(symbols["_g_videoScrollPending"],1,1)
             call("_GFX_DrawViewportPixelsFast",(0x52000,0,0),{"D2":0x12345678})
             self.assertEqual(cpu.reg_read(reg("D0")),1)
             self.assertEqual(cpu.reg_read(reg("D2")),0x12345678)
             self.assertEqual(read(symbols["_restoredCursor"],4),0)
             self.assertEqual(read(symbols["_g_videoDisplayListNext"],4),0x70012)
             write(symbols["_g_videoDisplayListActive"],0,1)
+            before_scroll = bytes(cpu.mem_read(0x40000, 2560))
+            call("_GFX_DrawViewportPixelsFast",(0x52000,0,0),{"D2":0x12345678})
+            self.assertEqual(cpu.reg_read(reg("D0")),0)
+            self.assertEqual(cpu.reg_read(reg("D2")),0x12345678)
+            self.assertEqual(read(symbols["_restoredCursor"],4),0)
+            self.assertEqual(bytes(cpu.mem_read(0x40000, 2560)),before_scroll)
+            write(symbols["_g_videoScrollPending"],0,1)
             call("_GFX_DrawViewportPixelsFast",(0x52000,0,0),{"D2":0x12345678})
             self.assertEqual(cpu.reg_read(reg("D0")),1)
             self.assertEqual(cpu.reg_read(reg("D2")),0x12345678)

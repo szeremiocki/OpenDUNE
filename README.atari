@@ -928,9 +928,16 @@ measurement on the target.
 
 Click-to-center actions on ST/STE (minimap, viewport right-click, and the
 selected-object name) reuse the same incremental planar shift as edge
-scrolling while any viewport overlap remains. Diagonal shifts clear all
-exposed corners as well as the new rows and columns. Jumps with no overlap
-rebuild the viewport.
+scrolling while any viewport overlap remains. Edge reconstruction covers
+new rows, columns and diagonal corners without a separate clear. Jumps with
+no overlap rebuild the viewport.
+With `viewport_blitter=1`, the retained rectangle is copied by one
+overlap-safe shared-bus BLiTTER launch while the display list is constructed.
+The first forced flush or final playback promotes the remaining copy to HOG
+and waits for completion; later flushes need no further scroll wait.
+Immediate screen accesses also finish a pending copy. Visible legacy overlays
+are restored synchronously; otherwise restoration does not interrupt construction.
+With the BLiTTER disabled, per-scanline CPU memmove remains in use.
 
 The upper announcement banner converts its 24-row text composition once
 per slide on ST/STE, then copies the moving 14-row planar window without

@@ -18,6 +18,7 @@ bool Video_Atari_DisplayListPending(void)
 
 void Video_Atari_DisplayListFlush(void)
 {
+	if (g_videoScrollPending) Video_Atari_FinishScroll();
 	if (!Video_Atari_DisplayListPending()) return;
 	*g_videoDisplayListNext = HTOBE16(0x4e75);
 	g_videoDisplayListActive = false;

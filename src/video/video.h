@@ -172,10 +172,12 @@ extern bool Video_Atari_PresentPlanarSubRect(const uint16 *pixels, uint16 srcStr
  * video_atari.c for the full contract (group-aligned geometry only,
  * ST/STE only, independent of present mode). Used by the gameplay
  * viewport scroll to avoid re-running c2p on pixels that only moved.
- * The source/destination bounding rectangle is the viewport being moved.
- * Its area outside the destination is cleared to black, including the
- * extra exposed corners of diagonal shifts. */
+ * The caller reconstructs exposed tiles; they are not cleared here.
+ * With viewport BLiTTER enabled, the copy can remain pending until the
+ * next display-list flush or immediate screen access. */
 extern bool Video_Atari_ShiftPlanar(int16 x, int16 y, uint16 width, uint16 height, int16 dx, int16 dy);
+extern bool g_videoScrollPending;
+extern void Video_Atari_FinishScroll(void);
 /* Freeze the IBM.PAL mapping at tile load, without changing the UI palette.
  * Decode packed 16x16 tiles directly into private planar cache storage.
  * The 16-entry source palette contains house-adjusted logical indices.
