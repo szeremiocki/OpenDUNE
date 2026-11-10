@@ -66,6 +66,8 @@ bool g_videoViewportBlitter = false;
 bool g_videoScrollPending;
 bool g_videoBlitterTileSetup = false;	/* read by atari_viewport_tile.s */
 #define s_blitterTileSetup g_videoBlitterTileSetup
+static bool s_blitterDestinationWord;
+extern void Video_Atari_ConfigureBlitterDestination(uint32 wordOnly);
 
 #define BLITTER_SRC_XINC ((volatile int16 *)0xFFFF8A20UL)
 #define BLITTER_SRC_YINC ((volatile int16 *)0xFFFF8A22UL)
@@ -76,6 +78,7 @@ bool g_videoBlitterTileSetup = false;	/* read by atari_viewport_tile.s */
 #define BLITTER_DST_XINC ((volatile int16 *)0xFFFF8A2EUL)
 #define BLITTER_DST_YINC ((volatile int16 *)0xFFFF8A30UL)
 #define BLITTER_DST_ADDR ((volatile uint32 *)0xFFFF8A32UL)
+#define BLITTER_DST_ADDR_HIGH ((volatile uint16 *)0xFFFF8A32UL)
 #define BLITTER_XCOUNT ((volatile uint16 *)0xFFFF8A36UL)
 #define BLITTER_YCOUNT ((volatile uint16 *)0xFFFF8A38UL)
 #define BLITTER_HOP ((volatile uint8 *)0xFFFF8A3AUL)
@@ -108,7 +111,8 @@ static int s_savedCpuSpeed = -1;	/* -1 = not touched, else value to restore */
 #define ST_PLANAR_LINE_BYTES	(SCREEN_WIDTH / 2)	/* 4 bitplanes, 1 nibble/pixel */
 
 static uint32 s_stScreenBase = 0;	/* address to program, incl. shake offset */
-static const uint16 *s_blitterHalftonePattern;
+const uint16 *g_videoBlitterHalftonePattern;	/* shared with the native cursor kernel */
+#define s_blitterHalftonePattern g_videoBlitterHalftonePattern
 
 static uint32 s_paletteBackup[256];
 static uint16 s_SquareTable[256];
@@ -1096,6 +1100,25 @@ static void Video_ST_SetBase(void)
 	}
 }
 
+static bool Video_Atari_BlitterDestinationFits(uint32 base)
+{
+	/* Include the address advanced beyond the last row, not just written pixels. */
+	return base != 0 && (base & 1) == 0 &&
+	    (base >> 16) == ((base + (SCREEN_HEIGHT + 1) * ST_PLANAR_LINE_BYTES - 1) >> 16);
+}
+
+static void Video_Atari_InitBlitterDestination(void)
+{
+	uint32 base = (uint32)(size_t)s_planarBase;
+
+	s_blitterDestinationWord = s_viewportBlitter && Video_Atari_BlitterDestinationFits(base);
+	if (s_blitterDestinationWord) {
+		while ((*BLITTER_CTRL & 0x80) != 0) {}
+		*BLITTER_DST_ADDR_HIGH = base >> 16;
+	}
+	Video_Atari_ConfigureBlitterDestination(s_blitterDestinationWord);
+}
+
 /**
  * Initialize the video driver.
  */
@@ -1166,7 +1189,9 @@ bool Video_Init(int screen_magnification, VideoScaleFilter filter)
 		Setscreen(-1, -1, 0);	 /* set ST-Low resolution */
 		s_planarBase = (uint8 *)Logbase() + s_center_image_offset;
 		s_blitterTileSetup = false;
+		Atari_SupervisorExec(Video_Atari_InitBlitterDestination);
 		Warning("ST/STE planar screen base: $%08lx (Logbase)\n", (unsigned long)Logbase());
+		Debug("BLiTTER destination: %s writes\n", s_blitterDestinationWord ? "low-word" : "full-address");
 		/* set and backup system palette */
 		for (i=0; i<16; i++) {
 			s_paletteBackup[i] = Setcolor(i, ((s_palette4BitPC[i*4+0] << 5) & 0x0700) | ((s_palette4BitPC[i*4+1] << 1) & 0x0070) | ((s_palette4BitPC[i*4+2]>>3) & 0x007));
@@ -1216,6 +1241,8 @@ void Video_Uninit(void)
 		}
 		Setscreen(s_savedLogBase, s_savedPhysBase, s_savedMode);
 		s_planarBase = NULL;
+		s_blitterDestinationWord = false;
+		Video_Atari_ConfigureBlitterDestination(false);
 	}
 	Atari_SupervisorExec(uninstall_ikbd_handler);
 	if(s_savedCpuSpeed >= 0) {
@@ -2202,10 +2229,8 @@ void Video_Atari_ExecuteDisplayList(const uint16 *stream)
 	if (g_videoScrollPending) Video_Atari_FinishScroll();
 	s_displayStream = stream;
 	s_blitterTileSetup = false;
-	s_blitterHalftonePattern = NULL;
 	Atari_SupervisorExec(Video_Atari_DisplayExecute);
 	s_blitterTileSetup = false;
-	s_blitterHalftonePattern = NULL;
 }
 
 static uint16 *Video_Atari_DisplayMoveLong(uint16 *out, uint16 opcode, uint32 value)
@@ -2242,6 +2267,7 @@ static uint16 *Video_Atari_DisplayGeometry(uint16 *out, const Video_Atari_Sprite
 static uint16 *Video_Atari_DisplayPattern(uint16 *out, const uint16 *pattern)
 {
 	uint16 i;
+	out = Video_Atari_DisplayMoveLong(out, 0x42b9, (uint32)(size_t)&s_blitterHalftonePattern);
 	for (i = 0; i < 16; i++) {
 		*out++ = HTOBE16(0x31fc);
 		*out++ = HTOBE16(pattern[i]);
@@ -2556,7 +2582,6 @@ void Video_Atari_TileCursorFrame(uint16 col, uint16 row, VideoAtariTileCursorSha
 		g_videoTileCursorBlit.dst = dst;
 		g_videoTileCursorBlit.pattern = pattern;
 		g_videoTileCursorBlit.operations = s_tileCursorOperations[pen];
-		s_blitterHalftonePattern = NULL;
 		Atari_SupervisorExec(Video_Atari_TileCursorTail);
 		g_videoTileCursorBlit = saved;
 		g_videoTileCursorRestored = restored;
@@ -2577,7 +2602,6 @@ void Video_Atari_RestoreTileCursor(void)
 	if (g_videoTileCursorTail == NULL) return;
 	assert(!Video_Atari_DisplayListPending());
 	if (g_videoScrollPending) Video_Atari_FinishScroll();
-	s_blitterHalftonePattern = NULL;
 	Atari_SupervisorExec(Video_Atari_TileCursorTail);
 }
 
@@ -3347,11 +3371,19 @@ static void Video_Atari_BlitterStart(void)
 	while ((*BLITTER_CTRL & 0x80) != 0) {}
 }
 
+static void Video_Atari_CompleteScroll(void)
+{
+	Video_Atari_BlitterStart();
+	/* A reverse bulk copy can finish before the first screen row. */
+	if (s_blitterDestinationWord)
+		*BLITTER_DST_ADDR_HIGH = (uint32)(size_t)s_planarBase >> 16;
+}
+
 void __attribute__((noinline)) Video_Atari_FinishScroll(void)
 {
 	assert(g_videoScrollPending);
 	/* Resume the remaining copy in HOG mode without reloading geometry. */
-	Atari_SupervisorExec(Video_Atari_BlitterStart);
+	Atari_SupervisorExec(Video_Atari_CompleteScroll);
 	g_videoScrollPending = false;
 }
 
@@ -3568,8 +3600,9 @@ static void Video_Atari_CompileSpriteBlit(Video_Atari_SpriteBlitCode *code, uint
 				*out++ = HTOBE16(0x47ea); /* lea plane(a2),a3 */
 				*out++ = HTOBE16(plane * 2);
 			}
-			*out++ = HTOBE16(plane != 0 ? 0x21cb : 0x21ca);
-			*out++ = HTOBE16(0x8a32);
+			*out++ = HTOBE16((plane != 0 ? 0x21cb : 0x21ca) |
+			    (s_blitterDestinationWord ? 0x1000 : 0));
+			*out++ = HTOBE16(s_blitterDestinationWord ? 0x8a34 : 0x8a32);
 			*out++ = HTOBE16(0x31c0); /* move.w d0,BLITTER_YCOUNT */
 			*out++ = HTOBE16(0x8a38);
 			*out++ = HTOBE16(0x11fc);
@@ -3648,7 +3681,7 @@ static void Video_Atari_QueueMaskedBlit(bool protected)
 			    (pass == 0 || s_spriteHighlight == NULL || s_spriteHighlight[plane] != HL_ZERO))
 				launches++;
 	if (launches == 0) return;
-	assert(g_videoDisplayListLimit - out >= (48 + (protected ? 96 : 0) + launches * 30) / 2);
+	assert(g_videoDisplayListLimit - out >= (48 + (protected ? 102 : 0) + launches * 30) / 2);
 	out = Video_Atari_DisplayGeometry(out, s_planarBlit.plan);
 	if (protected) out = Video_Atari_DisplayPattern(out, s_planarBlit.writable);
 	for (pass = 0; pass < 2; pass++) {

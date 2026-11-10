@@ -2,6 +2,7 @@
 	xdef	_GFX_DrawViewportTileFast	;export symbol
 	xdef	_GFX_DrawViewportPixelsFast
 	xdef	_Video_Atari_ExpandTileNibbles
+	xdef	_Video_Atari_ViewportTileDestination
 	xref	_g_videoViewportBlitter
 	xref	_g_videoBlitterTileSetup
 	xref	_g_videoPlanarBase
@@ -88,6 +89,7 @@ tile_blit:	tst.b	_g_videoDisplayListActive
 	move.b	#0,$ffff8a3d.w
 	move.b	#1,_g_videoBlitterTileSetup
 .ready:	move.l	d2,$ffff8a24.w		; source address
+_Video_Atari_ViewportTileDestination:
 	move.l	a1,$ffff8a32.w		; destination address
 	move.w	#16,$ffff8a38.w		; lines
 	move.b	#$c0,$ffff8a3c.w	; start, hog

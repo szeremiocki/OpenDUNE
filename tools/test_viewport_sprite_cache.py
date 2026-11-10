@@ -55,6 +55,7 @@ def inactive_display_list():
     return """
 #define g_videoDisplayListActive false
 #define g_videoScrollPending false
+#define s_blitterDestinationWord false
 #define Video_Atari_FinishScroll() assert(false)
 #define Video_Atari_DisplayListFlush() ((void)0)
 #define Video_Atari_DisplayListCheck(bytes) ((void)(bytes))
@@ -75,6 +76,7 @@ def blitter_model(video, tiles=False, protected=False):
 static bool s_viewportBlitter;
 #define Video_Atari_ViewportBlitter() (s_viewportBlitter)
 static bool s_blitterTileSetup;
+#define s_blitterDestinationWord false
 static int16 reg_src_x, reg_src_y, reg_dst_x, reg_dst_y;
 static uintptr_t reg_src, reg_dst;
 static uint16 reg_mask1, reg_mask2, reg_mask3, reg_x, reg_y;

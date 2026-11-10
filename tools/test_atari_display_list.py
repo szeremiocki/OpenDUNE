@@ -244,6 +244,8 @@ int main(void) {
         block = video[video.index("typedef struct PlanarBlit {"):
                       video.index("static PlanarBlit s_planarBlit;") + len("static PlanarBlit s_planarBlit;")]
         production = "\n".join(function(video, name) for name in (
+            "Video_Atari_DisplayExecute", "Video_Atari_ExecuteDisplayList",
+            "Video_Atari_BlitterDestinationFits", "Video_Atari_InitBlitterDestination",
             "Video_Atari_DisplayMoveLong", "Video_Atari_DisplayGeometry",
             "Video_Atari_DisplayPattern", "Video_Atari_DisplayPlane",
             "Video_Atari_QueueMaskedBlit", "Video_Atari_BuildSpriteBlitPlan",
@@ -262,10 +264,15 @@ int main(void) {
 #include "src/video/video.h"
 #include "src/os/endian.h"
 #define ST_PLANAR_LINE_BYTES 160
+enum { SCREEN_HEIGHT = 200 };
 bool g_videoDisplayListActive, g_videoBlitterTileSetup;
 bool g_videoScrollPending;
 bool g_videoViewportBlitter, g_atariSupervisorResident;
 uint8 *g_videoPlanarBase;
+#define s_planarBase g_videoPlanarBase
+#define s_viewportBlitter g_videoViewportBlitter
+static bool s_blitterDestinationWord;
+extern void Video_Atari_ConfigureBlitterDestination(uint32 wordOnly);
 uint16 s_curViewportTiles[10], g_videoTileCursorTiles[10];
 uint16 *s_planarTileHouse[6], *s_planarTiles;
 uint8 *s_planarTileReady;
@@ -275,7 +282,12 @@ void Video_Atari_RestoreTileCursor(void) {
 }
 uint16 *g_videoDisplayListNext, *g_videoDisplayListLimit;
 #define s_blitterTileSetup g_videoBlitterTileSetup
-static const uint16 *s_blitterHalftonePattern;
+const uint16 *g_videoBlitterHalftonePattern;
+#define s_blitterHalftonePattern g_videoBlitterHalftonePattern
+static const uint16 *s_displayStream;
+#define Atari_SupervisorExec(callback) (callback)()
+extern void Video_Atari_RunDisplayList(const uint16 *stream);
+void Video_Atari_FinishScroll(void) { assert(false); }
 extern void Video_Atari_BlitPlaneCode(void);
 typedef struct PlacementTint {
     uint8 *dst; const uint16 *pattern; uint16 words,height,pen;
@@ -286,6 +298,12 @@ bool g_videoTileCursorRestored;
 /* MACROS */
 /* BLOCK */
 /* FUNCTIONS */
+bool TestDestination(uint32 base, bool enabled) {
+    g_videoPlanarBase = (uint8 *)(size_t)base;
+    g_videoViewportBlitter = enabled;
+    Video_Atari_InitBlitterDestination();
+    return s_blitterDestinationWord;
+}
 void TestPlan(Video_Atari_SpriteBlitPlan *out, uint16 sx, uint16 width, uint16 phase) {
     Video_Atari_BuildSpriteBlitPlan(out,32,sx,width,phase);
 }
@@ -302,6 +320,9 @@ void TestTint(uint16 *dst, const uint16 *pattern) {
     s_placeTint.dst=(uint8 *)dst; s_placeTint.pattern=pattern;
     s_placeTint.words=2; s_placeTint.height=4;
     Video_Atari_PlacementTintBlit();
+}
+void TestHalftone(const uint16 *pattern) {
+    Video_Atari_SetHalftonePattern(pattern);
 }
 void TestCursorFrame(uint8 *dst, const uint16 *pattern, uint16 pen) {
     g_videoTileCursorBlit.dst=dst; g_videoTileCursorBlit.pattern=pattern;
@@ -335,7 +356,7 @@ void TestCursorFrame(uint8 *dst, const uint16 *pattern, uint16 pen) {
             subprocess.run([tools[3], "-O", "binary", str(elf), str(binary)], check=True)
             table = subprocess.check_output([tools[2], "-n", str(elf)], text=True)
             symbols = {m[2]: int(m[1], 16) for m in
-                       re.finditer(r"^([0-9a-f]+) [A-Za-z] (_\S+)$", table, re.M)}
+                       re.finditer(r"^([0-9a-f]+) [A-Za-z] (\S+)$", table, re.M)}
             cpu = unicorn.Uc(unicorn.UC_ARCH_M68K, unicorn.UC_MODE_BIG_ENDIAN)
             cpu.ctl_set_cpu_model(registers.UC_CPU_M68K_M68000)
             cpu.mem_map(0, 0x100000)
@@ -362,8 +383,14 @@ void TestCursorFrame(uint8 *dst, const uint16 *pattern, uint16 pen) {
                 self.assertEqual(cpu.reg_read(reg("PC")), 0x1000, name)
                 self.assertEqual(cpu.reg_read(reg("A7")), sp + 4, name)
 
+            destination_writes, halftone_writes = [], []
+
             def mmio(cpu, access, address, size, value, data):
                 nonlocal pending
+                if 0xffff8a00 <= address < 0xffff8a20:
+                    halftone_writes.append((address, size))
+                if 0xffff8a32 <= address < 0xffff8a36:
+                    destination_writes.append((address, size))
                 if address == 0xffff8a3c and value & 0xf0 == 0xc0:
                     pending = True
 
@@ -424,6 +451,30 @@ void TestCursorFrame(uint8 *dst, const uint16 *pattern, uint16 pen) {
 
             cpu.hook_add(unicorn.UC_HOOK_MEM_WRITE, mmio, begin=0xffff8a00, end=0xffff8a3f)
             cpu.hook_add(unicorn.UC_HOOK_CODE, instruction)
+            configure = symbols["_Video_Atari_ConfigureBlitterDestination"]
+            self.assertEqual(read(configure + 4, 2), 0x41fa)  # lea table(pc),a0
+            table = configure + 6 + struct.unpack(">h", cpu.mem_read(configure + 6, 2))[0]
+            patches = tuple((read(table + i * 4, 4), opcode) for i, opcode in enumerate(
+                (0x21ca, 0x21ca, 0x21c8, 0x21c8, 0x21c8, 0x21c8, 0x21c9)))
+            for base, enabled, word_only in (
+                    (0, True, False), (0x40001, True, False),
+                    (0x3f8000, True, True), (0x48260, True, True),
+                    (0x48262, True, False), (0x49000, True, False),
+                    (0x40000, False, False)):
+                write(0xffff8a32, 0xdead1234, 4)
+                before = len(destination_writes)
+                call("_TestDestination", (base, int(enabled)))
+                cpu.ctl_remove_cache(0x10000, 0x20000)
+                self.assertEqual(cpu.reg_read(reg("D0")), word_only)
+                self.assertEqual(read(0xffff8a32, 4),
+                                 ((base >> 16) << 16 | 0x1234) if word_only else 0xdead1234)
+                self.assertEqual(destination_writes[before:],
+                                 [(0xffff8a32, 2)] if word_only else [])
+                for address, opcode in patches:
+                    self.assertEqual(read(address, 2),
+                                     opcode | (0x1000 if word_only else 0))
+                    self.assertEqual(read(address + 2, 2),
+                                     0x8a34 if word_only else 0x8a32)
             background = bytes((i * 113 + 17) & 255 for i in range(160 * 16))
             pixels = b"".join(struct.pack(">H",
                 (i * 137 + 0x369c) & ((i // 4 * 971 + 0xa39f) & 0xffff)) for i in range(32))
@@ -460,6 +511,14 @@ void TestCursorFrame(uint8 *dst, const uint16 *pattern, uint16 pen) {
                 self.assertEqual(nops, max(0, launches - 1))
             call("_Video_Atari_CompileSpriteBlitCode", (0x20000, 255))
             for phase in range(16):
+                word_only = bool(phase & 1)
+                call("_TestDestination", (0x40000, int(word_only)))
+                cpu.ctl_remove_cache(0x10000, 0x20000)
+                call("_Video_Atari_CompileSpriteBlitCode", (0x20000, 255))
+                cpu.ctl_remove_cache(0x20000, 0x20200)
+                expected_destination = struct.pack(">HH",
+                    0x31ca if word_only else 0x21ca, 0x8a34 if word_only else 0x8a32)
+                self.assertIn(expected_destination, bytes(cpu.mem_read(0x20000, 286)))
                 for sx in (0,1,15,16,31):
                     for effect in range(10):
                         protected, line = bool(effect & 1), (phase + sx) & 15
@@ -512,11 +571,11 @@ void TestCursorFrame(uint8 *dst, const uint16 *pattern, uint16 pen) {
                                              effect,int(protected),line,0x30020))
                         launches = 7 if effect == 7 else 8
                         self.assertEqual(read(symbols["_g_videoDisplayListNext"],4)-before,
-                                         48+(96 if protected else 0)+launches*30)
+                                         48+(102 if protected else 0)+launches*30)
                         reference(effect,protected)
                         before = read(symbols["_g_videoDisplayListNext"],4)
                         call("_TestTint", (0x40282,0x30020))
-                        self.assertEqual(read(symbols["_g_videoDisplayListNext"],4)-before,174)
+                        self.assertEqual(read(symbols["_g_videoDisplayListNext"],4)-before,180)
                         for y in range(4):
                             for group in range(2):
                                 dst=(y+4)*160+group*8+2
@@ -533,24 +592,30 @@ void TestCursorFrame(uint8 *dst, const uint16 *pattern, uint16 pen) {
                         saved={name:0x123400+i for i,name in enumerate(
                             ("D2","D3","D4","D5","D6","D7","A2","A3","A4","A5","A6"))}
                         cpu.ctl_remove_cache(0x70000,cursor+2)
+                        before = len(destination_writes)
                         call("_Video_Atari_RunDisplayList",(0x70000,),saved)
+                        self.assertTrue(destination_writes[before:])
+                        self.assertEqual(set(destination_writes[before:]),
+                                         {(0xffff8a34, 2)} if word_only else {(0xffff8a32, 4)})
                         self.assertEqual(bytes(cpu.mem_read(0x40000,len(expected))),bytes(expected),
                                          (phase,sx,effect,protected))
                         self.assertEqual(bytes(cpu.mem_read(geometry,50)),cached)
                         for name,value in saved.items():
                             self.assertEqual(cpu.reg_read(reg(name)),value,name)
+            call("_TestDestination", (0x40000 - 40 * 160, 1))
+            cpu.ctl_remove_cache(0x10000, 0x20000)
             write(symbols["_g_videoDisplayListNext"],0x70000,4)
             write(symbols["_g_videoDisplayListActive"],1,1)
             call("_TestPlan",(0x30000,0,16,0))
             for cell in range(16):
                 call("_Video_Atari_QueueTile",(0x52000,0x40000))
                 call("_TestMasked",(0x50000,0x60000,0x40000,0x30000,0x20000,0,1,0,0x30020))
-            self.assertEqual(read(symbols["_g_videoDisplayListNext"],4)-0x70000,16*(384+18))
+            self.assertEqual(read(symbols["_g_videoDisplayListNext"],4)-0x70000,16*(390+18))
             write(symbols["_g_videoDisplayListNext"],0x70000,4)
             for cell in range(16):
                 call("_Video_Atari_QueueMaskedTile",(0x54002,0x55002,0x40000))
                 call("_TestMasked",(0x50000,0x60000,0x40000,0x30000,0x20000,0,1,0,0x30020))
-            self.assertEqual(read(symbols["_g_videoDisplayListNext"],4)-0x70000,16*(384+24))
+            self.assertEqual(read(symbols["_g_videoDisplayListNext"],4)-0x70000,16*(390+24))
             write(symbols["_g_videoPlanarBase"],0x40000-40*160,4)
             write(symbols["_g_videoViewportBlitter"],1,1)
             write(symbols["_g_atariSupervisorResident"],1,1)
@@ -574,6 +639,23 @@ void TestCursorFrame(uint8 *dst, const uint16 *pattern, uint16 pen) {
             self.assertEqual(cpu.reg_read(reg("D2")),0x12345678)
             self.assertEqual(read(symbols["_restoredCursor"],4),1)
 
+            for base, word_only in ((0x48262, False), (0x48260, True)):
+                call("_TestDestination", (base, 1))
+                cpu.ctl_remove_cache(0x10000, 0x20000)
+                destination = base + 184 * 160 + 19 * 8
+                cpu.mem_write(destination, background)
+                expected = bytearray(background)
+                for y in range(16):
+                    expected[y*160:y*160+8] = tile[y*8:y*8+8]
+                before = len(destination_writes)
+                call("_GFX_DrawViewportPixelsFast", (0x52000, 19, 9), {"D2":0x12345678})
+                self.assertEqual(cpu.reg_read(reg("D0")), 1)
+                self.assertEqual(cpu.reg_read(reg("D2")), 0x12345678)
+                self.assertEqual(destination_writes[before:],
+                                 [(0xffff8a34, 2)] if word_only else [(0xffff8a32, 4)])
+                self.assertEqual(read(0xffff8a32, 4), destination + 16 * 160)
+                self.assertEqual(bytes(cpu.mem_read(destination, len(expected))), bytes(expected))
+
             saved = {name: 0x123400+i for i, name in enumerate(
                 ("D2","D3","D4","D5","D6","D7","A2","A3","A4","A5","A6"))}
             patterns = (
@@ -581,9 +663,13 @@ void TestCursorFrame(uint8 *dst, const uint16 *pattern, uint16 pen) {
                 (0xfc3f,0x8001,0x8001,0x8001,0x8001,0x8001,0,0x0180,
                  0x0180,0,0x8001,0x8001,0x8001,0x8001,0x8001,0xfc3f),
                 tuple(pattern))
-            for pen in range(16):
-                for cursor_pattern in patterns:
-                    cpu.mem_write(0x30020, struct.pack(">16H", *cursor_pattern))
+            for selection in range(32):
+                pen, word_only = selection & 15, bool(selection & 16)
+                call("_TestDestination", (0x40000, int(word_only)))
+                cpu.ctl_remove_cache(0x10000, 0x20000)
+                for pattern_index, cursor_pattern in enumerate(patterns):
+                    cursor_pattern_address = 0x56000 + pattern_index * 32
+                    cpu.mem_write(cursor_pattern_address, struct.pack(">16H", *cursor_pattern))
                     cpu.mem_write(0x40000, background)
                     expected = bytearray(background)
                     for y in range(16):
@@ -595,7 +681,10 @@ void TestCursorFrame(uint8 *dst, const uint16 *pattern, uint16 pen) {
                     hardware_launches.clear()
                     write(symbols["_g_videoBlitterTileSetup"],1,1)
                     write(symbols["_g_videoTileCursorRestored"],0,1)
-                    call("_TestCursorFrame", (0x40000,0x30020,pen), saved)
+                    before = len(destination_writes)
+                    call("_TestCursorFrame", (0x40000,cursor_pattern_address,pen), saved)
+                    self.assertEqual(destination_writes[before:],
+                                     [(0xffff8a34, 2)] * 4 if word_only else [(0xffff8a32, 4)] * 4)
                     self.assertEqual(bytes(cpu.mem_read(0x40000,len(expected))), bytes(expected))
                     self.assertEqual(bytes(cpu.mem_read(0xffff8a00,32)),
                                      struct.pack(">16H",*cursor_pattern))
@@ -644,6 +733,83 @@ void TestCursorFrame(uint8 *dst, const uint16 *pattern, uint16 pen) {
                     self.assertEqual(bytes(cpu.mem_read(0x40000,len(expected))),bytes(expected))
                     for name,value in saved.items():
                         self.assertEqual(cpu.reg_read(reg(name)),value,name)
+
+            def cursor_residency(pattern_address, pen, destination, upload_bytes):
+                initial = bytes(background)
+                expected = bytearray(initial)
+                pattern = struct.unpack(">16H", cpu.mem_read(pattern_address, 32))
+                for y in range(16):
+                    for p in range(4):
+                        old = struct.unpack_from(">H", expected, y*160+p*2)[0]
+                        value = (old & ~pattern[y]) | (pattern[y] if pen & (1 << p) else 0)
+                        struct.pack_into(">H", expected, y*160+p*2, value)
+                cpu.mem_write(destination, initial)
+                before = len(halftone_writes)
+                call("_TestCursorFrame", (destination, pattern_address, pen), saved)
+                self.assertEqual(sum(size for _, size in halftone_writes[before:]), upload_bytes)
+                self.assertEqual(read(symbols["_g_videoBlitterHalftonePattern"], 4), pattern_address)
+                self.assertEqual(bytes(cpu.mem_read(destination, len(expected))), bytes(expected))
+                for name, value in saved.items():
+                    self.assertEqual(cpu.reg_read(reg(name)), value, name)
+
+            write(symbols["_g_videoBlitterHalftonePattern"], 0, 4)
+            cursor_residency(0x56000, 4, 0x40000, 32)
+            cursor_residency(0x56000, 15, 0x40008, 0)
+            cursor_residency(0x56020, 15, 0x40000, 32)
+            cursor_residency(0x56000, 4, 0x40000, 32)
+            cursor_residency(0x56000, 4, 0x40000, 0)
+
+            def begin_residency_list():
+                write(symbols["_g_videoDisplayListNext"], 0x70000, 4)
+                write(symbols["_g_videoDisplayListActive"], 1, 1)
+
+            def finish_residency_list(upload_bytes):
+                end = read(symbols["_g_videoDisplayListNext"], 4)
+                cpu.mem_write(end, struct.pack(">HIH", 0x4eb9,
+                    symbols["_Video_Atari_TileCursorTail"], 0x4e75))
+                write(symbols["_g_videoDisplayListActive"], 0, 1)
+                cpu.ctl_remove_cache(0x70000, end + 8)
+                before = len(halftone_writes)
+                call("_Video_Atari_ExecuteDisplayList", (0x70000,), saved)
+                self.assertEqual(sum(size for _, size in halftone_writes[before:]), upload_bytes)
+                self.assertEqual(read(symbols["_g_videoBlitterHalftonePattern"], 4), 0x56000)
+                self.assertEqual(bytes(cpu.mem_read(0xffff8a00, 32)),
+                                 bytes(cpu.mem_read(0x56000, 32)))
+
+            # Source-only tiles/sprites and playback boundaries preserve the resident cursor pattern.
+            call("_TestPlan", (0x30000, 0, 16, 0))
+            begin_residency_list()
+            call("_Video_Atari_QueueTile", (0x52000, 0x40000))
+            call("_Video_Atari_BlitSpriteCode", inputs={
+                "A0":0x50000, "A1":0x60000, "A2":0x40000, "A3":0x30000,
+                "A4":0x20000, "D0":4})
+            finish_residency_list(0)
+            cursor_residency(0x56000, 7, 0x40008, 0)
+            begin_residency_list()
+            finish_residency_list(0)
+
+            # Queuing does not change residency; actual fog/tint playback invalidates it.
+            cpu.mem_write(0x30020, bytes(cpu.mem_read(0x56020, 32)))
+            for tint in (False, True):
+                begin_residency_list()
+                before = len(halftone_writes)
+                if tint:
+                    call("_TestTint", (0x40282, 0x30020))
+                else:
+                    call("_TestMasked", (0x50000, 0x60000, 0x40000, 0x30000,
+                                         0x20000, 0, 1, 0, 0x30020))
+                self.assertEqual(len(halftone_writes), before)
+                self.assertEqual(read(symbols["_g_videoBlitterHalftonePattern"], 4), 0x56000)
+                finish_residency_list(64)
+                cursor_residency(0x56000, 4, 0x40000, 0)
+
+            # Immediate C halftone writes share the native residency state.
+            before = len(halftone_writes)
+            call("_TestHalftone", (0x56000,))
+            self.assertEqual(len(halftone_writes), before)
+            call("_TestHalftone", (0x56020,))
+            self.assertEqual(sum(size for _, size in halftone_writes[before:]), 32)
+            cursor_residency(0x56000, 4, 0x40000, 32)
 
             # Variable-width CPU text uses its own masks and preserves BLITTER state.
             for groups in (1, 3, 5, 8, 20):

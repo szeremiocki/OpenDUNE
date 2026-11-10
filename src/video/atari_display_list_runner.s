@@ -10,8 +10,11 @@
 	xdef	_Video_Atari_BlitTileCode
 	xdef	_Video_Atari_BlitPlaneCode
 	xdef	_Video_Atari_TileCursorTail
+	xdef	_Video_Atari_ConfigureBlitterDestination
+	xref	_Video_Atari_ViewportTileDestination
 	xref	_g_videoDisplayListNext
 	xref	_g_videoBlitterTileSetup
+	xref	_g_videoBlitterHalftonePattern
 	xref	_g_videoTileCursorBlit
 	xref	_g_videoTileCursorRestored
 	xref	_Video_Atari_BlitSpriteGeometry
@@ -219,6 +222,7 @@ _Video_Atari_BlitTileCode:
 	move.b	#1,_g_videoBlitterTileSetup
 .ready:
 	move.l	a0,$ffff8a24.w
+tile_destination:
 	move.l	a2,$ffff8a32.w
 	move.w	#16,$ffff8a38.w
 	move.b	#$c0,$ffff8a3c.w
@@ -231,6 +235,7 @@ _Video_Atari_BlitTileCode:
 _Video_Atari_BlitPlaneCode:
 	move.w	d1,$ffff8a3a.w
 	move.l	a0,$ffff8a24.w
+plane_destination:
 	move.l	a2,$ffff8a32.w
 	move.w	d0,$ffff8a38.w
 	move.b	d2,$ffff8a3c.w
@@ -247,6 +252,9 @@ _Video_Atari_TileCursorTail:
 	bmi.s	.idle
 	clr.b	_g_videoBlitterTileSetup
 	move.l	_g_videoTileCursorBlit+4,a0
+	cmpa.l	_g_videoBlitterHalftonePattern,a0
+	beq.s	.pattern_ready
+	move.l	a0,_g_videoBlitterHalftonePattern
 	movem.l	(a0)+,d0-d1
 	movem.l	d0-d1,$ffff8a00.w
 	movem.l	(a0)+,d0-d1
@@ -255,6 +263,7 @@ _Video_Atari_TileCursorTail:
 	movem.l	d0-d1,$ffff8a10.w
 	movem.l	(a0)+,d0-d1
 	movem.l	d0-d1,$ffff8a18.w
+.pattern_ready:
 	move.l	_g_videoTileCursorBlit+8,a1
 	move.l	_g_videoTileCursorBlit,a0
 	move.l	#$ffffffff,$ffff8a28.w
@@ -263,15 +272,29 @@ _Video_Atari_TileCursorTail:
 	move.w	#1,$ffff8a36.w
 	move.b	#1,$ffff8a3a.w
 	clr.b	$ffff8a3d.w
-	rept	3
 	move.b	(a1)+,$ffff8a3b.w
+cursor_destination0:
 	move.l	a0,$ffff8a32.w
 	addq.l	#2,a0
 	move.w	#16,$ffff8a38.w
 	move.b	#$c0,$ffff8a3c.w
 	nop
-	endr
 	move.b	(a1)+,$ffff8a3b.w
+cursor_destination1:
+	move.l	a0,$ffff8a32.w
+	addq.l	#2,a0
+	move.w	#16,$ffff8a38.w
+	move.b	#$c0,$ffff8a3c.w
+	nop
+	move.b	(a1)+,$ffff8a3b.w
+cursor_destination2:
+	move.l	a0,$ffff8a32.w
+	addq.l	#2,a0
+	move.w	#16,$ffff8a38.w
+	move.b	#$c0,$ffff8a3c.w
+	nop
+	move.b	(a1)+,$ffff8a3b.w
+cursor_destination3:
 	move.l	a0,$ffff8a32.w
 	move.w	#16,$ffff8a38.w
 	move.b	#$c0,$ffff8a3c.w
@@ -281,3 +304,25 @@ _Video_Atari_TileCursorTail:
 	move.b	#2,$ffff8a3a.w
 	move.b	#1,_g_videoTileCursorRestored
 	rts
+
+; Initialization only, with no queued draws. Select once, not at each launch.
+; MOVE.L An,abs.w and MOVE.W An,abs.w have the same instruction length.
+_Video_Atari_ConfigureBlitterDestination:
+	move.l	4(sp),d0
+	lea	destination_writes(pc),a0
+	moveq	#6,d1
+.next:
+	move.l	(a0)+,a1
+	andi.w	#$efff,(a1)
+	move.w	#$8a32,2(a1)
+	tst.l	d0
+	beq.s	.full
+	ori.w	#$1000,(a1)
+	move.w	#$8a34,2(a1)
+.full:
+	dbra	d1,.next
+	rts
+destination_writes:
+	dc.l	tile_destination,plane_destination
+	dc.l	cursor_destination0,cursor_destination1,cursor_destination2,cursor_destination3
+	dc.l	_Video_Atari_ViewportTileDestination

@@ -17,7 +17,7 @@ class PlanarScrollTest(unittest.TestCase):
     def test_retained_rectangle_copy_and_one_shot_barrier(self):
         video = (ROOT / "src/video/video_atari.c").read_text()
         production = "\n".join(function(video, name) for name in (
-            "Video_Atari_BlitterStart", "Video_Atari_FinishScroll",
+            "Video_Atari_BlitterStart", "Video_Atari_CompleteScroll", "Video_Atari_FinishScroll",
             "Video_Atari_BlitterSetup", "Video_Atari_BlitScroll",
             "Video_Atari_ShiftPlanar", "Video_Atari_DisplayExecute",
             "Video_Atari_ExecuteDisplayList", "Video_Atari_PlanarCopyGroup",
@@ -36,11 +36,14 @@ enum { MCH_ST, MCH_STE, MCH_MEGA_STE, MCH_TT, MCH_FALCON };
 static union { uint32 aligned; uint8 bytes[32000 + 512]; } screen;
 static uint8 before[sizeof(screen.bytes)], expected[sizeof(screen.bytes)];
 static uint8 *base;
+#define s_planarBase base
+static bool s_blitterDestinationWord;
+static uint16 destinationHigh;
 static int s_machine_type;
 bool g_videoViewportBlitter, g_videoScrollPending;
 #define s_viewportBlitter g_videoViewportBlitter
 static bool s_blitterTileSetup, s_placeVisible, s_curVisible;
-static const uint16 *s_blitterHalftonePattern, *s_displayStream;
+static const uint16 *s_displayStream;
 void (*g_videoTileCursorTail)(void);
 static struct {
     const uint16 *pixels;
@@ -170,6 +173,7 @@ static void advance(unsigned count) {
 #define BLITTER_ENDMASK3 (&registers.last)
 #define BLITTER_SRC_ADDR (&registers.source)
 #define BLITTER_DST_ADDR (&registers.destination)
+#define BLITTER_DST_ADDR_HIGH (&destinationHigh)
 #define BLITTER_XCOUNT (&registers.words)
 #define BLITTER_YCOUNT (&registers.rows)
 #define BLITTER_HOP (&registers.hop)
@@ -232,6 +236,7 @@ static void reset(unsigned offset) {
     base = screen.bytes + offset;
     memset(&registers, 0xa5, sizeof(registers));
     registers.control = 0;
+    destinationHigh = 0xdead;
     launches = promotions = moves = supervisorCalls = placementCalls = cursorSyncs = 0;
     executions = processed = takeoverPolls = 0;
     erased = completed = started = prefetched = false;
@@ -281,8 +286,10 @@ static void check_barriers(void) {
     s_viewportBlitter = true;
     originalPlacement = originalCursor = false;
     s_machine_type = MCH_STE;
+    for (unsigned wordOnly = 0; wordOnly < 2; wordOnly++)
     for (unsigned reverse = 0; reverse < 2; reverse++)
     for (unsigned scenario = 0; scenario < 6; scenario++) {
+        s_blitterDestinationWord = wordOnly;
         int x = reverse ? 0 : 16, dx = reverse ? 16 : -16;
         prepare(0, x, 40, 224, 160, dx, 0);
         assert(Video_Atari_ShiftPlanar(x, 40, 224, 160, dx, 0));
@@ -323,6 +330,7 @@ static void check_barriers(void) {
             assert(executions == 1);
         }
         assert(completed && !g_videoScrollPending && launches == 1);
+        assert(destinationHigh == (wordOnly ? ((uint32)(size_t)base >> 16) : 0xdead));
         assert(promotions == (scenario == 0 ? 0u : 1u));
         assert(takeoverPolls == (scenario == 0 ? 0u : 3u));
         assert(!memcmp(screen.bytes, expected, sizeof(expected)));
@@ -331,6 +339,7 @@ static void check_barriers(void) {
         Video_Atari_DisplayListFlush();
         assert(supervisorCalls == calls);
     }
+    s_blitterDestinationWord = false;
 }
 int main(void) {
     for (unsigned mode = 0; mode < 2; mode++)

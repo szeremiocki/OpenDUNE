@@ -24,6 +24,8 @@ API or a display-listed CPU-only viewport.
 | Capacity reservations and cache replacement/teardown lifetime barriers | Done |
 | Opaque selection publication without redundant immediate cursor repair | Done |
 | Shared-bus retained scroll copy with one-shot HOG completion barrier | Done; capture 93 profiled |
+| Initialization-selected low-word BLITTER destination writes | Done; native-tested, host profiling pending |
+| Cursor halftone residency across draws and playback boundaries | Done; native-tested, host profiling pending |
 
 The message-list implementation passed 16 focused fixtures and seven ASan/UBSan
 fixtures, and built in normal and damage-debug plain-68000 configurations.
@@ -40,9 +42,8 @@ VBL-submitted or guaranteed tear-free. Cache-enabled Mega STE launch behaviour
 still needs separate hardware confirmation.
 
 **Not done:** complete prepared CPU operation coverage, the explicit nullable
-publication-context API below, removal of global scheduling/backend coupling,
-and cursor halftone-upload reuse. These remain follow-up work, not claims about
-this implementation.
+publication-context API below, and removal of global scheduling/backend coupling.
+These remain follow-up work, not claims about this implementation.
 
 ## Execution
 
@@ -71,6 +72,27 @@ checked, zero mismatches. Its 15 retained scrolls complete at four early flushes
 and eleven normal list ends, with one BUSY read each and no polling-loop repeats.
 No capacity-triggered drains occur. Copy bus costs overlap construction, so
 launch/completion function timings are not end-to-end scroll timings.
+
+BLITTER destination writes are specialized once the ST/STE planar base is
+known. If the framebuffer and post-transfer address increments fit one 64 KiB
+bank, initialization sets the high destination word at `$FFFF8A32`. Seven
+fixed native launch instructions are patched once, before publication begins;
+sprite recipes select the same form at cache-fill time. They then write only
+the low word at `$FFFF8A34`, without a per-launch branch. Both instruction
+forms occupy four bytes; the word form removes one word-sized MMIO write
+and nominally four 68000 cycles per launch. No measured aggregate gain is
+claimed yet.
+
+Eligibility conservatively includes 201 rows of 160 bytes, not just the
+32,000 displayed bytes: the BLITTER advances its destination after the last
+row too. A bank-crossing or unaligned base, or a disabled BLITTER, retains
+full-address writes. The capture-93 base `$003F8000` qualifies. Bulk scroll
+setup and immediate C compatibility writers retain full-address writes.
+Scroll completion restores the framebuffer's high word before subsequent
+draws, since a reverse copy can leave the destination register before the
+first screen row. Teardown restores the fixed native instructions to their
+full-address form. There is no framebuffer reallocation or display-list ABI
+change.
 
 Ordinary full-width sprites now cache sixteen executable geometry prefixes
 instead of sixteen data plans. Each 50-byte prefix sets geometry, clears the
@@ -138,17 +160,32 @@ no C callback, argument-stack setup, overlay test or saved-background merge.
 Tile-cursor mode suppresses the classic battlefield pointer and excludes
 placement mode; their ordinary rendering paths remain separate. The tail only
 invalidates tile setup and marks the frame restored, besides programming the
-BLITTER. Halftone uploads and conservative playback-boundary cache invalidation
-remain unchanged. Immediate restores also invalidate halftone cache knowledge.
+BLITTER. Halftone residency is independent of geometry residency and survives
+both playback boundaries and immediate cursor restores.
 Fog protection is unchanged. Intermediate drains can leave the frame erased
 until its final renderer command; scanout is not atomic.
 
-The ordinary frame uses a fixed 68000 kernel: four paired MOVEM transfers
-upload the 16 halftone words, fixed aligned geometry is installed once, and
+The ordinary frame uses a fixed 68000 kernel: on a pattern-cache miss, four
+paired MOVEM transfers upload the 16 halftone words; fixed aligned geometry
+is installed once, and
 four unrolled plane launches use predecoded OR/clear operations for the pen.
 There is no C plane loop, clipping plan, per-drain recipe compilation or
 geometry packet. The kernel invalidates opaque-tile setup and restores HOP;
-playback boundaries invalidate C halftone residency knowledge.
+the pattern cache remains valid.
+
+The cursor kernel compares its immutable pattern pointer with the shared
+`g_videoBlitterHalftonePattern` residency key and branches past the upload on
+a hit. The pointer is the shape's identity, so moving the cursor or changing
+its pen does not require another upload. Source-only tile/sprite draws, CPU
+commands and retained scrolling do not alter halftone RAM or invalidate this
+key. A different cursor shape uploads and records its own pointer.
+
+Immediate C halftone writers share the same residency key. Queued fog and tint
+uploads contain a six-byte `CLR.L` that invalidates it at playback, not during
+construction; the next cursor then reloads its shape. These uploads retain
+their immediate pattern words rather than caching pointers to mutable masks.
+Initialization, protection reset and mutation of a resident cursor-protection
+array still invalidate residency explicitly.
 
 | Command | Bytes |
 |---|---:|
@@ -158,18 +195,18 @@ playback boundaries invalidate C halftone residency knowledge.
 | Ordinary sprite with cached phase code | 40 |
 | Ordinary sprite with temporary clipping plan | 76 |
 | Highlight, maximum eight planes | 288 |
-| Protected sprite, maximum eight planes | 384 |
-| Placement tint | 174 |
+| Protected sprite, maximum eight planes | 390 |
+| Placement tint | 180 |
 | Explicit tile-cursor command | 6 |
 
 ## Capacity and lifetimes
 
 Capacity-triggered drains belong to the viewport, not launch redirectors.
-Before a cached sprite draw, the viewport checks 6,528 bytes: an at-most
+Before a cached sprite draw, the viewport checks 6,624 bytes: an at-most
 48x48 image, including alignment edges, covers at most 4x4 cells, each requiring
-at most 384 launch bytes and one 24-byte terrain repair. Disjoint damage/fog
+at most 390 launch bytes and one 24-byte terrain repair. Disjoint damage/fog
 splits do not increase that cell bound. Terrain repair checks 360 bytes before
-each dirty row (15 masked tiles); final tint checks 174 bytes. The renderer
+each dirty row (15 masked tiles); final tint checks 180 bytes. The renderer
 checks six bytes before the cursor, and text publication checks 32 bytes per
 strip. Only the two-byte terminal RTS is reserved, leaving 65,534 bytes for
 commands. Native emitters never trigger capacity drains.
@@ -232,6 +269,66 @@ sprite can use the same immediate-argument + JSR/RTS stream, with a private
 register contract and cache-eviction barriers. Immediate CPU publishers drain;
 CPU kernels running inside the list would not. This is not VBL-submitted or
 guaranteed tear-free, and no emulator gameplay testing is performed here.
+
+## Planned next: destination-only executable tiles
+
+Tile-only follow-up; not implemented. Keep the current executable-list format,
+sprite commands, painter order and repair-on-first-touch semantics. The cache
+already prepares composite pixels/masks and drains before replacement; playback
+already preserves the public ABI once. The missing pieces are executable tile
+assets and destination-only publication.
+
+1. **Give each prepared tile an executable entry.** Cover ordinary house
+   variants, ground/overlay composites, opaque fog and selection tiles, including
+   masked results. Bundle code with its internal pixels/masks, or provide an
+   entry associated with stable storage; publication receives the entry, not
+   exposed pixel/mask arguments. Assets must remain alive and unchanged while
+   queued. Preserve flush-before-retag, eviction and teardown barriers; rebuild
+   an entry only after draining its previous users. Do not patch shared
+   per-asset destination slots during construction: the same tile can be queued
+   at several destinations.
+
+2. **Emit destination-only tile calls.** The private entry takes A0 as the
+   destination and returns with RTS. Other registers and CCR may be scratch;
+   A7 must remain balanced. Preserve the C ABI at the outer assembly playback
+   boundary, not per tile. The command is:
+
+   ```asm
+           movea.l #destination,a0
+           jsr     prepared_tile_entry
+   ```
+
+   This is 12 bytes, replacing the current 18-byte opaque and 24-byte masked
+   tile commands. Compute the destination from the current planar buffer.
+   No source pointers, masks or backend selection belong in this command.
+
+3. **Update both publication routes.** Change the native fast lookup in
+   `src/video/atari_viewport_tile.s`, which currently derives a raw pixel
+   address using the 128-byte tile stride, to resolve an executable entry.
+   Update the C composite/fog/selection routes in `src/gfx.c` likewise.
+   Use an explicit queue-only emitter on known list-building paths rather
+   than repeating active-list tests or routing playback through enqueue-aware
+   launchers. Retain ordered immediate compatibility paths and their public
+   ABI adapters where needed; avoid unnecessary submission wrappers and
+   register saves in the hot path.
+
+4. **Provide unconditional private drawing entries.** Choose CPU or BLITTER
+   implementation when preparing the asset, hidden from the renderer.
+   BLITTER entries must retain geometry/setup reuse across compatible draws;
+   CPU entries must not access BLITTER hardware on machines without it.
+   Nearby data plus shared assembly copy/merge kernels can establish this
+   interface before asset-specific CPU instruction generation. Immediate
+   pixels, PC-relative data, register reuse and shared versus inline bodies
+   remain implementation choices to compare, not assumed speedups. Keep
+   hardware-state knowledge consistent when mixing CPU and BLITTER entries.
+
+Measure complete construction, dispatch, setup and drawing, plus cache-build
+cost and code/data storage. A smaller command can lose execution time to an
+extra wrapper jump. Verify repeated uses of one asset at different destinations,
+opaque/masked output, mixed backends, cache replacement/drains and register/stack
+preservation. This step does not remove capacity checks or enable display lists
+for the entire CPU-only viewport; those remain separate decisions.
+See `ATARI_COMPILED_CPU_ASSETS.md` for CPU-body specialization alternatives.
 
 ## Planned: explicit publication context, independent of backend
 

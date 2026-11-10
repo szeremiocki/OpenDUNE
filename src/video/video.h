@@ -251,11 +251,11 @@ extern void (*g_videoTileCursorTail)(void);
 extern void Video_Atari_RestoreTileCursor(void);
 extern bool Video_Atari_DisplayListPending(void);
 /* A <=48x48 cached sprite covers at most 4x4 cells, including phase edges.
- * Each cell needs at most 384 launch bytes and one 24-byte tile repair. */
+ * Each cell needs at most 390 launch bytes and one 24-byte tile repair. */
 enum {
-	VIDEO_ATARI_DISPLAY_SPRITE_BYTES = 16 * (384 + 24),
+	VIDEO_ATARI_DISPLAY_SPRITE_BYTES = 16 * (390 + 24),
 	VIDEO_ATARI_DISPLAY_TILE_ROW_BYTES = 15 * 24,
-	VIDEO_ATARI_DISPLAY_TINT_BYTES = 174,
+	VIDEO_ATARI_DISPLAY_TINT_BYTES = 180,
 	VIDEO_ATARI_DISPLAY_TEXT_BYTES = 32,
 	VIDEO_ATARI_DISPLAY_CURSOR_BYTES = 6
 };

@@ -100,6 +100,7 @@ void Video_Atari_TileCursorTail(void) {
     const uint8 *operations = g_videoTileCursorBlit.operations;
     uint8 *destination = g_videoTileCursorBlit.dst;
     s_blitterTileSetup = false;
+    s_blitterHalftonePattern = pattern;
     for (unsigned p = 0; p < 4; p++) {
         for (unsigned row = 0; row < 16; row++) {
             uint16 *dst = (uint16 *)(destination + row*160) + p;
@@ -140,7 +141,6 @@ static void Video_Atari_RefreshViewportCursor(uint8 *base, uint16 first, uint16 
 static bool queuedCursorTile = true;
 void Video_Atari_ExecuteDisplayList(const uint16 *stream) {
     assert(!g_videoDisplayListActive);
-    s_blitterHalftonePattern = NULL;
     executions++;
     while (true) {
         uint16 opcode = BETOH16(*stream++);
@@ -235,7 +235,7 @@ int main(void) {
     s_blitterHalftonePattern = tile;
     writeScene(false); /* immediate writer before list construction */
     assert(frameLaunches == 12 && !s_blitterTileSetup);
-    assert(s_blitterHalftonePattern == NULL);
+    assert(s_blitterHalftonePattern == s_tileCursorPatterns[1]);
     checkFrame(s_tileCursorPatterns[1],15,false);
     Video_Atari_DisplayListBegin();
     uint16 retainedScreen[16000]; memcpy(retainedScreen, screen, sizeof(screen));

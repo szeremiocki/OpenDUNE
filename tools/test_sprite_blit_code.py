@@ -39,6 +39,7 @@ static uint16 big_endian(uint16 value) {
     return result;
 }
 #define HTOBE16(v) big_endian(v)
+static bool s_blitterDestinationWord;
 /* PRODUCTION */
 typedef struct {
     uint16 pixels[256], masks[64], width, height;
@@ -126,6 +127,7 @@ static uint16 big_endian(uint16 value) {
     return result;
 }
 #define HTOBE16(v) big_endian(v)
+static bool s_blitterDestinationWord;
 /* PRODUCTION */
 void make_plan(Video_Atari_SpriteBlitPlan *out, uint16 stride, uint16 sourceX,
                uint16 width, uint16 phase) {
