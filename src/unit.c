@@ -686,7 +686,8 @@ Team *Unit_GetTeam(Unit *u)
 }
 
 /**
- * Incrementally sort units; reconcile allied/enemy counts every ten calls.
+ * Incrementally sort units; reconcile allied/enemy counts every ten executed passes.
+ * On Atari, skip one call after a swap-free pass.
  */
 void Unit_Sort(void)
 {
@@ -699,6 +700,13 @@ void Unit_Sort(void)
 	 * iteration would reload, and the bias table avoids UnitInfo indexing. */
 	static uint16 footBias[UNIT_MAX];
 	static bool footBiasReady = false;
+	static bool swapped = true;
+
+	if (!swapped) {
+		swapped = true;
+		return;
+	}
+	swapped = false;
 
 	if (!footBiasReady) {
 		for (i = 0; i < UNIT_MAX; i++) footBias[i] = g_table_unitInfo[i].movementType == MOVEMENT_FOOT ? 0x100 : 0;
@@ -716,6 +724,7 @@ void Unit_Sort(void)
 			if ((int16)y1 > (int16)y2) {
 				g_unitFindArray[i] = u2;
 				g_unitFindArray[i + 1] = u1;
+				swapped = true;
 			} else {
 				u1 = u2;
 				y1 = y2;

@@ -31,7 +31,16 @@ typedef struct Animation {
 } Animation;
 
 static Animation g_animations[ANIMATION_MAX];
+static uint16 s_animationCount;
 static uint32 s_animationTimer; /*!< Timer for animations. */
+
+static void Animation_Release(Animation *animation)
+{
+	Animation *last = &g_animations[--s_animationCount];
+
+	if (animation != last) *animation = *last;
+	last->commands = NULL;
+}
 
 /**
  * Stop with this Animation.
@@ -237,6 +246,7 @@ static void Animation_Func_PlayVoice(Animation *animation, int16 parameter)
 void Animation_Init(void)
 {
 	memset(g_animations, 0, ANIMATION_MAX * sizeof(Animation));
+	s_animationCount = 0;
 }
 
 /**
@@ -249,16 +259,17 @@ void Animation_Init(void)
  */
 void Animation_Start(const AnimationCommandStruct *commands, tile32 tile, uint16 tileLayout, uint8 houseID, uint8 iconGroup)
 {
-	Animation *animation = g_animations;
 	uint16 packed = Tile_PackTile(tile);
 	Tile *t;
-	int i;
 
 	t = &g_map[packed];
 	Animation_Stop_ByTile(packed);
 
-	for (i = 0; i < ANIMATION_MAX; i++, animation++) {
-		if (animation->commands != NULL) continue;
+	if (s_animationCount == ANIMATION_MAX) return;
+
+	/* NULL commands mark a static structure frame without occupying a slot. */
+	if (commands != NULL) {
+		Animation *animation = &g_animations[s_animationCount++];
 
 		animation->tickNext   = g_timerGUI;
 		animation->tileLayout = tileLayout;
@@ -267,13 +278,12 @@ void Animation_Start(const AnimationCommandStruct *commands, tile32 tile, uint16
 		animation->iconGroup  = iconGroup;
 		animation->commands   = commands;
 		animation->tile       = tile;
-
-		s_animationTimer = 0;
-
-		t->houseID = houseID;
-		t->hasAnimation = true;
-		return;
 	}
+
+	s_animationTimer = 0;
+
+	t->houseID = houseID;
+	t->hasAnimation = true;
 }
 
 /**
@@ -288,11 +298,11 @@ void Animation_Stop_ByTile(uint16 packed)
 
 	if (!t->hasAnimation) return;
 
-	for (i = 0; i < ANIMATION_MAX; i++, animation++) {
-		if (animation->commands == NULL) continue;
+	for (i = 0; i < s_animationCount; i++, animation++) {
 		if (Tile_PackTile(animation->tile) != packed) continue;
 
 		Animation_Func_Stop(animation, 0);
+		Animation_Release(animation);
 		return;
 	}
 }
@@ -308,9 +318,7 @@ void Animation_Tick(void)
 	if (s_animationTimer > g_timerGUI) return;
 	s_animationTimer += 10000;
 
-	for (i = 0; i < ANIMATION_MAX; i++, animation++) {
-		if (animation->commands == NULL) continue;
-
+	for (i = 0; i < s_animationCount;) {
 		if (animation->tickNext <= g_timerGUI) {
 			const AnimationCommandStruct *commands = animation->commands + animation->current;
 			int16 parameter = commands->parameter;
@@ -332,9 +340,15 @@ void Animation_Tick(void)
 				case ANIMATION_SET_ICONGROUP:      Animation_Func_SetIconGroup(animation, parameter); break;
 			}
 
-			if (animation->commands == NULL) continue;
+			if (animation->commands == NULL) {
+				/* The unvisited last animation now occupies this slot. */
+				Animation_Release(animation);
+				continue;
+			}
 		}
 
 		if (animation->tickNext < s_animationTimer) s_animationTimer = animation->tickNext;
+		i++;
+		animation++;
 	}
 }

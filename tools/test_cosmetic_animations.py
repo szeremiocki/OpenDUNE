@@ -293,8 +293,136 @@ static void test_other_frames_and_lifecycle(void) {
         assert(g_map[watchedPacked + layouts[3][i]].groundTileID ==
                g_mapTileID[watchedPacked + layouts[3][i]]);
 }
+static tile32 pool_tile(unsigned packed) {
+    return (tile32){(packed & 63) << 8, (packed >> 6) << 8};
+}
+static void test_pool_release_and_replacement(void) {
+    const AnimationCommandStruct wait[] = {{ANIMATION_PAUSE, 100}, {ANIMATION_STOP, 0}};
+    const AnimationCommandStruct replacement[] = {{ANIMATION_PAUSE, 50}, {ANIMATION_STOP, 0}};
+    const unsigned a = 650, b = 652, c = 654, d = 656;
+    reset(ICM_ICONGROUP_CONSTRUCTION_YARD, 3, 0, true);
+    Animation_Start(wait, pool_tile(a), 3, 2, ICM_ICONGROUP_CONSTRUCTION_YARD);
+    Animation_Start(wait, pool_tile(b), 0, 3, ICM_ICONGROUP_CONSTRUCTION_YARD);
+    Animation_Start(wait, pool_tile(c), 0, 4, ICM_ICONGROUP_SAND_TRACKS);
+    assert(s_animationCount == 3);
+    g_animations[2].tickNext = 1234;
+    g_animations[2].current = 1;
+    for (unsigned i = 0; i < 4; i++) {
+        g_map[a + layouts[3][i]].groundTileID = 999;
+        g_map[a + layouts[3][i]].overlayTileID = 7;
+    }
+    Animation_Stop_ByTile(a);
+    assert(s_animationCount == 2 && !g_map[a].hasAnimation);
+    for (unsigned i = 0; i < 4; i++)
+        assert(g_map[a + layouts[3][i]].groundTileID ==
+               g_mapTileID[a + layouts[3][i]] &&
+               g_map[a + layouts[3][i]].overlayTileID == 0);
+    assert(Tile_PackTile(g_animations[0].tile) == c);
+    assert(g_animations[0].commands == wait && g_animations[0].tickNext == 1234 &&
+           g_animations[0].current == 1 && g_animations[0].houseID == 4 &&
+           g_animations[0].tileLayout == 0 &&
+           g_animations[0].iconGroup == ICM_ICONGROUP_SAND_TRACKS);
+    assert(Tile_PackTile(g_animations[1].tile) == b && g_animations[2].commands == NULL);
+    assert(g_map[b].hasAnimation && g_map[c].hasAnimation);
+    Animation_Start(wait, pool_tile(d), 0, 2, ICM_ICONGROUP_SAND_TRACKS);
+    assert(s_animationCount == 3 && Tile_PackTile(g_animations[2].tile) == d);
+    Animation_Start(replacement, pool_tile(b), 0, 5, ICM_ICONGROUP_SAND_TRACKS);
+    assert(s_animationCount == 3 && Tile_PackTile(g_animations[1].tile) == d);
+    assert(Tile_PackTile(g_animations[2].tile) == b &&
+           g_animations[2].commands == replacement && g_map[b].houseID == 5);
+    /* Static structure frames retain their map marker but own no pool slot. */
+    Animation_Start(NULL, pool_tile(c), 0, 6, ICM_ICONGROUP_SAND_TRACKS);
+    assert(s_animationCount == 2 && g_map[c].hasAnimation && g_map[c].houseID == 6);
+    for (unsigned i = 0; i < s_animationCount; i++)
+        assert(Tile_PackTile(g_animations[i].tile) != c);
+    Animation_Stop_ByTile(c);
+    assert(s_animationCount == 2);
+    Animation_Stop_ByTile(d);
+    Animation_Stop_ByTile(b);
+    assert(s_animationCount == 0);
+    Animation_Start(wait, pool_tile(a), 0, 2, ICM_ICONGROUP_SAND_TRACKS);
+    Animation_Init();
+    assert(s_animationCount == 0);
+    for (unsigned i = 0; i < ANIMATION_MAX; i++) assert(g_animations[i].commands == NULL);
+}
+static void test_pool_tick_removal(void) {
+    const AnimationCommandStruct stop[] = {{ANIMATION_STOP, 0}};
+    const AnimationCommandStruct abort[] = {{ANIMATION_ABORT, 0}};
+    const AnimationCommandStruct voice[] = {
+        {ANIMATION_PLAY_VOICE, 35}, {ANIMATION_PAUSE, 100}, {ANIMATION_STOP, 0}
+    };
+    const unsigned a = 650, b = 652, c = 654, d = 656;
+    reset(ICM_ICONGROUP_SAND_TRACKS, 0, 0, true);
+    Animation_Start(stop, pool_tile(a), 0, 2, ICM_ICONGROUP_SAND_TRACKS);
+    Animation_Start(voice, pool_tile(b), 0, 2, ICM_ICONGROUP_SAND_TRACKS);
+    Animation_Start(abort, pool_tile(c), 0, 2, ICM_ICONGROUP_SAND_TRACKS);
+    Animation_Start(voice, pool_tile(d), 0, 2, ICM_ICONGROUP_SAND_TRACKS);
+    g_map[a].overlayTileID = g_map[c].overlayTileID = 7;
+    Animation_Tick();
+    assert(s_animationCount == 2 && voices == 2 && randomCalls == 0);
+    assert(!g_map[a].hasAnimation && !g_map[c].hasAnimation);
+    assert(g_map[a].overlayTileID == 0 && g_map[c].overlayTileID == 7);
+    assert(g_map[b].hasAnimation && g_map[d].hasAnimation);
+    assert(Tile_PackTile(g_animations[0].tile) == d &&
+           Tile_PackTile(g_animations[1].tile) == b);
+    assert(g_animations[0].current == 1 && g_animations[1].current == 1);
+    Animation_Tick();
+    assert(voices == 2 && randomCalls == 2);
+    uint32 next = g_animations[0].tickNext < g_animations[1].tickNext ?
+        g_animations[0].tickNext : g_animations[1].tickNext;
+    assert(s_animationTimer == next && next >= 100 && next <= 103);
+    g_timerGUI = next - 1;
+    Animation_Tick();
+    assert(s_animationCount == 2 && g_animations[0].current == 2 &&
+           g_animations[1].current == 2 && randomCalls == 2 && voices == 2);
+    g_timerGUI = 104;
+    Animation_Tick();
+    assert(s_animationCount == 0 && !g_map[b].hasAnimation && !g_map[d].hasAnimation);
+    for (unsigned i = 0; i < 4; i++) assert(g_animations[i].commands == NULL);
+    /* The swapped-in entry may be waiting: retain its deadline without executing it. */
+    Animation_Start(stop, pool_tile(a), 0, 2, ICM_ICONGROUP_SAND_TRACKS);
+    Animation_Start(voice, pool_tile(b), 0, 2, ICM_ICONGROUP_SAND_TRACKS);
+    g_animations[1].tickNext = 200;
+    Animation_Tick();
+    assert(s_animationCount == 1 && Tile_PackTile(g_animations[0].tile) == b &&
+           g_animations[0].current == 0 && s_animationTimer == 200 && voices == 2);
+    g_timerGUI = 200;
+    Animation_Tick();
+    assert(g_animations[0].current == 1 && voices == 3);
+    Animation_Stop_ByTile(b);
+    assert(s_animationCount == 0);
+    /* Consecutive removals must examine every swapped-in entry at this same index. */
+    Animation_Start(stop, pool_tile(a), 0, 2, ICM_ICONGROUP_SAND_TRACKS);
+    Animation_Start(abort, pool_tile(b), 0, 2, ICM_ICONGROUP_SAND_TRACKS);
+    Animation_Start(stop, pool_tile(c), 0, 2, ICM_ICONGROUP_SAND_TRACKS);
+    Animation_Start(abort, pool_tile(d), 0, 2, ICM_ICONGROUP_SAND_TRACKS);
+    Animation_Tick();
+    assert(s_animationCount == 0 && !g_map[a].hasAnimation && !g_map[b].hasAnimation &&
+           !g_map[c].hasAnimation && !g_map[d].hasAnimation);
+}
+static void test_pool_capacity(void) {
+    const AnimationCommandStruct wait[] = {{ANIMATION_PAUSE, 100}, {ANIMATION_STOP, 0}};
+    const AnimationCommandStruct replacement[] = {{ANIMATION_PAUSE, 50}, {ANIMATION_STOP, 0}};
+    reset(ICM_ICONGROUP_SAND_TRACKS, 0, 0, true);
+    for (unsigned i = 0; i < ANIMATION_MAX; i++)
+        Animation_Start(wait, pool_tile(512 + i), 0, 2, ICM_ICONGROUP_SAND_TRACKS);
+    assert(s_animationCount == ANIMATION_MAX);
+    Animation_Start(wait, pool_tile(900), 0, 2, ICM_ICONGROUP_SAND_TRACKS);
+    assert(s_animationCount == ANIMATION_MAX && !g_map[900].hasAnimation);
+    Animation_Start(replacement, pool_tile(537), 0, 3, ICM_ICONGROUP_SAND_TRACKS);
+    assert(s_animationCount == ANIMATION_MAX && g_map[537].houseID == 3);
+    assert(Tile_PackTile(g_animations[25].tile) == 512 + ANIMATION_MAX - 1);
+    assert(Tile_PackTile(g_animations[ANIMATION_MAX - 1].tile) == 537 &&
+           g_animations[ANIMATION_MAX - 1].commands == replacement);
+    Animation_Stop_ByTile(562);
+    assert(s_animationCount == ANIMATION_MAX - 1 && !g_map[562].hasAnimation);
+    Animation_Start(wait, pool_tile(900), 0, 2, ICM_ICONGROUP_SAND_TRACKS);
+    assert(s_animationCount == ANIMATION_MAX && g_map[900].hasAnimation &&
+           Tile_PackTile(g_animations[ANIMATION_MAX - 1].tile) == 900);
+}
 int main(void) {
     test_option(); initialize_frames(); test_sequences(); test_other_frames_and_lifecycle();
+    test_pool_release_and_replacement(); test_pool_tick_removal(); test_pool_capacity();
     return 0;
 }
 """
