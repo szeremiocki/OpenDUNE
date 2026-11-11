@@ -200,9 +200,20 @@ int main(void) {
                                   (extended ? 0x2000 : 0x4000 | id));
                 words[1] = HTOBE16(0xab00 | id);
                 assert(Script_CompileNative(&info));
-                uint32 target = ((uint32)BETOH16(info.nativeCode[4]) << 16) |
-                                BETOH16(info.nativeCode[5]);
-                assert(target == Script_NativeHandlers[callback < 8 ? 45 : SCRIPT_FUNCTION]);
+                uint32 target = entry_target(info.nativeCode);
+                if (audited[callback] != NULL) {
+                    assert(BETOH16(info.nativeCode[1]) == 0x227c);
+                    uint32 address = ((uint32)BETOH16(info.nativeCode[2]) << 16) |
+                                     BETOH16(info.nativeCode[3]);
+                    assert(address == (uint32)(uintptr_t)audited[callback]);
+                    assert(target == Script_NativeHandlers[callback < 8 ? 45 : 57]);
+#ifdef SCRIPT_NATIVE_PAIR_STATS
+                    assert(BETOH16(info.nativeCode[7]) == 64 + id);
+#endif
+                } else {
+                    assert(BETOH16(info.nativeCode[1]) == 0x323c);
+                    assert(target == Script_NativeHandlers[SCRIPT_FUNCTION]);
+                }
                 assert(BETOH16(info.nativeCode[0]) == (extended ? 0x7e20 : 0x7e10));
                 Script_ClearInfo(&info);
                 info.start = words;
@@ -356,16 +367,21 @@ int main(void) {
         harness = harness.replace("/* ENDIAN */", str(ROOT / "src/os/endian.h"))
         harness = harness.replace("/* FOURCC */", str(ROOT / "include/multichar.h"))
         harness = harness.replace("/* HANDLERS */",
-                                  ",".join(hex(0x100000 + i * 16) for i in range(57)))
+                                  ",".join(hex(0x100000 + i * 16) for i in range(58)))
         harness = harness.replace("/* PRODUCTION */", production)
         with tempfile.TemporaryDirectory(prefix="script-native-loader-") as directory:
             c_file = Path(directory) / "test.c"
             c_file.write_text(harness)
             compiler = shlex.split(os.environ.get("CC", "cc"))
+            flags = shlex.split(os.environ.get("TEST_CFLAGS", ""))
             binary = Path(directory) / "test"
-            subprocess.run([*compiler, "-std=c99", "-O2", "-Wall", "-Wextra",
-                            "-Werror", "-DTOS", str(c_file), "-o", str(binary)], check=True)
-            subprocess.run([str(binary)], check=True)
+            for stats in (False, True):
+                with self.subTest(stats=stats):
+                    subprocess.run([*compiler, "-std=c99", "-O2", "-Wall", "-Wextra",
+                                    "-Werror", "-DTOS", *flags,
+                                    *(["-DSCRIPT_NATIVE_PAIR_STATS"] if stats else []),
+                                    str(c_file), "-o", str(binary)], check=True)
+                    subprocess.run([str(binary)], check=True)
 
 
 if __name__ == "__main__":

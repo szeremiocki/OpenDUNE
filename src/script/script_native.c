@@ -58,6 +58,7 @@ bool Script_CompileNative(ScriptInfo *scriptInfo)
 		uint16 words = 1;
 		uint16 handler;
 		uint32 target;
+		ScriptFunction callback = NULL;
 		uint16 *entry = code + (size_t)i * 8;
 
 		if ((current & 0x8000) != 0) {
@@ -81,16 +82,25 @@ bool Script_CompileNative(ScriptInfo *scriptInfo)
 		if (opcode == SCRIPT_UNARY) handler = parameter < 3 ? 19 + parameter : 40;
 		if (opcode == SCRIPT_BINARY) handler = parameter < 18 ? 22 + parameter : 43;
 		if (opcode == 33) handler = 41;
-		target = Script_NativeHandlers[handler];
 		if (opcode == SCRIPT_FUNCTION && scriptInfo->functions != NULL &&
-		    (parameter & 0xFF) < SCRIPT_FUNCTIONS_COUNT &&
-		    Script_NativePreservesContext(scriptInfo->functions[parameter & 0xFF])) {
-			target = Script_NativeHandlers[45];
+		    (parameter & 0xFF) < SCRIPT_FUNCTIONS_COUNT) {
+			callback = scriptInfo->functions[parameter & 0xFF];
 		}
+		target = Script_NativeHandlers[callback == NULL ? handler :
+		                              Script_NativePreservesContext(callback) ? 45 : 57];
 
 		entry[0] = HTOBE16(0x7E00 | words * 16); /* moveq #step,d7 */
 		entry[7] = HTOBE16(0x4E71);
-		if (opcode == SCRIPT_SETRETURNVALUE ||
+		if (callback != NULL) {
+			uint32 address = (uint32)(uintptr_t)callback;
+
+			entry[1] = HTOBE16(0x227C); /* movea.l #callback,a1 */
+			entry[2] = HTOBE16(address >> 16);
+			entry[3] = HTOBE16(address);
+#ifdef SCRIPT_NATIVE_PAIR_STATS
+			entry[7] = HTOBE16(64 + (parameter & 0xFF));
+#endif
+		} else if (opcode == SCRIPT_SETRETURNVALUE ||
 		    opcode == SCRIPT_STACK_REWIND || opcode == SCRIPT_STACK_FORWARD) {
 			target = Script_NativeHandlers[42];
 			entry[1] = HTOBE16(opcode == SCRIPT_SETRETURNVALUE ? 0x357C :
@@ -147,12 +157,16 @@ bool Script_CompileNative(ScriptInfo *scriptInfo)
 			           (nextTarget == Script_NativeHandlers[SCRIPT_PUSH] ||
 			            nextTarget == Script_NativeHandlers[SCRIPT_PUSH2])) {
 				fusion = 47;
-			} else if (normal && BETOH16(entry[2]) == 5 &&
-			           (firstTarget == Script_NativeHandlers[SCRIPT_PUSH] ||
-			            firstTarget == Script_NativeHandlers[SCRIPT_PUSH2]) &&
-			           (nextTarget == Script_NativeHandlers[14] || nextTarget == Script_NativeHandlers[45]) &&
-			           scriptInfo->functions != NULL && (BETOH16(next[2]) & 0xFF) < SCRIPT_FUNCTIONS_COUNT &&
-			           scriptInfo->functions[BETOH16(next[2]) & 0xFF] == Script_Unit_GetInfo) {
+			}
+		} else if (normal && BETOH16(next[1]) == 0x227C) {
+			uint32 callback = ((uint32)BETOH16(next[2]) << 16) | BETOH16(next[3]);
+
+			nextTarget = ((uint32)BETOH16(next[5]) << 16) | BETOH16(next[6]);
+			if (BETOH16(entry[2]) == 5 &&
+			    (firstTarget == Script_NativeHandlers[SCRIPT_PUSH] ||
+			     firstTarget == Script_NativeHandlers[SCRIPT_PUSH2]) &&
+			    (nextTarget == Script_NativeHandlers[45] || nextTarget == Script_NativeHandlers[57]) &&
+			    callback == (uint32)(uintptr_t)Script_Unit_GetInfo) {
 				fusion = 56;
 			}
 		} else if (normal && BETOH16(next[1]) == 0x207C) {
@@ -195,11 +209,13 @@ bool Script_CompileNative(ScriptInfo *scriptInfo)
 		uint16 h;
 		uint16 callback = BETOH16(entry[2]) & 63;
 
+		/* Resolved entries already retain their original callback index. */
+		if (BETOH16(entry[1]) == 0x227C) continue;
 		if (BETOH16(entry[3]) == 0x4EF9) target = ((uint32)BETOH16(entry[4]) << 16) | BETOH16(entry[5]);
 		else if (BETOH16(entry[4]) == 0x4EF9) target = ((uint32)BETOH16(entry[5]) << 16) | BETOH16(entry[6]);
 		else continue;
-		for (h = 0; h < 57 && Script_NativeHandlers[h] != target; h++) {}
-		if (h >= 57) continue;
+		for (h = 0; h < 58 && Script_NativeHandlers[h] != target; h++) {}
+		if (h >= 58) continue;
 		entry[7] = HTOBE16((h == 14 || h == 45) ? 64 + callback : h + 1);
 	}
 #endif
@@ -225,14 +241,14 @@ uint16 Script_NativePeek(ScriptEngine *script, int position)
 #ifdef SCRIPT_NATIVE_PAIR_STATS
 static const char *Script_NativeCodeName(uint16 code, char *buffer)
 {
-	static const char *const names[57] = {
+	static const char *const names[58] = {
 		"JUMP", "SETRET", "PUSHRET", "PUSH", "PUSH2", "PUSHVAR", "PUSHLOC", "PUSHPAR",
 		"POPRET", "POPVAR", "POPLOC", "POPPAR", "REWIND", "FORWARD", "FUNC", "JUMPNE",
 		"INV", "INV", "RETURN", "NOT", "NEG", "COMPL", "AND", "OR", "EQ", "NE", "LT",
 		"LE", "GT", "GE", "ADD", "SUB", "MUL", "DIV", "SHR", "SHL", "BAND", "BOR",
 		"MOD", "XOR", "INV", "TRUNC", "NEXT1", "BININV", "NEXT2", "FUNCFAST",
 		"F_REWRET", "F_RETIMM", "F_RETJMP", "F_EQJ", "F_NEJ", "F_LTJ", "F_LEJ",
-		"F_GTJ", "F_GEJ", "SENTINEL", "F_TGT"
+		"F_GTJ", "F_GEJ", "SENTINEL", "F_TGT", "FUNCRES"
 	};
 	if (code == 0) {
 		buffer[0] = '-'; buffer[1] = 0;

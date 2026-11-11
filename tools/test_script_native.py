@@ -23,7 +23,8 @@ class ScriptNativeTest(unittest.TestCase):
             from unicorn import Uc, UC_ARCH_M68K, UC_MODE_BIG_ENDIAN, UC_HOOK_CODE
             from unicorn.m68k_const import (UC_CPU_M68K_M68000, UC_M68K_REG_PC,
                                             UC_M68K_REG_A7, UC_M68K_REG_D0,
-                                            UC_M68K_REG_A2)
+                                            UC_M68K_REG_A2, UC_M68K_REG_A1,
+                                            UC_M68K_REG_D1)
         except ImportError:
             self.skipTest("Native execution requires the optional unicorn package")
         tools = ("m68k-atari-mint-gcc", "vasmm68k_mot", "m68k-atari-mint-nm")
@@ -94,6 +95,8 @@ extern void test_fail(unsigned line);
                     last_comparison = None
                     path_counts = {case: [0, 0] for case in range(1, 23)}
                     fusion_counts = {case: 0 for case in range(13, 23)}
+                    callback_paths = {"NativeFunction": 0, "NativeFunctionFast": 0,
+                                      "NativeFunctionResolved": 0}
                     fallthrough_pcs = []
 
                     def integer(address):
@@ -161,6 +164,25 @@ extern void test_fail(unsigned line);
                     for name in ("NativeFusedNext", "NativeFusedJump"):
                         cpu.hook_add(UC_HOOK_CODE, fusion_hook,
                                      begin=addresses[name], end=addresses[name])
+
+                    def callback_hook(cpu, address, size, user_data):
+                        name = next(name for name in callback_paths if addresses[name] == address)
+                        callback_paths[name] += 1
+                        engine = cpu.reg_read(UC_M68K_REG_A2)
+                        info = integer(engine + 6)
+                        table = integer(info + 16)
+                        if name == "NativeFunction":
+                            index = cpu.reg_read(UC_M68K_REG_D1) & 255
+                            self.assertTrue(index >= 64 or integer(table + index * 4) == 0,
+                                            "Valid callbacks must bypass index lookup")
+                        else:
+                            target = cpu.reg_read(UC_M68K_REG_A1)
+                            self.assertNotEqual(target, 0)
+                            self.assertIn(target, [integer(table + index * 4) for index in range(64)])
+
+                    for name in callback_paths:
+                        cpu.hook_add(UC_HOOK_CODE, callback_hook,
+                                     begin=addresses[name], end=addresses[name])
                     stop = 0x7f0000
                     cpu.reg_write(UC_M68K_REG_A7, 0x7ff000)
                     cpu.mem_write(0x7ff000, struct.pack(">I", stop))
@@ -175,6 +197,7 @@ extern void test_fail(unsigned line);
                                      f"bytecode={words}; last comparison={last_comparison}")
                     self.assertEqual(cpu.reg_read(UC_M68K_REG_D0), 0)
                     self.assertFalse(allocations, "Native code allocation leaked")
+                    self.assertTrue(all(callback_paths.values()), callback_paths)
                     self.assertEqual(fusion_counts, {**{case: 1 for case in range(13, 22)}, 22: 6})
                     self.assertEqual(fallthrough_pcs, [addresses["_words"]] * 16,
                                      "Ordinary native opcodes must not publish bytecode PCs")

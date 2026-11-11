@@ -408,6 +408,13 @@ NativeStackRewind:
 NativeStackForward:
 	sub.b	d1,13(a2)
 	NEXT
+INVOKE_FUNCTION macro
+	move.l	a2,-(sp)
+	jsr	(a1)
+	addq.l	#4,sp
+	move.w	d0,10(a2)
+	bra	\1
+	endm
 CALL_FUNCTION macro
 	PUBLISH_NEXT_PC
 	and.l	#$ff,d1
@@ -419,11 +426,7 @@ CALL_FUNCTION macro
 	move.l	(a1,d4.l),a1
 	cmpa.w	#0,a1
 	beq	.invalid\@
-	move.l	a2,-(sp)
-	jsr	(a1)
-	addq.l	#4,sp
-	move.w	d0,10(a2)
-	bra	\1
+	INVOKE_FUNCTION	\1
 .invalid\@:
 	moveq	#14,d0
 	bra	NativeInvalid
@@ -433,7 +436,11 @@ LEAN set 0
 NativeFunction:
 	CALL_FUNCTION	NativeReenter
 NativeFunctionFast:
-	CALL_FUNCTION	_Script_NativeNext
+	PUBLISH_NEXT_PC
+	INVOKE_FUNCTION	_Script_NativeNext
+NativeFunctionResolved:
+	PUBLISH_NEXT_PC
+	INVOKE_FUNCTION	NativeReenter
 NativeJumpNE:
 	PEEK	1
 	POP	d4
@@ -696,6 +703,7 @@ _Script_NativeHandlers:
 	dc.l	NativeFuseLessEqualJump,NativeFuseGreaterJump,NativeFuseGreaterEqualJump
 	dc.l	NativeSentinel
 	dc.l	NativeFuseTargetAttack
+	dc.l	NativeFunctionResolved
 
 	ifne	PAIRSTATS
 	bss

@@ -122,6 +122,7 @@ int main(void) {
         draw = function(viewport, "GUI_Widget_Viewport_Draw")
         ground = draw[draw.index("bool boundsReady"):draw.index("bodyHouse =")]
         ground = ground.replace("#ifdef TOS", "").replace("#endif", "")
+        ground = ground.replace("GUI_Widget_Viewport_UnitDamageFree(", "count_damage_check(")
         production = "\n".join(function(viewport, name) for name in (
             "GUI_Widget_Viewport_SpriteDamageRect",
             "GUI_Widget_Viewport_SpriteDamageFree",
@@ -147,7 +148,7 @@ uint8 **g_sprites = sprites;
 GUI_SpriteBounds g_viewportSpriteBounds[355][4];
 static GUI_SpriteLayers currentLayers;
 static int currentFlags;
-static unsigned builds;
+static unsigned builds, damageChecks;
 static uint16 GUI_Widget_Viewport_GroundSprites(Unit *u, int *flags,
                                                 GUI_SpriteLayers *layers, uint16 parts) {
     (void)u; *flags = currentFlags; assert(parts == UNIT_SPRITE_ALL);
@@ -156,6 +157,10 @@ static uint16 GUI_Widget_Viewport_GroundSprites(Unit *u, int *flags,
     return 0;
 }
 /* PRODUCTION */
+static bool count_damage_check(const Unit *u, int16 x, int16 y) {
+    damageChecks++;
+    return GUI_Widget_Viewport_UnitDamageFree(u,x,y);
+}
 static bool candidate(Unit *u, int16 x, int16 y) {
     for (unsigned once = 0; once < 1; once++) {
         int spriteFlags;
@@ -258,7 +263,9 @@ int main(void) {
     s_viewportSpriteNeedsRedraw = false;
     assert(candidate(&u,56,8) && builds == 3);
     s_viewportSpriteNeedsRedraw = true;
+    unsigned checksBefore = damageChecks;
     assert(candidate(&u,100,80) && builds == 4);
+    assert(damageChecks == checksBefore);
     s_viewportSpriteNeedsRedraw = false;
     assert(!candidate(&u,248,8) && builds == 4);
     s_viewportSpriteFilterActive = false;
@@ -302,6 +309,22 @@ int main(void) {
     memset(g_viewportSpriteBounds,0,sizeof(g_viewportSpriteBounds));
     GUI_Widget_Viewport_UpdateUnitBounds(&u,0,0,&currentLayers);
     checkBox(&u,24,8);
+    /* Required redraws bypass damage checks after rebuilding bounds too,
+     * but entirely transparent frames still must be rejected. */
+    s_viewportSpriteNeedsRedraw = true;
+    currentLayers.count = 0;
+    currentFlags = 0;
+    for (unsigned harvester = 0; harvester < 2; harvester++)
+    for (unsigned visible = 0; visible < 2; visible++) {
+        u.o.type = harvester ? UNIT_HARVESTER : UNIT_TANK;
+        Unit_ClearViewportKey(&u);
+        dimensions(0,16,16);
+        if (!visible) memset(g_viewportSpriteBounds[0],0,sizeof(g_viewportSpriteBounds[0]));
+        checksBefore = damageChecks;
+        assert(candidate(&u,24,8) == (visible != 0));
+        assert(damageChecks == checksBefore);
+        assert((u.viewportBoundsWidth != 0) == (visible != 0));
+    }
     return 0;
 }
 """

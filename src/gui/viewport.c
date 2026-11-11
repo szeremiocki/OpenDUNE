@@ -1550,7 +1550,8 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 
 #ifdef TOS
 			bool boundsReady = u->o.type != UNIT_HARVESTER && u->viewportBoundsWidth != 0;
-			if (boundsReady && GUI_Widget_Viewport_UnitDamageFree(u, x, y)) continue;
+			if (boundsReady && !s_viewportSpriteNeedsRedraw &&
+			    GUI_Widget_Viewport_UnitDamageFree(u, x, y)) continue;
 #endif
 			spriteFlags = 0;
 			layers.count = 0;
@@ -1558,7 +1559,9 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 #ifdef TOS
 			if (!boundsReady) {
 				GUI_Widget_Viewport_UpdateUnitBounds(u, index, spriteFlags, &layers);
-				if (GUI_Widget_Viewport_UnitDamageFree(u, x, y)) continue;
+				if (u->viewportBoundsWidth == 0) continue;
+				if (!s_viewportSpriteNeedsRedraw &&
+				    GUI_Widget_Viewport_UnitDamageFree(u, x, y)) continue;
 			}
 #endif
 
