@@ -47,7 +47,8 @@ These remain follow-up work, not claims about this implementation.
 
 ## Execution
 
-One lazily allocated 65,536-byte arena contains commands in execution order.
+One statically allocated, word-aligned 16,384-byte arena contains commands in
+execution order. It lives in BSS and requires no allocation or NULL-storage check.
 Commands load immediate register arguments, call an assembly drawing kernel,
 and return directly to the following command. Flush writes one terminal RTS,
 executes the prefix, and resets the write pointer without clearing storage.
@@ -75,7 +76,7 @@ launch/completion function timings are not end-to-end scroll timings.
 
 BLITTER destination writes are specialized once the ST/STE planar base is
 known. If the framebuffer and post-transfer address increments fit one 64 KiB
-bank, initialization sets the high destination word at `$FFFF8A32`. Seven
+bank, initialization sets the high destination word at `$FFFF8A32`. Six
 fixed native launch instructions are patched once, before publication begins;
 sprite recipes select the same form at cache-fill time. They then write only
 the low word at `$FFFF8A34`, without a per-launch branch. Both instruction
@@ -97,9 +98,11 @@ change.
 Ordinary full-width sprites now cache sixteen executable geometry prefixes
 instead of sixteen data plans. Each 50-byte prefix sets geometry, clears the
 tile-setup flag and jumps through A4 to the one shared plane recipe. A3 selects
-the cached phase prefix. The register launch boundary emits a 40-byte command
+the cached phase prefix. The queue entry emits a 36-byte command
 loading source, mask, destination, geometry and recipe pointers plus height,
-then calling the geometry launcher. It does not copy geometry into the stream.
+then `JSR (A3)` directly into that prefix. The recipe's RTS returns to the
+stream, with no enqueue-aware launcher or extra wrapper jump. Geometry is not
+copied into the stream.
 The prefixes consume 800 bytes per image instead of 288 bytes of data plans:
 32 KiB extra across 64 composite slots, plus resident phase tables.
 
@@ -110,9 +113,10 @@ The fixed tile-cursor kernel uses the same NOP spacing between planes and
 waits after its last launch before restoring HOP. Other drawing kernels
 retain their completion waits.
 
-Horizontally clipped fragments and highlight/protected draws retain immediate
-geometry emission. `_Video_Atari_BlitSpriteCode` redirects these dynamic
-launches while construction is active. No pointer to a temporary plan is
+Horizontally clipped fragments and highlight/protected draws retain inline
+geometry emission. Construction calls explicit queue emitters; immediate
+`_Video_Atari_BlitSpriteCode` and `_Video_Atari_BlitSpriteGeometry` never enqueue.
+No pointer to a temporary plan is
 retained. Ordinary dynamic commands call the immutable plane recipe directly.
 Opaque tile launch boundaries emit source/destination loads and a call to the
 opaque kernel, retaining its hardware-setup cache.
@@ -192,7 +196,7 @@ array still invalidate residency explicitly.
 | Opaque 16x16 tile | 18 |
 | CPU masked 16x16 tile | 24 |
 | CPU masked text rectangle | 32 |
-| Ordinary sprite with cached phase code | 40 |
+| Ordinary sprite with cached phase code | 36 |
 | Ordinary sprite with temporary clipping plan | 76 |
 | Highlight, maximum eight planes | 288 |
 | Protected sprite, maximum eight planes | 390 |
@@ -208,8 +212,10 @@ at most 390 launch bytes and one 24-byte terrain repair. Disjoint damage/fog
 splits do not increase that cell bound. Terrain repair checks 360 bytes before
 each dirty row (15 masked tiles); final tint checks 180 bytes. The renderer
 checks six bytes before the cursor, and text publication checks 32 bytes per
-strip. Only the two-byte terminal RTS is reserved, leaving 65,534 bytes for
-commands. Native emitters never trigger capacity drains.
+strip. Only the two-byte terminal RTS is reserved, leaving 16,382 bytes for
+commands. The conservative 6,624-byte sprite reservation is unchanged: with
+more than 9,758 bytes already queued it can drain even when the actual next
+draw would fit. Native emitters never trigger capacity drains.
 
 Composite pixel and mask reservations are 48x48. Cache misses retain the original
 canvas when it fits; oversized canvases are cropped to existing opaque bounds,
@@ -332,8 +338,15 @@ See `ATARI_COMPILED_CPU_ASSETS.md` for CPU-body specialization alternatives.
 
 ## Planned: explicit publication context, independent of backend
 
-This is a follow-up plan, not implemented by the current display-list
-experiment. It depends on CPU publication coverage described in
+The current first step separates construction and execution entry points:
+viewport opaque repairs use queue-only tile lookups, sprite construction
+calls queue-only register adapters, and native/immediate BLITTER launchers
+contain no active-list dispatch. Shared C publication boundaries still select
+queued versus immediate execution using the global construction phase.
+Capacity checks, compatibility barriers and the BLITTER-only Begin gate remain.
+
+The full nullable-context API below is a follow-up plan, not implemented by
+this separation. It depends on CPU publication coverage described in
 `ATARI_COMPILED_CPU_ASSETS.md`.
 
 Separate two decisions:
@@ -363,7 +376,7 @@ stale. A leaf emitter that cannot drain can accept raw `Next` and return its
 updated value. Capacity ownership and eviction barriers must remain explicit;
 passing a pointer alone does not solve either.
 
-Prerequisites before replacing today's global active-list/launch-redirection
+Prerequisites before replacing the remaining global publication-scheduling
 checks:
 
 - Provide prepared plain-68000 CPU draws for every normal viewport operation:
@@ -398,11 +411,14 @@ candidate; recording it does not authorize the larger renderer conversion.
 
 `tools/test_atari_display_list.py` exercises actual arena capacity control,
 CPU-write barriers, ordinary LRU eviction and terrain retagging. Its CPU-only
-Unicorn harness runs the actual native launch redirectors, C highlight/fog/tint
+Unicorn harness runs the actual native queue entries, immediate sprite entries,
+typed C-to-register queue adapters, C highlight/fog/tint
 emitters and playback wrapper. It checks planar pixels across all X phases,
 clipping offsets and highlight recipes, mutable-plan/pattern lifetime, an
 interleaved CPU kernel, stack/register preservation and the worst sprite batch
-size. Existing renderer fixtures separately retain immediate-mode coverage.
+size. It verifies immediate entries draw without enqueueing even when the
+construction flag is set, and queue entries emit without touching hardware.
+Existing renderer fixtures separately retain immediate-mode coverage.
 The native masked-tile cases also check empty/full/mixed masks, word-aligned
 longword accesses, CPU/BLITTER interleaving, untouched BLITTER state and inputs,
 and the enlarged maximum repair reservation.

@@ -64,6 +64,10 @@ def inactive_display_list():
 #define Video_Atari_QueueTile(pixels,dst) ((void)(pixels), (void)(dst))
 #define Video_Atari_QueueMaskedBlit(protected) ((void)(protected))
 #define Video_Atari_QueueTintBlit(pattern,operation) ((void)(pattern), (void)(operation))
+#define Video_Atari_QueueSpriteBlitCode(code,pixels,masks,dst,height,plan) \
+    ((void)(code), (void)(pixels), (void)(masks), (void)(dst), (void)(height), (void)(plan), assert(false))
+#define Video_Atari_QueueSpriteBlitGeometry(code,pixels,masks,dst,height,geometry) \
+    ((void)(code), (void)(pixels), (void)(masks), (void)(dst), (void)(height), (void)(geometry), assert(false))
 """
 
 

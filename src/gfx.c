@@ -317,7 +317,7 @@ void GFX_DrawPlanarFogTile(uint16 x, uint16 y)
 void GFX_DrawPlanarViewportFog(uint16 col, uint16 row)
 {
 	GFX_PreparePlanarFogTile();
-	if (Video_Atari_BlitViewportTile(s_viewportFogPixels, col, row)) return;
+	if (Video_Atari_QueueViewportTile(s_viewportFogPixels, col, row)) return;
 	Video_Atari_DrawPlanarTile(s_viewportFogPixels, s_viewportFogMasks, col << 4, (row << 4) + 40,
 	    s_viewportFogPixels);
 }
@@ -341,8 +341,8 @@ void GFX_DrawPlanarViewportTile(uint16 tileID, uint16 overlayID, uint16 col, uin
 		masks = s_planarCompositeMasks[slot];
 	}
 	if (opacity == PLANAR_TILE_OPAQUE) {
-		if (overlayID != 0 && GFX_DrawViewportPixelsFast((unsigned long)pixels, col, row)) return;
-		if (Video_Atari_BlitViewportTile(pixels, col, row)) return;
+		if (overlayID != 0 && GFX_QueueViewportPixelsFast((unsigned long)pixels, col, row)) return;
+		if (Video_Atari_QueueViewportTile(pixels, col, row)) return;
 		Video_Atari_DrawPlanarTile(pixels, masks, col << 4, (row << 4) + 40, pixels);
 		return;
 	}

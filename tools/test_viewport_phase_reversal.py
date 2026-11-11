@@ -635,7 +635,7 @@ static void GFX_DrawPlanarFogTile(uint16 x, uint16 y) {
 static void GFX_DrawPlanarViewportFog(uint16 col, uint16 row) {
     GFX_DrawPlanarFogTile(col * 16, 40 + row * 16);
 }
-static bool GFX_DrawViewportTileFast(uint16 id, uint16 col, uint16 row, uint8 house) {
+static bool GFX_QueueViewportTileFast(uint16 id, uint16 col, uint16 row, uint8 house) {
     GFX_DrawPlanarTile(id, col * 16, 40 + row * 16, house);
     return true;
 }
@@ -939,7 +939,7 @@ static void GFX_DrawPlanarFogTile(uint16 x, uint16 y) {
 static void GFX_DrawPlanarViewportFog(uint16 col, uint16 row) {
     GFX_DrawPlanarFogTile(col * 16, 40 + row * 16);
 }
-static bool GFX_DrawViewportTileFast(uint16 id, uint16 col, uint16 row, uint8 house) {
+static bool GFX_QueueViewportTileFast(uint16 id, uint16 col, uint16 row, uint8 house) {
     GFX_DrawPlanarTile(id, col * 16, 40 + row * 16, house);
     return true;
 }

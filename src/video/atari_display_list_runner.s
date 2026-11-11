@@ -11,13 +11,11 @@
 	xdef	_Video_Atari_BlitPlaneCode
 	xdef	_Video_Atari_TileCursorTail
 	xdef	_Video_Atari_ConfigureBlitterDestination
-	xref	_Video_Atari_ViewportTileDestination
 	xref	_g_videoDisplayListNext
 	xref	_g_videoBlitterTileSetup
 	xref	_g_videoBlitterHalftonePattern
 	xref	_g_videoTileCursorBlit
 	xref	_g_videoTileCursorRestored
-	xref	_Video_Atari_BlitSpriteGeometry
 
 ; C ABI: stream. Generated commands use a private register ABI and RTS.
 _Video_Atari_RunDisplayList:
@@ -84,8 +82,7 @@ _Video_Atari_QueueSpriteGeometry:
 	move.l	a4,(a5)+
 	move.w	#$303c,(a5)+
 	move.w	d0,(a5)+
-	move.w	#$4eb9,(a5)+
-	move.l	#_Video_Atari_BlitSpriteGeometry,(a5)+
+	move.w	#$4e93,(a5)+		; jsr (a3), geometry jumps to the recipe
 	move.l	a5,_g_videoDisplayListNext
 	move.l	(sp)+,a5
 	rts
@@ -310,7 +307,7 @@ cursor_destination3:
 _Video_Atari_ConfigureBlitterDestination:
 	move.l	4(sp),d0
 	lea	destination_writes(pc),a0
-	moveq	#6,d1
+	moveq	#5,d1
 .next:
 	move.l	(a0)+,a1
 	andi.w	#$efff,(a1)
@@ -325,4 +322,3 @@ _Video_Atari_ConfigureBlitterDestination:
 destination_writes:
 	dc.l	tile_destination,plane_destination
 	dc.l	cursor_destination0,cursor_destination1,cursor_destination2,cursor_destination3
-	dc.l	_Video_Atari_ViewportTileDestination

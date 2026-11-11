@@ -1,10 +1,8 @@
 ; vim: set tabstop=8 shiftwidth=8 noexpandtab:
-	xdef	_GFX_DrawViewportTileFast	;export symbol
-	xdef	_GFX_DrawViewportPixelsFast
+	xdef	_GFX_QueueViewportTileFast
+	xdef	_GFX_QueueViewportPixelsFast
 	xdef	_Video_Atari_ExpandTileNibbles
-	xdef	_Video_Atari_ViewportTileDestination
 	xref	_g_videoViewportBlitter
-	xref	_g_videoBlitterTileSetup
 	xref	_g_videoPlanarBase
 	xref	_g_atariSupervisorResident
 	xref	_s_curViewportTiles
@@ -12,26 +10,23 @@
 	xref	_s_planarTileHouse
 	xref	_s_planarTileReady
 	xref	_s_planarTiles
-	xref	_g_videoDisplayListActive
-	xref	_g_videoScrollPending
 	xref	_Video_Atari_QueueTileBlit
-	xref	_Video_Atari_RestoreTileCursor
 	;code
 
 ; prototype:
-; long GFX_DrawViewportTileFast(unsigned long tileID, unsigned long col,
+; long GFX_QueueViewportTileFast(unsigned long tileID, unsigned long col,
 ;                               unsigned long row, unsigned long house);
 ;
 ; Fast path for one opaque, overlay-free viewport tile: per-house index
-; lookup, opacity check, then a single blitter run. The tile blitter setup is
-; reloaded here when a masked sprite blit has changed it. Returns 1 when the
-; tile was drawn and 0 when the caller must use the general C path (no
+; lookup, opacity check, then a queue-only launch. Requires an active list
+; when BLITTER publication is enabled. Returns 1 when the tile was queued
+; and 0 when the caller must use the general C path (no
 ; blitter, supervisor not resident, cursor over the tile, tile not opaque or
 ; not yet decoded). Arguments are full longs.
 
 PLANAR_TILE_OPAQUE	equ	3
 
-_GFX_DrawViewportTileFast:
+_GFX_QueueViewportTileFast:
 	move.l	d2,-(sp)
 	tst.b	_g_videoViewportBlitter
 	beq	tile_fail
@@ -67,35 +62,8 @@ _GFX_DrawViewportTileFast:
 	bne	tile_fail
 	lsl.l	#7,d2
 	add.l	_s_planarTiles,d2
-tile_blit:	tst.b	_g_videoDisplayListActive
-	beq.s	.immediate
+tile_blit:
 	jsr	_Video_Atari_QueueTileBlit
-	moveq	#1,d0
-	move.l	(sp)+,d2
-	rts
-.immediate:
-	tst.b	_g_videoScrollPending
-	bne	tile_fail		; C fallback completes the scroll first
-	tst.b	_g_videoBlitterTileSetup
-	bne	.ready
-.idle:	tst.b	$ffff8a3c.w
-	bmi	.idle
-	move.l	#$00020002,$ffff8a20.w	; same registers as Video_Atari_BlitOpaque()
-	move.l	#$ffffffff,$ffff8a28.w
-	move.l	#$ffff0002,$ffff8a2c.w
-	move.w	#154,$ffff8a30.w
-	move.w	#4,$ffff8a36.w
-	move.w	#$0203,$ffff8a3a.w
-	move.b	#0,$ffff8a3d.w
-	move.b	#1,_g_videoBlitterTileSetup
-.ready:	move.l	d2,$ffff8a24.w		; source address
-_Video_Atari_ViewportTileDestination:
-	move.l	a1,$ffff8a32.w		; destination address
-	move.w	#16,$ffff8a38.w		; lines
-	move.b	#$c0,$ffff8a3c.w	; start, hog
-.wait:	tst.b	$ffff8a3c.w
-	bmi	.wait
-	jsr	_Video_Atari_RestoreTileCursor
 	moveq	#1,d0
 	move.l	(sp)+,d2
 	rts
@@ -103,10 +71,10 @@ tile_fail:	moveq	#0,d0
 	move.l	(sp)+,d2
 	rts
 
-; long GFX_DrawViewportPixelsFast(unsigned long pixels, unsigned long col,
+; long GFX_QueueViewportPixelsFast(unsigned long pixels, unsigned long col,
 ;                                 unsigned long row);
 ; Same as above for an already composed opaque tile image at "pixels".
-_GFX_DrawViewportPixelsFast:
+_GFX_QueueViewportPixelsFast:
 	move.l	d2,-(sp)
 	tst.b	_g_videoViewportBlitter
 	beq	tile_fail

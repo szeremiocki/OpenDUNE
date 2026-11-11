@@ -187,7 +187,7 @@ extern void Video_Atari_InitTileMapping(const uint8 *palette);
 extern void Video_Atari_DecodePlanarTile(const uint8 *src, const uint8 *palette, uint16 *pixels);
 /* copyPixels is NULL or a ground/overlay source proven fully opaque by
  * cached tile mask classifications. */
-extern bool Video_Atari_BlitViewportTile(const uint16 *pixels, uint16 col, uint16 row);
+extern bool Video_Atari_QueueViewportTile(const uint16 *pixels, uint16 col, uint16 row);
 extern void Video_Atari_DrawPlanarTile(const uint16 *pixels, const uint16 *masks, uint16 x, uint16 y,
                                       const uint16 *copyPixels);
 /* Fog-covered ground never reaches the screen: merge both cached images
@@ -253,6 +253,7 @@ extern bool Video_Atari_DisplayListPending(void);
 /* A <=48x48 cached sprite covers at most 4x4 cells, including phase edges.
  * Each cell needs at most 390 launch bytes and one 24-byte tile repair. */
 enum {
+	VIDEO_ATARI_DISPLAY_LIST_BYTES = 16384,
 	VIDEO_ATARI_DISPLAY_SPRITE_BYTES = 16 * (390 + 24),
 	VIDEO_ATARI_DISPLAY_TILE_ROW_BYTES = 15 * 24,
 	VIDEO_ATARI_DISPLAY_TINT_BYTES = 180,

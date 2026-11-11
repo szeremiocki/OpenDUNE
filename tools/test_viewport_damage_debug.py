@@ -122,7 +122,7 @@ static void GFX_DrawPlanarSelectionTile(unsigned ground, unsigned fog, unsigned 
     recordTile(x >> 4, (y - 40) >> 4);
 }
 static void GFX_DrawPlanarViewportFog(unsigned col, unsigned row) { recordTile(col,row); }
-static bool GFX_DrawViewportTileFast(unsigned ground, unsigned col, unsigned row, unsigned house) {
+static bool GFX_QueueViewportTileFast(unsigned ground, unsigned col, unsigned row, unsigned house) {
     (void)ground; (void)house; recordTile(col,row); return true;
 }
 static void GFX_DrawPlanarViewportTile(unsigned ground, unsigned fog, unsigned x,

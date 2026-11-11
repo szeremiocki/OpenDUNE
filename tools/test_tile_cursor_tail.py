@@ -241,11 +241,13 @@ int main(void) {
     uint16 retainedScreen[16000]; memcpy(retainedScreen, screen, sizeof(screen));
     writeScene(false); /* active list: no screen write or immediate cursor repair */
     assert(frameLaunches == 12 && Video_Atari_DisplayListPending());
-    assert(g_videoDisplayListNext - g_videoDisplayListLimit + 32767 == 12);
+    assert(g_videoDisplayListNext - g_videoDisplayListLimit +
+           VIDEO_ATARI_DISPLAY_LIST_BYTES / 2 - 1 == 12);
     assert(!memcmp(retainedScreen, screen, sizeof(screen)));
-    Video_Atari_DisplayListCheck(65534);
+    Video_Atari_DisplayListCheck(VIDEO_ATARI_DISPLAY_LIST_BYTES - 2);
     assert(frameLaunches == 12);
-    for (unsigned i = 0; i < 32767; i++) *g_videoDisplayListNext++ = HTOBE16(0x4e71);
+    for (unsigned i = 0; i < VIDEO_ATARI_DISPLAY_LIST_BYTES / 2 - 1; i++)
+        *g_videoDisplayListNext++ = HTOBE16(0x4e71);
     Video_Atari_DisplayListCheck(6); /* full payload drains before explicit cursor */
     assert(tails == 2 && frameLaunches == 12 && !Video_Atari_DisplayListPending());
     writeScene(false);
