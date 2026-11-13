@@ -212,6 +212,8 @@ video/atari_viewport_tile.s
 video/atari_sprite_blit.s
 video/atari_display_list.c
 video/atari_display_list_runner.s
+video/atari_sidebar.c
+video/atari_sidebar_health.s
 video/atari_copyrows.s
 video/atari_cursor.s
 gui/planar_rows.s
@@ -287,6 +289,7 @@ timer.h
 tools.h
 unit.h
 video/video.h
+video/atari_sidebar.h
 video/video_fps.h
 video/hqx_common.h
 video/hqx.h

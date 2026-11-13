@@ -39,6 +39,7 @@ typedef uint16_t uint16;
 typedef int8_t int8;
 typedef int Screen;
 enum { SCREEN_0, SCREEN_1, SCREEN_2, TIMER_GAME = 2 };
+enum { UNIT_UPDATE_MAP_REPAINT = 2, UNIT_SPRITE_SELECTION = 1 };
 /* TYPES */
 /* TABLE */
 typedef struct Widget {
@@ -51,6 +52,10 @@ typedef struct { uint16 position; bool keyValid; } Unit;
 static void Unit_ClearViewportKey(Unit *u) { assert(u != NULL); u->keyValid = false; }
 static Unit unit;
 static Unit *g_unitSelected;
+static void Unit_PrepareSpriteChange(Unit *u, unsigned kind) {
+    assert(u == &unit && kind == UNIT_SPRITE_SELECTION);
+    Unit_ClearViewportKey(u);
+}
 static Widget widgets[18], *g_widgetLinkedListHead;
 static uint16 g_selectionType, g_selectionTypeNew, g_cursorDefaultSpriteID;
 static uint16 g_cursorSpriteID, g_curWidgetIndex, g_structureActivePosition;
@@ -63,6 +68,8 @@ static uint8_t pixels[46];
 static unsigned draws[46], fullPasses, panels, timerCalls, borders;
 static unsigned interfaces, textClears, unitUpdates, mapSelections, spriteChanges;
 static unsigned placementHides;
+static bool tileCursorOwns, cursorSuppressed;
+static unsigned classicCursorDraws;
 static bool Config_ViewportFadeEnabled(void) { return true; }
 static Screen GFX_Screen_SetActive(Screen screen) {
     Screen old = active;
@@ -71,7 +78,12 @@ static Screen GFX_Screen_SetActive(Screen screen) {
 }
 #ifdef TOS
 static bool Video_Atari_CursorDirect(void) { return direct; }
-static void Video_Atari_PlacementHide(void) { placementHides++; }
+static void Video_Atari_PlacementHide(void) {
+    placementHides++;
+    cursorSuppressed = false;
+}
+static bool GUI_Widget_Viewport_TileCursorActive(void) { return tileCursorOwns; }
+static void Video_Atari_PlacementCursor(bool hidden) { cursorSuppressed = hidden; }
 #endif
 static void Timer_SetTimer(unsigned timer, bool enabled) {
     assert(timer == TIMER_GAME);
@@ -87,7 +99,7 @@ static void GUI_DisplayText(const char *text, int priority) {
     textClears++;
 }
 static void Unit_UpdateMap(unsigned kind, Unit *u) {
-    assert(kind == 2 && u == &unit);
+    assert(kind == UNIT_UPDATE_MAP_REPAINT && u == &unit);
     Unit_ClearViewportKey(u);
     unitUpdates++;
 }
@@ -102,6 +114,7 @@ static uint16 Widget_SetCurrentWidget(uint16 index) {
 }
 static void GUI_Widget_DrawBorder(uint16 index, unsigned type, bool pressed) {
     assert(index == g_curWidgetIndex && type == 0 && !pressed);
+    if (direct && tileCursorOwns && !cursorSuppressed) classicCursorDraws++;
     borders++;
 }
 static void GUI_Widget_Draw(Widget *w) {
@@ -122,6 +135,7 @@ static void Sprites_SetMouseSprite(unsigned x, unsigned y, const void *sprite) {
 static const void *g_sprites[1] = { &unit };
 static void GUI_Widget_ActionPanel_Draw(bool force) {
     assert(force);
+    if (direct && tileCursorOwns && !cursorSuppressed) classicCursorDraws++;
     panels++;
     for (unsigned i = 2; i < 11; i++) {
         Widget *w = &widgets[i];
@@ -202,6 +216,8 @@ static void init(unsigned old, unsigned variant, bool useDirect) {
     memset(draws, 0, sizeof(draws));
     fullPasses = panels = timerCalls = borders = interfaces = textClears = 0;
     unitUpdates = mapSelections = spriteChanges = placementHides = 0;
+    tileCursorOwns = cursorSuppressed = false;
+    classicCursorDraws = 0;
 }
 int main(void) {
     init(SELECTIONTYPE_UNIT, 0, false);
@@ -245,6 +261,24 @@ int main(void) {
             }
         }
     }
+#ifdef TOS
+    for (unsigned targeting = 0; targeting < 2; targeting++) {
+        unsigned old = targeting ? SELECTIONTYPE_TARGET : SELECTIONTYPE_UNIT;
+        unsigned next = targeting ? SELECTIONTYPE_UNIT : SELECTIONTYPE_TARGET;
+        for (unsigned owns = 0; owns < 2; owns++) {
+            init(old, 0, true);
+            tileCursorOwns = cursorSuppressed = owns != 0;
+            GUI_ChangeSelectionType(next);
+            assert(cursorSuppressed == (owns != 0));
+            assert(classicCursorDraws == 0);
+            assert(placementHides == 1 && panels == 1);
+        }
+        init(old, 0, true);
+        tileCursorOwns = cursorSuppressed = true;
+        GUI_ChangeSelectionType(SELECTIONTYPE_MENTAT);
+        assert(!cursorSuppressed);
+    }
+#endif
     return 0;
 }
 """

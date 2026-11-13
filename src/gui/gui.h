@@ -7,6 +7,17 @@
 
 struct Unit;
 #ifdef TOS
+struct Font;
+typedef struct GUITextState {
+	struct Font *font;
+	int8 spacing;
+	uint8 colours[16];
+	uint16 fontFlags, styleFlags;
+	uint16 *planarTarget;
+	bool planarAllowed;
+} GUITextState;
+extern void GUI_TextState_Get(GUITextState *state);
+extern void GUI_TextState_Set(const GUITextState *state);
 extern void GUI_Widget_Viewport_DamageUnit(struct Unit *unit, uint16 parts);
 #ifdef VIEWPORT_DEBUG_DAMAGE
 extern bool GUI_Widget_Viewport_DebugInput(uint16 input);

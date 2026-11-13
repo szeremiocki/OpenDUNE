@@ -247,7 +247,9 @@ tile_cursor_pen. It snaps to the edge tile nearest the mouse, including the
 top/right activation strips outside the battlefield. Frame and arrow are one
 halftone draw through the display list in BLITTER mode; unchanged, undamaged
 tiles need no cursor redraw. Moving, changing or hiding it repairs its old
-tile. The sidebar, minimap and menus keep the normal pointer. With tile_cursor=0,
+tile. Unit/target panel transitions retain pointer suppression until the viewport
+updates the frame, preventing a brief classic targeting cursor between draws.
+The sidebar, minimap and menus keep the normal pointer. With tile_cursor=0,
 scroll arrows retain pixel-precise software-cursor positioning:
 
 [opendune]
@@ -656,34 +658,57 @@ without redrawing unchanged base widgets or running the second full widget
 draw pass. Changed widget visibility/selection still triggers drawing, and
 the action panel is rebuilt normally for command text, Cancel, and unit
 controls. Other selection transitions and TT/Falcon keep the original path.
-The ST-family action panel now composes directly into a private 64x82 planar
-canvas. The existing action-panel layout, widget callbacks and drawing APIs
-are retained; a sidebar scope redirects their drawing primitives. A cached
-clean frame provides the reconstruction background;
-portraits, production icons and coloured font glyphs are converted once per
-resident variant through the shared c2p encoder. Glyphs retain explicit
-opacity, including logical colours quantized to pen zero. Four bounded glyph
-variants per character cover text styles, selected commands and button presses;
-portrait variants cover normal and remapped button states. These assets are
-resident RAM caches, not additional files or a chunky SCREEN_0 mirror.
+The ST-family action panel draws directly into the live planar screen, without
+whole-panel off-screen composition. Existing layout and widget callbacks remain;
+a sidebar scope redirects their drawing primitives. The BLITTER backend has
+named background/frame/gauge members and directly indexed button/caption arrays, not a
+searchable fragment cache. Setup temporarily selects SCREEN_1 and disables
+sidebar/planar-target routing, so the original chunky rectangle, border,
+sprite and text primitives prepare individual static elements. It retains a
+chunky chrome template and reuses the current button template across captions.
+Each asset is rendered once and converted once through
+Video_Atari_EncodePlanarStrided, the shared sprite c2p/lookup path and future
+common sidebar dithering hook. Geometry supplies opaque bounds and storage
+sizes; only masked elements need bounded semantic opacity work. Black palette
+index zero is not treated as transparent.
 
-Attack, Move and Harvest each retain a complete native planar command panel
-(7,872 bytes of pixel data altogether). Re-entering targeting restores that
-template and replays the current Cancel button state rather than reconstructing
-the prompt, title and icon. Language, prompt colour and font changes select a
-fresh template. Forced redraws still republish the panel and update widget
-visibility, shortcuts and font/style state.
+Transient prepared fragments establish the exact packed bank size before
+allocation. Each command is compiled once against its final bank addresses;
+there is no compiler sizing pass, whole-bank second render, or whole-planar
+scratch clear/opacity scan for opaque assets. Temporary SCREEN_1 contents
+(including pixels outside a fragment touched by the original primitives) are
+saved/restored. The workspace and staged fragments are freed after setup.
+There is no asset eviction or allocation during warm frame/caption playback.
 
-A bounded 128-entry, four-way fragment cache also retains complete text-button
-states, portraits, positioned icons, production-button frames and formatted labels. Text keys
-include the actual text, font, spacing and full glyph-colour table; keys also
-distinguish geometry and widget clipping. Fragments record explicit write
-masks rather than differences against their original background, preserving
-transparent pixels and opaque pen zero when reused over a different canvas.
-Nested label captures remain part of their enclosing button. Warm text-button
-draws bypass glyph placement and border fills; positioned icons replay aligned
-planar words rather than repeating sprite shifting/composition. Production callbacks
-retain their live percentage and shortcut updates.
+Small action, repair/upgrade and cancel buttons are complete, opaque,
+64-pixel-wide strips: captions, left/right edges, top/bottom outlines and
+intersecting sidebar decorations are baked together. Each draw needs one
+BLITTER copy, not a separate frame and caption. There are three command states:
+idle raised, active orange raised, and pressed idle-colour flat. Pressed state
+takes priority over selection; there is no orange pressed variant. Repair keeps
+its special idle caption colour. Other static captions remain opaque strips.
+
+Production shares an opaque frame rather than storing full-height copies for
+each caption. Its caption/bottom-edge strips are separate from the produced
+object's sprite and construction-footprint decorations. A production-only
+change updates that widget without rebuilding the whole panel. Percentage and
+hold/completion changes retain its frame and sprites; changing the produced
+object, image mode or pressed frame repaints them. Percentage updates restore
+their opaque background strip before merging live text, including when digits
+shrink. A full panel redraw also repaints production contents.
+
+The standard-font/artwork fixture measures 45,228 bytes for the packed bank,
+plus 1,204 bytes of named descriptors (45.3 KiB), versus the former
+128,742-byte reservation. Complete button states increase storage from the
+compact separate-frame version's 31.7 KiB in exchange for fewer blits.
+Runtime bank size depends on the loaded font and caption line counts. Portraits
+and production icons remain separately demand-decoded through the shared c2p
+encoder; their heap storage is not included in that bank measurement. The DMG
+label, miniature gauge and health frame form one masked asset, with the variable
+health interior excluded. Health updates use a parameterized CPU fill; names,
+numbers, percentages, countdowns and blinking prompts use ordered live text.
+Preparation preserves the active screen and widget state, and saves/restores
+the full font, spacing, colour, wrapper-style and planar-text routing state.
 
 The visible-state key uses health-bar width/colour, displayed production/repair
 percentages, action/ownership, repair/upgrade availability and the actual
@@ -691,22 +716,27 @@ windtrap, storage, Outpost, Starport and missile numbers. Unchanged raw HP or
 countdown values no longer rebuild the panel. Production-string and upgrade
 initialization side effects still run before this early return. Buttons with
 selection states draw only once, after their final state is established;
-hover, press and keyboard redraws use the same planar canvas immediately.
+press and keyboard redraws use the same native widget path immediately.
+When only the visible health-bar width/colour changes, an existing unit or
+structure panel updates its bar without redrawing the background, portrait,
+name, gauge asset or buttons. Enemy AI orders are excluded from the visible
+state when their command buttons are hidden. Repair-button, windtrap-output or
+other simultaneous visible changes retain the full redraw path, as do forced
+redraws and invalidated panels. Health, command-only and production-only updates
+all use the existing sidebar Begin/End scope; they do not rebuild static assets.
 
-Changed non-command panels reconstruct from the clean frame and cached fragments, never
-from live display pixels. Publication compares with the previous clean canvas
-and restores only changed 16-pixel-group/row spans through the cursor-safe
-planar restore path. Unchanged spans cause no screen writes; a number change
-does not copy the whole panel. Warm updates perform no sidebar c2p and no
+Viewport and sidebar use separate batches in the shared 16 KiB display-list
+arena. Both execute their lists before returning, independently of framerate's
+Video_Tick callback. Warm panel updates perform no sidebar c2p and no
 SCREEN_1-to-SCREEN_0 copy. Interface startup/return publishes SCREEN_1 chrome
-before rebuilding both the native sidebar and battlefield; forced redraws
-republish even if cached pixels are unchanged. Sprite reloads and mapping
-changes invalidate assets. TT/Falcon and other platforms retain the old panel.
-STE5 measured the initial primitive-cache backend at 6.46% inclusive sidebar
-CPU, down from STE4's 10.23%, but exposed slower target-panel entry after the
-old whole-panel cache was removed. The command templates and whole-fragment
-caches above address that repeated composition; their CPU cost still needs
-a new gameplay profile. The 1-2% sidebar target is not yet measured.
+before rebuilding the native sidebar and battlefield. Forced redraws republish
+the panel; resource/mapping replacement rebuilds the asset bank. TT/Falcon and
+other platforms retain the old panel visuals. Capture105 of the preceding
+compact separate-frame backend measured 20.98 ms per forced panel redraw
+(capture104: 22.70 ms) and 36.09 ms per selection redraw (41.10 ms). Its separate
+command-frame playback still cost about 0.62 ms per button, plus 0.16 ms for an
+opaque caption. Complete-button performance requires a new gameplay profile;
+the two captures have different workloads.
 Factory-list scrolling rebuilds its SCREEN_1 animation strip from the item
 sprites and a retained background colour, including the preceding/following
 items. It never reads chunky SCREEN_0 back. ST/STE scrolling advances two

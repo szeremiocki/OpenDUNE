@@ -95,6 +95,34 @@ static const RankScore _rankScores[] = {
 };
 
 static uint8 g_colours[16];		/*!< Colors used for drawing chars */
+static uint16 s_textFontFlags = -1, s_textStyleFlags = -1;
+
+#ifdef TOS
+static uint16 *s_planarTarget;
+static bool s_textPlanarAllowed;
+
+void GUI_TextState_Get(GUITextState *state)
+{
+	state->font = g_fontCurrent;
+	state->spacing = g_fontCharOffset;
+	memcpy(state->colours, g_colours, sizeof(state->colours));
+	state->fontFlags = s_textFontFlags;
+	state->styleFlags = s_textStyleFlags;
+	state->planarTarget = s_planarTarget;
+	state->planarAllowed = s_textPlanarAllowed;
+}
+
+void GUI_TextState_Set(const GUITextState *state)
+{
+	g_fontCurrent = state->font;
+	g_fontCharOffset = state->spacing;
+	memcpy(g_colours, state->colours, sizeof(g_colours));
+	s_textFontFlags = state->fontFlags;
+	s_textStyleFlags = state->styleFlags;
+	s_planarTarget = state->planarTarget;
+	s_textPlanarAllowed = state->planarAllowed;
+}
+#endif
 static ClippingArea g_clipping = { 0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1 };
 uint8 *g_palette_998A = NULL;
 uint8 g_remap[256];
@@ -273,8 +301,6 @@ void GUI_DrawFilledRectangle(int16 left, int16 top, int16 right, int16 bottom, u
 
 #ifdef TOS
 /* While set, GUI_DrawChar() composes glyph cells into this planar buffer instead of drawing chunky. */
-static uint16 *s_planarTarget;
-static bool s_textPlanarAllowed;
 static uint16 s_planarTargetStride;  /*!< Words per row. */
 static uint16 s_planarTargetRows;
 
@@ -1016,23 +1042,20 @@ void GUI_DrawText_Wrapper(const char *string, int16 left, int16 top, uint8 fgCol
 {
 	char textBuffer[240];
 	const char *text = textBuffer;
-	static uint16 displayedarg12low = -1;
-	static uint16 displayedarg2mid  = -1;
-
 	uint8 arg12low = flags & 0x0F;	/* font : 1 => 6p, 2 => 8p */
 	uint8 arg2mid  = flags & 0xF0;	/* style */
 
-	if ((arg12low != displayedarg12low && arg12low != 0) || string == NULL) {
+	if ((arg12low != s_textFontFlags && arg12low != 0) || string == NULL) {
 		switch (arg12low) {
 			case 1:  Font_Select(g_fontNew6p); break;
 			case 2:  Font_Select(g_fontNew8p); break;
 			default: Font_Select(g_fontNew8p); break;
 		}
 
-		displayedarg12low = arg12low;
+		s_textFontFlags = arg12low;
 	}
 
-	if ((arg2mid != displayedarg2mid && arg2mid != 0) || string == NULL) {
+	if ((arg2mid != s_textStyleFlags && arg2mid != 0) || string == NULL) {
 		uint8 colours[16];
 		memset(colours, 0, sizeof(colours));
 
@@ -1068,7 +1091,7 @@ void GUI_DrawText_Wrapper(const char *string, int16 left, int16 top, uint8 fgCol
 
 		GUI_InitColors(colours, 0, lengthof(colours) - 1);
 
-		displayedarg2mid = arg2mid;
+		s_textStyleFlags = arg2mid;
 	}
 
 	if (string == NULL) return;
@@ -4199,6 +4222,9 @@ void GUI_DrawProgressbar(uint16 current, uint16 max)
 	if (current <= max / 2) colour = l_info[9];
 	if (current <= max / 4) colour = l_info[10];
 
+#ifdef TOS
+	if (GUI_Sidebar_Progressbar(width, (uint8)colour, (uint8)s_colourBorderSchema[1][0])) return;
+#endif
 	if (current != 0 && width  == 0) width = 1;
 	if (current != 0 && height == 0) height = 1;
 
@@ -4295,6 +4321,7 @@ void GUI_DrawInterfaceAndRadar(Screen screenID)
 #ifdef TOS
 		/* SCREEN_1 has neither the native sidebar nor the battlefield. */
 		if (directViewport) {
+			GUI_Sidebar_Preload();
 			GUI_Widget_ActionPanel_Draw(true);
 			GUI_DrawScreen(SCREEN_0);
 		}
@@ -4864,6 +4891,8 @@ void GUI_ChangeSelectionType(uint16 selectionType)
 			&& ((oldSelectionType == SELECTIONTYPE_UNIT && selectionType == SELECTIONTYPE_TARGET)
 				|| (oldSelectionType == SELECTIONTYPE_TARGET && selectionType == SELECTIONTYPE_UNIT)));
 		Video_Atari_PlacementHide();
+		/* Panel writes can sync the pointer before the viewport prepares its target frame. */
+		if (!redrawAllWidgets && GUI_Widget_Viewport_TileCursorActive()) Video_Atari_PlacementCursor(true);
 #endif
 		Timer_SetTimer(TIMER_GAME, false);
 

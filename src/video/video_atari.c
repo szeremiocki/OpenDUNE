@@ -2755,6 +2755,7 @@ void Video_Atari_LiveEnd(uint16 x, uint16 y, uint16 width, uint16 height)
 {
 	Video_Atari_RestoreTileCursor();
 	GFX_Screen_ClearDirtyRect(x & ~15, y, (x + width + 15) & ~15, y + height);
+	if (s_viewportBlitter) Video_Atari_CursorSync(Video_Atari_PlanarBase());
 }
 
 /* Flat-colour planar fill. Unlike the c2p path this handles rectangles
