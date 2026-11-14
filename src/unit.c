@@ -2285,7 +2285,7 @@ void Unit_DisplayStatusText(Unit *unit)
 			buffer[len + 1] = '\0';
 		}
 	}
-	GUI_DisplayText(buffer, 2);
+	GUI_DisplayTextLiteral(buffer, 2);
 }
 
 /**

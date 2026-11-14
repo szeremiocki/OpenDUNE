@@ -697,8 +697,9 @@ object, image mode or pressed frame repaints them. Percentage updates restore
 their opaque background strip before merging live text, including when digits
 shrink. A full panel redraw also repaints production contents.
 
-The standard-font/artwork fixture measures 45,228 bytes for the packed bank,
-plus 1,204 bytes of named descriptors (45.3 KiB), versus the former
+The standard-font/artwork fixture measures 45,474 bytes for the packed bank,
+plus 1,204 bytes of named descriptors and three 4-byte background-command pointers
+(45.6 KiB), versus the former
 128,742-byte reservation. Complete button states increase storage from the
 compact separate-frame version's 31.7 KiB in exchange for fewer blits.
 Runtime bank size depends on the loaded font and caption line counts. Portraits
@@ -710,6 +711,32 @@ numbers, percentages, countdowns and blinking prompts use ordered live text.
 Preparation preserves the active screen and widget state, and saves/restores
 the full font, spacing, colour, wrapper-style and planar-text routing state.
 
+Ready command, cancel and repair/upgrade button captions bypass string scanning,
+formatting, width measurement and alignment. Their prepared images are anchored
+at the button centre; wrapper font/style/spacing and colour-state updates are
+preserved. Preparation, non-ready captions, production text and CPU drawing keep
+the normal text path. This adds no image storage or cache slots.
+
+The separate sidebar sprite map has 82 direct slots for sprite IDs 24-105,
+indexed by ID minus 24 (328 bytes of pointers on Atari). Decoded images and
+alignment-specific BLITTER commands are allocated on demand and retained until
+sidebar resources are freed. Native flat buttons do not remap their image when
+pressed, so there are no remap variants; nonzero remap requests and out-of-range
+IDs are rejected explicitly. This map does not use viewport component-cache
+slots.
+
+Known solid stock portraits/icons (IDs 28-30 and 65-105, 32x24) skip opacity
+decoding, mask packing and final planar masking. They share one 384-byte
+all-ones mask buffer for CPU drawing instead of owning per-image masks, saving
+476 bytes per decoded portrait after its added mask pointer. BLITTER drawing
+uses opaque source copies with geometric endmasks for shifted/clipped edges,
+without a separate clearing pass. IDs 24-26 skip opacity decoding too, using
+rectangular masks to exclude
+their padded columns. Other IDs and unexpected dimensions retain explicit
+opacity decoding; sprites 27, 63 and 64 keep their holes. Shifted/clipped blits
+retain their existing end masks. Eligibility assumes the stock artwork: custom
+images introducing holes at these IDs require updating the opaque-ID contract.
+
 The visible-state key uses health-bar width/colour, displayed production/repair
 percentages, action/ownership, repair/upgrade availability and the actual
 windtrap, storage, Outpost, Starport and missile numbers. Unchanged raw HP or
@@ -720,23 +747,44 @@ press and keyboard redraws use the same native widget path immediately.
 When only the visible health-bar width/colour changes, an existing unit or
 structure panel updates its bar without redrawing the background, portrait,
 name, gauge asset or buttons. Enemy AI orders are excluded from the visible
-state when their command buttons are hidden. Repair-button, windtrap-output or
-other simultaneous visible changes retain the full redraw path, as do forced
-redraws and invalidated panels. Health, command-only and production-only updates
-all use the existing sidebar Begin/End scope; they do not rebuild static assets.
+state when their command buttons are hidden. Refinery/silo storage, windtrap
+power, Outpost counts and Starport countdown/caption changes restore only the
+stats region (rows 88-123) before redrawing its text. Repair/upgrade state
+changes redraw only that button from the prepared states. If the button
+disappears, its band (rows 75-86) is restored, preserving shared portrait and
+production outlines. Health, stats, repair and production each have independent
+dirty flags and dispatches in one Begin/End batch; repair-induced production
+hold/resume changes do not force a full panel redraw. There are no special
+combined handlers. Stats and repair restoration borrow the existing background
+pixels, adding two 82-byte copy commands and their pointers, not more images.
+Unit-to-unit selection uses a redraw-category mask: enemy-to-enemy and
+player-to-player selections retain background and gauge. Same-type selections
+also retain portrait/name; changed types restore only the title band before
+redrawing the name and portrait. A third 82-byte command borrows the background's
+title rows 42-50 without duplicating pixels. Health redraws only when its visible
+width/colour changes; command widgets update metadata but redraw only changed
+states/labels. Same-type enemy-to-player transitions add commands without erasing
+the upper panel. Player-to-enemy, different-type enemy-to-player, non-unit
+transitions and unsupported layouts retain full redraws. Invalidated panels and
+forced restoration of the same selection also redraw fully. Partial updates do
+not rebuild static assets.
 
 Viewport and sidebar use separate batches in the shared 16 KiB display-list
 arena. Both execute their lists before returning, independently of framerate's
 Video_Tick callback. Warm panel updates perform no sidebar c2p and no
 SCREEN_1-to-SCREEN_0 copy. Interface startup/return publishes SCREEN_1 chrome
-before rebuilding the native sidebar and battlefield. Forced redraws republish
-the panel; resource/mapping replacement rebuilds the asset bank. TT/Falcon and
+before rebuilding the native sidebar and battlefield. Forced selection changes
+may retain components; other forced redraws republish the panel.
+Resource/mapping replacement rebuilds the asset bank. TT/Falcon and
 other platforms retain the old panel visuals. Capture105 of the preceding
 compact separate-frame backend measured 20.98 ms per forced panel redraw
 (capture104: 22.70 ms) and 36.09 ms per selection redraw (41.10 ms). Its separate
 command-frame playback still cost about 0.62 ms per button, plus 0.16 ms for an
-opaque caption. Complete-button performance requires a new gameplay profile;
-the two captures have different workloads.
+opaque caption. Capture112 measures opaque portrait playback at 0.4023 ms/image
+(capture111: 0.8805 ms) and ready-button text wrappers at 0.4831 ms/button
+(0.5872 ms). Seven cold images average 15.83 ms including command preparation
+(17.58 ms for nine images in capture111). These are averages from different
+workloads, before unit-selection component retention.
 Factory-list scrolling rebuilds its SCREEN_1 animation strip from the item
 sprites and a retained background colour, including the preceding/following
 items. It never reads chunky SCREEN_0 back. ST/STE scrolling advances two
@@ -969,12 +1017,18 @@ Immediate screen accesses also finish a pending copy. Visible legacy overlays
 are restored synchronously; otherwise restoration does not interrupt construction.
 With the BLiTTER disabled, per-scanline CPU memmove remains in use.
 
-The upper announcement banner converts its 24-row text composition once
-per slide on ST/STE, then copies the moving 14-row planar window without
-further c2p. Its 3.75 KiB cache uses the fixed gameplay mapping; masked
-horizontal edges preserve the adjacent HUD, and cursor backgrounds are
-updated through the normal planar helpers. Timing and text queuing are
-unchanged.
+The upper announcement banner composes text directly into its 24-row planar
+cache on ST/STE, then copies the moving 14-row window without further c2p.
+Rebuilds retain unchanged lines, including their occupied bounds while
+scrolling; shorter replacements clear the former text extent. Palette,
+font and layout changes invalidate the retained pixels, and unsupported or
+overlapping lines keep the full-composition fallback. Forced screen
+restoration still copies the full banner window even when its text is
+retained. The 3.75 KiB pixel cache is unchanged; masked horizontal edges
+preserve the adjacent HUD and normal planar helpers maintain cursor
+backgrounds. Completed unit-status messages bypass a second printf pass,
+and banner lines are drawn literally, including percent signs. Timing,
+message priorities, queuing and the original text position are unchanged.
 
 Atari credits numbers use a small six-column unsigned formatter instead
 of general printf machinery, with no division or stream handling. Equal

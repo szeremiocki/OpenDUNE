@@ -44,6 +44,9 @@ class SidebarPlanarTest(unittest.TestCase):
             ("GUI_Sidebar_Fill", "sidebarFills"),
             ("GUI_Sidebar_Sprite", "sidebarSprites"),
             ("GUI_Sidebar_CaptureBegin", "sidebarCaptures"),
+            ("GUI_Sidebar_RestoreStats", "statsRestores"),
+            ("GUI_Sidebar_RestoreRepair", "repairRestores"),
+            ("GUI_Sidebar_RestoreTitle", "titleRestores"),
         ):
             body = function(sidebar, name)
             instrumentation = counter + "++;"
@@ -70,6 +73,11 @@ class SidebarPlanarTest(unittest.TestCase):
         )
         compose = function(video, "Video_Atari_BlitPlanarSprite")
         functions = functions.replace(compose, compose.replace("{", "{\nsidebarCompositions++;", 1))
+        measure = function(font, "Font_GetStringWidth")
+        functions = functions.replace(measure, measure.replace("{", "{\ntextMeasurements++;", 1))
+        layout = "\tif (strchr(string, '%') == NULL"
+        assert layout in functions
+        functions = functions.replace(layout, "\ttextLayouts++;\n" + layout, 1)
         harness = r"""
 #include <assert.h>
 #include <stdio.h>
@@ -114,7 +122,7 @@ typedef struct TestBlit {
     uint16 stride, width, height, phase;
 } TestBlit;
 /* BLIT COMPILER */
-static unsigned preparedBlits, queuedBlits, batchBegins, queuedHealth, nonemptyFlushes, productionFaces;
+static unsigned preparedBlits, queuedBlits, batchBegins, queuedHealth, nonemptyFlushes, productionFaces, statsRestores, repairRestores, titleRestores, backgroundBlits;
 static struct {
     TestBlit blit;
     uint16 *dst, width;
@@ -179,6 +187,8 @@ void Video_Atari_DisplayListEnd(void) {
 void Video_Atari_QueueSidebarBlit(const uint16 *code,uint16 *dst) {
     assert(g_videoDisplayListActive && pendingBlitCount<4096);
     memcpy(&pendingBlits[pendingBlitCount].blit,code,sizeof(TestBlit));
+    if(pendingBlits[pendingBlitCount].blit.width==64 && pendingBlits[pendingBlitCount].blit.height==82)
+        backgroundBlits++;
     if(pendingBlits[pendingBlitCount].blit.width==64 && pendingBlits[pendingBlitCount].blit.height==37)
         productionFaces++;
     pendingBlits[pendingBlitCount].cpu=NULL;
@@ -202,8 +212,9 @@ void *Video_Atari_QueueSidebarCPU(void (*code)(const void *),size_t bytes) {
     return pendingBlits[pendingBlitCount++].cpuData;
 }
 static uint16 generation;
-static unsigned encodes, liveEnds, copies, hides, shows, widgetDraws[12];
+static unsigned encodes, liveEnds, copies, hides, shows, widgetDraws[12], opacityDecodes;
 static unsigned sidebarChars, sidebarFills, sidebarSprites, sidebarCompositions, sidebarCaptures;
+static unsigned textMeasurements, textLayouts;
 static uint16 display[320 * 200 / 4], reference[320 * 200 / 4];
 static uint8 screens[2][320 * 200], mapping[256], remapping[256];
 static uint8 assetData[355][5 + 32 * 24], *assets[355];
@@ -272,7 +283,9 @@ void GFX_PutPixel(uint16 x, uint16 y, uint8 colour) {
     assert(!GUI_Sidebar_Active());
     screens[g_screenActiveID][y * 320 + x] = colour;
 }
-void Error(const char *format, ...) { (void)format; abort(); }
+void Error(const char *format, ...) {
+    va_list ap; va_start(ap,format); vfprintf(stderr,format,ap); va_end(ap);
+}
 void Warning(const char *format, ...) { (void)format; abort(); }
 void GUI_Mouse_Hide_InRegion(uint16 l, uint16 t, uint16 r, uint16 b) {
     (void)l; (void)t; (void)r; (void)b; hides++;
@@ -290,7 +303,7 @@ uint16 Widget_SetCurrentWidget(uint16 index) {
     g_curWidgetFGColourBlink = g_widgetProperties[index].fgColourBlink;
     return old;
 }
-House *House_Get_ByIndex(uint8 index) { assert(index <= 1); return &house; }
+House *House_Get_ByIndex(uint8 index) { assert(index < HOUSE_MAX); return &house; }
 #undef Unit_Get_ByIndex
 Unit *Unit_Get_ByIndex(uint16 index) { assert(index == 1); return &linked; }
 uint8 Unit_GetHouseID(Unit *u) { return u->deviated ? 1 : u->o.houseID; }
@@ -384,6 +397,7 @@ void GUI_DrawSpriteToBuffer(uint8 *dst, uint16 width, uint16 height,
     }
 }
 void GUI_DrawSpriteOpacity(uint8 *dst,uint16 width,uint16 height,const uint8 *sprite,int16 x,int16 y) {
+    opacityDecodes++;
     for(unsigned row=0;row<sprite[2];row++) for(unsigned col=0;col<sprite[3];col++)
         if(sprite[5+row*sprite[3]+col] && row+y<height && col+x<width) dst[(row+y)*width+col+x]=1;
 }
@@ -401,7 +415,7 @@ void GUI_DrawSprite(Screen screen, const uint8 *sprite, uint16 id, uint8 houseID
         if (!colour) continue;
         if ((sprite[0]&1) && colour==255) colour=0;
         for (unsigned n=0;n<count;n++) colour=remap[colour];
-        dst[(row+y)*320+col+x]=colour;
+        if(row+y<200 && col+x<320) dst[(row+y)*320+col+x]=colour;
     }
 }
 bool Video_Atari_PresentFill(int16 x,int16 y,uint16 w,uint16 h,uint8 colour) {
@@ -473,6 +487,7 @@ static void check_panel(void) {
     memset(display,0x7b,sizeof(display)); memset(screens,0xa5,sizeof(screens));
     memset(widgetDraws,0,sizeof(widgetDraws));
     unsigned beforeCopies=copies;
+    GUI_Sidebar_Invalidate();
     GUI_Widget_ActionPanel_Draw(true);
     assert(g_screenActiveID==SCREEN_0 && g_curWidgetIndex==0 && hides==shows);
     assert(!memcmp(display,reference,sizeof(display)) && copies==beforeCopies);
@@ -501,10 +516,11 @@ static void check_hover(unsigned i,unsigned down) {
     widgets[i].state.hover2=down; GUI_Widget_Draw(&widgets[i]);
     uint16 shortcut=widgets[i].shortcut;
     uint8 coloursAfter[16]; memcpy(coloursAfter,g_colours,sizeof(coloursAfter));
-    Font *fontAfter=g_fontCurrent;
-    int8 spacingAfter=g_fontCharOffset;
+    GUITextState textAfter, textActual;
+    GUI_TextState_Get(&textAfter);
     memcpy(reference,display,sizeof(display));
-    direct=true; setup_widgets(); g_screenActiveID=SCREEN_0; GUI_Widget_ActionPanel_Draw(true);
+    direct=true; setup_widgets(); g_screenActiveID=SCREEN_0;
+    GUI_Sidebar_Invalidate(); GUI_Widget_ActionPanel_Draw(true);
     static uint16 normal[sizeof(display)/sizeof(*display)];
     if(down && widgets[i].state.selected) {
         widgets[i].state.selected=false;
@@ -513,14 +529,19 @@ static void check_hover(unsigned i,unsigned down) {
     }
     memcpy(normal,display,sizeof(display));
     uint16 *bank=s_assetBank;
-    widgets[i].state.hover2=down; unsigned c=copies, blits=queuedBlits; GUI_Widget_Draw(&widgets[i]);
-    if(g_videoViewportBlitter && widgets[i].index!=5 && widgets[i].index!=6)
+    widgets[i].state.hover2=down; unsigned c=copies, blits=queuedBlits;
+    unsigned measurements=textMeasurements, layouts=textLayouts;
+    GUI_Widget_Draw(&widgets[i]);
+    if(g_videoViewportBlitter && widgets[i].index!=5 && widgets[i].index!=6) {
         assert(queuedBlits==blits+1);
+        assert(textMeasurements==measurements && textLayouts==layouts);
+    }
     if(memcmp(reference,display,sizeof(display))) {
         for(unsigned word=0;word<sizeof(display)/sizeof(*display);word++)
             if(reference[word]!=display[word]) {
-                fprintf(stderr,"hover widget=%u down=%u structure=%u differs at group=%u y=%u (%04x/%04x)\n",
-                        i+3,down,structure.o.type,(word%80)/4,word/80,reference[word],display[word]);
+                fprintf(stderr,"hover widget=%u down=%u structure=%u unit=%u selection=%u wide=%u differs at group=%u y=%u (%04x/%04x)\n",
+                        i+3,down,structure.o.type,unit.o.type,g_selectionType,wideCaption,
+                        (word%80)/4,word/80,reference[word],display[word]);
                 break;
             }
     }
@@ -547,8 +568,58 @@ static void check_hover(unsigned i,unsigned down) {
     widgets[i].shortcut=0;
     GUI_Widget_Draw(&widgets[i]);
     assert(!memcmp(reference,display,sizeof(display)) && widgets[i].shortcut==shortcut);
-    assert(g_fontCurrent==fontAfter && g_fontCharOffset==spacingAfter);
+    GUI_TextState_Get(&textActual);
+    assert(textActual.font==textAfter.font && textActual.spacing==textAfter.spacing);
+    assert(textActual.fontFlags==textAfter.fontFlags && textActual.styleFlags==textAfter.styleFlags);
     assert(!memcmp(g_colours,coloursAfter,sizeof(coloursAfter)));
+}
+static void check_unit_selection(unsigned mask) {
+    static uint16 previous[sizeof(display)/sizeof(*display)];
+    Widget prior[9], expected[9];
+    memcpy(previous,display,sizeof(previous));
+    memcpy(prior,widgets,sizeof(prior));
+    direct=false;
+    GUI_Widget_ActionPanel_Draw(true);
+    memcpy(reference,display,sizeof(reference));
+    memcpy(expected,widgets,sizeof(expected));
+    memcpy(display,previous,sizeof(display));
+    memcpy(widgets,prior,sizeof(widgets));
+    direct=true;
+    unsigned backgrounds=backgroundBlits, sprites=sidebarSprites, titles=titleRestores;
+    unsigned health=queuedHealth, blits=queuedBlits, ends=liveEnds;
+    memset(widgetDraws,0,sizeof(widgetDraws));
+    GUI_Widget_ActionPanel_Draw(true);
+    assert(s_planarRedraw==mask && liveEnds==ends+1);
+    if(memcmp(reference,display,sizeof(display)))
+        for(unsigned word=0;word<lengthof(display);word++)
+            if(reference[word]!=display[word]) {
+                fprintf(stderr,"selection mask=%u type=%u owner=%u differs at group=%u y=%u (%04x/%04x)\n",
+                        mask,unit.o.type,unit.o.houseID,(word%80)/4,word/80,reference[word],display[word]);
+                break;
+            }
+    assert(!memcmp(reference,display,sizeof(display)));
+    for(unsigned i=0;i<9;i++) {
+        assert(widgets[i].flags.invisible==expected[i].flags.invisible);
+        if(!expected[i].flags.invisible) {
+            assert(widgets[i].stringID==expected[i].stringID);
+            assert(widgets[i].shortcut==expected[i].shortcut && widgets[i].shortcut2==expected[i].shortcut2);
+            assert(widgets[i].state.selected==expected[i].state.selected);
+            assert(widgets[i].state.hover2==expected[i].state.hover2);
+        }
+    }
+    if(mask==SIDEBAR_REDRAW_ALL) {
+        if(g_videoViewportBlitter) assert(backgroundBlits==backgrounds+1);
+    } else {
+        assert(backgroundBlits==backgrounds);
+        assert(sidebarSprites==sprites+!!(mask&SIDEBAR_REDRAW_PORTRAIT));
+        assert(titleRestores==titles+!!(mask&SIDEBAR_REDRAW_NAME));
+        if(g_videoViewportBlitter) {
+            assert(queuedHealth==health+!!(mask&SIDEBAR_REDRAW_HEALTH));
+            if(mask==0) assert(queuedBlits==blits);
+        }
+        if(!(mask&SIDEBAR_REDRAW_COMMANDS))
+            for(unsigned i=8;i<12;i++) assert(!widgetDraws[i]);
+    }
 }
 static void check_production_update(bool imageChanged) {
     static uint16 previous[sizeof(display)/sizeof(*display)];
@@ -572,19 +643,30 @@ static void check_production_update(bool imageChanged) {
 }
 static void check_health_update(bool healthOnly,bool force) {
     static uint16 previous[sizeof(display)/sizeof(*display)];
+    Widget prior[9];
     GUITextState text;
     GUI_TextState_Get(&text);
     memcpy(previous,display,sizeof(previous));
+    memcpy(prior,widgets,sizeof(prior));
     direct=false;
     GUI_Widget_ActionPanel_Draw(true);
     memcpy(reference,display,sizeof(reference));
     memcpy(display,previous,sizeof(display));
+    memcpy(widgets,prior,sizeof(widgets));
     direct=true;
     GUI_TextState_Set(&text);
     unsigned sprites=sidebarSprites, health=queuedHealth, blits=queuedBlits, p=liveEnds;
     unsigned conversions=encodes, prepared=preparedBlits, c=copies;
+    unsigned restores=statsRestores;
     memset(widgetDraws,0,sizeof(widgetDraws));
     GUI_Widget_ActionPanel_Draw(force);
+    if(memcmp(reference,display,sizeof(display)))
+        for(unsigned word=0;word<lengthof(display);word++)
+            if(reference[word]!=display[word]) {
+                fprintf(stderr,"health hp=%u force=%u mask=%u differs at group=%u y=%u (%04x/%04x)\n",
+                        unit.o.hitpoints,force,s_planarRedraw,(word%80)/4,word/80,reference[word],display[word]);
+                break;
+            }
     assert(!memcmp(reference,display,sizeof(display)) && liveEnds==p+1 && copies==c);
     if(healthOnly) {
         assert(sidebarSprites==sprites && encodes==conversions && preparedBlits==prepared);
@@ -599,10 +681,95 @@ static void check_health_update(bool healthOnly,bool force) {
             }
         }
     } else if(g_videoViewportBlitter) {
-        assert(queuedBlits>blits);
+        assert(queuedBlits>blits && statsRestores==restores);
     }
 }
-int main(void) {
+static void check_component_update(bool healthChanged, bool statsChanged, bool repairChanged, bool productionChanged) {
+    static uint16 previous[sizeof(display)/sizeof(*display)];
+    Widget previousWidgets[9], expectedRepair;
+    GUITextState text;
+    GUI_TextState_Get(&text);
+    memcpy(previous,display,sizeof(previous));
+    memcpy(previousWidgets,widgets,sizeof(widgets));
+    direct=false;
+    GUI_Widget_ActionPanel_Draw(true);
+    memcpy(reference,display,sizeof(reference));
+    expectedRepair=widgets[1];
+    memcpy(display,previous,sizeof(display));
+    memcpy(widgets,previousWidgets,sizeof(widgets));
+    direct=true;
+    GUI_TextState_Set(&text);
+    unsigned sprites=sidebarSprites, health=queuedHealth, blits=queuedBlits, p=liveEnds;
+    unsigned conversions=encodes, prepared=preparedBlits, restores=statsRestores, batches=batchBegins;
+    unsigned repairClears=repairRestores;
+    memset(widgetDraws,0,sizeof(widgetDraws));
+    GUI_Widget_ActionPanel_Draw(false);
+    assert(!memcmp(reference,display,sizeof(display)) && liveEnds==p+1);
+    assert(statsRestores==restores+statsChanged);
+    assert(repairRestores==repairClears+(repairChanged && expectedRepair.flags.invisible));
+    if(!productionChanged) assert(sidebarSprites==sprites);
+    assert(encodes==conversions && preparedBlits==prepared);
+    assert(g_screenActiveID==SCREEN_0 && g_curWidgetIndex==0);
+    for(unsigned i=3;i<12;i++)
+        assert(widgetDraws[i]==(i==4 && repairChanged ? 1 :
+                               i==5 && productionChanged ? 1 : 0));
+    assert(widgets[1].flags.invisible==expectedRepair.flags.invisible);
+    assert(widgets[1].state.selected==expectedRepair.state.selected);
+    assert(widgets[1].stringID==expectedRepair.stringID && widgets[1].shortcut==expectedRepair.shortcut);
+    if(g_videoViewportBlitter) {
+        assert(batchBegins==batches+1 && !pendingBlitCount && !g_videoDisplayListActive);
+        assert(queuedHealth==health+healthChanged && queuedBlits>blits);
+        if(!productionChanged) assert(queuedBlits<=blits+3*statsChanged+2*repairChanged);
+    }
+    for(unsigned y=0;y<200;y++) for(unsigned group=0;group<20;group++) {
+        uint16 changed=statsChanged && y>=88 && y<124 && group>=16 ? 0xffff : 0;
+        if(repairChanged && y>=75 && y<=86 && group>=16) changed=0xffff;
+        if(productionChanged && y>=86 && y<123 && group>=16) changed=0xffff;
+        if(healthChanged && y>=52 && y<59)
+            changed=group==18?0x07ff:group==19?0xfff8:0;
+        for(unsigned plane=0;plane<4;plane++) {
+            unsigned offset=y*80+group*4+plane;
+            assert(!((previous[offset]^display[offset])&(uint16)~changed));
+        }
+    }
+    p=liveEnds;
+    GUI_Widget_ActionPanel_Draw(false);
+    assert(liveEnds==p);
+}
+static void check_stats_update(bool healthChanged) {
+    check_component_update(healthChanged,true,false,false);
+}
+static void check_sidebar_sprite(uint16 id, uint16 x, bool opaque, bool shared) {
+    direct=false; g_screenActiveID=SCREEN_1;
+    GUI_DrawFilledRectangle(256,42,319,123,20);
+    GUI_DrawSprite(SCREEN_ACTIVE,g_sprites[id],id,GUI_SPRITE_COLOUR_EMBEDDED,x,51,0,0);
+    copy_rect(256,42,256,42,64,82,SCREEN_1);
+    memcpy(reference,display,sizeof(reference));
+    direct=true; GUI_Sidebar_Begin(false);
+    GUI_Sidebar_Fill(256,42,319,123,20);
+    unsigned opacity=opacityDecodes;
+    bool cold=s_sprites[id-SIDEBAR_SPRITE_FIRST]==NULL;
+    GUI_DrawSprite(SCREEN_ACTIVE,g_sprites[id],id,GUI_SPRITE_COLOUR_EMBEDDED,x,51,0,0);
+    GUI_Sidebar_End();
+    assert(opacityDecodes==opacity+(cold && !opaque));
+    assert(!memcmp(reference,display,sizeof(display)));
+    SidebarSprite *entry=s_sprites[id-SIDEBAR_SPRITE_FIRST];
+    assert((entry->masks==s_opaqueSpriteMasks)==shared);
+    if(g_videoViewportBlitter && shared) {
+        TestBlit blit;
+        memcpy(&blit,entry->blits[(x-256)&15]->words,sizeof(blit));
+        assert(blit.masks==NULL);
+    }
+    unsigned conversions=encodes, prepared=preparedBlits;
+    GUI_Sidebar_Begin(false);
+    GUI_DrawSprite(SCREEN_ACTIVE,g_sprites[id],id,GUI_SPRITE_COLOUR_EMBEDDED,x,51,0,
+                   DRAWSPRITE_FLAG_REMAP,g_paletteMapping1,0);
+    GUI_Sidebar_End();
+    assert(opacityDecodes==opacity+(cold && !opaque));
+    assert(entry==s_sprites[id-SIDEBAR_SPRITE_FIRST] && encodes==conversions && preparedBlits==prepared);
+    assert(!memcmp(reference,display,sizeof(display)));
+}
+int main(int argc, char **argv) {
 #ifdef TEST_SIDEBAR_BLITTER
     g_videoViewportBlitter=true;
 #endif
@@ -612,15 +779,22 @@ int main(void) {
         for(unsigned p=0;p<36;p++) fontData[c][p]=(c+p*3)%5;
     }
     for(unsigned id=0;id<355;id++) {
-        assets[id]=assetData[id]; assets[id][2]=id==24?3:24;
+        assets[id]=assetData[id]; assets[id][2]=24;
         assets[id][0]=1;
-        assets[id][3]=id==24?3:32;
+        assets[id][3]=32;
+        if(id>=24 && id<=26) assets[id][2]=assets[id][3]=id==24?5:8;
         if(id==27) { assets[id][2]=5; assets[id][3]=28; }
         if(id==63) { assets[id][2]=14; assets[id][3]=20; }
+        bool opaque=(id>=24 && id<=26) || (id>=28 && id<=30) || (id>=65 && id<=105);
         for(unsigned p=0;p<assets[id][2]*assets[id][3];p++)
-            assets[id][p+5]=(id+p)%5?(id+p)%255+1:0;
+            assets[id][p+5]=opaque || (id+p)%5?(id+p)%255+1:0;
     }
     /* REAL RESOURCES */
+    if(argc>1) {
+        uint16 id=(uint16)atoi(argv[1]), count=argc>2?(uint16)atoi(argv[2]):0;
+        GUI_Sidebar_Sprite(g_sprites[65],id,258,51,DRAWSPRITE_FLAG_REMAP,g_paletteMapping1,count);
+        abort();
+    }
     g_widgetProperties[0]=(WidgetProperties){0,0,40,200,15,12,0};
     g_widgetProperties[6]=(WidgetProperties){32,42,8,82,15,12,0};
     house.creditsStorage=1000; house.credits=425; house.windtrapCount=2;
@@ -630,14 +804,14 @@ int main(void) {
     for(unsigned i=0;i<UNIT_MAX;i++) {
         g_table_unitInfo[i].o.hitpoints=100;
         g_table_unitInfo[i].o.buildTime=100;
-        g_table_unitInfo[i].o.spriteID=50+i;
+        g_table_unitInfo[i].o.spriteID=65+i;
         g_table_unitInfo[i].o.stringID_abbrev=STR_MOVE;
         for(unsigned a=0;a<4;a++) g_table_unitInfo[i].o.actionsPlayer[a]=g_table_actionsAI[a];
     }
     for(unsigned i=0;i<STRUCTURE_MAX;i++) {
         g_table_structureInfo[i].o.hitpoints=100;
         g_table_structureInfo[i].o.buildTime=100;
-        g_table_structureInfo[i].o.spriteID=100+i;
+        g_table_structureInfo[i].o.spriteID=65+i;
         g_table_structureInfo[i].o.stringID_abbrev=STR_MOVE;
         g_table_structureInfo[i].creditsStorage=1000;
         g_table_structureInfo[i].powerUsage=-100;
@@ -679,7 +853,7 @@ int main(void) {
     assert(g_curWidgetFGColourBlink==setupBlink && g_curWidgetFGColourNormal==setupNormal);
     assert(batchBegins==setupBegins && liveEnds==setupEnds);
     if(g_videoViewportBlitter) {
-        assert(encodes-setupEncodes==86 && preparedBlits-setupCompiles==86);
+        assert(encodes-setupEncodes==86 && preparedBlits-setupCompiles==89);
         assert(sidebarCaptures-setupCaptures==86);
         assert(!s_prepared && !s_chrome && !s_buttonTemplate);
     }
@@ -687,7 +861,7 @@ int main(void) {
     /* RESOURCE FOOTPRINT */
     if(g_videoViewportBlitter) {
         assert(s_sidebar.background.ready && s_sidebar.damageGauge.ready);
-        assert(s_sprites[27][0]==NULL);
+        assert(s_sprites[27-SIDEBAR_SPRITE_FIRST]==NULL);
         assert(s_sidebar.productionFace[0].ready && s_sidebar.productionFace[1].ready);
         assert(g_sidebarCaptions.action[ACTION_MOVE][0].ready);
         assert(g_sidebarCaptions.action[ACTION_MOVE][1].ready);
@@ -707,6 +881,45 @@ int main(void) {
         GUI_Widget_TextButton2_Draw(&outside);
         if(!native) memcpy(reference,display,sizeof(display));
         else assert(!memcmp(reference,display,sizeof(display)));
+    }
+    /* Ready buttons skip layout but preserve both changed and unchanged wrapper state. */
+    for(unsigned sameStyle=0;sameStyle<2;sameStyle++) for(unsigned state=0;state<4;state++) {
+        direct=false; setup_widgets(); g_screenActiveID=SCREEN_1;
+        GUI_Widget_ActionPanel_Draw(true);
+        Widget button=widgets[5];
+        button.stringID=g_table_actionInfo[g_table_unitInfo[unit.o.type].o.actionsPlayer[0]].stringID;
+        button.state.selected=state&1; button.state.hover2=(state&2)!=0;
+        GUI_DrawText_Wrapper(NULL,0,0,3,11,sameStyle?0x121:0x12);
+        uint8 prior[2]={11,3};
+        GUI_InitColors(prior,0,1);
+        GUITextState before, expected, actual;
+        GUI_TextState_Get(&before);
+        GUI_Widget_TextButton2_Draw(&button);
+        uint16 shortcut=button.shortcut;
+        GUI_TextState_Get(&expected);
+        copy_rect(256,42,256,42,64,82,SCREEN_1);
+        memcpy(reference,display,sizeof(reference));
+        direct=true; setup_widgets(); GUI_Widget_ActionPanel_Draw(true);
+        GUI_TextState_Set(&before);
+        GUI_Sidebar_Begin(false);
+        unsigned measurements=textMeasurements, layouts=textLayouts, queued=queuedBlits;
+        GUI_Widget_TextButton2_Draw(&button);
+        GUI_TextState_Get(&actual);
+        GUI_Sidebar_End();
+        if(memcmp(reference,display,sizeof(display)))
+            for(unsigned word=0;word<lengthof(display);word++)
+                if(reference[word]!=display[word]) {
+                    fprintf(stderr,"ready button style=%u state=%u differs at group=%u y=%u (%04x/%04x)\n",
+                            sameStyle,state,(word%80)/4,word/80,reference[word],display[word]);
+                    break;
+                }
+        assert(!memcmp(reference,display,sizeof(display)) && button.shortcut==shortcut);
+        assert(actual.font==expected.font && actual.spacing==expected.spacing);
+        assert(actual.fontFlags==expected.fontFlags && actual.styleFlags==expected.styleFlags);
+        assert(!memcmp(actual.colours,expected.colours,sizeof(actual.colours)));
+        assert(textMeasurements==measurements+!g_videoViewportBlitter);
+        assert(textLayouts==layouts+!g_videoViewportBlitter);
+        if(g_videoViewportBlitter) assert(queuedBlits==queued+1);
     }
     check_panel();
     unsigned p=liveEnds;
@@ -730,6 +943,48 @@ int main(void) {
     p=liveEnds;
     unit.nextActionID=ACTION_ATTACK; GUI_Widget_ActionPanel_Draw(false);
     assert(liveEnds>p);
+    /* Retain unit layout across selections, including ownership and shorter titles. */
+    unit.nextActionID=ACTION_INVALID; unit.actionID=ACTION_MOVE; check_panel();
+    unit.o.index++;
+    check_unit_selection(SIDEBAR_REDRAW_COMMANDS);
+    for(unsigned i=8;i<12;i++) assert(!widgetDraws[i]);
+    widgets[5].state.hover2=true; GUI_Widget_Draw(&widgets[5]);
+    unit.o.index++; check_unit_selection(SIDEBAR_REDRAW_COMMANDS);
+    assert(widgetDraws[8]==1 && !widgets[5].state.hover2);
+    unit.o.index++; unit.o.hitpoints=50; unit.actionID=ACTION_ATTACK;
+    check_unit_selection(SIDEBAR_REDRAW_HEALTH|SIDEBAR_REDRAW_COMMANDS);
+    assert(widgetDraws[8]==1 && widgetDraws[9]==1);
+    g_table_unitInfo[UNIT_LAUNCHER].o.stringID_abbrev=STR_AREA_GUARD;
+    g_table_unitInfo[UNIT_LAUNCHER].o.actionsPlayer[1]=ACTION_RETREAT;
+    g_table_unitInfo[UNIT_LAUNCHER].o.actionsPlayer[3]=ACTION_STOP;
+    unit.o.index++; unit.o.type=UNIT_LAUNCHER;
+    check_unit_selection(SIDEBAR_REDRAW_PORTRAIT|SIDEBAR_REDRAW_NAME|SIDEBAR_REDRAW_COMMANDS);
+    unit.o.index++; unit.o.type=UNIT_TANK;
+    check_unit_selection(SIDEBAR_REDRAW_PORTRAIT|SIDEBAR_REDRAW_NAME|SIDEBAR_REDRAW_COMMANDS);
+    unit.o.houseID=1; check_unit_selection(SIDEBAR_REDRAW_ALL);
+    unit.o.index++; check_unit_selection(0);
+    unit.o.index++; unit.o.hitpoints=49; check_unit_selection(SIDEBAR_REDRAW_HEALTH);
+    unit.o.index++; unit.o.type=UNIT_LAUNCHER; unit.o.hitpoints=25;
+    check_unit_selection(SIDEBAR_REDRAW_PORTRAIT|SIDEBAR_REDRAW_NAME|SIDEBAR_REDRAW_HEALTH);
+    unit.o.index++; unit.o.houseID=2; unit.o.type=UNIT_TANK;
+    check_unit_selection(SIDEBAR_REDRAW_PORTRAIT|SIDEBAR_REDRAW_NAME);
+    unit.o.houseID=0; check_unit_selection(SIDEBAR_REDRAW_COMMANDS);
+    unit.o.houseID=1; check_unit_selection(SIDEBAR_REDRAW_ALL);
+    unit.o.index++; unit.o.houseID=0; unit.o.type=UNIT_LAUNCHER;
+    check_unit_selection(SIDEBAR_REDRAW_ALL);
+    unit.o.index++; GUI_Sidebar_Invalidate(); check_unit_selection(SIDEBAR_REDRAW_ALL);
+    check_unit_selection(SIDEBAR_REDRAW_ALL); /* Explicit restoration, not a new selection. */
+    unit.o.index++; g_config.language=LANGUAGE_FRENCH; check_unit_selection(SIDEBAR_REDRAW_ALL);
+    g_selectionType=SELECTIONTYPE_TARGET; g_activeAction=ACTION_ATTACK;
+    GUI_Widget_ActionPanel_Draw(true);
+    g_selectionType=SELECTIONTYPE_UNIT; unit.o.index++; check_unit_selection(SIDEBAR_REDRAW_ALL);
+    g_debugGame=true; unit.o.index++; check_unit_selection(SIDEBAR_REDRAW_ALL);
+    g_debugGame=false;
+    g_table_unitInfo[UNIT_LAUNCHER].o.stringID_abbrev=STR_MOVE;
+    for(unsigned a=0;a<4;a++) g_table_unitInfo[UNIT_LAUNCHER].o.actionsPlayer[a]=g_table_actionsAI[a];
+    unit.o.type=UNIT_TANK; unit.o.houseID=0; unit.o.hitpoints=75; unit.actionID=ACTION_MOVE;
+    unit.nextActionID=ACTION_ATTACK;
+    g_config.language=LANGUAGE_ENGLISH; check_panel();
     for(unsigned a=0;a<3;a++) {
         g_selectionType=SELECTIONTYPE_TARGET;
         g_activeAction=a==0?ACTION_ATTACK:a==1?ACTION_MOVE:ACTION_HARVEST;
@@ -765,6 +1020,19 @@ int main(void) {
         assert(liveEnds==p && encodes==e);
         structure.countDown-=3*256;
         check_production_update(false);
+        structure.o.flags.s.repairing=structure.o.flags.s.onHold=true;
+        check_component_update(false,false,true,true);
+        structure.o.flags.s.repairing=structure.o.flags.s.onHold=false;
+        check_component_update(false,false,true,true);
+        structure.o.hitpoints=80; structure.o.flags.s.repairing=structure.o.flags.s.onHold=true;
+        check_component_update(true,false,true,true);
+        widgets[3].state.hover2=true; GUI_Widget_Draw(&widgets[3]);
+        structure.o.hitpoints=100; structure.o.flags.s.repairing=structure.o.flags.s.onHold=false;
+        check_component_update(true,false,true,true);
+        widgets[3].state.hover2=false; GUI_Widget_Draw(&widgets[3]);
+        structure.upgradeTimeLeft=100; check_component_update(false,false,true,false);
+        structure.upgradeTimeLeft=0; check_component_update(false,false,true,false);
+        structure.o.hitpoints=75; check_component_update(true,false,true,false);
         structure.o.flags.s.onHold=true; check_production_update(false);
         structure.o.flags.s.onHold=false; check_production_update(false);
         structure.objectType=f?STRUCTURE_TURRET:UNIT_INFANTRY;
@@ -774,13 +1042,15 @@ int main(void) {
         check_panel();
         structure.o.flags.s.onHold=true; check_panel();
         structure.o.flags.s.onHold=false; structure.countDown=0; check_panel();
-        structure.o.flags.s.upgrading=true; structure.upgradeTimeLeft=57; check_panel();
+        structure.o.flags.s.upgrading=true; structure.upgradeTimeLeft=57;
+        check_component_update(false,false,true,true);
         structure.upgradeTimeLeft=90; check_production_update(false);
         structure.upgradeTimeLeft=91; check_production_update(false);
         widgets[2].state.hover2=true; GUI_Widget_Draw(&widgets[2]);
         structure.upgradeTimeLeft=1; check_production_update(false);
         widgets[2].state.hover2=false; GUI_Widget_Draw(&widgets[2]);
         structure.o.flags.s.upgrading=false; structure.upgradeTimeLeft=0;
+        check_component_update(false,false,true,true);
         structure.countDown=50*256; structure.o.hitpoints=75;
         for(unsigned i=1;i<4;i++) for(unsigned down=0;down<2;down++) check_hover(i,down);
     }
@@ -788,21 +1058,49 @@ int main(void) {
     structure.o.hitpoints=50; check_health_update(true,false);
     assert(!g_structureHighHealth);
     structure.o.hitpoints=25; check_health_update(true,false);
-    structure.o.hitpoints=100; check_health_update(false,false);
-    structure.o.hitpoints=99; check_health_update(false,false);
+    structure.o.flags.s.repairing=true; check_component_update(false,false,true,false);
+    structure.o.flags.s.repairing=false; check_component_update(false,false,true,false);
+    structure.o.flags.s.repairing=true; check_health_update(false,true);
+    structure.o.flags.s.repairing=false; GUI_Sidebar_Invalidate(); check_health_update(false,false);
+    structure.o.hitpoints=100; check_component_update(true,false,true,false);
+    structure.o.hitpoints=99; check_component_update(true,false,true,false);
     structure.o.type=STRUCTURE_WINDTRAP; structure.o.hitpoints=75; check_panel();
-    structure.o.hitpoints=50; check_health_update(false,false);
+    structure.o.hitpoints=50; check_stats_update(true);
     structure.o.houseID=1; check_panel();
     structure.o.hitpoints=25; check_health_update(true,false);
+    structure.o.flags.s.repairing=true;
+    p=liveEnds; GUI_Widget_ActionPanel_Draw(false); assert(liveEnds==p);
+    structure.o.flags.s.repairing=false;
     structure.o.houseID=0; structure.o.hitpoints=75;
     structure.o.type=STRUCTURE_OUTPOST; check_panel();
-    p=liveEnds; house.unitCountAllied++; GUI_Widget_ActionPanel_Draw(false); assert(liveEnds>p);
+    house.unitCountAllied++; check_stats_update(false);
+    house.unitCountAllied=1; house.unitCountEnemy=1;
+    structure.o.hitpoints=50; check_stats_update(true);
     structure.o.type=STRUCTURE_WINDTRAP; check_panel();
-    p=liveEnds; house.powerUsage+=10; GUI_Widget_ActionPanel_Draw(false); assert(liveEnds>p);
+    house.powerUsage+=10; check_stats_update(false);
+    structure.o.hitpoints=80; check_stats_update(true);
     structure.o.type=STRUCTURE_SILO; check_panel();
-    p=liveEnds; house.credits++; GUI_Widget_ActionPanel_Draw(false); assert(liveEnds>p);
+    house.credits=1000; check_stats_update(false);
+    house.credits=9; check_stats_update(false);
+    structure.o.type=STRUCTURE_REFINERY; structure.o.hitpoints=75;
+    structure.o.flags.s.repairing=structure.o.flags.s.onHold=true;
+    house.credits=425; check_panel();
+    structure.o.hitpoints=80; house.credits=375; check_stats_update(true);
+    structure.o.hitpoints=85; check_health_update(true,false);
+    structure.o.hitpoints=86; house.credits=9; check_stats_update(false);
+    house.credits=8; check_health_update(false,true);
+    house.credits=7; GUI_Sidebar_Invalidate(); check_health_update(false,false);
+    structure.o.hitpoints=100; house.credits=6; check_component_update(true,true,true,false);
+    structure.o.flags.s.repairing=structure.o.flags.s.onHold=false;
+    structure.o.hitpoints=75;
     structure.o.type=STRUCTURE_STARPORT; check_panel();
-    p=liveEnds; house.starportLinkedID=0xffff; GUI_Widget_ActionPanel_Draw(false); assert(liveEnds>p);
+    house.starportTimeLeft=1; check_stats_update(false);
+    house.starportLinkedID=0xffff; check_stats_update(false);
+    house.starportLinkedID=1; house.starportTimeLeft=9;
+    structure.o.hitpoints=50; check_stats_update(true);
+    structure.o.houseID=1; check_panel();
+    p=liveEnds; house.starportTimeLeft--; GUI_Widget_ActionPanel_Draw(false); assert(liveEnds==p);
+    structure.o.houseID=0;
     structure.o.type=STRUCTURE_WINDTRAP; structure.o.hitpoints=100; upgradable=true;
     structure.upgradeTimeLeft=0; check_panel(); assert(structure.upgradeTimeLeft==100 && upgradedChecks);
     structure.o.flags.s.repairing=true; structure.o.hitpoints=10; check_panel();
@@ -920,7 +1218,7 @@ int main(void) {
     if(g_videoViewportBlitter) {
         unsigned queued=queuedBlits;
         assert(GUI_Sidebar_DamageGauge());
-        assert(queuedBlits==queued+1 && s_sprites[27][0]==NULL);
+        assert(queuedBlits==queued+1 && s_sprites[27-SIDEBAR_SPRITE_FIRST]==NULL);
         /* Health is a hole in the static asset, not a stored fill. */
         TestBlit gauge;
         memcpy(&gauge,s_sidebar.damageGauge.code,sizeof(gauge));
@@ -949,6 +1247,37 @@ int main(void) {
         }
         GUI_Sidebar_End();
         assert(!memcmp(display,reference,sizeof(display)));
+    }
+    GUI_Sidebar_Free();
+    for(unsigned id=24;id<=30;id++)
+        check_sidebar_sprite(id,258,id!=27,id>=28);
+    check_sidebar_sprite(31,258,false,false);
+    check_sidebar_sprite(62,258,false,false);
+    check_sidebar_sprite(63,258,false,false);
+    check_sidebar_sprite(64,258,false,false);
+    for(unsigned id=65;id<=105;id++) check_sidebar_sprite(id,258,true,true);
+    for(unsigned phase=0;phase<16;phase++) {
+        check_sidebar_sprite(65,256+phase,true,true);
+        check_sidebar_sprite(65,288+phase,true,true);
+        check_sidebar_sprite(24,256+phase,true,false);
+        check_sidebar_sprite(24,304+phase,true,false);
+        check_sidebar_sprite(63,256+phase,false,false);
+        check_sidebar_sprite(63,288+phase,false,false);
+        check_sidebar_sprite(64,256+phase,false,false);
+        check_sidebar_sprite(64,288+phase,false,false);
+    }
+    /* Different geometry must retain real opacity, even within a known-opaque ID range. */
+    const uint16 geometryIDs[]={24,28,65};
+    for(unsigned i=0;i<lengthof(geometryIDs);i++) {
+        uint16 id=geometryIDs[i];
+        GUI_Sidebar_Free();
+        uint8 height=assets[id][2], width=assets[id][3], first=assets[id][5];
+        if(id==28) assets[id][3]--;
+        else assets[id][2]--;
+        assets[id][5]=0;
+        check_sidebar_sprite(id,258,false,false);
+        GUI_Sidebar_Free();
+        assets[id][2]=height; assets[id][3]=width; assets[id][5]=first;
     }
     /* Whole-string labels against the legacy renderer over equal and different backgrounds. */
     GUI_Sidebar_Free();
@@ -1036,10 +1365,14 @@ int main(void) {
             shapes = files["SHAPES.SHP"]
             count = struct.unpack_from("<H", shapes)[0]
             modern = struct.unpack_from("<I", shapes, 2)[0] == 4 + count * 4
-            for sprite_id in (24, 27, 63, 65, 84):
+            for sprite_id in (*range(24, 32), *range(62, 106)):
                 offset = struct.unpack_from("<I" if modern else "<H", shapes,
                                             2 + (sprite_id - 12) * (4 if modern else 2))[0]
                 sprite = decode_sprite(shapes[offset + (2 if modern else 0):])
+                if sprite_id in (*range(24, 27), *range(28, 31), *range(65, 106)):
+                    size = 5 if sprite_id == 24 else 8 if sprite_id <= 26 else 32
+                    self.assertEqual((sprite.width, sprite.height), (size, size if size < 32 else 24))
+                    self.assertNotIn(None, sprite.pixels, f"Opaque sidebar sprite {sprite_id}")
                 pixels = [0 if pixel is None else
                           (sprite.palette[pixel] if sprite.palette else pixel) or 255
                           for pixel in sprite.pixels]
@@ -1068,6 +1401,13 @@ int main(void) {
                          "-Wl,--gc-sections", "-o", str(binary)], check=True,
                     )
                     subprocess.run([str(binary)], check=True)
+                    for sprite_id, remap_count in ((23, 0), (106, 0), (65535, 0), (65, 1), (65, 2)):
+                        rejected = subprocess.run(
+                            [str(binary), str(sprite_id), str(remap_count)],
+                            capture_output=True, text=True,
+                        )
+                        self.assertEqual(rejected.returncode, 1)
+                        self.assertIn(f"Unsupported sidebar sprite request {sprite_id}", rejected.stderr)
 
 
 if __name__ == "__main__":

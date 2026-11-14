@@ -95,6 +95,90 @@ static uint16 GUI_Widget_ProductionPercent(const Structure *s)
 	return 100 * timeLeft / buildTime;
 }
 
+static void GUI_Widget_DrawStructureStats(const Structure *s, const StructureInfo *si, const House *h)
+{
+	switch (s->o.type) {
+		case STRUCTURE_WINDTRAP: {
+			uint16 powerOutput = s->o.hitpoints * -si->powerUsage / si->o.hitpoints;
+			uint16 powerAverage = h->windtrapCount == 0 ? 0 : h->powerUsage / h->windtrapCount;
+
+			GUI_Widget_DrawSidebarSeparator();
+#ifdef TOS
+			GUI_Sidebar_UseCaption(g_sidebarCaptions.power);
+#endif
+			GUI_DrawText_Wrapper(String_Get_ByIndex(STR_POWER_INFONEEDEDOUTPUT), 258, 88, 29, 0, 0x11);
+#ifdef TOS
+			GUI_Sidebar_CaptionEnd();
+#endif
+			GUI_DrawText_Wrapper("%3d", 292, g_fontCurrent->height * 2 + 80, 29, 0, 0x11, powerAverage);
+			GUI_DrawText_Wrapper("%3d", 292, g_fontCurrent->height * 3 + 80,
+			    powerOutput >= powerAverage ? 29 : 6, 0, 0x11, powerOutput);
+		} break;
+
+		case STRUCTURE_STARPORT:
+			if (h->starportLinkedID != 0xFFFF) {
+				GUI_DrawText_Wrapper(String_Get_ByIndex(STR_FRIGATEARRIVAL_INTMINUS_D), 258, 88, 29, 0, 0x11, h->starportTimeLeft);
+			} else {
+#ifdef TOS
+				GUI_Sidebar_UseCaption(g_sidebarCaptions.starport);
+#endif
+				GUI_DrawText_Wrapper(String_Get_ByIndex(STR_FRIGATE_INORBIT_ANDAWAITINGORDER), 258, 88, 29, 0, 0x11);
+#ifdef TOS
+				GUI_Sidebar_CaptionEnd();
+#endif
+			}
+			break;
+
+		case STRUCTURE_REFINERY:
+		case STRUCTURE_SILO: {
+			uint16 creditsStored = h->credits > h->creditsStorage ? si->creditsStorage :
+			    h->credits * si->creditsStorage / h->creditsStorage;
+
+			GUI_Widget_DrawSidebarSeparator();
+			GUI_DrawText_Wrapper(String_Get_ByIndex(STR_SPICEHOLDS_4DMAX_4D), 258, 88, 29, 0, 0x11,
+			    creditsStored, si->creditsStorage <= 1000 ? si->creditsStorage : 1000);
+		} break;
+
+		case STRUCTURE_OUTPOST:
+			GUI_Widget_DrawSidebarSeparator();
+			GUI_DrawText_Wrapper(String_Get_ByIndex(STR_RADAR_SCANFRIEND_2DENEMY_2D), 258, 88, 29, 0, 0x11,
+			    h->unitCountAllied, h->unitCountEnemy);
+			break;
+
+		default: break;
+	}
+}
+
+static void GUI_Widget_DrawRepairUpgrade(Widget *w, const Structure *s)
+{
+	bool selected;
+
+	if (w == NULL) return;
+	if (s->o.flags.s.upgrading) {
+		w->stringID = STR_UPGRADING;
+		selected = true;
+	} else if (s->o.hitpoints != g_table_structureInfo[s->o.type].o.hitpoints) {
+		selected = s->o.flags.s.repairing;
+		w->stringID = selected ? STR_REPAIRING : STR_REPAIR;
+	} else if (s->upgradeTimeLeft != 0) {
+		w->stringID = STR_UPGRADE;
+		selected = false;
+	} else {
+#ifdef TOS
+		if (GUI_Sidebar_Active() && !w->flags.invisible) GUI_Sidebar_RestoreRepair(w);
+#endif
+		GUI_Widget_MakeInvisible(w);
+		return;
+	}
+#ifdef TOS
+	if (GUI_Sidebar_Active()) w->flags.invisible = false;
+	else
+#endif
+	GUI_Widget_MakeVisible(w);
+	if (selected) GUI_Widget_MakeSelected(w, false);
+	else GUI_Widget_MakeNormal(w, false);
+}
+
 
 /**
  * Draw a text button widget to the display, relative to its parent.
@@ -674,13 +758,20 @@ typedef struct SidebarVisibleState {
 
 /* Set when the unit's command is the only thing that changed since the last panel draw. */
 static bool s_planarActionOnly;
-static bool s_planarProductionOnly;
-static bool s_planarHealthOnly;
+enum { SIDEBAR_UPDATE_HEALTH = 1, SIDEBAR_UPDATE_STATS = 2,
+       SIDEBAR_UPDATE_REPAIR = 4, SIDEBAR_UPDATE_PRODUCTION = 8 };
+static uint16 s_planarUpdates;
+enum { SIDEBAR_REDRAW_BACKGROUND = 1, SIDEBAR_REDRAW_PORTRAIT = 2,
+       SIDEBAR_REDRAW_NAME = 4, SIDEBAR_REDRAW_GAUGE = 8,
+       SIDEBAR_REDRAW_HEALTH = 16, SIDEBAR_REDRAW_COMMANDS = 32,
+       SIDEBAR_REDRAW_ALL = 63 };
+static uint16 s_planarRedraw;
 
 static uint16 GUI_Widget_ActionPanel_GetPlanarActionType(bool forceDraw)
 {
 	static SidebarVisibleState displayed;
 	SidebarVisibleState state;
+	bool valid;
 	const Object *o = NULL;
 	const ObjectInfo *oi = NULL;
 	Structure *s = NULL;
@@ -774,36 +865,73 @@ static uint16 GUI_Widget_ActionPanel_GetPlanarActionType(bool forceDraw)
 		}
 	}
 	s_planarActionOnly = false;
-	s_planarProductionOnly = false;
-	s_planarHealthOnly = false;
-	if (!forceDraw && GUI_Sidebar_Valid()) {
-		if (Memory_Equal16(&state, &displayed, sizeof(state))) return 0;
-		if ((state.actionType == 2 || state.actionType == 3) &&
-		    (state.healthWidth != displayed.healthWidth || state.healthColour != displayed.healthColour)) {
-			SidebarVisibleState same = state;
+	s_planarUpdates = 0;
+	s_planarRedraw = SIDEBAR_REDRAW_ALL;
+	valid = GUI_Sidebar_Valid();
+	if (!forceDraw && valid && Memory_Equal16(&state, &displayed, sizeof(state))) return 0;
+	/* Selection changes also request forceDraw; an unchanged selection still forces restoration. */
+	if (valid && state.actionType == 2 && displayed.actionType == 2 &&
+	    state.player == displayed.player && state.language == displayed.language && state.debug == displayed.debug &&
+	    g_fontNew6p->height <= 8 && GUI_Sidebar_PortraitOpaque(oi->spriteID) &&
+	    GUI_Sidebar_PortraitOpaque(g_table_unitInfo[displayed.type].o.spriteID) &&
+	    (!forceDraw || state.index != displayed.index || state.type != displayed.type ||
+	     state.house != displayed.house || state.owner != displayed.owner)) {
+		bool wasPlayer = displayed.owner == state.player || state.debug;
+		bool isPlayer = state.owner == state.player || state.debug;
+		bool sameType = state.type == displayed.type;
 
-			same.healthWidth = displayed.healthWidth;
-			same.healthColour = displayed.healthColour;
-			s_planarHealthOnly = Memory_Equal16(&same, &displayed, sizeof(state));
+		if (wasPlayer == isPlayer || (!wasPlayer && isPlayer && sameType)) {
+			s_planarRedraw = sameType ? 0 : SIDEBAR_REDRAW_PORTRAIT | SIDEBAR_REDRAW_NAME;
+			if (state.healthWidth != displayed.healthWidth || state.healthColour != displayed.healthColour)
+				s_planarRedraw |= SIDEBAR_REDRAW_HEALTH;
+			if (isPlayer) s_planarRedraw |= SIDEBAR_REDRAW_COMMANDS;
+		}
+	}
+	if (!forceDraw && valid) {
+		if (state.actionType == 2 || state.actionType == 3) {
+			SidebarVisibleState same = state;
+			uint16 updates = 0;
+
+			if (state.healthWidth != displayed.healthWidth || state.healthColour != displayed.healthColour) {
+				same.healthWidth = displayed.healthWidth;
+				same.healthColour = displayed.healthColour;
+				updates |= SIDEBAR_UPDATE_HEALTH;
+			}
+			if (state.actionType == 3 &&
+			    (state.type == STRUCTURE_WINDTRAP || state.type == STRUCTURE_STARPORT ||
+			     state.type == STRUCTURE_REFINERY || state.type == STRUCTURE_SILO || state.type == STRUCTURE_OUTPOST) &&
+			    (state.value1 != displayed.value1 || state.value2 != displayed.value2)) {
+				same.value1 = displayed.value1;
+				same.value2 = displayed.value2;
+				updates |= SIDEBAR_UPDATE_STATS;
+			}
+			if (state.actionType == 3 &&
+			    (state.repair != displayed.repair || state.upgrade != displayed.upgrade) &&
+			    GUI_Widget_Get_ByIndex(g_widgetLinkedListHead, 4) != NULL) {
+				same.repair = displayed.repair;
+				same.upgrade = displayed.upgrade;
+				updates |= SIDEBAR_UPDATE_REPAIR;
+			}
+			if (state.actionType == 3 &&
+			    (state.production != displayed.production || state.percent != displayed.percent ||
+			     state.objectType != displayed.objectType)) {
+				const Widget *production = GUI_Widget_Get_ByIndex(g_widgetLinkedListHead, 5);
+
+				if (production != NULL && !production->flags.invisible) {
+					same.production = displayed.production;
+					same.percent = displayed.percent;
+					same.objectType = displayed.objectType;
+					if (state.type != STRUCTURE_PALACE) same.value3 = displayed.value3;
+					updates |= SIDEBAR_UPDATE_PRODUCTION;
+				}
+			}
+			if (Memory_Equal16(&same, &displayed, sizeof(state))) s_planarUpdates = updates;
 		}
 		if (state.actionType == 2 && displayed.actionType == 2 && state.action != displayed.action) {
 			SidebarVisibleState same = state;
 
 			same.action = displayed.action;
 			s_planarActionOnly = Memory_Equal16(&same, &displayed, sizeof(state));
-		}
-		if (state.actionType == 3 && displayed.actionType == 3 &&
-		    (state.production != displayed.production || state.percent != displayed.percent ||
-		     state.objectType != displayed.objectType)) {
-			SidebarVisibleState same = state;
-			const Widget *production = GUI_Widget_Get_ByIndex(g_widgetLinkedListHead, 5);
-
-			same.production = displayed.production;
-			same.percent = displayed.percent;
-			same.objectType = displayed.objectType;
-			if (state.type != STRUCTURE_PALACE) same.value3 = displayed.value3;
-			s_planarProductionOnly = production != NULL && !production->flags.invisible &&
-			    Memory_Equal16(&same, &displayed, sizeof(state));
 		}
 	}
 	displayed = state;
@@ -910,18 +1038,21 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 	}
 
 #ifdef TOS
-	if (native && s_planarHealthOnly) {
+	if (native && s_planarUpdates != 0) {
 		oldScreenID = GFX_Screen_SetActive(SCREEN_1);
 		GUI_Sidebar_Begin(false);
-		GUI_DrawProgressbar(o->hitpoints, oi->hitpoints);
-		GUI_Sidebar_End();
-		GFX_Screen_SetActive(oldScreenID);
-		return;
-	}
-	if (native && actionType == 3 && s_planarProductionOnly) {
-		oldScreenID = GFX_Screen_SetActive(SCREEN_1);
-		GUI_Sidebar_Begin(false);
-		GUI_Widget_Draw(GUI_Widget_Get_ByIndex(g_widgetLinkedListHead, 5));
+		if ((s_planarUpdates & SIDEBAR_UPDATE_HEALTH) != 0) GUI_DrawProgressbar(o->hitpoints, oi->hitpoints);
+		if ((s_planarUpdates & SIDEBAR_UPDATE_STATS) != 0) {
+			GUI_Sidebar_RestoreStats();
+			GUI_Widget_DrawStructureStats(s, si, h);
+		}
+		if ((s_planarUpdates & SIDEBAR_UPDATE_REPAIR) != 0) {
+			Widget *repair = GUI_Widget_Get_ByIndex(g_widgetLinkedListHead, 4);
+
+			GUI_Widget_DrawRepairUpgrade(repair, s);
+		}
+		if ((s_planarUpdates & SIDEBAR_UPDATE_PRODUCTION) != 0)
+			GUI_Widget_Draw(GUI_Widget_Get_ByIndex(g_widgetLinkedListHead, 5));
 		GUI_Sidebar_End();
 		GFX_Screen_SetActive(oldScreenID);
 		return;
@@ -963,27 +1094,28 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 #endif
 
 		widget30 = GUI_Widget_Get_ByIndex(w, 7);
-		GUI_Widget_MakeInvisible(widget30);
-
 		widget24 = GUI_Widget_Get_ByIndex(w, 4);
-		GUI_Widget_MakeInvisible(widget24);
-
 		widget28 = GUI_Widget_Get_ByIndex(w, 6);
-		GUI_Widget_MakeInvisible(widget28);
-
 		widget2C = GUI_Widget_Get_ByIndex(w, 5);
-		GUI_Widget_MakeInvisible(widget2C);
-
 		widget34 = GUI_Widget_Get_ByIndex(w, 3);
-		GUI_Widget_MakeInvisible(widget34);
 
 		/* Create the 4 buttons */
 		for (i = 0; i < 4; i++) {
 			buttons[i] = GUI_Widget_Get_ByIndex(w, i + 8);
-			GUI_Widget_MakeInvisible(buttons[i]);
 		}
 
-		GUI_Widget_DrawBorder(g_curWidgetIndex, 0, 0);
+#ifdef TOS
+		if (!native || (s_planarRedraw & SIDEBAR_REDRAW_BACKGROUND) != 0)
+#endif
+		{
+			GUI_Widget_MakeInvisible(widget30);
+			GUI_Widget_MakeInvisible(widget24);
+			GUI_Widget_MakeInvisible(widget28);
+			GUI_Widget_MakeInvisible(widget2C);
+			GUI_Widget_MakeInvisible(widget34);
+			for (i = 0; i < 4; i++) GUI_Widget_MakeInvisible(buttons[i]);
+			GUI_Widget_DrawBorder(g_curWidgetIndex, 0, 0);
+		}
 	}
 
 	if (actionType > 1) {
@@ -1005,8 +1137,14 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 			default: break;
 		}
 
-		if (stringID != STR_NULL) {
+		if (stringID != STR_NULL
 #ifdef TOS
+		    && (!native || (s_planarRedraw & SIDEBAR_REDRAW_NAME) != 0)
+#endif
+		) {
+#ifdef TOS
+			if (native && (s_planarRedraw & SIDEBAR_REDRAW_BACKGROUND) == 0)
+				GUI_Sidebar_RestoreTitle();
 			if (actionType >= 4 && actionType <= 6)
 				GUI_Sidebar_UseCaption(g_sidebarCaptions.title[actionType - 4]);
 #endif
@@ -1046,14 +1184,24 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 				break;
 		}
 
-		if (spriteID != 0xFFFF) {
+		if (spriteID != 0xFFFF
+#ifdef TOS
+		    && (!native || (s_planarRedraw & SIDEBAR_REDRAW_PORTRAIT) != 0)
+#endif
+		) {
 			GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[spriteID], spriteID, GUI_SPRITE_COLOUR_EMBEDDED, 258, 51, 0, 0);
 		}
 
 		/* Unit / Structure */
-		if (actionType == 2 || actionType == 3) {
+		if ((actionType == 2 || actionType == 3)
 #ifdef TOS
-			if (GUI_Sidebar_DamageGauge()) {
+		    && (!native || (s_planarRedraw & (SIDEBAR_REDRAW_GAUGE | SIDEBAR_REDRAW_HEALTH)) != 0)
+#endif
+		) {
+#ifdef TOS
+			if (native && (s_planarRedraw & SIDEBAR_REDRAW_GAUGE) == 0) {
+				GUI_DrawProgressbar(o->hitpoints, oi->hitpoints);
+			} else if (GUI_Sidebar_DamageGauge()) {
 				GUI_DrawProgressbar(o->hitpoints, oi->hitpoints);
 			} else
 #endif
@@ -1074,12 +1222,22 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 
 					GUI_Widget_MakeVisible(widget34);
 
+#ifdef TOS
+					if (native && (s_planarRedraw & SIDEBAR_REDRAW_COMMANDS) == 0) break;
+#endif
 					actionCurrent = (u->nextActionID != ACTION_INVALID) ? u->nextActionID : u->actionID;
 
 					actions = oi->actionsPlayer;
 					if (isNotPlayerOwned && o->type != UNIT_HARVESTER) actions = g_table_actionsAI;
 
 					for (i = 0; i < 4; i++) {
+#ifdef TOS
+						bool unchanged = native && (s_planarRedraw & SIDEBAR_REDRAW_BACKGROUND) == 0 &&
+						    !buttons[i]->flags.invisible &&
+						    buttons[i]->stringID == g_table_actionInfo[actions[i]].stringID &&
+						    buttons[i]->state.selected == (actions[i] == actionCurrent) &&
+						    (actions[i] == actionCurrent || (!buttons[i]->state.hover1 && !buttons[i]->state.hover2));
+#endif
 						buttons[i]->stringID = g_table_actionInfo[actions[i]].stringID;
 						buttons[i]->shortcut = GUI_Widget_GetShortcut(String_Get_ByIndex(buttons[i]->stringID)[0]);
 
@@ -1096,6 +1254,9 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 #endif
 						GUI_Widget_MakeVisible(buttons[i]);
 
+#ifdef TOS
+						if (unchanged) continue;
+#endif
 						if (actions[i] == actionCurrent) {
 							GUI_Widget_MakeSelected(buttons[i], false);
 						} else {
@@ -1108,45 +1269,7 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 				{
 					GUI_Widget_MakeVisible(widget34);
 
-					if (o->flags.s.upgrading) {
-						widget24->stringID = STR_UPGRADING;
-
-#ifdef TOS
-						if (native) widget24->flags.invisible = false;
-						else
-#endif
-						GUI_Widget_MakeVisible(widget24);
-						GUI_Widget_MakeSelected(widget24, false);
-					} else if (o->hitpoints != oi->hitpoints) {
-						if (o->flags.s.repairing) {
-							widget24->stringID = STR_REPAIRING;
-
-#ifdef TOS
-							if (native) widget24->flags.invisible = false;
-							else
-#endif
-							GUI_Widget_MakeVisible(widget24);
-							GUI_Widget_MakeSelected(widget24, false);
-						} else {
-							widget24->stringID = STR_REPAIR;
-
-#ifdef TOS
-							if (native) widget24->flags.invisible = false;
-							else
-#endif
-							GUI_Widget_MakeVisible(widget24);
-							GUI_Widget_MakeNormal(widget24, false);
-						}
-					} else if (s->upgradeTimeLeft != 0) {
-						widget24->stringID = STR_UPGRADE;
-
-#ifdef TOS
-						if (native) widget24->flags.invisible = false;
-						else
-#endif
-						GUI_Widget_MakeVisible(widget24);
-						GUI_Widget_MakeNormal(widget24, false);
-					}
+					GUI_Widget_DrawRepairUpgrade(widget24, s);
 
 					if (o->type != STRUCTURE_STARPORT) {
 						if (oi->flags.factory || (o->type == STRUCTURE_PALACE && s->countDown == 0)) {
@@ -1190,51 +1313,13 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 							GUI_DrawText_Wrapper(String_Get_ByIndex(STR_D_DONE), 258, 116, 29, 0, 0x11, percent);
 						} break;
 
-						case STRUCTURE_WINDTRAP: {
-							uint16 powerOutput = o->hitpoints * -si->powerUsage / oi->hitpoints;
-							uint16 powerAverage = (h->windtrapCount == 0) ? 0 : h->powerUsage / h->windtrapCount;
-
-							GUI_Widget_DrawSidebarSeparator();
-#ifdef TOS
-							GUI_Sidebar_UseCaption(g_sidebarCaptions.power);
-#endif
-							GUI_DrawText_Wrapper(String_Get_ByIndex(STR_POWER_INFONEEDEDOUTPUT), 258, 88, 29, 0, 0x11);
-#ifdef TOS
-							GUI_Sidebar_CaptionEnd();
-#endif
-							GUI_DrawText_Wrapper("%3d", 292, g_fontCurrent->height * 2 + 80, 29, 0, 0x11, powerAverage);
-							GUI_DrawText_Wrapper("%3d", 292, g_fontCurrent->height * 3 + 80, (powerOutput >= powerAverage) ? 29 : 6, 0, 0x11, powerOutput);
-						} break;
-
-						case STRUCTURE_STARPORT: {
-							if (h->starportLinkedID != 0xFFFF) {
-								GUI_DrawText_Wrapper(String_Get_ByIndex(STR_FRIGATEARRIVAL_INTMINUS_D), 258, 88, 29, 0, 0x11, h->starportTimeLeft);
-							} else {
-#ifdef TOS
-								GUI_Sidebar_UseCaption(g_sidebarCaptions.starport);
-#endif
-								GUI_DrawText_Wrapper(String_Get_ByIndex(STR_FRIGATE_INORBIT_ANDAWAITINGORDER), 258, 88, 29, 0, 0x11);
-#ifdef TOS
-								GUI_Sidebar_CaptionEnd();
-#endif
-							}
-						} break;
-
+						case STRUCTURE_WINDTRAP:
+						case STRUCTURE_STARPORT:
 						case STRUCTURE_REFINERY:
-						case STRUCTURE_SILO: {
-							uint16 creditsStored;
-
-							creditsStored = h->credits * si->creditsStorage / h->creditsStorage;
-							if (h->credits > h->creditsStorage) creditsStored = si->creditsStorage;
-
-							GUI_Widget_DrawSidebarSeparator();
-							GUI_DrawText_Wrapper(String_Get_ByIndex(STR_SPICEHOLDS_4DMAX_4D), 258, 88, 29, 0, 0x11, creditsStored, (si->creditsStorage <= 1000) ? si->creditsStorage : 1000);
-						} break;
-
-						case STRUCTURE_OUTPOST: {
-							GUI_Widget_DrawSidebarSeparator();
-							GUI_DrawText_Wrapper(String_Get_ByIndex(STR_RADAR_SCANFRIEND_2DENEMY_2D), 258, 88, 29, 0, 0x11, h->unitCountAllied, h->unitCountEnemy);
-						} break;
+						case STRUCTURE_SILO:
+						case STRUCTURE_OUTPOST:
+							GUI_Widget_DrawStructureStats(s, si, h);
+							break;
 					}
 				} break;
 

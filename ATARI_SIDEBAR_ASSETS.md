@@ -38,10 +38,73 @@ fragments use a 50-byte common portion plus 32 bytes per required clear/set
 pass. A descriptor occupies 14 bytes on the target ABI. These figures exclude
 the destination/call entry submitted to the shared display-list arena.
 
-The standard-font/artwork fixture measures 45,228 bytes of packed pixels,
-masks and code, plus 1,204 bytes for the 86 descriptors: 46,432 bytes, or
-approximately 45.3 KiB. This is not an exact in-game total for every language
+The standard-font/artwork fixture measures 45,474 bytes of packed pixels,
+masks and code, plus 1,204 bytes for the 86 descriptors and three 4-byte
+background-command pointers: 46,690 bytes, or approximately 45.6 KiB.
+This is not an exact in-game total for every language
 and resource set, and it excludes separately decoded sprite storage.
+
+Ready text-button assets are anchored at the widget centre rather than the
+measured text edge. After selecting font/style state, the wrapper directly
+submits ready command, cancel and repair/upgrade images without scanning,
+formatting, measuring or aligning their strings. It still updates colour slots
+0/1 as the ordinary text draw would. Initial preparation and non-ready captions
+retain normal layout; production captions and CPU drawing are unchanged.
+No descriptors, image bytes or cache entries are added by this shortcut.
+
+Separately decoded sprites use an 82-slot direct map for IDs 24-105, indexed by
+ID minus 24, with no remap variants. The map costs 328 bytes on Atari; image,
+mask and alignment-command allocations are additional and demand-driven.
+Compared with the former 355-by-3 pointer map, this saves 3,932 bytes of BSS.
+Native flat-button images stay unremapped when pressed. Out-of-range IDs and
+nonzero remap counts are rejected rather than drawing an incorrect variant.
+
+Stock 32x24 portraits/icons at IDs 28-30 and 65-105 bypass opacity decoding and
+mask packing, as well as scratch clearing and final planar masking. Their
+compact CPU masks point directly into one shared 192-word all-ones buffer
+(384 bytes of BSS, initialized once). BLITTER commands instead use opaque
+source copies: shifted/clipped copies use hardware endmasks on both edges,
+without an opacity-clear pass. Each image
+owns only its 384-byte planar pixels plus a 104-byte descriptor, rather than the
+former 964-byte image/descriptor/masks allocation: 476 bytes saved per decoded
+portrait, excluding alignment commands. Other sprite descriptors grow by four
+bytes for the mask pointer. The shared buffer is palette-independent and is not
+freed with individual images.
+
+Solid IDs 24-26 (5x5, 8x8, 8x8) generate rectangular masks without opacity
+decoding, preserving transparent padding and opaque logical colour zero.
+Other IDs, including sprites 27, 63 and 64, retain the generic opacity decoder.
+Known IDs with unexpected dimensions also use generic decoding. This is a
+stock-SHAPES.SHP opacity contract; replacement artwork with holes at the same
+IDs and dimensions requires updating eligibility.
+
+The bank includes three additional 82-byte, code-only background-restore commands.
+They copy the existing background image's stats rows 88-123 (64x36), title
+rows 42-50 (64x9) and repair button rows 75-86 (64x12), with no duplicate pixels
+or additional descriptors. Preparation still captures and converts 86 images;
+it compiles 89 copy recipes.
+Stats restoration clears old text before partial storage, power, radar-count or
+Starport updates, including shorter numbers and countdown-to-caption transitions.
+Visible repair/upgrade states use their complete prepared button assets;
+repair restoration is needed only when that button disappears. Its shared
+portrait/production outline rows are then restored with ordered line commands.
+Health, stats, repair and production are independently dispatched in one batch,
+without special combined handlers.
+
+Unit-to-unit selection uses independent redraw-category bits for background,
+portrait, name, gauge/frame, health and commands. Enemy-to-enemy and
+player-to-player selections retain the background and gauge; changing unit type
+redraws the portrait and restores only the title band before drawing the new name.
+Same-type selections retain portrait/name too. Health updates only if its visible
+width/colour changes. Player commands refresh visibility and shortcuts but redraw
+only changed labels, selection states or normal-button hover states.
+Same-type enemy-to-player transitions also retain the upper panel while adding
+the commands. Player-to-enemy, different-type enemy-to-player and non-unit
+transitions retain full redraws. Debug/player/language changes, invalidated
+panels, non-stock portrait geometry/opacity contracts and titles taller than the
+reserved band also use full redraws. A forced request for the already displayed
+selection still restores the whole panel; a forced request for a different unit
+may retain components.
 
 ## Named frame/background members: 7
 

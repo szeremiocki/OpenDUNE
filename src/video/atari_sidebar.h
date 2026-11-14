@@ -9,7 +9,7 @@ typedef struct VideoAtariSidebarBlit {
 } VideoAtariSidebarBlit;
 
 /* Immutable source pixels and opacity use four interleaved words per group.
- * NULL opacity selects an aligned, opaque rectangle copy. */
+ * NULL opacity selects an opaque copy, with endmasks for shifted/clipped edges. */
 extern size_t Video_Atari_CompileSidebarBlit(VideoAtariSidebarBlit *code,
     const uint16 *pixels, const uint16 *masks, uint16 sourceWidth,
     uint16 width, uint16 height, uint16 phase);

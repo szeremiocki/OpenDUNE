@@ -252,6 +252,8 @@ const uint16 *make_stream(const VideoAtariSidebarBlit *code) {
                 skew, op = read(base + 0x3d, 1), read(base + 0x3b, 1)
                 self.assertEqual(read(base + 0x3a, 1), 2)
                 self.assertIn(op, (3, 4, 7))
+                if opaque:
+                    self.assertEqual(op, 3)
                 for _ in range(rows):
                     for word in range(words):
                         suppress = bool(skew & 0x40) and word + 1 == words
@@ -285,16 +287,17 @@ const uint16 *make_stream(const VideoAtariSidebarBlit *code) {
 
             cpu.hook_add(unicorn.UC_HOOK_MEM_WRITE, mmio, begin=0xffff8a00, end=0xffff8a3f)
             cpu.hook_add(unicorn.UC_HOOK_CODE, instruction)
-            for opaque in (False, True):
-                for stride in (16, 32, 64):
-                    for height in (1, 24, 82):
-                        for phase in ((0,) if opaque else range(16)):
-                            for width in ((stride,) if opaque else (1, stride - 3, stride)):
+            for mode in ("masked", "opaque", "solid_masks"):
+                opaque = mode == "opaque"
+                for stride in ((32,) if mode == "solid_masks" else (16, 32, 64)):
+                    for height in ((24,) if mode == "solid_masks" else (1, 24, 82)):
+                        for phase in range(16):
+                            for width in (1, stride - 3, stride):
                                 size = stride // 2 * height
                                 pixels, masks = bytearray(size), bytearray(size)
                                 for y in range(height):
                                     for x in range(stride):
-                                        if not opaque and (x + y) % 5 == 0:
+                                        if mode == "masked" and (x + y) % 5 == 0:
                                             continue
                                         index, bit = y * stride // 2 + x // 16 * 8, 0x8000 >> (x & 15)
                                         for plane in range(4):
@@ -350,6 +353,8 @@ const uint16 *make_stream(const VideoAtariSidebarBlit *code) {
                                 self.assertEqual(read(0x70000, 1), 0)
                                 if phase == 0 and width == stride:
                                     self.assertEqual(launches, 1 if opaque else 2)
+                                elif opaque:
+                                    self.assertEqual(launches, 4)
                                 self.assertEqual(cpu.mem_read(0x40000, len(expected)), expected,
                                                  (opaque, stride, width, height, phase))
 

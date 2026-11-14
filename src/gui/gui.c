@@ -333,16 +333,9 @@ static void PlanarBox_Intersect(PlanarBox *b, const PlanarBox *o)
 }
 #endif
 
-/**
- * Display a text.
- * @param str The text to display. If \c NULL, update the text display (scroll text, and/or remove it on time out).
- * @param importance Importance of the new text. Value \c -1 means remove all text lines, \c -2 means drop all texts in buffer but not yet displayed.
- *                   Otherwise, it is the importance of the message (if supplied). Higher numbers mean displayed sooner.
- * @param ... The args for the text.
- */
-void GUI_DisplayText(const char *str, int importance, ...)
+/* Both entry points supply a terminated message of at most 79 characters. */
+static void GUI_DisplayTextBuffer(const char *buffer, int importance)
 {
-	char buffer[80];                 /* Formatting buffer of new message. */
 	static uint32 displayTimer = 0;  /* Timeout value for next update of the display. */
 	static uint16 textOffset;        /* Vertical position of text being scrolled. */
 	static bool scrollInProgress;    /* Text is being scrolled (and partly visible to the user). */
@@ -359,22 +352,21 @@ void GUI_DisplayText(const char *str, int importance, ...)
 #ifdef TOS
 	static uint16 bannerPlanar[24 * SCREEN_WIDTH / 4];
 	static bool bannerPlanarReady;
-	static uint16 bannerGroups[2];   /* Groups the text of line 2 and line 1 occupies in bannerPlanar. */
+	static struct {
+		char text[80];
+		uint8 colours[16];
+		int8 spacing;
+		bool valid;
+		uint16 groups;
+		PlanarBox box;
+	} bannerLines[2];
+	static const Font *bannerFont;
+	static uint16 bannerFontHeight, bannerLeft, bannerPalette;
 	static bool bannerBoxValid;      /* bannerBox and screenBox describe what bannerPlanar and the bar hold. */
 	static bool bannerInternal;      /* The pending update comes from the scroll logic, not from outside. */
 	static PlanarBox bannerBox;      /* Where bannerPlanar differs from the background (buffer pixels). */
 	static PlanarBox screenBox;      /* Where the bar on screen differs from the background (screen pixels). */
 #endif
-
-	buffer[0] = '\0';
-
-	if (str != NULL) {
-		va_list ap;
-
-		va_start(ap, importance);
-		vsnprintf(buffer, sizeof(buffer), str, ap);
-		va_end(ap);
-	}
 
 	if (importance == -1) { /* Remove all displayed lines. */
 		line1Importance = -1;
@@ -411,11 +403,11 @@ void GUI_DisplayText(const char *str, int importance, ...)
 					strncpy(displayLine3, displayLine2, sizeof(displayLine3));
 					fgColour3 = fgColour2;
 					line3Importance = line2Importance;
-					strncpy(displayLine2, buffer, sizeof(displayLine2));
+					strcpy(displayLine2, buffer);
 					fgColour2 = 12;
 					line2Importance = importance;
 				} else if (importance >= line3Importance) {
-					strncpy(displayLine3, buffer, sizeof(displayLine3));
+					strcpy(displayLine3, buffer);
 					line3Importance = importance;
 					fgColour3 = 12;
 				}
@@ -442,7 +434,7 @@ void GUI_DisplayText(const char *str, int importance, ...)
 
 		if (buffer[0] != '\0') {
 			if (strcasecmp(buffer, displayLine2) != 0 && importance >= line3Importance) {
-				strncpy(displayLine3, buffer, sizeof(displayLine3));
+				strcpy(displayLine3, buffer);
 				line3Importance = importance;
 			}
 		}
@@ -456,9 +448,15 @@ void GUI_DisplayText(const char *str, int importance, ...)
 				static uint16 bannerBackground[24 * SCREEN_WIDTH / 4];
 				static uint8 bannerBackgroundPen = 0xFF;
 				uint8 pen = Video_Atari_GetPalettePen(g_curWidgetFGColourNormal);
+				uint16 palette = Video_Atari_GetPaletteGeneration();
+				uint16 left = g_curWidgetXBase << 3;
 
 				PlanarBox touched = { 0, 0, 0, 0 };
-				bool full = !bannerBoxValid || (g_textDisplayNeedsUpdate && !bannerInternal) || pen != bannerBackgroundPen;
+				bool restore = !bannerBoxValid || (g_textDisplayNeedsUpdate && !bannerInternal);
+				bool full = !bannerLines[0].valid || !bannerLines[1].valid ||
+				            pen != bannerBackgroundPen || palette != bannerPalette ||
+				            bannerFont != g_fontNew8p || bannerFontHeight != g_fontNew8p->height ||
+				            bannerLeft != left || g_fontNew8p->height > 11;
 				uint8 pass;
 
 				if (pen != bannerBackgroundPen) {
@@ -483,7 +481,8 @@ void GUI_DisplayText(const char *str, int importance, ...)
 
 					if (full) {
 						memcpy(bannerPlanar, bannerBackground, sizeof(bannerPlanar));
-						bannerGroups[0] = bannerGroups[1] = 0;
+						bannerLines[0].groups = bannerLines[1].groups = 0;
+						bannerLines[0].valid = bannerLines[1].valid = false;
 					}
 					s_planarTarget = bannerPlanar;
 					s_planarTargetStride = SCREEN_WIDTH / 4;
@@ -491,23 +490,43 @@ void GUI_DisplayText(const char *str, int importance, ...)
 					s_planarTouch = &touched;
 					done = true;
 					for (line = 0; line < 2; line++) {
-						const uint16 y = line == 0 ? 2 : 13, left = g_curWidgetXBase << 3;
+						const uint16 y = line == 0 ? 2 : 13;
+						const char *text = line == 0 ? displayLine2 : displayLine1;
+						const uint8 colour = line == 0 ? fgColour2 : fgColour1;
+						bool retain;
 
-						if (bannerGroups[line] != 0 && !full) {
-							PlanarBox cleared = { left & ~15, y, (left & ~15) + bannerGroups[line] * 16, y + g_fontNew8p->height };
+						/* Keep the wrapper's text-state side effects even when retaining its pixels. */
+						GUI_DrawText_Wrapper("", left, y, colour, 0, 0x012);
+						retain = bannerLines[line].valid && bannerLines[line].spacing == g_fontCharOffset &&
+						         memcmp(bannerLines[line].colours, g_colours, sizeof(g_colours)) == 0 &&
+						         strcmp(bannerLines[line].text, text) == 0;
+						if (retain) {
+							PlanarBox_Union(&touched, &bannerLines[line].box);
+							continue;
+						}
+						if (bannerLines[line].groups != 0 && !full) {
+							PlanarBox cleared = { left & ~15, y, (left & ~15) + bannerLines[line].groups * 16, y + g_fontNew8p->height };
 							uint16 row;
 
 							if (cleared.bottom > 24) cleared.bottom = 24;
 							for (row = cleared.top; row < cleared.bottom; row++)
 								memcpy(bannerPlanar + row * (SCREEN_WIDTH / 4) + (cleared.left >> 2),
 								       bannerBackground + row * (SCREEN_WIDTH / 4) + (cleared.left >> 2),
-								       bannerGroups[line] * 4 * sizeof(uint16));
+								       bannerLines[line].groups * 4 * sizeof(uint16));
 							PlanarBox_Union(&touched, &cleared);
 						}
+						memset(&bannerLines[line].box, 0, sizeof(bannerLines[line].box));
+						s_planarTouch = &bannerLines[line].box;
 						s_planarLineDone = false;
-						GUI_DrawText_Wrapper(line == 0 ? displayLine2 : displayLine1, left, y,
-						                     line == 0 ? fgColour2 : fgColour1, 0, 0x012);
-						bannerGroups[line] = s_planarGroups;
+						GUI_DrawText(text, left, y, colour, 0);
+						PlanarBox_Union(&touched, &bannerLines[line].box);
+						bannerLines[line].groups = s_planarGroups;
+						bannerLines[line].valid = s_planarLineDone;
+						if (s_planarLineDone) {
+							strcpy(bannerLines[line].text, text);
+							memcpy(bannerLines[line].colours, g_colours, sizeof(g_colours));
+							bannerLines[line].spacing = g_fontCharOffset;
+						}
 						done = done && s_planarLineDone;
 					}
 					s_planarTarget = NULL;
@@ -518,8 +537,12 @@ void GUI_DisplayText(const char *str, int importance, ...)
 				}
 
 				bannerBox = touched;
+				bannerFont = g_fontNew8p;
+				bannerFontHeight = g_fontNew8p->height;
+				bannerLeft = left;
+				bannerPalette = palette;
 				bannerInternal = false;
-				if (full) bannerBoxValid = false;
+				if (full || restore) bannerBoxValid = false;
 				g_textDisplayNeedsUpdate = false;
 				bannerPlanarReady = true;
 			}
@@ -530,8 +553,10 @@ void GUI_DisplayText(const char *str, int importance, ...)
 
 			GUI_DrawFilledRectangle(0, 0, SCREEN_WIDTH - 1, 23, g_curWidgetFGColourNormal);
 
-			GUI_DrawText_Wrapper(displayLine2, g_curWidgetXBase << 3,  2, fgColour2, 0, 0x012);
-			GUI_DrawText_Wrapper(displayLine1, g_curWidgetXBase << 3, 13, fgColour1, 0, 0x012);
+			GUI_DrawText_Wrapper("", g_curWidgetXBase << 3, 2, fgColour2, 0, 0x012);
+			GUI_DrawText(displayLine2, g_curWidgetXBase << 3, 2, fgColour2, 0);
+			GUI_DrawText_Wrapper("", g_curWidgetXBase << 3, 13, fgColour1, 0, 0x012);
+			GUI_DrawText(displayLine1, g_curWidgetXBase << 3, 13, fgColour1, 0);
 
 			g_textDisplayNeedsUpdate = false;
 #ifdef TOS
@@ -608,6 +633,42 @@ void GUI_DisplayText(const char *str, int importance, ...)
 		scrollInProgress = false;
 		return;
 	}
+}
+
+/**
+ * Display a text.
+ * @param str The text to display. If \c NULL, update the text display (scroll text, and/or remove it on time out).
+ * @param importance Importance of the new text. Value \c -1 means remove all text lines, \c -2 means drop all texts in buffer but not yet displayed.
+ *                   Otherwise, it is the importance of the message (if supplied). Higher numbers mean displayed sooner.
+ * @param ... The args for the text.
+ */
+void GUI_DisplayText(const char *str, int importance, ...)
+{
+	char buffer[80];
+
+	buffer[0] = '\0';
+	if (str != NULL) {
+		va_list ap;
+
+		va_start(ap, importance);
+		vsnprintf(buffer, sizeof(buffer), str, ap);
+		va_end(ap);
+	}
+	GUI_DisplayTextBuffer(buffer, importance);
+}
+
+/* Submit already-formatted text with the same length limit as GUI_DisplayText(). */
+void GUI_DisplayTextLiteral(const char *str, int importance)
+{
+	char buffer[80];
+
+	if (str == NULL) {
+		GUI_DisplayTextBuffer("", importance);
+		return;
+	}
+	strncpy(buffer, str, sizeof(buffer) - 1);
+	buffer[sizeof(buffer) - 1] = '\0';
+	GUI_DisplayTextBuffer(buffer, importance);
 }
 
 /* Draws one glyph cell into screen at index x; rows are fc->width + remainingWidth apart. */
@@ -1095,6 +1156,10 @@ void GUI_DrawText_Wrapper(const char *string, int16 left, int16 top, uint8 fgCol
 	}
 
 	if (string == NULL) return;
+
+#ifdef TOS
+	if (flags == 0x121 && GUI_Sidebar_DrawButtonCaption(left, top, fgColour, bgColour)) return;
+#endif
 
 	if (strchr(string, '%') == NULL && strlen(string) < sizeof(textBuffer)) {
 		text = string;

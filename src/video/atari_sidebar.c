@@ -70,8 +70,7 @@ size_t Video_Atari_CompileSidebarBlit(VideoAtariSidebarBlit *code,
 	*out++ = HTOBE16(0x4239); /* Invalidate the shared BLITTER register residency at playback. */
 	*out++ = HTOBE16((uint32)(uintptr_t)&g_videoBlitterTileSetup >> 16);
 	*out++ = HTOBE16((uint32)(uintptr_t)&g_videoBlitterTileSetup);
-	if (masks == NULL) {
-		assert(phase == 0 && width == sourceWidth);
+	if (masks == NULL && phase == 0 && width == sourceWidth) {
 		out = Sidebar_Interleaved(out, width);
 		out = Sidebar_Word(out, 0x31fc, 0x0203, 0x8a3a);
 		out = Sidebar_Launch(out, pixels, 0, height);
@@ -79,14 +78,14 @@ size_t Video_Atari_CompileSidebarBlit(VideoAtariSidebarBlit *code,
 		uint16 set[4] = {0}, clear[4] = {0};
 		uint16 group, groups = sourceWidth / 16 * height;
 
-		for (group = 0; group < groups; group++) {
+		for (group = 0; masks != NULL && group < groups; group++) {
 			for (plane = 0; plane < 4; plane++) {
 				uint16 opacity = masks[group * 4 + plane], colour = pixels[group * 4 + plane];
 				set[plane] |= colour & opacity;
 				clear[plane] |= (uint16)~colour & opacity;
 			}
 		}
-		if (phase == 0 && width == sourceWidth) {
+		if (masks != NULL && phase == 0 && width == sourceWidth) {
 			out = Sidebar_Interleaved(out, width);
 			for (pass = 0; pass < 2; pass++) {
 				const uint16 *needed = pass == 0 ? clear : set;
@@ -103,11 +102,12 @@ size_t Video_Atari_CompileSidebarBlit(VideoAtariSidebarBlit *code,
 			out = Sidebar_Word(out, 0x31fc, 160 - (words - 1) * 8, 0x8a30);
 			out = Sidebar_Word(out, 0x31fc, words, 0x8a36);
 			out = Sidebar_Word(out, 0x11fc, phase | (suppress ? 0x40 : 0), 0x8a3d);
-			for (pass = 0; pass < 2; pass++) {
-				out = Sidebar_Word(out, 0x31fc, pass == 0 ? 0x0204 : 0x0207, 0x8a3a);
+			for (pass = 0; pass < (masks == NULL ? 1 : 2); pass++) {
+				out = Sidebar_Word(out, 0x31fc,
+				    masks == NULL ? 0x0203 : (pass == 0 ? 0x0204 : 0x0207), 0x8a3a);
 				for (plane = 0; plane < 4; plane++) {
-					if ((pass == 0 ? clear[plane] : set[plane]) == 0) continue;
-					out = Sidebar_Launch(out, (pass == 0 ? masks : pixels) + plane, plane, height);
+					if (masks != NULL && (pass == 0 ? clear[plane] : set[plane]) == 0) continue;
+					out = Sidebar_Launch(out, (masks != NULL && pass == 0 ? masks : pixels) + plane, plane, height);
 				}
 			}
 		}

@@ -32,12 +32,16 @@ extern void GUI_Sidebar_Free(void);
 extern void GUI_Sidebar_Preload(void);
 extern void GUI_Sidebar_Begin(bool force);
 extern void GUI_Sidebar_End(void);
+extern void GUI_Sidebar_RestoreStats(void);
+extern void GUI_Sidebar_RestoreTitle(void);
+extern void GUI_Sidebar_RestoreRepair(const struct Widget *w);
 extern bool GUI_Sidebar_WidgetBegin(const struct Widget *w);
 extern bool GUI_Sidebar_WidgetBorder(uint16 widgetIndex, uint16 borderType, bool pressed);
 extern bool GUI_Sidebar_ButtonFrame(const struct Widget *w, bool down);
 extern bool GUI_Sidebar_ProductionImage(const struct Widget *w, const struct Structure *s);
 extern void GUI_Sidebar_ProductionPercent(const struct Widget *w, bool upgrading);
 extern bool GUI_Sidebar_PortraitFrame(const struct Widget *w, bool down);
+extern bool GUI_Sidebar_PortraitOpaque(uint16 spriteID);
 extern bool GUI_Sidebar_Separator(void);
 extern void GUI_Sidebar_CaptionBegin(SidebarAsset *image, const struct Widget *w);
 #define GUI_Sidebar_UseCaption(member) \
@@ -45,6 +49,7 @@ extern void GUI_Sidebar_CaptionBegin(SidebarAsset *image, const struct Widget *w
 #define GUI_Sidebar_UseButtonCaption(member, w) \
 	GUI_Sidebar_CaptionBegin(&(member), (w))
 extern void GUI_Sidebar_CaptionEnd(void);
+extern bool GUI_Sidebar_DrawButtonCaption(int16 centre, int16 top, uint8 foreground, uint8 background);
 extern bool GUI_Sidebar_DamageGauge(void);
 extern bool GUI_Sidebar_Progressbar(uint16 width, uint8 colour, uint8 background);
 extern void GUI_Sidebar_Fill(int16 left, int16 top, int16 right, int16 bottom, uint8 colour);

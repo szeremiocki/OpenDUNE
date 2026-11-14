@@ -23,17 +23,24 @@
 #include "../video/atari_sidebar.h"
 
 enum { SIDEBAR_X = 256, SIDEBAR_Y = 42, SIDEBAR_WIDTH = 64, SIDEBAR_HEIGHT = 82,
-       SIDEBAR_GROUPS = 4, SIDEBAR_SPRITES = 355 };
+       SIDEBAR_GROUPS = 4, SIDEBAR_SPRITE_FIRST = 24, SIDEBAR_SPRITE_LAST = 105,
+       SIDEBAR_SPRITES = SIDEBAR_SPRITE_LAST - SIDEBAR_SPRITE_FIRST + 1, SIDEBAR_STATS_Y = 88,
+       SIDEBAR_STATS_HEIGHT = SIDEBAR_Y + SIDEBAR_HEIGHT - SIDEBAR_STATS_Y,
+       SIDEBAR_OPAQUE_CODE_BYTES = 82 };
 
 typedef struct SidebarSprite {
 	uint16 width, height;
 	VideoAtariSidebarBlit *blits[16];
 	uint16 blitWidths[16];
+	uint16 *masks;
 	uint16 data[];
 } SidebarSprite;
 
-/* Pre-decoded planar sprites: pixels (4 words per group) followed by one mask word per group. */
-static SidebarSprite *s_sprites[SIDEBAR_SPRITES][3];
+/* Solid 32x24 portraits share this buffer for both compact CPU and replicated BLITTER masks. */
+static uint16 s_opaqueSpriteMasks[2 * 24 * 4];
+
+/* Pixels (4 words per group); only transparent/padded sprites also own compact and replicated masks. */
+static SidebarSprite *s_sprites[SIDEBAR_SPRITES];
 
 /* Destination of the primitives: the sidebar's top-left group in a planar surface. */
 static uint16 *s_dst;
@@ -52,6 +59,7 @@ static struct {
 	bool down, valid;
 } s_production;
 static uint16 *s_assetBank;
+static const uint16 *s_statsBackgroundCode, *s_repairBackgroundCode, *s_titleBackgroundCode;
 static size_t s_assetBytes, s_assetUsed;
 static SidebarAsset *s_caption;
 static const Widget *s_captionWidget;
@@ -196,7 +204,7 @@ void GUI_Sidebar_Invalidate(void) { s_valid = false; s_production.valid = false;
 
 void GUI_Sidebar_Free(void)
 {
-	uint16 i, variant;
+	uint16 i;
 
 	assert(!s_active);
 	Video_Atari_DisplayListFlush();
@@ -204,17 +212,18 @@ void GUI_Sidebar_Free(void)
 	memset(&g_sidebarCaptions, 0, sizeof(g_sidebarCaptions));
 	free(s_assetBank);
 	s_assetBank = NULL;
+	s_statsBackgroundCode = NULL;
+	s_repairBackgroundCode = NULL;
+	s_titleBackgroundCode = NULL;
 	s_assetBytes = s_assetUsed = 0;
 	s_caption = NULL;
 	s_captionWidget = NULL;
 	for (i = 0; i < SIDEBAR_SPRITES; i++) {
-		for (variant = 0; variant < 3; variant++) {
-			uint16 phase;
-			if (s_sprites[i][variant] != NULL)
-				for (phase = 0; phase < 16; phase++) free(s_sprites[i][variant]->blits[phase]);
-			free(s_sprites[i][variant]);
-			s_sprites[i][variant] = NULL;
-		}
+		uint16 phase;
+		if (s_sprites[i] != NULL)
+			for (phase = 0; phase < 16; phase++) free(s_sprites[i]->blits[phase]);
+		free(s_sprites[i]);
+		s_sprites[i] = NULL;
 	}
 	s_valid = false;
 	s_production.valid = false;
@@ -251,6 +260,49 @@ void GUI_Sidebar_End(void)
 	Video_Atari_LiveEnd(SIDEBAR_X, SIDEBAR_Y, SIDEBAR_WIDTH, SIDEBAR_HEIGHT);
 	/* A widget-only update cannot validate the rest of a replaced panel. */
 	s_valid |= s_complete;
+}
+
+static void GUI_Sidebar_RestoreBand(const uint16 *code, int16 top, int16 bottom)
+{
+	if (GUI_Sidebar_Assets()) {
+		Video_Atari_QueueSidebarBlit(code, s_dst + (top - SIDEBAR_Y) * s_stride);
+	} else {
+		int16 oldTop = s_clipTop, oldBottom = s_clipBottom;
+
+		s_clipTop = top - SIDEBAR_Y;
+		s_clipBottom = bottom - SIDEBAR_Y;
+		GUI_Widget_DrawBorder(6, 0, false);
+		s_clipTop = oldTop;
+		s_clipBottom = oldBottom;
+	}
+}
+
+void GUI_Sidebar_RestoreStats(void)
+{
+	GUI_Sidebar_RestoreBand(s_statsBackgroundCode, SIDEBAR_STATS_Y, SIDEBAR_Y + SIDEBAR_HEIGHT - 1);
+}
+
+void GUI_Sidebar_RestoreTitle(void)
+{
+	GUI_Sidebar_RestoreBand(s_titleBackgroundCode, SIDEBAR_Y, 50);
+}
+
+void GUI_Sidebar_RestoreRepair(const Widget *w)
+{
+	const Widget *portrait = GUI_Widget_Get_ByIndex(g_widgetLinkedListHead, 6);
+	const Widget *production = GUI_Widget_Get_ByIndex(g_widgetLinkedListHead, 5);
+	int16 top = w->offsetY - 1, bottom = w->offsetY + w->height;
+
+	GUI_Sidebar_RestoreBand(s_repairBackgroundCode, top, bottom);
+	/* Preserve the neighboring outlines that share the button's first/last rows. */
+	if (portrait != NULL && !portrait->flags.invisible &&
+	    portrait->offsetY + portrait->height >= top && portrait->offsetY + portrait->height <= bottom)
+		GUI_DrawLine(portrait->offsetX - 1, portrait->offsetY + portrait->height,
+		    portrait->offsetX + portrait->width, portrait->offsetY + portrait->height, 12);
+	if (production != NULL && !production->flags.invisible &&
+	    production->offsetY - 1 >= top && production->offsetY - 1 <= bottom)
+		GUI_DrawLine(production->offsetX - 1, production->offsetY - 1,
+		    production->offsetX + production->width, production->offsetY - 1, 12);
 }
 
 bool GUI_Sidebar_WidgetBegin(const Widget *w)
@@ -591,6 +643,21 @@ void GUI_Sidebar_CaptionEnd(void)
 	s_captionWidget = NULL;
 }
 
+bool GUI_Sidebar_DrawButtonCaption(int16 centre, int16 top, uint8 foreground, uint8 background)
+{
+	const Widget *w = s_captionWidget;
+	uint8 colours[2] = { background, foreground };
+
+	if (s_caption == NULL || !s_caption->ready || w == NULL || w->index == 5 ||
+	    !GUI_Sidebar_Assets() || background != 0 || !GUI_Glyph_Usable(g_fontCurrent)) return false;
+	if (!GUI_Sidebar_FlatButtons(w) || centre != w->offsetX + w->width / 2 || top != w->offsetY + 1 ||
+	    s_caption->width != SIDEBAR_WIDTH || s_caption->height != w->height + 2 ||
+	    top + g_fontCurrent->height > SIDEBAR_Y + SIDEBAR_HEIGHT) return false;
+	GUI_InitColors(colours, 0, 1);
+	GUI_Sidebar_AssetDraw(s_caption, centre, top);
+	return true;
+}
+
 bool GUI_Sidebar_Border(int16 left, int16 top, uint16 width, uint16 height, const uint8 colours[4], bool fill)
 {
 	int16 x0 = left - SIDEBAR_X, y0 = top - SIDEBAR_Y;
@@ -681,6 +748,9 @@ bool GUI_Sidebar_Text(const char *string, int16 left, int16 top, const uint8 col
 	if (GUI_Sidebar_Assets()) {
 		if (!GUI_Glyph_Usable(g_fontCurrent) || colours[0] != 0) return false;
 		if (s_caption != NULL) {
+			/* Text-button images do not need a measured text edge as their drawing anchor. */
+			int16 anchor = s_captionWidget != NULL && s_captionWidget->index != 5 ?
+			    s_captionWidget->offsetX + s_captionWidget->width / 2 : left;
 			if (!s_caption->ready) {
 				int16 bandTop = top, bandBottom;
 				uint16 lines = 1;
@@ -727,10 +797,10 @@ bool GUI_Sidebar_Text(const char *string, int16 left, int16 top, const uint8 col
 					    w->offsetX + w->width - 1, w->offsetY + w->height - 1, 20);
 				}
 				GUI_Sidebar_CaptureEnd();
-				GUI_Sidebar_AssetLoad(s_caption, left, top, SIDEBAR_X, bandTop,
+				GUI_Sidebar_AssetLoad(s_caption, anchor, top, SIDEBAR_X, bandTop,
 				    SIDEBAR_WIDTH, bandBottom - bandTop + 1, NULL);
 			}
-			GUI_Sidebar_AssetDraw(s_caption, left, top);
+			GUI_Sidebar_AssetDraw(s_caption, anchor, top);
 		} else {
 			GUI_Sidebar_QueueText(string, left, top, colours, false);
 		}
@@ -770,33 +840,51 @@ bool GUI_Sidebar_Text(const char *string, int16 left, int16 top, const uint8 col
 	return true;
 }
 
+static bool GUI_Sidebar_SpriteOpaque(uint16 spriteID, uint16 width, uint16 height)
+{
+	/* Stock SHAPES.SHP rectangles; changed geometry keeps the generic opacity decoder. */
+	if (spriteID >= 24 && spriteID <= 26) {
+		uint16 size = spriteID == 24 ? 5 : 8;
+		return width == size && height == size;
+	}
+	return ((spriteID >= 28 && spriteID <= 30) || (spriteID >= 65 && spriteID <= 105)) &&
+	    width == 32 && height == 24;
+}
+
+bool GUI_Sidebar_PortraitOpaque(uint16 spriteID)
+{
+	const uint8 *sprite = g_sprites[spriteID];
+	uint16 width = READ_LE_UINT16(sprite + 3);
+
+	return width == 32 && GUI_Sidebar_SpriteOpaque(spriteID, width, sprite[2]);
+}
+
 static void GUI_Sidebar_DecodeSprite(const uint8 *sprite, uint16 width, uint16 height,
-                                    const uint8 *remap, uint16 remapCount,
-                                    uint16 *pixels, uint16 *masks)
+                                    uint16 *pixels, uint16 *masks, bool opaque)
 {
 	union { uint32 align; uint8 bytes[64 * 48]; } chunky;
 	uint16 row, col, groups = width >> 4;
 
-	memset(masks, 0, groups * height * sizeof(*masks));
-	memset(chunky.bytes, 0, width * height);
-	GUI_DrawSpriteOpacity(chunky.bytes, width, height, sprite, 0, 0);
-	for (row = 0; row < height; row++)
-		for (col = 0; col < width; col++)
-			if (chunky.bytes[row * width + col] != 0)
-				masks[row * groups + (col >> 4)] |= 0x8000u >> (col & 15);
-	memset(chunky.bytes, 0, width * height);
-	GUI_DrawSpriteToBuffer(chunky.bytes, width, height, sprite, 0, 0);
-	for (row = 0; row < height; row++) {
-		for (col = 0; col < width; col++) {
-			uint8 *pixel = &chunky.bytes[row * width + col];
-			uint16 count;
-			if ((masks[row * groups + (col >> 4)] & (0x8000u >> (col & 15))) == 0) continue;
-			for (count = 0; count < remapCount; count++) *pixel = remap[*pixel];
-		}
+	if (!opaque) {
+		assert(masks != NULL);
+		memset(masks, 0, groups * height * sizeof(*masks));
+		memset(chunky.bytes, 0, width * height);
+		GUI_DrawSpriteOpacity(chunky.bytes, width, height, sprite, 0, 0);
+		for (row = 0; row < height; row++)
+			for (col = 0; col < width; col++)
+				if (chunky.bytes[row * width + col] != 0)
+					masks[row * groups + (col >> 4)] |= 0x8000u >> (col & 15);
+	} else if (masks != NULL) {
+		uint16 mask = 0xffffu << (16 - READ_LE_UINT16(sprite + 3));
+		assert(groups == 1);
+		for (row = 0; row < height; row++) masks[row] = mask;
 	}
+	if (masks != NULL) memset(chunky.bytes, 0, width * height);
+	GUI_DrawSpriteToBuffer(chunky.bytes, width, height, sprite, 0, 0);
 	Video_Atari_EncodePlanar(chunky.bytes, pixels, width, height);
-	for (row = 0; row < groups * height; row++)
-		for (col = 0; col < 4; col++) pixels[row * 4 + col] &= masks[row];
+	if (masks != NULL)
+		for (row = 0; row < groups * height; row++)
+			for (col = 0; col < 4; col++) pixels[row * 4 + col] &= masks[row];
 }
 
 void GUI_Sidebar_Sprite(const uint8 *sprite, uint16 spriteID, int16 x, int16 y,
@@ -808,38 +896,49 @@ void GUI_Sidebar_Sprite(const uint8 *sprite, uint16 spriteID, int16 x, int16 y,
 	uint16 height;
 	int16 localX = x - SIDEBAR_X, localY = y - SIDEBAR_Y;
 
-	assert(spriteID < SIDEBAR_SPRITES && g_sprites[spriteID] == sprite);
-	assert((flags & ~DRAWSPRITE_FLAG_REMAP) == 0 && remapCount <= 2);
-	assert(remapCount == 0 || remap == g_paletteMapping1);
-	VARIABLE_NOT_USED(flags);
-	entry = s_sprites[spriteID][remapCount];
+	if (spriteID < SIDEBAR_SPRITE_FIRST || spriteID > SIDEBAR_SPRITE_LAST ||
+	    (flags & ~DRAWSPRITE_FLAG_REMAP) != 0 || remapCount != 0) {
+		Error("Unsupported sidebar sprite request %u (flags %04x, remap %u)\n",
+		    spriteID, (unsigned int)flags, remapCount);
+		exit(1);
+	}
+	assert(g_sprites[spriteID] == sprite);
+	VARIABLE_NOT_USED(remap);
+	entry = s_sprites[spriteID - SIDEBAR_SPRITE_FIRST];
 	if (entry == NULL) {
-		uint16 width = (READ_LE_UINT16(sprite + 3) + 15) & ~15;
+		uint16 sourceWidth = READ_LE_UINT16(sprite + 3);
+		uint16 width = (sourceWidth + 15) & ~15;
 		uint16 height = sprite[2];
 		uint16 row, column;
+		bool opaque = GUI_Sidebar_SpriteOpaque(spriteID, sourceWidth, height);
+		bool sharedMasks = opaque && sourceWidth == width;
 		if (width == 0 || width > 64 || height == 0 || height > 48) {
 			Error("Unsupported sidebar sprite %u (%ux%u)\n", spriteID, width, height);
 			exit(1);
 		}
 		groups = width >> 4;
 		words = groups * height;
-		entry = calloc(1, sizeof(*entry) + words * 9 * sizeof(uint16));
+		entry = calloc(1, sizeof(*entry) + words * (sharedMasks ? 4 : 9) * sizeof(uint16));
 		if (entry == NULL) {
 			Error("Out of memory for sidebar sprite %u\n", spriteID);
 			exit(1);
 		}
 		entry->width = width;
 		entry->height = height;
-		GUI_Sidebar_DecodeSprite(sprite, width, height, remap, remapCount, entry->data, entry->data + words * 4);
-		for (row = 0; row < words; row++)
-			for (column = 0; column < 4; column++) {
-				entry->data[words * 5 + row * 4 + column] = entry->data[words * 4 + row];
-			}
-		s_sprites[spriteID][remapCount] = entry;
+		entry->masks = sharedMasks ? s_opaqueSpriteMasks : entry->data + words * 4;
+		if (sharedMasks && s_opaqueSpriteMasks[0] == 0)
+			memset(s_opaqueSpriteMasks, 0xff, sizeof(s_opaqueSpriteMasks));
+		GUI_Sidebar_DecodeSprite(sprite, width, height, entry->data,
+		    sharedMasks ? NULL : entry->masks, opaque);
+		if (!sharedMasks)
+			for (row = 0; row < words; row++)
+				for (column = 0; column < 4; column++)
+					entry->masks[words + row * 4 + column] = entry->masks[row];
+		s_sprites[spriteID - SIDEBAR_SPRITE_FIRST] = entry;
 	}
 	groups = entry->width >> 4;
 	words = groups * entry->height;
-	masks = entry->data + words * 4;
+	masks = entry->masks;
 	pixels = entry->data;
 	height = entry->height;
 	assert(localX >= 0 && localY >= 0 && localY + height <= SIDEBAR_HEIGHT);
@@ -858,7 +957,8 @@ void GUI_Sidebar_Sprite(const uint8 *sprite, uint16 spriteID, int16 x, int16 y,
 				Error("Out of memory for sidebar sprite command\n");
 				exit(1);
 			}
-			Video_Atari_CompileSidebarBlit(code, pixels, entry->data + words * 5,
+			Video_Atari_CompileSidebarBlit(code, pixels,
+			    masks == s_opaqueSpriteMasks ? NULL : masks + words,
 			    entry->width, visibleWidth, height, phase);
 			entry->blits[phase] = code;
 			entry->blitWidths[phase] = visibleWidth;
@@ -968,6 +1068,8 @@ void GUI_Sidebar_Preload(void)
 	GUITextState text, chunky;
 	Screen screen;
 	uint8 *saved;
+	const uint16 *backgroundPixels = NULL;
+	const Widget *repair = GUI_Widget_Get_ByIndex(g_widgetLinkedListHead, 4);
 
 	if (!Video_Atari_CursorDirect() || !Video_Atari_ViewportBlitter() ||
 	    GUI_Widget_Get_ByIndex(g_widgetLinkedListHead, 8) == NULL) return;
@@ -995,6 +1097,7 @@ void GUI_Sidebar_Preload(void)
 	GUI_DrawText_Wrapper(NULL, 0, 0, 15, 0, 0x11);
 	GUI_Sidebar_PrepareAssets();
 	s_active = s_batch = s_preparing = false;
+	s_assetBytes += SIDEBAR_OPAQUE_CODE_BYTES * (repair != NULL ? 3 : 2);
 	s_assetBank = malloc(s_assetBytes);
 	if (s_assetBank == NULL) {
 		Error("Out of memory for sidebar assets (%lu bytes)\n", (unsigned long)s_assetBytes);
@@ -1018,9 +1121,32 @@ void GUI_Sidebar_Preload(void)
 		}
 		memcpy(compiled, code.words, bytes);
 		asset->code = compiled;
+		if (asset == &s_sidebar.background) backgroundPixels = pixels;
 		s_assetUsed += prepared->pixelBytes + bytes;
 		s_prepared = prepared->next;
 		free(prepared);
+	}
+	for (uint16 band = 0; band < (repair != NULL ? 3 : 2); band++) {
+		VideoAtariSidebarBlit code;
+		uint16 *compiled = s_assetBank + s_assetUsed / sizeof(uint16);
+		uint16 top = band == 0 ? SIDEBAR_STATS_Y : band == 1 ? SIDEBAR_Y : repair->offsetY - 1;
+		uint16 height = band == 0 ? SIDEBAR_STATS_HEIGHT : band == 1 ? 51 - SIDEBAR_Y : repair->height + 2;
+		size_t bytes;
+
+		assert(backgroundPixels != NULL);
+		/* Borrow the background's pixels; only the clipped copy command is new. */
+		bytes = Video_Atari_CompileSidebarBlit(&code,
+		    backgroundPixels + (top - SIDEBAR_Y) * SIDEBAR_GROUPS * 4,
+		    NULL, SIDEBAR_WIDTH, SIDEBAR_WIDTH, height, 0);
+		if (bytes != SIDEBAR_OPAQUE_CODE_BYTES) {
+			Error("Sidebar background command size changed (%lu bytes)\n", (unsigned long)bytes);
+			exit(1);
+		}
+		memcpy(compiled, code.words, bytes);
+		if (band == 0) s_statsBackgroundCode = compiled;
+		else if (band == 1) s_titleBackgroundCode = compiled;
+		else s_repairBackgroundCode = compiled;
+		s_assetUsed += bytes;
 	}
 	if (s_assetUsed != s_assetBytes) {
 		Error("Sidebar asset bank size changed during preparation (%lu/%lu bytes)\n",
