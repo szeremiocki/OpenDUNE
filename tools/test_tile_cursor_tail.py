@@ -426,7 +426,8 @@ int main(void) {
         viewport = (ROOT / "src/gui/viewport.c").read_text()
         state = viewport[viewport.index("static bool s_tileCursorShown"):
                          viewport.index("/* Runs before the dirty scan")]
-        production = function(video, "Video_Atari_PlacementCursor")
+        production = function(video, "Video_Atari_CursorSuppressed")
+        production += "\n" + function(video, "Video_Atari_PlacementCursor")
         production += "\n" + function(viewport, "GUI_Widget_Viewport_PlacementDirty")
         production += "\n" + state
         production += "\n" + function(viewport, "GUI_Widget_Viewport_PlacementPrepare")
@@ -444,10 +445,12 @@ int main(void) {
 #define max(a,b) ((a)>(b)?(a):(b))
 #define SELECTIONTYPE_PLACE 1
 static bool s_curSuppress, s_curDrawn = true, s_curDirty;
+static uint16 s_curGroup = 4, s_curY = 72, s_curH = 16;
 static uint16 s_curDrawnGroup = 4, s_curDrawnY = 72, s_curDrawnH = 16;
 static bool s_placeTintShown, s_placeTintInvalid;
 static int16 s_placeTintX, s_placeTintY, s_placeTintW, s_placeTintH;
 static uint16 g_tileCursor = 1, g_mouseDisabled, g_mouseX = 64, g_mouseY = 72;
+static uint16 g_mouseSpriteIconIndex;
 static uint16 g_cursorSpriteID, g_viewportPosition;
 static uint16 g_selectionType, g_selectionRectanglePosition, g_minimapPosition;
 static uint16 g_selectionWidth = 1, g_selectionHeight = 1, g_selectionState = 1;
@@ -492,7 +495,7 @@ int main(void) {
     g_selectionType = 0; prepare();
     assert(s_tileCursorShown && !s_placeTintShown && s_curSuppress);
     g_mouseX = 250; prepare();
-    assert(!s_tileCursorShown && !GUI_Widget_Viewport_TileCursorActive() && !s_curSuppress);
+    assert(!s_tileCursorShown && GUI_Widget_Viewport_TileCursorActive() && s_curSuppress);
     repairs = 0; memset(s_viewportSpriteDamage,0,sizeof(s_viewportSpriteDamage));
     g_mouseX = 64; g_mouseY = 24; g_cursorSpriteID = 1;
     prepare();
@@ -525,6 +528,7 @@ int main(void) {
         {1,239,24,14,0,TILE_CURSOR_SCROLL_UP},
         {2,240,60,14,1,TILE_CURSOR_SCROLL_RIGHT},
         {2,249,199,14,9,TILE_CURSOR_SCROLL_RIGHT},
+        {2,250,199,14,9,TILE_CURSOR_SCROLL_RIGHT},
         {3,239,199,14,9,TILE_CURSOR_SCROLL_DOWN},
         {4,1,199,0,9,TILE_CURSOR_SCROLL_LEFT},
         {4,0,40,0,0,TILE_CURSOR_SCROLL_LEFT},
@@ -561,8 +565,10 @@ int main(void) {
     repairs = 0; prepare(); assert(!s_tileCursorShown && s_curSuppress && s_placeTintShown);
     g_selectionType = 0;
     repairs = 0; prepare(); assert(s_tileCursorShown && s_curSuppress);
-    g_mouseX = 250; repairs = 0; prepare(); assert(!s_tileCursorShown && !s_curSuppress);
+    g_mouseX = 251; repairs = 0; prepare();
+    assert(!s_tileCursorShown && s_curSuppress && GUI_Widget_Viewport_TileCursorActive());
     g_mouseX = 64; g_mouseY = 23; repairs = 0; prepare(); assert(!s_tileCursorShown);
+    assert(s_curSuppress && GUI_Widget_Viewport_TileCursorActive());
     g_mouseY = 72; g_cursorSpriteID = 5;
     repairs = 0; prepare();
     assert(s_tileCursorShown && s_tileCursorShape == TILE_CURSOR_TARGET && s_curSuppress);
@@ -572,6 +578,104 @@ int main(void) {
 }
 """
         run_harness(harness.replace("/* PRODUCTION */", production).replace("/* CURSOR */", cursor))
+
+    def test_edge_hysteresis_suppresses_existing_and_new_classic_cursors(self):
+        video = (ROOT / "src/video/video_atari.c").read_text()
+        production = "\n".join(function(video, name) for name in (
+            "Video_Atari_CursorSuppressed", "Video_Atari_CursorSync",
+            "Video_Atari_PlacementCursor"))
+        harness = r"""
+#include <assert.h>
+#include <stddef.h>
+#include "types.h"
+#define SELECTIONTYPE_PLACE 2
+static uint8 screen[1];
+static bool s_curSuppress = true, s_curDrawn, s_curVisible = true, s_curDirty;
+static uint16 g_tileCursor = 1, g_selectionType = 3;
+static uint16 g_mouseX, g_mouseY, g_mouseSpriteIconIndex;
+static uint16 g_mouseHiddenDepth, g_mouseLock;
+static uint16 s_curSelectedIcon, s_curKeyPal, s_paletteGeneration;
+static const void *s_curKeySprite;
+static uint16 s_curGroup, s_curY, s_curH = 8, s_curGroups = 1, s_curDrawStride = 1;
+static uint16 s_curDrawnGroup, s_curDrawnY, s_curDrawnH, s_curDrawnGroups;
+static uint8 *s_curDrawnBase;
+static uint16 s_curDrawnData[1][4], s_curDrawnMask[1][1];
+static const uint16 *s_curDrawData, *s_curDrawMask;
+static unsigned erases, draws;
+static bool Video_Atari_CursorSuppressed(void);
+static void GUI_Mouse_Hide(void) { assert(false); }
+static void GUI_Mouse_Show(void) { assert(false); }
+static void Video_Atari_CursorEraseFull(void) { if (s_curDrawn) erases++; s_curDrawn = false; }
+static void Video_Atari_CursorDraw(uint8 *base) {
+    assert(base == screen && !s_curDrawn && !Video_Atari_CursorSuppressed());
+    draws++; s_curDrawn = true; s_curDrawnBase = base;
+    s_curDrawnGroup = s_curGroup; s_curDrawnY = s_curY;
+    s_curDrawnH = s_curH; s_curDrawnGroups = s_curGroups;
+}
+static long Video_Atari_CursorRowsEqual(const uint16 *a, long sa, const uint16 *b,
+                                       long sb, long h, long w) {
+    (void)a; (void)sa; (void)b; (void)sb; (void)h; (void)w;
+    return 1;
+}
+/* PRODUCTION */
+static void check(uint16 x, uint16 y, uint16 icon, bool hidden) {
+    g_mouseX = x; g_mouseY = y; g_mouseSpriteIconIndex = icon;
+    s_curGroup = x >> 4; s_curY = y;
+    s_curSelectedIcon = icon;
+    /* No geometry or dirty-bit change: suppression must precede the fast return. */
+    s_curDrawnGroup = s_curGroup; s_curDrawnY = s_curY;
+    s_curDrawnH = s_curH; s_curDrawnGroups = s_curGroups;
+    s_curDrawnBase = screen; s_curDrawn = true; s_curDirty = false;
+    erases = draws = 0;
+    Video_Atari_CursorSync(screen);
+    assert(s_curDrawn == !hidden && erases == (unsigned)hidden && !draws);
+    Video_Atari_CursorSync(screen);
+    assert(erases == (unsigned)hidden && !draws);
+    /* A fresh draw must obey the same decision. */
+    s_curDrawn = false;
+    Video_Atari_CursorSync(screen);
+    assert(s_curDrawn == !hidden && draws == (unsigned)!hidden);
+}
+int main(void) {
+    static const uint16 points[][2] = {
+        {0,0}, {64,23}, {64,24}, {239,39}, {240,40}, {249,72},
+        {250,72}, {251,72}, {0,100}, {239,198}, {239,199},
+        {256,60}, {280,150}, {319,0}
+    };
+    for (unsigned i = 0; i < sizeof(points)/sizeof(points[0]); i++) {
+        uint16 x = points[i][0], y = points[i][1];
+        for (uint16 icon = 0; icon <= 5; icon++) {
+            bool scroll = icon >= 1 && icon <= 4;
+            bool region = x <= 250 && y >= 24 && y < 200;
+            check(x,y,icon,scroll || region);
+        }
+    }
+    /* Returning to controls/radar restores the ordinary/target pointer. */
+    check(280,60,0,false); check(280,150,5,false);
+    /* Menu/presentation release wins even with an old scroll icon selected. */
+    Video_Atari_PlacementCursor(false);
+    check(64,72,1,false); check(249,72,0,false);
+    /* Taking ownership erases a sprite wholly outside the battlefield too. */
+    g_mouseSpriteIconIndex = 2;
+    erases = 0;
+    Video_Atari_PlacementCursor(true);
+    assert(!s_curDrawn && erases == 1);
+    Video_Atari_PlacementCursor(true);
+    assert(erases == 1);
+    s_curSuppress = true;
+    /* Legacy mode retains its original sprite-intersection policy. */
+    g_tileCursor = 0;
+    check(64,24,1,false); check(249,72,0,false);
+    check(64,72,0,true); check(0,199,4,true);
+    s_curSuppress = false;
+    check(64,72,0,false);
+    /* Placement keeps its old intersection policy even with tile_cursor=1. */
+    g_tileCursor = 1; g_selectionType = SELECTIONTYPE_PLACE; s_curSuppress = true;
+    check(64,24,1,false); check(249,72,0,false); check(64,72,0,true);
+    return 0;
+}
+"""
+        run_harness(harness.replace("/* PRODUCTION */", production))
 
 
 if __name__ == "__main__":

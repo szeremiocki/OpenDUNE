@@ -1201,8 +1201,15 @@ static void GUI_Widget_Viewport_TileCursorPrepare(bool placing)
 	VideoAtariTileCursorShape shape = TILE_CURSOR_NORMAL;
 	uint16 col = 0, row = 0;
 
-	if (g_tileCursor != 0 && !placing && g_mouseDisabled == 0 &&
-	    g_mouseX < 250 && g_mouseY >= 24 && g_mouseY < 200 &&
+	/* Ownership outlives the frame so hysteresis cannot revive a classic arrow. */
+	if (g_tileCursor != 0 && !placing && g_mouseDisabled == 0) {
+		Video_Atari_PlacementCursor(true);
+		s_tileCursorOwns = true;
+	} else if (s_tileCursorOwns) {
+		if (!placing) Video_Atari_PlacementCursor(false);
+		s_tileCursorOwns = false;
+	}
+	if (s_tileCursorOwns && g_mouseX <= 250 && g_mouseY >= 24 && g_mouseY < 200 &&
 	    (scroll || (g_mouseX < 240 && g_mouseY >= 40))) {
 		show = true;
 		col = min(g_mouseX >> 4, 14);
@@ -1215,13 +1222,6 @@ static void GUI_Widget_Viewport_TileCursorPrepare(bool placing)
 			case 5: shape = TILE_CURSOR_TARGET; break;
 			default: break;
 		}
-	}
-	if (show) {
-		Video_Atari_PlacementCursor(true);
-		s_tileCursorOwns = true;
-	} else if (s_tileCursorOwns && !placing) {
-		Video_Atari_PlacementCursor(false);
-		s_tileCursorOwns = false;
 	}
 	if (s_tileCursorShown && s_tileCursorViewport != g_viewportPosition) {
 		/* Scrolling moved the old frame's pixels with the map. */

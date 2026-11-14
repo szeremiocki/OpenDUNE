@@ -231,7 +231,7 @@ static void poll(void) {
     GUI_DisplayText(NULL, 0);
     assert(hides == shows && active == SCREEN_0 && currentWidget == 6);
 }
-static void finish(unsigned phase) {
+static void finishFrames(unsigned phase) {
     unsigned count = phase == 0 ? 1 : (phase == 1 ? 11 : 6);
     for (unsigned i = 0; i < count; i++) {
         if (frames == i) poll();
@@ -239,7 +239,11 @@ static void finish(unsigned phase) {
         assert(offsets[i] == (phase == 0 ? 0 : 10 - i * phase));
         g_timerGUI++;
     }
-    assert(renders == 1 && !strcmp(displayed, "alpha"));
+    assert(!strcmp(displayed, "alpha"));
+}
+static void finish(unsigned phase) {
+    finishFrames(phase);
+    assert(renders == 1);
 }
 int main(void) {
     const char *valid[] = {"0", "1", "2", " 2\t", "+1", "00"};
@@ -322,6 +326,60 @@ int main(void) {
             assert(!strcmp(displayed, "urgent"));
         }
     }
+    for (unsigned backend = 0; backend < 2; backend++) {
+#ifdef TOS
+        direct = backend != 0;
+#else
+        (void)backend;
+#endif
+        for (unsigned phase = 0; phase <= 2; phase++) {
+            /* Periodic duplicate status is a keep-alive, without another frame. */
+            reset(phase);
+            GUI_DisplayTextLiteral("alpha", 3);
+            finishFrames(phase);
+            uint32 completed = g_timerGUI - 1;
+            unsigned oldFrames = frames;
+            unsigned oldRenders = renders;
+            g_timerGUI = completed + 300;
+            GUI_DisplayTextLiteral("ALPHA", 3);
+            assert(frames == oldFrames && renders == oldRenders);
+            g_timerGUI = completed + 901;
+            poll();
+            assert(frames == oldFrames && renders == oldRenders);
+            /* Without further status updates, the renewed hold still expires. */
+            g_timerGUI = completed + 1200;
+            poll();
+            assert(frames == oldFrames);
+            g_timerGUI++;
+            poll();
+            assert(frames == oldFrames + (phase == 0 ? 1u : 0u));
+            if (phase != 0) {
+                poll();
+                assert(frames == oldFrames + 1 && offsets[oldFrames] == 10);
+            }
+        }
+    }
+    /* A queued message must not be postponed by duplicate status keep-alives. */
+    reset(0);
+    GUI_DisplayTextLiteral("alpha", 3);
+    uint32 statusCompleted = g_timerGUI;
+    GUI_DisplayText("beta", 2);
+    unsigned statusFrames = frames;
+    g_timerGUI = statusCompleted + 300;
+    GUI_DisplayTextLiteral("alpha", 3);
+    assert(frames == statusFrames);
+    g_timerGUI = statusCompleted + 901;
+    poll();
+    assert(frames == statusFrames + 1 && !strcmp(displayed, "beta"));
+    /* A duplicate during scrolling must not restart the display hold. */
+    reset(1);
+    GUI_DisplayTextLiteral("alpha", 3);
+    g_timerGUI += 300;
+    GUI_DisplayTextLiteral("alpha", 3);
+    assert(frames == 1 && offsets[0] == 10);
+    g_timerGUI++;
+    poll();
+    assert(frames == 2 && offsets[1] == 9);
     /* Literal input is not interpreted as another format, including on rebuild. */
     reset(0);
     unsigned beforeFormats = formats;

@@ -1868,6 +1868,17 @@ static void Video_Atari_MarkViewportTiles(uint16 tiles[10], int16 x, int16 y,
 
 static bool s_curSuppress;
 
+static bool Video_Atari_CursorSuppressed(void)
+{
+	if (!s_curSuppress) return false;
+	if (g_tileCursor != 0 && g_selectionType != SELECTIONTYPE_PLACE) {
+		/* Use the hotspot, not the sprite box, across both activation strips. */
+		return (g_mouseSpriteIconIndex >= 1 && g_mouseSpriteIconIndex <= 4) ||
+		    (g_mouseX <= 250 && g_mouseY >= 24 && g_mouseY < 200);
+	}
+	return s_curGroup < 15 && s_curY + s_curH > 40;
+}
+
 typedef struct CursorComposeArgs {
 	uint16 *dst, *save, *drawnData, *drawnMask;
 	const uint16 *data, *mask;
@@ -1916,7 +1927,6 @@ static void Video_Atari_CursorDraw(uint8 *base)
 	uint16 *p;
 
 	if (s_curDrawn || !s_curVisible) return;
-	if (s_curSuppress && s_curGroup < 15 && s_curY + s_curH > 40) return;
 	if (s_curH == 0 || s_curGroups == 0) return;
 	if (s_curDrawData == NULL || s_curDrawMask == NULL) return;
 
@@ -1963,6 +1973,11 @@ static void Video_Atari_CursorSync(uint8 *base)
 	    g_mouseHiddenDepth == 0 && g_mouseLock == 0) {
 		GUI_Mouse_Hide();
 		GUI_Mouse_Show();
+	}
+	if (Video_Atari_CursorSuppressed()) {
+		if (s_curDrawn) Video_Atari_CursorEraseFull();
+		s_curDirty = false;
+		return;
 	}
 	same = s_curDrawn && s_curVisible && s_curDrawnBase == base &&
 	       s_curDrawnY == s_curY && s_curDrawnH == s_curH &&
@@ -2431,10 +2446,10 @@ void Video_Atari_DebugDamageEnd(void)
 static const uint16 s_tileCursorPatterns[6][16] = {
 	{ 0xf00f, 0x8001, 0x8001, 0x8001, 0, 0, 0, 0, 0, 0, 0, 0, 0x8001, 0x8001, 0x8001, 0xf00f },
 	{ 0xfc3f, 0x8001, 0x8001, 0x8001, 0x8001, 0x8001, 0, 0x0180, 0x0180, 0, 0x8001, 0x8001, 0x8001, 0x8001, 0x8001, 0xfc3f },
-	{ 0xf00f, 0x8001, 0x8001, 0x8001, 0x0180, 0x03c0, 0x07e0, 0x0ff0, 0x0180, 0x0180, 0x0180, 0x0180, 0x8001, 0x8001, 0x8001, 0xf00f },
-	{ 0xf00f, 0x8001, 0x8001, 0x8001, 0x0080, 0x00c0, 0x00e0, 0x0ff0, 0x0ff0, 0x00e0, 0x00c0, 0x0080, 0x8001, 0x8001, 0x8001, 0xf00f },
-	{ 0xf00f, 0x8001, 0x8001, 0x8001, 0x0180, 0x0180, 0x0180, 0x0180, 0x0ff0, 0x07e0, 0x03c0, 0x0180, 0x8001, 0x8001, 0x8001, 0xf00f },
-	{ 0xf00f, 0x8001, 0x8001, 0x8001, 0x0100, 0x0300, 0x0700, 0x0ff0, 0x0ff0, 0x0700, 0x0300, 0x0100, 0x8001, 0x8001, 0x8001, 0xf00f }
+	{ 0xf00f, 0x8001, 0x8001, 0x8001, 0x0180, 0x03c0, 0x07e0, 0x0ff0, 0, 0, 0, 0, 0x8001, 0x8001, 0x8001, 0xf00f },
+	{ 0xf00f, 0x8001, 0x8001, 0x8001, 0x0080, 0x00c0, 0x00e0, 0x00f0, 0x00f0, 0x00e0, 0x00c0, 0x0080, 0x8001, 0x8001, 0x8001, 0xf00f },
+	{ 0xf00f, 0x8001, 0x8001, 0x8001, 0, 0, 0, 0, 0x0ff0, 0x07e0, 0x03c0, 0x0180, 0x8001, 0x8001, 0x8001, 0xf00f },
+	{ 0xf00f, 0x8001, 0x8001, 0x8001, 0x0100, 0x0300, 0x0700, 0x0f00, 0x0f00, 0x0700, 0x0300, 0x0100, 0x8001, 0x8001, 0x8001, 0xf00f }
 };
 static const uint8 s_tileCursorOperations[16][4] = {
 	{4,4,4,4}, {7,4,4,4}, {4,7,4,4}, {7,7,4,4},
@@ -2608,7 +2623,8 @@ void Video_Atari_PlacementCursor(bool hidden)
 {
 	if (s_curSuppress == hidden) return;
 	s_curSuppress = hidden;
-	if (hidden && s_curDrawn && s_curDrawnGroup < 15 && s_curDrawnY + s_curDrawnH > 40) {
+	if (hidden && s_curDrawn &&
+	    ((s_curDrawnGroup < 15 && s_curDrawnY + s_curDrawnH > 40) || Video_Atari_CursorSuppressed())) {
 		Video_Atari_CursorEraseFull();
 	}
 	s_curDirty = true;

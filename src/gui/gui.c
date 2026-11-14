@@ -334,7 +334,7 @@ static void PlanarBox_Intersect(PlanarBox *b, const PlanarBox *o)
 #endif
 
 /* Both entry points supply a terminated message of at most 79 characters. */
-static void GUI_DisplayTextBuffer(const char *buffer, int importance)
+static void GUI_DisplayTextBuffer(const char *buffer, int importance, bool keepAlive)
 {
 	static uint32 displayTimer = 0;  /* Timeout value for next update of the display. */
 	static uint16 textOffset;        /* Vertical position of text being scrolled. */
@@ -411,6 +411,8 @@ static void GUI_DisplayTextBuffer(const char *buffer, int importance)
 					line3Importance = importance;
 					fgColour3 = 12;
 				}
+			} else if (keepAlive && displayLine2[0] == '\0' && displayLine3[0] == '\0') {
+				displayTimer = g_timerGUI + 900;
 			}
 		} else {
 			if (displayLine1[0] == '\0' && displayLine2[0] == '\0') return;
@@ -654,21 +656,21 @@ void GUI_DisplayText(const char *str, int importance, ...)
 		vsnprintf(buffer, sizeof(buffer), str, ap);
 		va_end(ap);
 	}
-	GUI_DisplayTextBuffer(buffer, importance);
+	GUI_DisplayTextBuffer(buffer, importance, false);
 }
 
-/* Submit already-formatted text with the same length limit as GUI_DisplayText(). */
+/* Submit preformatted status text; keep an unchanged, unqueued message alive. */
 void GUI_DisplayTextLiteral(const char *str, int importance)
 {
 	char buffer[80];
 
 	if (str == NULL) {
-		GUI_DisplayTextBuffer("", importance);
+		GUI_DisplayTextBuffer("", importance, false);
 		return;
 	}
 	strncpy(buffer, str, sizeof(buffer) - 1);
 	buffer[sizeof(buffer) - 1] = '\0';
-	GUI_DisplayTextBuffer(buffer, importance);
+	GUI_DisplayTextBuffer(buffer, importance, true);
 }
 
 /* Draws one glyph cell into screen at index x; rows are fc->width + remainingWidth apart. */
