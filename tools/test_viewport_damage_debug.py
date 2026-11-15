@@ -80,6 +80,7 @@ int main(void) {
     def test_collection_and_acceptance(self):
         source = (ROOT / "src/gui/viewport.c").read_text()
         production = inactive_display_list() + "\n".join(function(source, name) for name in (
+            "Viewport_ColumnMask",
             "GUI_Widget_Viewport_DebugInput",
             "GUI_Widget_Viewport_DebugBegin",
             "GUI_Widget_Viewport_DebugRect",

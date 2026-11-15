@@ -431,6 +431,7 @@ int main(void) {
         production += "\n" + function(viewport, "GUI_Widget_Viewport_PlacementDirty")
         production += "\n" + state
         production += "\n" + function(viewport, "GUI_Widget_Viewport_PlacementPrepare")
+        production += "\n" + function(viewport, "Viewport_ColumnMask")
         production += "\n" + function(viewport, "GUI_Widget_Viewport_SpriteDamageRect")
         draw = function(viewport, "GUI_Widget_Viewport_Draw")
         cursor = draw[draw.index("\tif (planarViewport && s_tileCursorShown &&"):

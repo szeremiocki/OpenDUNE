@@ -671,11 +671,13 @@ NativeFuseTargetAttack:
 	bra	NativeFusedNext
 
 NativeFusedNext:
+	; Successful fall-through pairs cannot change delay or unload the script.
+	; The existing sentinel still traps sequential end-of-code dispatch.
 	adda.w	d7,a6
 	moveq	#0,d7
 	move.b	1(a6),d7
 	subq.w	#1,d2
-	bra	_Script_NativeNext
+	bra	NativeLeanNext
 NativeFusedJump:
 	adda.w	d7,a6
 	move.l	4(a6),a6

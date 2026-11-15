@@ -27,6 +27,7 @@ class ViewportTileSpriteRepairTest(unittest.TestCase):
                          gui.index("} ViewportPlanarImage;") + len("} ViewportPlanarImage;")]
         sprite_type = bounds_type + "\n" + image_type + "\n" + sprite_type
         damage = "\n".join(function(viewport, name) for name in (
+            "Viewport_ColumnMask",
             "GUI_Widget_Viewport_DebugRect",
             "GUI_Widget_Viewport_BeginSpriteDamage",
             "GUI_Widget_Viewport_SpriteDamageRect",

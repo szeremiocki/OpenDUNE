@@ -320,11 +320,20 @@ int main(void) {
         unit = (ROOT / "src/unit.c").read_text()
         map_source = (ROOT / "src/map.c").read_text()
         tile = (ROOT / "src/tile.c").read_text()
+        around = world_damage_production(map_source, "Map_UpdateAround")
+        inline_add = """\t\ttile32 curTile = position;
+\t\tcurTile.x += diff.x;
+\t\tcurTile.y += diff.y;"""
+        self.assertIn(inline_add, around)
+        reference = around.replace(
+            inline_add, "\t\ttile32 curTile = Tile_AddTileDiff(position, diff);"
+        ).replace("void Map_UpdateAround(", "static void Reference_Map_UpdateAround(", 1)
         production = "\n".join([
-            function(tile, "Tile_AddTileDiff"),
+            function(tile, "Tile_AddTileDiff").replace(
+                "tile32 result;", "tile32 result;\n\ttileAdds++;", 1),
             world_damage_production(map_source, "Map_Update").replace(
                 "void Map_Update(", "static void Real_Map_Update(", 1),
-            world_damage_production(map_source, "Map_UpdateAround"),
+            around, reference,
             function(unit, "Unit_RemoveFromTile"),
             function(unit, "Unit_AddToTile"),
         ])
@@ -348,7 +357,7 @@ uint8 g_playerHouseID = 2;
 bool Tile_IsUnveiled(uint16 id) { (void)id; return false; }
 static bool direct, visible, markViewport;
 static Unit *occupant;
-static unsigned updates[5], marks, unveils;
+static unsigned updates[5], marks, unveils, tileAdds;
 static uint8 marked[512], revealed[512];
 bool Video_Atari_CursorDirect(void) { return direct; }
 static bool Map_IsTileVisible(uint16 packed) { assert(packed < 4096); return visible; }
@@ -375,13 +384,14 @@ static void clear(void) {
     memset(g_displayedViewport,0,sizeof(g_displayedViewport));
     memset(marked,0,sizeof(marked)); memset(revealed,0,sizeof(revealed));
     memset(updates,0,sizeof(updates));
-    marks = unveils = g_dirtyViewportCount = 0;
+    marks = unveils = tileAdds = g_dirtyViewportCount = 0;
     g_selectionRectangleNeedRepaint = false;
 }
 int main(void) {
     const tile32 positions[] = {{0x1480,0x1480},{0x1400,0x1400},{0x80,0x80},
-                                {0x3f80,0x3f80},{0,0},{0xff80,0xff80}};
-    const uint16 radii[] = {0,19,27,33};
+                                {0x3f80,0x3f80},{0,0},{0xff80,0xff80},
+                                {0x147f,0x14ff},{0x3fff,0x3fff},{0xffff,0x80}};
+    const uint16 radii[] = {0,1,15,16,19,27,32,33};
     for (unsigned native = 0; native < 2; native++)
     for (unsigned shown = 0; shown < 2; shown++)
     for (unsigned pos = 0; pos < sizeof(positions) / sizeof(*positions); pos++)
@@ -393,7 +403,17 @@ int main(void) {
         bool local = false;
 #endif
         clear();
+        Reference_Map_UpdateAround(radii[radius],positions[pos],NULL,1,true);
+        uint8 expectedFootprint[512];
+        memcpy(expectedFootprint,g_dirtyViewport,sizeof(expectedFootprint));
+        unsigned expectedVisits = g_dirtyViewportCount;
+        clear();
         Map_UpdateAround(radii[radius],positions[pos],NULL,1,true);
+        assert(!memcmp(expectedFootprint,g_dirtyViewport,sizeof(expectedFootprint)));
+        assert(g_dirtyViewportCount == expectedVisits);
+#ifdef TOS
+        assert(tileAdds == 0);
+#endif
         uint8 footprint[512]; memcpy(footprint,g_dirtyViewport,sizeof(footprint));
         unsigned visits = g_dirtyViewportCount, cells = 0;
         for (unsigned i = 0; i < 4096; i++) cells += !!BitArray_Test(footprint,i);
@@ -415,6 +435,9 @@ int main(void) {
             g_map[packed].hasUnit = true; g_map[packed].index = 17;
             memcpy(g_displayedViewport,footprint,sizeof(footprint));
             Map_UpdateAround(radii[radius],positions[pos],&u,callback,markViewport);
+#ifdef TOS
+            assert(tileAdds == 0);
+#endif
             bool terrain = callback == 0 || (callback == 2 && !local);
             assert(updates[0] == (terrain ? visits : 0));
             for (unsigned i = 1; i < 5; i++) assert(!updates[i]);

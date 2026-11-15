@@ -346,8 +346,13 @@ uint16 GUI_Widget_HandleEvents(Widget *w)
 		if (w->flags.invisible) continue;
 
 		/* Store the previous button state */
-		w->state.selectedLast = w->state.selected;
-		w->state.hover1Last = w->state.hover1;
+		bool wasSelected = w->state.selected;
+		bool wasHovered = w->state.hover1;
+		w->state.selectedLast = wasSelected;
+		w->state.hover1Last = wasHovered;
+		w->state.keySelected = false;
+		w->state.hover1 = false;
+		w->state.hover2 = false;
 
 		positionX = w->offsetX;
 		if (w->offsetX < 0) positionX += g_widgetProperties[w->parentID].width << 3;
@@ -358,7 +363,6 @@ uint16 GUI_Widget_HandleEvents(Widget *w)
 		positionY += g_widgetProperties[w->parentID].yBase;
 
 		widgetHover = false;
-		w->state.keySelected = false;
 
 		/* Check if the mouse is inside the widget */
 		if (positionX <= mouseX && mouseX <= positionX + w->width && positionY <= mouseY && mouseY <= positionY + w->height) {
@@ -379,8 +383,6 @@ uint16 GUI_Widget_HandleEvents(Widget *w)
 		}
 
 		/* Update the hover state */
-		w->state.hover1 = false;
-		w->state.hover2 = false;
 		if (widgetHover) {
 			/* Button pressed, and click is hover */
 			if ((buttonState & 0x3300) != 0 && w->flags.clickAsHover && (w == l_widget_selected || l_widget_selected == NULL)) {

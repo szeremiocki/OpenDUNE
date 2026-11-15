@@ -1345,7 +1345,13 @@ void Map_UpdateAround(uint16 radius, tile32 position, Unit *unit, uint8 function
 
 	i = 0;
 	do {
+#ifdef TOS
+		tile32 curTile = position;
+		curTile.x += diff.x;
+		curTile.y += diff.y;
+#else
 		tile32 curTile = Tile_AddTileDiff(position, diff);
+#endif
 
 		if (Tile_IsValid(curTile)) {
 			uint16 curPacked = Tile_PackTile(curTile);

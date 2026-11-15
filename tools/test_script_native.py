@@ -95,6 +95,8 @@ extern void test_fail(unsigned line);
                     last_comparison = None
                     path_counts = {case: [0, 0] for case in range(1, 23)}
                     fusion_counts = {case: 0 for case in range(13, 23)}
+                    fusion_pending = False
+                    fusion_handoffs = {"NativeLeanNext": 0, "_Script_NativeNext": 0}
                     callback_paths = {"NativeFunction": 0, "NativeFunctionFast": 0,
                                       "NativeFunctionResolved": 0}
                     fallthrough_pcs = []
@@ -157,12 +159,28 @@ extern void test_fail(unsigned line);
                                      begin=addresses[name], end=addresses[name])
 
                     def fusion_hook(cpu, address, size, user_data):
+                        nonlocal fusion_pending
                         case = integer(addresses["_nativeCursorCase"])
                         if case in fusion_counts:
                             fusion_counts[case] += 1
+                        if address == addresses["NativeFusedNext"]:
+                            self.assertFalse(fusion_pending)
+                            fusion_pending = True
 
                     for name in ("NativeFusedNext", "NativeFusedJump"):
                         cpu.hook_add(UC_HOOK_CODE, fusion_hook,
+                                     begin=addresses[name], end=addresses[name])
+
+                    def fusion_handoff_hook(cpu, address, size, user_data):
+                        nonlocal fusion_pending
+                        if fusion_pending:
+                            name = next(name for name in fusion_handoffs
+                                        if addresses[name] == address)
+                            fusion_handoffs[name] += 1
+                            fusion_pending = False
+
+                    for name in fusion_handoffs:
+                        cpu.hook_add(UC_HOOK_CODE, fusion_handoff_hook,
                                      begin=addresses[name], end=addresses[name])
 
                     def callback_hook(cpu, address, size, user_data):
@@ -198,6 +216,9 @@ extern void test_fail(unsigned line);
                     self.assertEqual(cpu.reg_read(UC_M68K_REG_D0), 0)
                     self.assertFalse(allocations, "Native code allocation leaked")
                     self.assertTrue(all(callback_paths.values()), callback_paths)
+                    self.assertFalse(fusion_pending)
+                    self.assertGreater(fusion_handoffs["NativeLeanNext"], 0)
+                    self.assertEqual(fusion_handoffs["_Script_NativeNext"], 0)
                     self.assertEqual(fusion_counts, {**{case: 1 for case in range(13, 22)}, 22: 6})
                     self.assertEqual(fallthrough_pcs, [addresses["_words"]] * 16,
                                      "Ordinary native opcodes must not publish bytecode PCs")

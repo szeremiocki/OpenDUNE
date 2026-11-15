@@ -60,22 +60,6 @@ clear:
 #define Viewport_DirtyBitSet(packed, local) BitArray_Test(g_dirtyViewport, (packed))
 #endif
 
-#ifdef TOS
-/* Unit_FindNextAny() with the strict flag hoisted by the caller; the count is still re-read. */
-static inline Unit *Viewport_NextUnit(uint16 *index, bool skipNotOnMap)
-{
-	uint16 i = *index + 1;
-	while (i < g_unitFindCount) {
-		Unit *u = g_unitFindArray[i];
-		if (skipNotOnMap && u->o.flags.s.isNotOnMap) { i++; continue; }
-		*index = i;
-		return u;
-	}
-	*index = i;
-	return NULL;
-}
-#endif
-
 /* Build with -DVIEWPORT_CHECK_PACKED_TILE to verify the Unit.packedTile cache. */
 #if defined(TOS) && defined(VIEWPORT_CHECK_PACKED_TILE)
 #define VIEWPORT_CHECK_PACKED(u) assert((u)->packedTile == Tile_PackTile((u)->o.position))
@@ -264,6 +248,16 @@ static void GUI_Widget_Viewport_BeginSpriteDamage(bool active)
 	memcpy(s_viewportSpriteDamage, g_viewportTerrainDamage, sizeof(s_viewportSpriteDamage));
 }
 
+static inline uint16 Viewport_ColumnMask(uint16 first, uint16 end)
+{
+	/* prefix[n] contains columns 0 through n-1 of the 15-column viewport. */
+	static const uint16 prefix[16] = {
+		0x0000, 0x0001, 0x0003, 0x0007, 0x000f, 0x001f, 0x003f, 0x007f,
+		0x00ff, 0x01ff, 0x03ff, 0x07ff, 0x0fff, 0x1fff, 0x3fff, 0x7fff
+	};
+	return prefix[end] ^ prefix[first];
+}
+
 static bool GUI_Widget_Viewport_SpriteDamageRect(int16 left, int16 top, int16 right, int16 bottom, bool redraw)
 {
 	uint16 first, end, y, columns, firstRow, endRow;
@@ -275,7 +269,7 @@ static bool GUI_Widget_Viewport_SpriteDamageRect(int16 left, int16 top, int16 ri
 	if (left >= right || top >= bottom) return false;
 	first = left >> 4;
 	end = (right + 15) >> 4;
-	columns = (0x7fff >> (15 - end)) & (0x7fff << first);
+	columns = Viewport_ColumnMask(first, end);
 	firstRow = (top - 40) >> 4;
 	endRow = (bottom - 40 + 15) >> 4;
 	if (!redraw) {
@@ -304,7 +298,7 @@ static bool GUI_Widget_Viewport_SpriteDamageFree(int16 left, int16 top, int16 ri
 	if (left >= right || top >= bottom) return true;
 	first = left >> 4;
 	end = (right + 15) >> 4;
-	columns = (0x7fff >> (15 - end)) & (0x7fff << first);
+	columns = Viewport_ColumnMask(first, end);
 	firstRow = (top - 40) >> 4;
 	endRow = (bottom - 40 + 15) >> 4;
 	for (y = firstRow; y < endRow; y++) {
@@ -1307,7 +1301,9 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 	}
 #endif
 
+#ifndef TOS
 	PoolFindStruct find;
+#endif
 
 	updateDisplay = forceRedraw;
 
@@ -1505,16 +1501,17 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 
 	/* Draw ground units */
 	if (g_dirtyUnitCount != 0 || forceRedraw || updateDisplay) {
-		find.type    = 0xFFFF;
-		find.index   = 0xFFFF;
-		find.houseID = HOUSE_INVALID;
-
 #ifdef TOS
 		/* Only house.c/load.c change it, never during a draw. */
 		const bool strictIfZero = (g_validateStrictIfZero == 0);
-#endif
 
+		for (i = 0; i < g_unitFindCount; i++) {
+#else
+		find.type    = 0xFFFF;
+		find.index   = 0xFFFF;
+		find.houseID = HOUSE_INVALID;
 		while (true) {
+#endif
 			Unit *u;
 			uint16 packed;
 			uint16 index;
@@ -1523,12 +1520,12 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 			uint8 bodyHouse;
 
 #ifdef TOS
-			u = Viewport_NextUnit(&find.index, strictIfZero);
+			u = g_unitFindArray[i];
+			if (strictIfZero && u->o.flags.s.isNotOnMap) continue;
 #else
 			u = Unit_Find(&find);
-#endif
-
 			if (u == NULL) break;
+#endif
 
 			if (u->o.index < 20 || u->o.index > 101) continue;
 

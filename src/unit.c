@@ -46,6 +46,9 @@ static uint32 s_tickUnitUnknown4  = 0; /*!< Indicates next time the Unknown4 fun
 static uint32 s_tickUnitScript    = 0; /*!< Indicates next time the Script function is executed. */
 static uint32 s_tickUnitUnknown5  = 0; /*!< Indicates next time the Unknown5 function is executed. */
 static uint32 s_tickUnitDeviation = 0; /*!< Indicates next time the Deviation function is executed. */
+#ifdef TOS
+static const UnitInfo *s_unitInfoByType[UNIT_MAX];
+#endif
 
 Unit *g_unitActive = NULL;
 Unit *g_unitHouseMissile = NULL;
@@ -185,7 +188,11 @@ static void Unit_UpdateSmokeDamage(Unit *unit)
  */
 void GameLoop_Unit(void)
 {
+#ifdef TOS
+	uint16 index;
+#else
 	PoolFindStruct find;
+#endif
 	bool tickMovement  = false;
 	bool tickRotation  = false;
 	bool tickBlinking  = false;
@@ -199,6 +206,13 @@ void GameLoop_Unit(void)
 	if (g_debugScenario) return;
 
 #ifdef TOS
+	/* Cache addresses, not metadata, to avoid repeated type-stride arithmetic. */
+	if (s_unitInfoByType[0] == NULL) {
+		for (index = 0; index < UNIT_MAX; index++) {
+			s_unitInfoByType[index] = &g_table_unitInfo[index];
+		}
+	}
+
 	if (Video_Atari_CursorDirect()) {
 		scriptBudget = SCRIPT_UNIT_OPCODES_PER_TICK + 1;
 		offscreenScriptBudget = 2;
@@ -244,26 +258,36 @@ void GameLoop_Unit(void)
 	Script_NativePairStatsPoll(g_timerGame);
 #endif
 
+#ifndef TOS
 	find.houseID = HOUSE_INVALID;
 	find.index   = 0xFFFF;
 	find.type    = 0xFFFF;
+#endif
 
 	/* Only scripts read these; nothing in the loop changes them. */
 	g_scriptCurrentStructure = NULL;
 	g_scriptCurrentTeam      = NULL;
 
+#ifdef TOS
+	for (index = 0; index < g_unitFindCount; index++) {
+#else
 	while (true) {
+#endif
 		const UnitInfo *ui;
 		Unit *u;
 
 #ifdef TOS
-		u = Unit_FindNextAny(&find.index);
+		u = g_unitFindArray[index];
 #else
 		u = Unit_Find(&find);
-#endif
 		if (u == NULL) break;
+#endif
 
+#ifdef TOS
+		ui = s_unitInfoByType[u->o.type];
+#else
 		ui = &g_table_unitInfo[u->o.type];
+#endif
 
 		if (u->o.flags.s.isNotOnMap) continue;
 

@@ -15,6 +15,184 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class SelectionTransitionTest(unittest.TestCase):
+    def test_widget_event_bookkeeping_equivalence(self):
+        video = (ROOT / "src/gui/widget.c").read_text()
+        handler = function(video, "GUI_Widget_HandleEvents")
+        start = handler.index("\t\t/* Store the previous button state */")
+        end = handler.index("\t\t/* Check if the mouse is inside the widget */", start)
+        reference = handler[:start] + r"""
+        w->state.selectedLast = w->state.selected;
+        w->state.hover1Last = w->state.hover1;
+        positionX = w->offsetX;
+        if (w->offsetX < 0) positionX += g_widgetProperties[w->parentID].width << 3;
+        positionX += g_widgetProperties[w->parentID].xBase << 3;
+        positionY = w->offsetY;
+        if (w->offsetY < 0) positionY += g_widgetProperties[w->parentID].height;
+        positionY += g_widgetProperties[w->parentID].yBase;
+        widgetHover = false;
+        w->state.keySelected = false;
+""" + handler[end:]
+        reference = reference.replace(
+            "/* Update the hover state */",
+            "/* Update the hover state */\n"
+            "        w->state.hover1 = false;\n        w->state.hover2 = false;", 1)
+        reference = reference.replace("GUI_Widget_HandleEvents(", "reference_events(", 1)
+        reference = reference.replace("s_widgetReset", "reference_reset")
+        harness = r"""
+#include <assert.h>
+#include <string.h>
+#include "types.h"
+#include "src/gui/widget.h"
+WidgetProperties g_widgetProperties[22];
+static bool s_widgetReset, reference_reset, direct;
+static uint16 g_mouseX, g_mouseY, g_mouseClickX, g_mouseClickY, g_mouseDisabled;
+static uint16 inputKey;
+static unsigned mode, eventCount;
+static Widget current[8], reference[8], *activeWidgets;
+static uint16 events[128][4], savedEvents[128][4];
+static uint32 randomState = 0x73a195df;
+static uint32 random_next(void) {
+    randomState ^= randomState << 13;
+    randomState ^= randomState >> 17;
+    randomState ^= randomState << 5;
+    return randomState;
+}
+static void record(Widget *w, uint16 kind) {
+    assert(eventCount < 128);
+    events[eventCount][0] = kind;
+    events[eventCount][1] = w->index;
+    events[eventCount][2] = w->state.selected | (w->state.hover1 << 1) |
+        (w->state.hover2 << 2) | (w->state.selectedLast << 3) |
+        (w->state.hover1Last << 4) | (w->state.hover2Last << 5) |
+        (w->state.keySelected << 6);
+    events[eventCount++][3] = w->state.buttonState;
+}
+Widget *GUI_Widget_GetNext(Widget *w) { return w->next; }
+void GUI_Widget_Draw(Widget *w) {
+    record(w, 1);
+    if (mode & 1) w->state.selected = !w->state.selected;
+    if ((mode & 2) && w->next != NULL) {
+        w->next->offsetX = -16;
+        g_widgetProperties[w->next->parentID].width = 31;
+    }
+}
+static bool click(Widget *w) {
+    record(w, 2);
+    if (mode & 4) {
+        w->state.hover1 = !w->state.hover1;
+        activeWidgets[7].flags.invisible = !activeWidgets[7].flags.invisible;
+        g_widgetProperties[1].yBase += 1;
+    }
+    return (mode & 8) != 0;
+}
+static uint16 Input_IsInputAvailable(void) { return inputKey != 0; }
+static uint16 Input_Wait(void) { uint16 key = inputKey; inputKey = 0; return key; }
+static uint16 Input_Test(uint16 key) { (void)key; return 0; }
+static bool Video_Atari_CursorDirect(void) { return direct; }
+bool GUI_Widget_TextButton_OpensTarget(const Widget *w) { return w->index == 1; }
+/* HANDLERS */
+int main(void) {
+    for (unsigned i = 0; i < 8; i++) {
+        current[i].index = i + 1;
+        current[i].next = i == 7 ? NULL : &current[i + 1];
+        current[i].parentID = i & 3;
+        current[i].offsetX = i & 1 ? -16 : 0;
+        current[i].offsetY = i & 1 ? -8 : 0;
+        current[i].width = 40; current[i].height = 40;
+        current[i].shortcut = 1 + i; current[i].shortcut2 = 9 + i;
+        current[i].clickProc = click;
+        current[i].flags.buttonFilterLeft = 15;
+        current[i].flags.buttonFilterRight = 15;
+        reference[i] = current[i];
+        reference[i].next = i == 7 ? NULL : &reference[i + 1];
+    }
+    const uint16 keys[] = {0,1,9,0x41,0x841,0x42,0x842,0x80c6,
+                          0x88c6,0x80c7,0x88c7,2,10,0x77,0,0};
+    for (unsigned step = 0; step < 4096; step++) {
+        unsigned changed = random_next() & 7;
+        Widget *w = &current[changed];
+        uint32 bits = random_next();
+        w->flags.invisible = (bits & 1) != 0;
+        w->flags.requiresClick = (bits & 2) != 0;
+        w->flags.clickAsHover = (bits & 4) != 0;
+        w->flags.loseSelect = (bits & 8) != 0;
+        w->flags.noClickCascade = (bits & 16) != 0;
+        w->flags.buttonFilterLeft = (bits >> 5) & 15;
+        w->flags.buttonFilterRight = (bits >> 9) & 15;
+        w->state.hover2Last = (bits >> 13) & 1;
+        w->offsetX = step & 1 ? -16 : 16;
+        w->offsetY = step & 2 ? -8 : 8;
+        w->parentID = (bits >> 14) & 3;
+        Widget *next = reference[changed].next;
+        reference[changed] = *w; reference[changed].next = next;
+        g_widgetProperties[0].xBase = step & 1 ? 0 : 2;
+        g_widgetProperties[0].yBase = step & 2 ? 0 : 8;
+        for (unsigned i = 0; i < 4; i++) {
+            g_widgetProperties[i].width = 40;
+            g_widgetProperties[i].height = 100;
+        }
+        uint16 key = keys[random_next() & 15];
+        g_mouseX = random_next() % 321;
+        g_mouseY = random_next() % 201;
+        g_mouseClickX = random_next() % 321;
+        g_mouseClickY = random_next() % 201;
+        g_mouseDisabled = (random_next() & 31) == 0;
+        mode = random_next() & 15; direct = (step & 1) != 0;
+        unsigned head = step % 19 == 0 ? 2 : 0;
+        bool reset = step % 29 == 0;
+        if (step < 2) {
+            current[0].flags.invisible = false;
+            current[0].flags.requiresClick = false;
+            current[0].flags.clickAsHover = true;
+            current[0].flags.buttonFilterLeft = 8;
+            current[0].flags.noClickCascade = true;
+            current[0].offsetX = current[0].offsetY = 0;
+            current[0].parentID = 0;
+            current[0].state.selected = current[0].state.hover1 = false;
+            next = reference[0].next; reference[0] = current[0]; reference[0].next = next;
+            g_widgetProperties[0].xBase = g_widgetProperties[0].yBase = 0;
+            g_mouseX = g_mouseY = 10; g_mouseDisabled = 0;
+            key = 0; mode = 8; head = 0; reset = step == 0;
+        }
+        bool nullHead = step > 1 && step % 17 == 0;
+        WidgetProperties before[22], after[22];
+        memcpy(before, g_widgetProperties, sizeof(before));
+        activeWidgets = current; s_widgetReset = reset; inputKey = key; eventCount = 0;
+        uint16 result = GUI_Widget_HandleEvents(nullHead ? NULL : &current[head]);
+        unsigned savedCount = eventCount;
+        memcpy(savedEvents, events, sizeof(events));
+        memcpy(after, g_widgetProperties, sizeof(after));
+        memcpy(g_widgetProperties, before, sizeof(before));
+        activeWidgets = reference; reference_reset = reset; inputKey = key; eventCount = 0;
+        assert(reference_events(nullHead ? NULL : &reference[head]) == result);
+        assert(reference_reset == s_widgetReset);
+        assert(eventCount == savedCount);
+        assert(!memcmp(savedEvents, events, eventCount * sizeof(events[0])));
+        assert(!memcmp(after, g_widgetProperties, sizeof(after)));
+        for (unsigned i = 0; i < 8; i++) {
+            Widget a = current[i], b = reference[i];
+            a.next = b.next = NULL;
+            assert(!memcmp(&a, &b, sizeof(a)));
+        }
+        if (step < 2) {
+            unsigned callbacks = 0;
+            for (unsigned i = 0; i < eventCount; i++) callbacks += events[i][0] == 2;
+            assert(callbacks == 1); /* stationary, released-button callbacks still run */
+        }
+    }
+    return 0;
+}
+"""
+        harness = harness.replace("/* HANDLERS */", reference + "\n" + handler)
+        with tempfile.TemporaryDirectory(prefix="widget-events-") as directory:
+            cfile, binary = Path(directory) / "test.c", Path(directory) / "test"
+            cfile.write_text(harness)
+            flags = shlex.split(os.environ.get("TEST_CFLAGS", ""))
+            subprocess.run(["cc", "-std=gnu17", "-O2", "-Wall", "-Wextra", "-Werror",
+                            "-DTOS", "-I", str(ROOT), "-I", str(ROOT / "include"),
+                            *flags, str(cfile), "-o", str(binary)], check=True)
+            subprocess.run([str(binary)], check=True)
+
     def test_state_and_drawing_policy(self):
         header = (ROOT / "src/gui/gui.h").read_text()
         selection_types = re.search(

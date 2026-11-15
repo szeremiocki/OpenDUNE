@@ -15,6 +15,75 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ViewportSpriteDamageTest(unittest.TestCase):
+    def test_prefix_masks_match_shift_masks(self):
+        viewport = (ROOT / "src/gui/viewport.c").read_text()
+        functions = [function(viewport, name) for name in (
+            "Viewport_ColumnMask",
+            "GUI_Widget_Viewport_SpriteDamageRect",
+            "GUI_Widget_Viewport_SpriteDamageFree",
+        )]
+        reference = "\n".join(functions[1:]).replace(
+            "Viewport_ColumnMask(first, end)",
+            "((0x7fff >> (15 - end)) & (0x7fff << first))").replace(
+            "GUI_Widget_Viewport_SpriteDamageRect", "reference_rect").replace(
+            "GUI_Widget_Viewport_SpriteDamageFree", "reference_free")
+        harness = r"""
+#include <assert.h>
+#include <string.h>
+#include "types.h"
+#define min(a,b) ((a) < (b) ? (a) : (b))
+#define max(a,b) ((a) > (b) ? (a) : (b))
+static bool s_viewportSpriteFilterActive, s_viewportSpriteNeedsRedraw;
+static uint16 s_viewportSpriteDamage[10];
+/* PRODUCTION */
+/* REFERENCE */
+int main(void) {
+    for (unsigned first = 0; first <= 15; first++)
+        for (unsigned end = first; end <= 15; end++)
+            assert(Viewport_ColumnMask(first, end) ==
+                   (uint16)((0x7fff >> (15 - end)) & (0x7fff << first)));
+    const int16 boxes[][4] = {
+        {-64, -64, 320, 240}, {0, 40, 240, 200}, {15, 55, 17, 57},
+        {239, 199, 320, 220}, {240, 40, 256, 200}, {0, 200, 16, 220},
+        {80, 80, 80, 96}, {32, 96, 16, 80}, {-32, 39, 1, 41},
+        {16, 56, 32, 72}, {224, 184, 240, 200}
+    };
+    for (unsigned pattern = 0; pattern < 256; pattern++)
+    for (unsigned active = 0; active < 2; active++)
+    for (unsigned needsRedraw = 0; needsRedraw < 2; needsRedraw++) {
+        uint16 initial[10], expected[10];
+        s_viewportSpriteFilterActive = active;
+        s_viewportSpriteNeedsRedraw = needsRedraw;
+        for (unsigned row = 0; row < 10; row++)
+            initial[row] = (pattern * 131 + row * 977) & 0x7fff;
+        if (pattern < 3) {
+            memset(initial, 0, sizeof(initial));
+            if (pattern == 1) initial[0] = 1;
+            if (pattern == 2) initial[9] = 1u << 14;
+        }
+        for (unsigned box = 0; box < sizeof(boxes) / sizeof(boxes[0]); box++) {
+            const int16 *b = boxes[box];
+            memcpy(s_viewportSpriteDamage, initial, sizeof(initial));
+            assert(GUI_Widget_Viewport_SpriteDamageFree(b[0], b[1], b[2], b[3]) ==
+                   reference_free(b[0], b[1], b[2], b[3]));
+            assert(!memcmp(s_viewportSpriteDamage, initial, sizeof(initial)));
+            for (unsigned redraw = 0; redraw < 2; redraw++) {
+                memcpy(s_viewportSpriteDamage, initial, sizeof(initial));
+                bool result = reference_rect(b[0], b[1], b[2], b[3], redraw);
+                memcpy(expected, s_viewportSpriteDamage, sizeof(expected));
+                memcpy(s_viewportSpriteDamage, initial, sizeof(initial));
+                assert(GUI_Widget_Viewport_SpriteDamageRect(b[0], b[1], b[2], b[3],
+                                                          redraw) == result);
+                assert(!memcmp(s_viewportSpriteDamage, expected, sizeof(expected)));
+            }
+        }
+    }
+    return 0;
+}
+"""
+        run_harness(harness.replace("/* PRODUCTION */", "\n".join(functions)).replace(
+            "/* REFERENCE */", reference))
+
     def test_composite_bounds_leave_storage_geometry_unchanged(self):
         gui = (ROOT / "src/gui/gui.c").read_text()
         cached = function(gui, "GUI_ViewportPlanarSprite")
@@ -124,6 +193,7 @@ int main(void) {
         ground = ground.replace("#ifdef TOS", "").replace("#endif", "")
         ground = ground.replace("GUI_Widget_Viewport_UnitDamageFree(", "count_damage_check(")
         production = "\n".join(function(viewport, name) for name in (
+            "Viewport_ColumnMask",
             "GUI_Widget_Viewport_SpriteDamageRect",
             "GUI_Widget_Viewport_SpriteDamageFree",
             "GUI_Widget_Viewport_UpdateUnitBounds",
@@ -333,6 +403,7 @@ int main(void) {
     def test_damage_snapshot_and_foreground_dependencies(self):
         viewport = (ROOT / "src/gui/viewport.c").read_text()
         production = "\n".join(function(viewport, name) for name in (
+            "Viewport_ColumnMask",
             "GUI_Widget_Viewport_BeginSpriteDamage",
             "GUI_Widget_Viewport_SpriteDamageRect",
             "GUI_Widget_Viewport_ShouldDrawSprite",
