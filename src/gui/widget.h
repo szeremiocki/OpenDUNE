@@ -236,6 +236,7 @@ extern void Widget_PaintCurrentWidget(void);
 extern bool GUI_Widget_Viewport_Click(Widget *w);
 extern void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShifted, bool drawToMainScreen);
 #ifdef TOS
+extern bool GUI_Widget_Viewport_ScrollBlocked(uint16 widgetIndex);
 extern bool GUI_Widget_Viewport_TileCursorActive(void);
 #endif
 #ifdef TOS

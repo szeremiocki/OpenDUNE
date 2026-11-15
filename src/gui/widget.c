@@ -327,6 +327,15 @@ uint16 GUI_Widget_HandleEvents(Widget *w)
 		buttonState |= (l_widget_button_state << 2) ^ 0x8800;
 	}
 
+#ifdef TOS
+	/* A captured edge must yield once scrolling reaches the map boundary. */
+	if (l_widget_selected != NULL && Video_Atari_CursorDirect() &&
+	    l_widget_selected->index >= 39 && l_widget_selected->index <= 42 &&
+	    l_widget_selected->clickProc == GUI_Widget_Viewport_Click &&
+	    GUI_Widget_Viewport_ScrollBlocked(l_widget_selected->index)) {
+		l_widget_selected = NULL;
+	}
+#endif
 	w = l_widget_last;
 	if (l_widget_selected != NULL) {
 		w = l_widget_selected;
@@ -368,6 +377,17 @@ uint16 GUI_Widget_HandleEvents(Widget *w)
 		if (positionX <= mouseX && mouseX <= positionX + w->width && positionY <= mouseY && mouseY <= positionY + w->height) {
 			widgetHover = true;
 		}
+#ifdef TOS
+		if (widgetHover && w->index >= 39 && w->index <= 43 &&
+		    w->clickProc == GUI_Widget_Viewport_Click && Video_Atari_CursorDirect()) {
+			if (w->index == 43) {
+				/* Scroll bands extend beyond the drawable battlefield. */
+				widgetHover = mouseX < positionX + w->width && mouseY < positionY + w->height;
+			} else if (GUI_Widget_Viewport_ScrollBlocked(w->index)) {
+				widgetHover = false;
+			}
+		}
+#endif
 
 		/* Check if there was a keypress for the widget */
 		if ((key & 0x7F) != 0 && ((key & 0x7F) == w->shortcut || (key & 0x7F) == w->shortcut2)) {

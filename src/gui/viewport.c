@@ -495,6 +495,21 @@ void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 b
 }
 #endif
 
+#ifdef TOS
+bool GUI_Widget_Viewport_ScrollBlocked(uint16 widgetIndex)
+{
+	const MapInfo *mapInfo = &g_mapInfos[g_scenario.mapScale];
+
+	switch (widgetIndex) {
+		case 39: return Tile_GetPackedY(g_minimapPosition) <= mapInfo->minY;
+		case 40: return Tile_GetPackedX(g_minimapPosition) >= mapInfo->minX + mapInfo->sizeX - 15;
+		case 41: return Tile_GetPackedX(g_minimapPosition) <= mapInfo->minX;
+		case 42: return Tile_GetPackedY(g_minimapPosition) >= mapInfo->minY + mapInfo->sizeY - 10;
+		default: return false;
+	}
+}
+#endif
+
 /**
  * Handles the Click events for the Viewport widget.
  *
@@ -533,6 +548,13 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 		 * from one is held back briefly to absorb the jitter. */
 		bool leavingScroll = (g_cursorSpriteID >= 1 && g_cursorSpriteID <= 4) &&
 			!(spriteID >= 1 && spriteID <= 4);
+#ifdef TOS
+		static const uint16 scrollWidgets[4] = {39, 40, 42, 41};
+		if (leavingScroll && Video_Atari_CursorDirect() &&
+		    GUI_Widget_Viewport_ScrollBlocked(scrollWidgets[g_cursorSpriteID - 1])) {
+			leavingScroll = false;
+		}
+#endif
 
 		if (leavingScroll && s_tickCursor + VIEWPORT_CURSOR_HYSTERESIS > g_timerGame) {
 			/* Keep the current scroll cursor a little longer. */

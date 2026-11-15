@@ -15,6 +15,184 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class SelectionTransitionTest(unittest.TestCase):
+    def test_map_boundaries_yield_scroll_input_and_cursor(self):
+        viewport = (ROOT / "src/gui/viewport.c").read_text()
+        handler = function((ROOT / "src/gui/widget.c").read_text(), "GUI_Widget_HandleEvents")
+        blocked = function(viewport, "GUI_Widget_Viewport_ScrollBlocked")
+        callback = function(viewport, "GUI_Widget_Viewport_Click")
+        cursor = callback[callback.index("\tspriteID = g_cursorSpriteID;"):
+                          callback.index("\n\tif (w->index == 45)")]
+        map_source = (ROOT / "src/map.c").read_text()
+        maps = re.search(r"const MapInfo g_mapInfos\[3\] = \{.*?\n\};", map_source, re.S)[0]
+        harness = r"""
+#include <assert.h>
+#include <stddef.h>
+#include <string.h>
+#include "types.h"
+#include "src/gui/widget.h"
+#include "src/map.h"
+#include "src/scenario.h"
+#include "src/tile.h"
+typedef struct XYPosition { int16 x, y; } XYPosition;
+WidgetProperties g_widgetProperties[22];
+Scenario g_scenario;
+uint16 g_minimapPosition, g_viewportPosition;
+static bool s_widgetReset;
+static uint16 g_mouseX, g_mouseY, g_mouseClickX, g_mouseClickY, g_mouseDisabled;
+static uint16 inputKey, called, deliveredButtons, g_cursorSpriteID, g_cursorDefaultSpriteID;
+static uint32 s_tickCursor, g_timerGame;
+static bool direct = true;
+static uint8 *g_sprites[6];
+static unsigned spriteChanges;
+#define VIEWPORT_CURSOR_HYSTERESIS 12
+/* MAPS */
+static uint16 Input_IsInputAvailable(void) { return inputKey != 0; }
+static uint16 Input_Wait(void) { uint16 key = inputKey; inputKey = 0; return key; }
+static uint16 Input_Test(uint16 key) { (void)key; return 0; }
+static bool Video_Atari_CursorDirect(void) { return direct; }
+bool GUI_Widget_TextButton_OpensTarget(const Widget *w) { (void)w; return false; }
+Widget *GUI_Widget_GetNext(Widget *w) { return w->next; }
+void GUI_Widget_Draw(Widget *w) { (void)w; }
+static void Sprites_SetMouseSprite(int16 x, int16 y, const uint8 *sprite) {
+    (void)x; (void)y; (void)sprite; spriteChanges++;
+}
+/* BLOCKED */
+bool GUI_Widget_Viewport_Click(Widget *w) {
+    uint16 spriteID;
+    assert(!direct || !GUI_Widget_Viewport_ScrollBlocked(w->index));
+    /* CURSOR */
+    called = w->index;
+    deliveredButtons = w->state.buttonState;
+    return true;
+}
+/* HANDLER */
+static Widget widgets[6];
+static void pointer(unsigned x, unsigned y, uint16 key, bool reset) {
+    g_mouseX = g_mouseClickX = x;
+    g_mouseY = g_mouseClickY = y;
+    inputKey = key; s_widgetReset = reset; called = 0; deliveredButtons = 0;
+    GUI_Widget_HandleEvents(widgets);
+}
+static void view(unsigned x, unsigned y) {
+    g_minimapPosition = Tile_PackXY(x,y);
+}
+int main(void) {
+    const unsigned geometry[6][4] = {
+        {0,24,240,16}, {240,40,10,160}, {0,40,2,160},
+        {0,198,240,2}, {0,40,240,160}, {0,0,320,200}
+    };
+    for (unsigned i = 0; i < 6; i++) {
+        widgets[i].index = i < 5 ? 39+i : 45;
+        widgets[i].clickProc = GUI_Widget_Viewport_Click;
+        widgets[i].next = i == 5 ? NULL : &widgets[i+1];
+        widgets[i].offsetX = geometry[i][0]; widgets[i].offsetY = geometry[i][1];
+        widgets[i].width = geometry[i][2]; widgets[i].height = geometry[i][3];
+        widgets[i].flags.buttonFilterLeft = 15;
+        widgets[i].flags.buttonFilterRight = 4;
+    }
+    g_timerGame = 100;
+    for (unsigned scale = 0; scale < 3; scale++) {
+        g_scenario.mapScale = scale;
+        const MapInfo *m = &g_mapInfos[scale];
+        unsigned right = m->minX+m->sizeX-15, bottom = m->minY+m->sizeY-10;
+        view(m->minX+1,m->minY+1);
+        for (unsigned edge = 39; edge <= 42; edge++)
+            assert(!GUI_Widget_Viewport_ScrollBlocked(edge));
+        view(m->minX,m->minY);
+        assert(GUI_Widget_Viewport_ScrollBlocked(39));
+        assert(GUI_Widget_Viewport_ScrollBlocked(41));
+        assert(!GUI_Widget_Viewport_ScrollBlocked(40));
+        assert(!GUI_Widget_Viewport_ScrollBlocked(42));
+        view(right,bottom);
+        assert(GUI_Widget_Viewport_ScrollBlocked(40));
+        assert(GUI_Widget_Viewport_ScrollBlocked(42));
+        assert(!GUI_Widget_Viewport_ScrollBlocked(39));
+        assert(!GUI_Widget_Viewport_ScrollBlocked(41));
+
+        /* Visible, not pending, viewport bounds govern the decision. */
+        g_viewportPosition = Tile_PackXY(m->minX,m->minY);
+        pointer(100,199,0x41,true);
+        assert(called == 43 && (deliveredButtons & 1));
+        pointer(239,100,0x842,true);
+        assert(called == 43 && (deliveredButtons & 0x40));
+        pointer(240,100,0x41,true);
+        assert(called == 45); /* Outside battlefield: never column 15. */
+        pointer(100,200,0x41,true);
+        assert(called == 45); /* Never row 10. */
+
+        /* Reaching the boundary needs neither a click nor fresh mouse motion. */
+        view(right-1,bottom-1);
+        pointer(100,199,0,true);
+        assert(called == 42 && g_cursorSpriteID == 3);
+        view(right-1,bottom);
+        pointer(100,199,0,false);
+        assert(called == 43 && g_cursorSpriteID == g_cursorDefaultSpriteID);
+
+        /* A captured bottom edge yields to earlier valid directions. */
+        view(m->minX+1,bottom-1);
+        g_viewportPosition = Tile_PackXY(right,bottom);
+        pointer(100,199,0x41,true);
+        assert(called == 42);
+        view(m->minX+1,bottom);
+        pointer(1,199,0,false);
+        assert(called == 41);
+        pointer(1,199,0x841,false);
+
+        /* Capture also yields directly to battlefield commands/releases. */
+        view(right-1,bottom-1);
+        pointer(100,199,0x41,true);
+        assert(called == 42);
+        view(right,bottom);
+        pointer(100,199,0,false);
+        assert(called == 43 && (deliveredButtons & 2));
+        pointer(100,199,0x841,false);
+        assert(called == 43 && (deliveredButtons & 4));
+
+        view(m->minX,m->minY);
+        pointer(1,100,0x41,true); assert(called == 43);
+        pointer(100,40,0x41,true); assert(called == 43);
+        pointer(100,24,0x41,true); assert(called == 45);
+        pointer(240,40,0,true); assert(called == 40); /* Right remains possible. */
+        view(right,bottom);
+        pointer(1,199,0,true); assert(called == 41); /* Left remains possible. */
+
+        for (unsigned icon = 1; icon <= 4; icon++) {
+            for (unsigned target = 0; target < 2; target++) {
+                g_cursorDefaultSpriteID = target ? 5 : 0;
+                view(icon == 2 ? right : m->minX, icon == 3 ? bottom : m->minY);
+                g_cursorSpriteID = icon; s_tickCursor = g_timerGame; spriteChanges = 0;
+                pointer(100,100,0,true);
+                assert(called == 43 && g_cursorSpriteID == g_cursorDefaultSpriteID);
+                assert(spriteChanges == 1); /* No arrow persistence at blocked bounds. */
+                view(m->minX+1,m->minY+1);
+                g_cursorSpriteID = icon; s_tickCursor = g_timerGame; spriteChanges = 0;
+                pointer(100,100,0,true);
+                assert(g_cursorSpriteID == icon && !spriteChanges); /* Existing hysteresis. */
+            }
+        }
+        direct = false;
+        view(right,bottom);
+        pointer(100,199,0x41,true);
+        assert(called == 42); /* Other Atari video modes keep existing routing. */
+        g_cursorSpriteID = 3; s_tickCursor = g_timerGame;
+        pointer(100,100,0,true);
+        assert(g_cursorSpriteID == 3);
+        direct = true;
+    }
+    return 0;
+}
+"""
+        harness = harness.replace("/* MAPS */", maps).replace("/* BLOCKED */", blocked)
+        harness = harness.replace("/* CURSOR */", cursor).replace("/* HANDLER */", handler)
+        with tempfile.TemporaryDirectory(prefix="map-edge-scroll-") as directory:
+            cfile, binary = Path(directory) / "test.c", Path(directory) / "test"
+            cfile.write_text(harness)
+            flags = shlex.split(os.environ.get("TEST_CFLAGS", ""))
+            subprocess.run(["cc", "-std=gnu17", "-O2", "-Wall", "-Wextra", "-Werror",
+                            "-DTOS", "-I", str(ROOT), "-I", str(ROOT / "include"),
+                            *flags, str(cfile), "-o", str(binary)], check=True)
+            subprocess.run([str(binary)], check=True)
+
     def test_widget_event_bookkeeping_equivalence(self):
         video = (ROOT / "src/gui/widget.c").read_text()
         handler = function(video, "GUI_Widget_HandleEvents")
@@ -90,6 +268,8 @@ static uint16 Input_Wait(void) { uint16 key = inputKey; inputKey = 0; return key
 static uint16 Input_Test(uint16 key) { (void)key; return 0; }
 static bool Video_Atari_CursorDirect(void) { return direct; }
 bool GUI_Widget_TextButton_OpensTarget(const Widget *w) { return w->index == 1; }
+bool GUI_Widget_Viewport_Click(Widget *w) { (void)w; assert(false); return false; }
+bool GUI_Widget_Viewport_ScrollBlocked(uint16 index) { (void)index; assert(false); return false; }
 /* HANDLERS */
 int main(void) {
     for (unsigned i = 0; i < 8; i++) {
