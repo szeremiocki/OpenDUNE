@@ -12,6 +12,7 @@
 #define MSVC_PACKED_END
 #define GCC_PACKED
 #define GCC_UNUSED
+#define GCC_FASTCALL
 #define PACK
 
 #define BIT_S8  int8
@@ -28,6 +29,11 @@
 	#define GCC_PACKED __attribute__((packed))
 	#undef GCC_UNUSED
 	#define GCC_UNUSED __attribute__((unused))
+	#if defined(TOS) && defined(__m68k__)
+		/* Mint requires the register ABI on both declarations and definitions. */
+		#undef GCC_FASTCALL
+		#define GCC_FASTCALL __attribute__((fastcall))
+	#endif
 
 	#undef BIT_S8
 	#undef BIT_S16

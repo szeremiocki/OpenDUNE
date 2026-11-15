@@ -55,7 +55,8 @@ static uint32 s_center_image_offset = 0;
 uint8 *g_videoPlanarBase = NULL;	/* read by atari_viewport_tile.s */
 #define s_planarBase g_videoPlanarBase
 /* ST/STE: composite the mouse cursor directly into the planar screen */
-static bool s_curDirect = false;
+bool g_videoAtariCursorDirect = false;
+#define s_curDirect g_videoAtariCursorDirect
 #ifdef VIEWPORT_DEBUG_DAMAGE
 static bool s_damageDebugOverlay;
 static bool s_damageDebugAccepted;
@@ -1475,10 +1476,12 @@ typedef struct {
 static CursorIcon s_curIcon[MOUSE_ICON_COUNT];
 static uint16 s_curIconPaletteGeneration = 0xffff;
 
+#if !defined(__m68k__)
 bool Video_Atari_CursorDirect(void)
 {
 	return s_curDirect;
 }
+#endif
 
 /**
  * Record the cursor geometry for this frame.

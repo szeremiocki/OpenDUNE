@@ -24,7 +24,17 @@ typedef enum Screen {
 
 extern void GFX_Init(void);
 extern void GFX_Uninit(void);
+extern Screen g_screenActiveID;
+#if defined(TOS) && defined(__m68k__)
+static inline Screen GFX_Screen_SetActive(Screen screenID)
+{
+	Screen oldScreen = g_screenActiveID;
+	if (screenID != SCREEN_ACTIVE) g_screenActiveID = screenID;
+	return oldScreen;
+}
+#else
 extern Screen GFX_Screen_SetActive(Screen screenID);
+#endif
 extern bool GFX_Screen_IsActive(Screen screenID);
 extern uint16 GFX_Screen_GetSize_ByIndex(Screen screenID);
 extern void *GFX_Screen_Get_ByIndex(Screen screenID);
@@ -111,7 +121,6 @@ extern void GFX_Screen_SetDirtySuppress(bool suppress);
  * GUI_DrawSprite's per-call setup 167 instructions/2165 cycles -> 110/1481,
  * i.e. -31.6%. The per-scanline g_dirty_blocks loop is untouched at 48.1
  * cycles/iteration before and after, as are the sprite pixel loops. */
-extern Screen g_screenActiveID;
 #define GFX_Screen_SetDirty(screenID, left, top, right, bottom) \
 	do { \
 		Screen screenID_ = (screenID); \

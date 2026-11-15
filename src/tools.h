@@ -21,7 +21,7 @@ extern uint16 Tools_AdjustToGameSpeed(uint16 normal, uint16 minimum, uint16 maxi
 extern IndexType Tools_Index_GetType(uint16 encoded);
 extern uint16 Tools_Index_Decode(uint16 encoded);
 extern uint16 Tools_Index_Encode(uint16 index, IndexType type);
-extern bool Tools_Index_IsValid(uint16 encoded);
+extern bool GCC_FASTCALL Tools_Index_IsValid(uint16 encoded);
 extern uint16 Tools_Index_GetPackedTile(uint16 encoded);
 extern tile32 Tools_Index_GetTile(uint16 encoded);
 extern struct Unit *Tools_Index_GetUnit(uint16 encoded);

@@ -760,7 +760,11 @@ uint16 Script_Unit_Rotate(ScriptEngine *script)
 	VARIABLE_NOT_USED(script);
 
 	u = g_scriptCurrentUnit;
+#ifdef TOS
+	ui = g_unitInfoByType[u->o.type];
+#else
 	ui = &g_table_unitInfo[u->o.type];
+#endif
 
 	if (ui->movementType != MOVEMENT_WINGER && (u->currentDestination.x != 0 || u->currentDestination.y != 0)) return 1;
 
@@ -771,16 +775,22 @@ uint16 Script_Unit_Rotate(ScriptEngine *script)
 	current = u->orientation[index].current;
 
 	if (!Tools_Index_IsValid(u->targetAttack)) return 0;
+#ifdef TOS
+	/* Helpers preserve the script context; avoid spilling u across calls. */
+	u = g_scriptCurrentUnit;
+#endif
 
 	/* Check where we should rotate to */
 	tile = Tools_Index_GetTile(u->targetAttack);
 #ifdef TOS
+	u = g_scriptCurrentUnit;
 	/* Tile_GetDirection is pure: reuse the result while both exact positions are unchanged. */
 	if (u->rotateValid && u->rotateFrom.x == u->o.position.x && u->rotateFrom.y == u->o.position.y &&
 	    u->rotateTo.x == tile.x && u->rotateTo.y == tile.y) {
 		orientation = u->rotateOrientation;
 	} else {
 		orientation = Tile_GetDirection(u->o.position, tile);
+		u = g_scriptCurrentUnit;
 		u->rotateFrom = u->o.position;
 		u->rotateTo = tile;
 		u->rotateOrientation = orientation;
@@ -990,24 +1000,24 @@ uint16 Script_Unit_GetInfo(ScriptEngine *script)
 	uint16 what;
 #endif
 
-	u = g_scriptCurrentUnit;
-
 #ifdef TOS
 	/* Range-check first so the switch needs no bounds test, and only the
 	 * cases that need the unit info look it up. */
 	what = STACK_PEEK(1);
 	if (what > 0x13) return 0;
 
+	/* Helpers preserve the unit context; reload it rather than spill u across calls. */
+	u = g_scriptCurrentUnit;
 	switch ((uint8)what) {
 		case 0x00: ui = &g_table_unitInfo[u->o.type]; return u->o.hitpoints * 256 / ui->o.hitpoints;
-		case 0x01: return Tools_Index_IsValid(u->targetMove) ? u->targetMove : 0;
+		case 0x01: return Tools_Index_IsValid(u->targetMove) ? g_scriptCurrentUnit->targetMove : 0;
 		case 0x02: ui = &g_table_unitInfo[u->o.type]; return ui->fireDistance << 8;
 		case 0x03: return u->o.index;
 		case 0x04: return u->orientation[0].current;
 		case 0x05: return u->targetAttack;
 		case 0x06:
 			if (u->originEncoded == 0 || u->o.type == UNIT_HARVESTER) Unit_FindClosestRefinery(u);
-			return u->originEncoded;
+			return g_scriptCurrentUnit->originEncoded;
 		case 0x07: return u->o.type;
 		case 0x08: return Tools_Index_Encode(u->o.index, IT_UNIT);
 		case 0x09: return u->movingSpeed;
@@ -1030,6 +1040,7 @@ uint16 Script_Unit_GetInfo(ScriptEngine *script)
 		default:   return 0;
 	}
 #else
+	u = g_scriptCurrentUnit;
 	ui = &g_table_unitInfo[u->o.type];
 
 	switch (STACK_PEEK(1)) {

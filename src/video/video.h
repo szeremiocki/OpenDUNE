@@ -22,7 +22,15 @@ extern void * Video_GetFrameBuffer(uint16 size);
 /* Direct-to-planar mouse cursor, see src/video/video_atari.c.
  * On ST/STE the cursor is composited straight into the planar screen after
  * the chunky to planar conversion, so it never dirties SCREEN_0. */
+#if defined(__m68k__)
+extern bool g_videoAtariCursorDirect;
+static inline bool Video_Atari_CursorDirect(void)
+{
+	return g_videoAtariCursorDirect;
+}
+#else
 extern bool Video_Atari_CursorDirect(void);
+#endif
 extern bool Video_Atari_CursorPrepare(const void *sprite, uint16 x, uint16 y,
                                       uint16 w, uint16 h, int16 dx, int16 dy);
 #define VIDEO_ATARI_CURSOR_MAX_WIDTH 96

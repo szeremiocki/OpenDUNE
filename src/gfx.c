@@ -650,6 +650,7 @@ void *GFX_Screen_Get_ByIndex(Screen screenID)
  * @param screenID The new screen to get active.
  * @return Old screenID that was currently active.
  */
+#if !defined(TOS) || !defined(__m68k__)
 Screen GFX_Screen_SetActive(Screen screenID)
 {
 	Screen oldScreen = s_screenActiveID;
@@ -658,6 +659,7 @@ Screen GFX_Screen_SetActive(Screen screenID)
 	}
 	return oldScreen;
 }
+#endif
 
 /**
 * Checks if the screen is active.

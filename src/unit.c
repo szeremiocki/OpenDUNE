@@ -47,7 +47,7 @@ static uint32 s_tickUnitScript    = 0; /*!< Indicates next time the Script funct
 static uint32 s_tickUnitUnknown5  = 0; /*!< Indicates next time the Unknown5 function is executed. */
 static uint32 s_tickUnitDeviation = 0; /*!< Indicates next time the Deviation function is executed. */
 #ifdef TOS
-static const UnitInfo *s_unitInfoByType[UNIT_MAX];
+const UnitInfo *g_unitInfoByType[UNIT_MAX];
 #endif
 
 Unit *g_unitActive = NULL;
@@ -207,9 +207,9 @@ void GameLoop_Unit(void)
 
 #ifdef TOS
 	/* Cache addresses, not metadata, to avoid repeated type-stride arithmetic. */
-	if (s_unitInfoByType[0] == NULL) {
+	if (g_unitInfoByType[0] == NULL) {
 		for (index = 0; index < UNIT_MAX; index++) {
-			s_unitInfoByType[index] = &g_table_unitInfo[index];
+			g_unitInfoByType[index] = &g_table_unitInfo[index];
 		}
 	}
 
@@ -284,7 +284,7 @@ void GameLoop_Unit(void)
 #endif
 
 #ifdef TOS
-		ui = s_unitInfoByType[u->o.type];
+		ui = g_unitInfoByType[u->o.type];
 #else
 		ui = &g_table_unitInfo[u->o.type];
 #endif

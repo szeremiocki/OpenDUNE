@@ -37,7 +37,7 @@ class UnitRecountTest(unittest.TestCase):
             end = loop.index("\n\t\tif (tickUnknown4", start)
             iterator = loop[start:end].replace("\t\tconst UnitInfo *ui;\n", "")
             iterator = iterator.replace("\t\tui = &g_table_unitInfo[u->o.type];\n", "")
-            iterator = iterator.replace("\t\tui = s_unitInfoByType[u->o.type];\n", "")
+            iterator = iterator.replace("\t\tui = g_unitInfoByType[u->o.type];\n", "")
         iterator += "\n        visit(u);\n    }\n"
         harness = r"""
 #include <assert.h>
@@ -185,7 +185,7 @@ int main(void) {
         start = loop.index("#ifdef TOS\n\t\tui = ")
         lookup = loop[start:loop.index("\n\n\t\tif (u->o.flags.s.isNotOnMap)", start)]
         table = next(line for line in source.splitlines()
-                     if line.startswith("static const UnitInfo *s_unitInfoByType["))
+                     if line.startswith("const UnitInfo *g_unitInfoByType["))
         harness = r"""
 #include <assert.h>
 #include <stddef.h>

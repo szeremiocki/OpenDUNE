@@ -100,7 +100,7 @@ uint16 Tools_Index_Encode(uint16 index, IndexType type)
  * @param id The encoded index to check for validity.
  * @return True if valid, false if not.
  */
-bool Tools_Index_IsValid(uint16 encoded)
+bool GCC_FASTCALL Tools_Index_IsValid(uint16 encoded)
 {
 	/* Mask-only decoding: avoids the costly 68000 shifts and the tile unpack. */
 	uint16 type = encoded & 0xC000;
