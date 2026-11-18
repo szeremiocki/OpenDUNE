@@ -8,6 +8,7 @@ import tempfile
 import unittest
 
 from tools.test_viewport_sprite_cache import function
+from tools.test_dither_preparation import colour_tile_compositor
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,19 +26,20 @@ class ViewportOverlayTilesTest(unittest.TestCase):
             "Video_Atari_CursorBackground", "Video_Atari_CursorWriteGroup",
             "Video_Atari_PlacementBlock", "Video_Atari_PlanarMergeGroup",
             "Video_Atari_RefreshViewportCursor",
-            "Video_Atari_PublishViewportCursorRect", "Video_Atari_DrawPlanarTileFoggedCursor",
+            "Video_Atari_PublishViewportCursorRect",
             "Video_Atari_PlacementEnd", "Video_Atari_PlacementHide",
-            "Video_Atari_DrawPlanarTile", "Video_Atari_DrawPlanarTileFogged",
+            "Video_Atari_DrawPlanarTile",
         )
         generic = function(video, "Video_Atari_PlanarOverlaysOverlap").replace(
             "Video_Atari_PlanarOverlaysOverlap(", "rectangle_overlap(")
         functions = "\n".join(function(video, name) for name in names)
+        functions += "\n" + colour_tile_compositor(video)
         functions += "\n" + function((ROOT / "src/gfx.c").read_text(), "GFX_ComposePlanarTile")
         legacy = "\n".join(
             function(video, name).replace(name + "(", "legacy_" + name + "(").replace(
                 "Video_Atari_TileOverlaysOverlap(base, x, y)",
                 "rectangle_overlap(base, x, y, 16, 16)")
-            for name in ("Video_Atari_DrawPlanarTile", "Video_Atari_DrawPlanarTileFogged")
+            for name in ("Video_Atari_DrawPlanarTile",)
         )
         harness = r"""
 #include <assert.h>
@@ -59,7 +61,6 @@ static uint16 cursorPixels[64 * 6 * 4], cursorMasks[64 * 6];
 static uint16 s_curSave[64][24], s_curDrawnData[64][24], s_curDrawnMask[64][6];
 static uint16 expectedSave[64][24];
 static uint16 s_curViewportTiles[10], s_placeViewportTiles[10];
-static uint16 g_videoTileCursorTiles[10], s_tileCursorWritable[16];
 static bool s_curVisible, s_curDrawn, s_curDirty;
 static uint8 *s_curDrawnBase;
 static uint16 s_curY, s_curH, s_curGroup, s_curGroups, s_curDrawStride;
@@ -231,9 +232,12 @@ static void cpu_publication(void) {
                         if (legacy) legacy_Video_Atari_DrawPlanarTile(pixels, masks, 64, 72, copy);
                         else Video_Atari_DrawPlanarTile(pixels, masks, 64, 72, copy);
                     } else {
-                        if (legacy) legacy_Video_Atari_DrawPlanarTileFogged(
-                            pixels, masks, fog, fogMasks, 64, 72, copy);
-                        else Video_Atari_DrawPlanarTileFogged(pixels, masks, fog, fogMasks, 64, 72, copy);
+                        uint16 combined[64], written[16];
+                        uint8 opacity = GFX_ComposePlanarTile(pixels, masks, fog, fogMasks,
+                            combined, written);
+                        copy = opacity == PLANAR_TILE_OPAQUE ? combined : NULL;
+                        if (legacy) legacy_Video_Atari_DrawPlanarTile(combined, written, 64, 72, copy);
+                        else Video_Atari_DrawPlanarTile(combined, written, 64, 72, copy);
                     }
                     assert(clears == 1 && rectangleChecks == 0);
                     if (!legacy) {

@@ -1,7 +1,7 @@
-/** @file src/gui/planar.c Write-only planar drawing primitives (TOS). */
+/** @file src/video/atari_planar.c Native colour border kernels (TOS). */
 
 #include "types.h"
-#include "planar.h"
+#include "atari_planar.h"
 
 enum { PLANAR_MAX_GROUPS = 20 };
 

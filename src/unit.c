@@ -2254,27 +2254,24 @@ Unit *Unit_CreateBullet(tile32 position, UnitType type, uint8 houseID, uint16 da
  */
 void Unit_DisplayStatusText(Unit *unit)
 {
+	static struct {
+		uint8 type, house, amount;
+		uint16 stringID;
+		bool valid;
+		char text[80];
+	} cached;
 	const UnitInfo *ui;
 	char buffer[81];
+	uint8 house, amount;
+	uint16 stringID = STR_NULL;
 
 	if (unit == NULL) return;
 
 	ui = &g_table_unitInfo[unit->o.type];
-
-	if (unit->o.type == UNIT_SANDWORM) {
-		snprintf(buffer, sizeof(buffer), "%s", String_Get_ByIndex(ui->o.stringID_abbrev));
-	} else {
-		const char *houseName = g_table_houseInfo[Unit_GetHouseID(unit)].name;
-		if (g_config.language == LANGUAGE_FRENCH) {
-			snprintf(buffer, sizeof(buffer), "%s %s", String_Get_ByIndex(ui->o.stringID_abbrev), houseName);
-		} else {
-			snprintf(buffer, sizeof(buffer), "%s %s", houseName, String_Get_ByIndex(ui->o.stringID_abbrev));
-		}
-	}
+	house = unit->o.type == UNIT_SANDWORM ? 0 : Unit_GetHouseID(unit);
+	amount = unit->o.type == UNIT_HARVESTER ? unit->amount : 0;
 
 	if (unit->o.type == UNIT_HARVESTER) {
-		uint16 stringID;
-
 		stringID = STR_IS_D_PERCENT_FULL;
 
 		if (unit->actionID == ACTION_HARVEST && unit->amount < 100) {
@@ -2292,13 +2289,28 @@ void Unit_DisplayStatusText(Unit *unit)
 		}
 
 		if (unit->amount == 0) stringID += 4;
+	}
 
-		{
-			size_t len = strlen(buffer);
-			char *s = buffer + len;
+	if (cached.valid && cached.type == unit->o.type && cached.house == house &&
+	    cached.amount == amount && cached.stringID == stringID &&
+	    GUI_KeepDisplayTextLiteral(cached.text)) return;
 
-			snprintf(s, sizeof(buffer) - len, String_Get_ByIndex(stringID), unit->amount);
+	if (unit->o.type == UNIT_SANDWORM) {
+		snprintf(buffer, sizeof(buffer), "%s", String_Get_ByIndex(ui->o.stringID_abbrev));
+	} else {
+		const char *houseName = g_table_houseInfo[house].name;
+		if (g_config.language == LANGUAGE_FRENCH) {
+			snprintf(buffer, sizeof(buffer), "%s %s", String_Get_ByIndex(ui->o.stringID_abbrev), houseName);
+		} else {
+			snprintf(buffer, sizeof(buffer), "%s %s", houseName, String_Get_ByIndex(ui->o.stringID_abbrev));
 		}
+	}
+
+	if (unit->o.type == UNIT_HARVESTER) {
+		size_t len = strlen(buffer);
+		char *s = buffer + len;
+
+		snprintf(s, sizeof(buffer) - len, String_Get_ByIndex(stringID), unit->amount);
 	}
 
 	{
@@ -2309,7 +2321,14 @@ void Unit_DisplayStatusText(Unit *unit)
 			buffer[len + 1] = '\0';
 		}
 	}
-	GUI_DisplayTextLiteral(buffer, 2);
+	cached.type = unit->o.type;
+	cached.house = house;
+	cached.amount = amount;
+	cached.stringID = stringID;
+	strncpy(cached.text, buffer, sizeof(cached.text) - 1);
+	cached.text[sizeof(cached.text) - 1] = '\0';
+	cached.valid = true;
+	GUI_DisplayTextLiteral(cached.text, 2);
 }
 
 /**

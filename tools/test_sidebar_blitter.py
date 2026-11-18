@@ -10,8 +10,23 @@ import subprocess
 import tempfile
 import unittest
 
+from tools.test_viewport_sprite_cache import function
+
 
 ROOT = Path(__file__).resolve().parents[1]
+
+SUPPORT = r"""
+#ifndef TOS
+#define TOS
+#endif
+#include "types.h"
+#include "src/video/video.h"
+#include "src/video/atari_mono_palette.h"
+#include "src/video/atari_mono.c"
+bool g_videoAtariMono;
+static bool s_monoWhiteIsOne = true;
+""" + "\n".join(function((ROOT / "src/video/video_atari.c").read_text(), name) for name in (
+    "Video_Atari_MonoPenWords", "Video_Atari_ExpandSpriteMasks"))
 
 
 class SidebarBlitterTest(unittest.TestCase):
@@ -51,7 +66,7 @@ const uint16 *make_cpu_stream(uint16 bytes) {
 """
         with tempfile.TemporaryDirectory(prefix="sidebar-cpu-") as directory:
             source, library = Path(directory) / "check.c", Path(directory) / "check.so"
-            source.write_text(harness)
+            source.write_text(SUPPORT + harness)
             subprocess.run([*shlex.split(os.environ.get("CC", "cc")), "-shared", "-fPIC",
                             "-std=gnu17", "-O2", "-Wall", "-Wextra", "-Werror",
                             "-I", str(ROOT / "include"), "-I", str(ROOT),
@@ -118,7 +133,7 @@ const uint16 *make_health(uint16 width, uint8 foreground, uint8 background) {
 """
         with tempfile.TemporaryDirectory(prefix="sidebar-health-") as directory:
             source, library = Path(directory) / "check.c", Path(directory) / "check.so"
-            source.write_text(harness)
+            source.write_text(SUPPORT + harness)
             subprocess.run([*shlex.split(os.environ.get("CC", "cc")), "-shared", "-fPIC",
                             "-std=gnu17", "-O2", "-Wall", "-Wextra", "-Werror",
                             "-I", str(ROOT / "include"), "-I", str(ROOT),
@@ -219,7 +234,7 @@ const uint16 *make_stream(const VideoAtariSidebarBlit *code) {
 """
         with tempfile.TemporaryDirectory(prefix="sidebar-blitter-") as directory:
             source, library = Path(directory) / "check.c", Path(directory) / "check.so"
-            source.write_text(harness)
+            source.write_text(SUPPORT + harness)
             subprocess.run([*shlex.split(os.environ.get("CC", "cc")), "-shared", "-fPIC",
                             "-std=gnu17", "-O2", "-Wall", "-Wextra", "-Werror",
                             "-I", str(ROOT / "include"), "-I", str(ROOT),
@@ -229,6 +244,7 @@ const uint16 *make_stream(const VideoAtariSidebarBlit *code) {
             lib.make_stream.argtypes = [ctypes.c_void_p]
             lib.make_stream.restype = ctypes.c_void_p
             flag = ctypes.c_bool.in_dll(lib, "g_videoBlitterTileSetup")
+            mono_flag = ctypes.c_bool.in_dll(lib, "g_videoAtariMono")
             cpu = unicorn.Uc(unicorn.UC_ARCH_M68K, unicorn.UC_MODE_BIG_ENDIAN)
             cpu.ctl_set_cpu_model(reg.UC_CPU_M68K_M68000)
             cpu.mem_map(0, 0x100000)
@@ -287,7 +303,12 @@ const uint16 *make_stream(const VideoAtariSidebarBlit *code) {
 
             cpu.hook_add(unicorn.UC_HOOK_MEM_WRITE, mmio, begin=0xffff8a00, end=0xffff8a3f)
             cpu.hook_add(unicorn.UC_HOOK_CODE, instruction)
-            for mode in ("masked", "opaque", "solid_masks"):
+            for mode in ("masked", "opaque", "solid_masks",
+                         "mono_masked", "mono_opaque", "mono_solid_masks"):
+                mono = mode.startswith("mono_")
+                mono_flag.value = mono
+                mode = mode.removeprefix("mono_")
+                scale, planes = (2, 1) if mono else (1, 4)
                 opaque = mode == "opaque"
                 for stride in ((32,) if mode == "solid_masks" else (16, 32, 64)):
                     for height in ((24,) if mode == "solid_masks" else (1, 24, 82)):
@@ -295,16 +316,19 @@ const uint16 *make_stream(const VideoAtariSidebarBlit *code) {
                             for width in (1, stride - 3, stride):
                                 size = stride // 2 * height
                                 pixels, masks = bytearray(size), bytearray(size)
-                                for y in range(height):
-                                    for x in range(stride):
-                                        if mode == "masked" and (x + y) % 5 == 0:
+                                source_stride = stride // 2 // scale
+                                for y in range(height * scale):
+                                    for x in range(stride * scale):
+                                        if mode == "masked" and (x // scale + y // scale) % 5 == 0:
                                             continue
-                                        index, bit = y * stride // 2 + x // 16 * 8, 0x8000 >> (x & 15)
-                                        for plane in range(4):
+                                        index = y * source_stride + x // 16 * planes * 2
+                                        bit = 0x8000 >> (x & 15)
+                                        for plane in range(planes):
                                             off = index + plane * 2
                                             struct.pack_into(">H", masks, off,
                                                 struct.unpack_from(">H", masks, off)[0] | bit)
-                                            if plane == 1 or (plane >= 2 and (x + y + plane) % 3):
+                                            if ((x * 3 + y * 5 + x // 2) % 3 if mono else
+                                                    plane == 1 or (plane >= 2 and (x + y + plane) % 3)):
                                                 struct.pack_into(">H", pixels, off,
                                                     struct.unpack_from(">H", pixels, off)[0] | bit)
                                 p = ctypes.create_string_buffer(bytes(pixels))
@@ -332,14 +356,15 @@ const uint16 *make_stream(const VideoAtariSidebarBlit *code) {
                                 cpu.mem_write(0x60000, bytes(masks))
                                 background = bytes((i * 113 + 17) & 255 for i in range(height * 160))
                                 expected = bytearray(background)
-                                for y in range(height):
-                                    for x in range(width):
-                                        source_off = y * stride // 2 + x // 16 * 8
-                                        sb, db = 0x8000 >> (x & 15), 0x8000 >> ((phase + x) & 15)
+                                for y in range(height * scale):
+                                    for x in range(width * scale):
+                                        source_off = y * source_stride + x // 16 * planes * 2
+                                        dx = phase * scale + x
+                                        sb, db = 0x8000 >> (x & 15), 0x8000 >> (dx & 15)
                                         if not opaque and not struct.unpack_from(">H", masks, source_off)[0] & sb:
                                             continue
-                                        for plane in range(4):
-                                            off = y * 160 + (phase + x) // 16 * 8 + plane * 2
+                                        for plane in range(planes):
+                                            off = y * (160 // scale) + dx // 16 * planes * 2 + plane * 2
                                             old = struct.unpack_from(">H", expected, off)[0]
                                             colour = struct.unpack_from(">H", pixels, source_off + plane * 2)[0]
                                             struct.pack_into(">H", expected, off, (old & ~db) | (db if colour & sb else 0))
@@ -354,9 +379,9 @@ const uint16 *make_stream(const VideoAtariSidebarBlit *code) {
                                 if phase == 0 and width == stride:
                                     self.assertEqual(launches, 1 if opaque else 2)
                                 elif opaque:
-                                    self.assertEqual(launches, 4)
+                                    self.assertEqual(launches, 1 if mono else 4)
                                 self.assertEqual(cpu.mem_read(0x40000, len(expected)), expected,
-                                                 (opaque, stride, width, height, phase))
+                                                 (mono, opaque, stride, width, height, phase))
 
 
 if __name__ == "__main__":

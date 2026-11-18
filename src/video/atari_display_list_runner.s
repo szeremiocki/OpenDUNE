@@ -205,22 +205,25 @@ _Video_Atari_MaskedRectCode:
 ; a0 pixels, a2 destination. Retain the existing opaque-tile setup cache.
 _Video_Atari_BlitTileCode:
 	tst.b	_g_videoBlitterTileSetup
-	bne.s	.ready
+	bne.s	tile_ready
 .idle:
 	tst.b	$ffff8a3c.w
 	bmi.s	.idle
 	move.l	#$00020002,$ffff8a20.w
 	move.l	#$ffffffff,$ffff8a28.w
 	move.l	#$ffff0002,$ffff8a2c.w
+tile_yinc:
 	move.w	#154,$ffff8a30.w
+tile_words:
 	move.w	#4,$ffff8a36.w
 	move.w	#$0203,$ffff8a3a.w
 	move.b	#0,$ffff8a3d.w
 	move.b	#1,_g_videoBlitterTileSetup
-.ready:
+tile_ready:
 	move.l	a0,$ffff8a24.w
 tile_destination:
 	move.l	a2,$ffff8a32.w
+tile_rows:
 	move.w	#16,$ffff8a38.w
 	move.b	#$c0,$ffff8a3c.w
 .wait:
@@ -305,6 +308,15 @@ cursor_destination3:
 ; Initialization only, with no queued draws. Select once, not at each launch.
 ; MOVE.L An,abs.w and MOVE.W An,abs.w have the same instruction length.
 _Video_Atari_ConfigureBlitterDestination:
+	move.w	#154,tile_yinc+2
+	move.w	#4,tile_words+2
+	move.w	#16,tile_rows+2
+	tst.l	8(sp)
+	beq.s	.colour
+	move.w	#78,tile_yinc+2
+	move.w	#2,tile_words+2
+	move.w	#32,tile_rows+2
+.colour:
 	move.l	4(sp),d0
 	lea	destination_writes(pc),a0
 	moveq	#5,d1

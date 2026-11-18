@@ -10,6 +10,7 @@ import tempfile
 import unittest
 
 from tools.test_viewport_sprite_cache import blitter_model, function
+from tools.test_dither_preparation import colour_tile_compositor
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -69,7 +70,6 @@ static uint16 s_curSave[CURSOR_MAX_H][CURSOR_MAX_GROUPS * 4];
 static uint16 s_curDrawnData[CURSOR_MAX_H][CURSOR_MAX_GROUPS * 4];
 static uint16 s_curDrawnMask[CURSOR_MAX_H][CURSOR_MAX_GROUPS];
 static uint16 s_curViewportTiles[10], s_placeViewportTiles[10];
-static uint16 g_videoTileCursorTiles[10], s_tileCursorWritable[16];
 static PlacementBlock s_placeBlocks[144];
 static uint16 s_placeBlockCount, s_placeDrawnWidth, s_placeDrawnHeight;
 static int16 s_placeDrawnX, s_placeDrawnY;
@@ -203,8 +203,11 @@ int main(void) {
             unsigned y = pos == 3 ? 16 : pos == 2 ? 40 : 72;
             reference_tile(kind, x, y);
             if (kind < 2) Video_Atari_DrawPlanarTile(tile, tileMasks, x, y, kind == 0 ? tile : NULL);
-            else Video_Atari_DrawPlanarTileFogged(tile, tileMasks, fog, fogMasks, x, y,
-                                                kind == 3 ? fog : NULL);
+            else {
+                uint16 combined[64], written[16];
+                Video_Atari_ComposePlanarTile(tile, tileMasks, fog, fogMasks, combined, written);
+                Video_Atari_DrawPlanarTile(combined, written, x, y, kind == 3 ? fog : NULL);
+            }
             check();
             if (!place && pos < 3) assert(mergeCalls == 0);
             if (pos == 0 && !place) assert(repairCalls == 1);
@@ -395,15 +398,15 @@ int main(void) {
             "Video_Atari_CursorGroup", "Video_Atari_CursorBackground",
             "Video_Atari_CursorWriteGroup", "Video_Atari_PlacementBlock",
             "Video_Atari_PlanarMergeGroup", "Video_Atari_RefreshViewportCursor",
-            "Video_Atari_PublishViewportCursorRect", "Video_Atari_DrawPlanarTileFoggedCursor",
+            "Video_Atari_PublishViewportCursorRect",
             "Video_Atari_PresentSpriteCursor",
             "Video_Atari_PresentPlanarSpriteOverlays",
             "Video_Atari_PublishPlanarSpritePlain",
-            "Video_Atari_DrawPlanarTile", "Video_Atari_DrawPlanarTileFogged",
+            "Video_Atari_DrawPlanarTile",
             "Video_Atari_PresentSprite", "Video_Atari_PresentPlanarSpriteStrided",
             "Video_Atari_PresentPlanarSprite",
         )
-        production = []
+        production = [colour_tile_compositor(video)]
         for name in names:
             if name == "Video_Atari_DrawPlanarTile":
                 production.append(blitter_model(video, tiles=True))

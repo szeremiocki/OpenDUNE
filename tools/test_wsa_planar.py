@@ -30,16 +30,7 @@ def archive_wsas(path):
             for i, (name, start) in enumerate(entries) if name.upper().endswith(".WSA")}
 
 
-def fixture():
-    width, height = 24, 3
-    first = bytes([0, width * height, 31, 128, 0, 0])
-    second = bytes([0x8F, 0, 4, 3, 128, 0, 0])
-    third = bytes([128, 70, 0, 1, 8, 128, 0, 0])
-    closing = bytearray(width * height)
-    closing[15:19] = bytes([3] * 4)
-    closing[70] = 8
-    closing = bytes([len(closing)]) + closing + bytes([128, 0, 0])
-    commands = [first, second, third, closing]
+def encode_wsa(width, height, commands):
     blocks = []
     for command in commands:
         block = b"".join(bytes([128 | len(command[i:i + 63])]) + command[i:i + 63]
@@ -52,8 +43,52 @@ def fixture():
     return (struct.pack("<5H", 3, width, height, workspace, 0) +
             struct.pack("<5I", *offsets) + b"".join(blocks))
 
-def continuation_fixture():
-    data = fixture()
+
+def fixture():
+    width, height = 24, 3
+    first = bytes([0, width * height, 31, 128, 0, 0])
+    second = bytes([0x8F, 0, 4, 3, 128, 0, 0])
+    third = bytes([128, 70, 0, 1, 8, 128, 0, 0])
+    closing = bytearray(width * height)
+    closing[15:19] = bytes([3] * 4)
+    closing[70] = 8
+    closing = bytes([len(closing)]) + closing + bytes([128, 0, 0])
+    return encode_wsa(width, height, [first, second, third, closing])
+
+
+def intro_fixture():
+    width, height = 304, 120
+    end = b"\x80\x00\x00"
+    first = bytearray()
+    remaining = width * height
+    while remaining:
+        count = min(remaining, 0x3fff)
+        first += b"\x80" + struct.pack("<H", 0xc000 | count) + b"\x1f"
+        remaining -= count
+
+    def delta(changes):
+        command = bytearray()
+        position = 0
+        for pixel, value in sorted(changes.items()):
+            skip = pixel - position
+            while skip:
+                count = min(skip, 0x7fff)
+                command += b"\x80" + struct.pack("<H", count)
+                skip -= count
+            command += bytes([1, value])
+            position = pixel + 1
+        return command + end
+
+    second = {0: 3, 303: 5, 304: 7, 18244: 8, width * height - 1: 11}
+    third = {0: 1, 8: 8, 303: 3, 18244: 4, width * height - 1: 5}
+    closing = {pixel: second.get(pixel, 0) ^ third.get(pixel, 0)
+               for pixel in second.keys() | third.keys()}
+    return encode_wsa(width, height, [first + end, delta(second), delta(third), delta(closing)])
+
+
+def continuation_fixture(data=None):
+    if data is None:
+        data = fixture()
     offsets = list(struct.unpack_from("<5I", data, 10))
     first_length = offsets[1] - offsets[0]
     return (data[:10] + struct.pack("<5I", 0, *(offset - first_length for offset in offsets[1:])) +
@@ -61,9 +96,207 @@ def continuation_fixture():
 
 
 class WSAPlanarTest(unittest.TestCase):
+    def test_native_intro_playback_budget_and_tail_pacing(self):
+        source = (ROOT / "src/cutscene.c").read_text()
+        playback = function(source, "GameLoop_PlayAnimation")
+        harness = r"""
+#include <assert.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "types.h"
+#include "GFX_HEADER"
+#include "HOUSE_HEADER"
+#include "WSA_HEADER"
+#include "MATH_HEADER"
+#define Debug(...) ((void)0)
+volatile uint32 g_timerGUI, g_timerTimeout;
+static uint32 wallMs, processedTicks, loadMs, dissolveMs, drawMs, stallMs, paletteMs;
+static uint32 shown[128];
+static unsigned shownCount, sourceFrames, loads, fades, speechPumps, frameAttempt, skipAfter;
+static uint16 s_subtitleIndex;
+static uint8 palette[768], g_palette_998A[768];
+uint8 *g_palette1 = palette;
+static uint8 screens[4][64000];
+static bool direct = true, skip;
+bool g_canSkipIntro;
+static char logs[4096];
+static void Warning(const char *format, ...) {
+    va_list ap; va_start(ap, format);
+    vsnprintf(logs + strlen(logs), sizeof(logs) - strlen(logs), format, ap);
+    va_end(ap);
+}
+static void Error(const char *format, ...) { (void)format; assert(false); }
+static void PrepareEnd(void) { assert(false); }
+static void sleepIdle(void) {
+    wallMs += 5;
+    uint32 current = wallMs / 20, elapsed = current - processedTicks;
+    g_timerGUI += elapsed;
+    g_timerTimeout -= g_timerTimeout < elapsed ? g_timerTimeout : elapsed;
+    processedTicks = current;
+}
+static bool Video_Atari_CursorDirect(void) { return direct; }
+static void Video_Atari_PresentPalette(uint8 *p) { assert(p == g_palette1); }
+void *GFX_Screen_Get_ByIndex(Screen screen) { return screens[screen]; }
+uint16 GFX_Screen_GetSize_ByIndex(Screen screen) { (void)screen; return 64000; }
+static void GUI_ClearScreen(Screen screen) { (void)screen; }
+static void GameLoop_PlaySubtitle(uint8 step) { assert(step == 0); }
+static uint16 GameLoop_PalettePart_Update(bool finish) { (void)finish; speechPumps++; return 0; }
+static void GameLoop_CopySubtitlePalette(uint8 *p) { (void)p; }
+static void GUI_SetPaletteAnimated(uint8 *p, int16 ticks) {
+    (void)p; (void)ticks; wallMs += paletteMs; sleepIdle();
+}
+static uint16 Input_Keyboard_NextKey(void) { return skip || shownCount >= skipAfter; }
+void *WSA_LoadFile(const char *name, void *wsa, uint32 size, bool reserve, bool allow) {
+    (void)size; (void)reserve; (void)allow;
+    assert(!strcmp(name, "INTRO8A.WSA"));
+    wallMs += loadMs; loads++;
+    return wsa == NULL ? screens[SCREEN_3] : wsa;
+}
+void *WSA_LoadIntro(const char *name, bool reserve) {
+    return WSA_LoadFile(name, NULL, 1, reserve, true);
+}
+bool WSA_IsContinuation(void *wsa) { (void)wsa; return false; }
+bool WSA_PreparePlanarContinuation(void *wsa, const char *const *parents, uint16 count) {
+    (void)wsa; (void)parents; (void)count; assert(false); return false;
+}
+WSAFrameFormat WSA_GetFrameFormat(void *wsa) { assert(wsa); return WSA_FRAME_PLANAR; }
+uint16 WSA_GetFrameCount(void *wsa) { assert(wsa); return sourceFrames; }
+void WSA_Unload(void *wsa) { assert(wsa); }
+bool WSA_DisplayFrame(void *wsa, uint16 frame, uint16 x, uint16 y, Screen screen) {
+    assert(wsa && x == 8 && y == 24);
+    if (frame >= sourceFrames) return false;
+    wallMs += drawMs;
+    if (frame == 1) wallMs += stallMs;
+    if (screen == SCREEN_0) {
+        assert(frameAttempt++ == frame);
+        assert(shownCount < 128); shown[shownCount++] = wallMs;
+    }
+    return true;
+}
+static bool GUI_Screen_FadeInPlanar(void *wsa, uint16 x, uint16 y, uint16 width, uint16 height) {
+    assert(wsa && x == 1 && y == 24 && width == 38 && height == 120);
+    fades++; frameAttempt = 1;
+    wallMs += dissolveMs / 2;
+    sleepIdle();
+    wallMs += dissolveMs - dissolveMs / 2; /* Deliberately leave pending timer work. */
+    return true;
+}
+static void GUI_Screen_FadeIn(int xs, int ys, int xd, int yd, int width, int height,
+                              Screen src, Screen dst) {
+    (void)xs; (void)ys; (void)xd; (void)yd; (void)width; (void)height; (void)src; (void)dst;
+    GUI_Screen_FadeInPlanar(screens[SCREEN_3], 1, 24, 38, 120);
+}
+static void GUI_Screen_FadeIn2(int x, int y, int width, int height,
+                               Screen src, Screen dst, int speed, bool clear) {
+    (void)speed; (void)clear;
+    GUI_Screen_FadeIn(1, y, x / 8, y, width / 8, height, src, dst);
+}
+/* PLAYBACK */
+static void reset(void) {
+    g_timerGUI = g_timerTimeout = wallMs = processedTicks = 0;
+    shownCount = loads = fades = speechPumps = frameAttempt = 0;
+    loadMs = dissolveMs = stallMs = paletteMs = 0;
+    sourceFrames = 16; drawMs = 1; skip = false; skipAfter = 128; g_canSkipIntro = true;
+    logs[0] = '\0';
+}
+static void check_pacing(unsigned first, unsigned minimum) {
+    for (unsigned i = first + 1; i < shownCount; i++) {
+        if (shown[i] - shown[i - 1] < minimum)
+            fprintf(stderr, "frame %u gap=%u minimum=%u\n%s", i,
+                shown[i] - shown[i - 1], minimum, logs);
+        assert(shown[i] - shown[i - 1] >= minimum);
+    }
+}
+int main(void) {
+    HouseAnimation_Animation scene[2] = {{"INTRO8A", 30, 0, HOUSEANIM_FLAGS_MODE2 |
+        HOUSEANIM_FLAGS_FADEIN}, {{0}, 0, 0, 0}};
+    for (unsigned variant = 0; variant < 2; variant++) {
+        reset(); loadMs = 8000; dissolveMs = variant == 0 ? 3000 : 8000;
+        GameLoop_PlayAnimation(scene, true);
+        assert(loads == 1 && fades == 1 && shownCount == 15 && speechPumps > 15);
+        assert(logs[0] == '\0');
+        assert(shown[shownCount - 1] - shown[0] >= 3000);
+        check_pacing(0, 210);
+    }
+    /* No transition: a long unpumped load must not erase the playback budget. */
+    reset(); scene[0].flags = HOUSEANIM_FLAGS_MODE2; loadMs = 10000;
+    GameLoop_PlayAnimation(scene, true);
+    assert(fades == 0 && shownCount == sourceFrames && logs[0] == '\0');
+    check_pacing(0, 210);
+    /* A stall can still overrun the deadline, but its tail must remain paced. */
+    reset(); scene[0].flags |= HOUSEANIM_FLAGS_FADEIN;
+    dissolveMs = 3000; stallMs = 4000;
+    GameLoop_PlayAnimation(scene, true);
+    assert(shownCount == 15 && logs[0] == '\0');
+    check_pacing(0, 210);
+    /* A paced tail keeps keyboard skipping responsive too. */
+    reset(); dissolveMs = 3000; stallMs = 4000; skipAfter = 3;
+    GameLoop_PlayAnimation(scene, true);
+    assert(shownCount == 3 && logs[0] == '\0');
+    /* Other setup can exhaust the deadline too: log it and keep nominal pacing. */
+    reset(); scene[0].flags = HOUSEANIM_FLAGS_MODE2 | HOUSEANIM_FLAGS_FADEINTEXT;
+    paletteMs = 8000;
+    GameLoop_PlayAnimation(scene, true);
+    assert(strstr(logs, "playback budget exhausted"));
+    assert(shownCount == sourceFrames);
+    check_pacing(1, 230);
+    /* Opted-out cutscenes retain their existing timing and produce no intro logs. */
+    reset(); scene[0].flags = HOUSEANIM_FLAGS_MODE2 | HOUSEANIM_FLAGS_FADEIN;
+    dissolveMs = 8000;
+    GameLoop_PlayAnimation(scene, false);
+    assert(shownCount == 15 && logs[0] == '\0');
+    assert(shown[2] - shown[1] < 20);
+    return 0;
+}
+"""
+        harness = (harness.replace("GFX_HEADER", str(ROOT / "src/gfx.h"))
+                   .replace("HOUSE_HEADER", str(ROOT / "src/house.h"))
+                   .replace("WSA_HEADER", str(ROOT / "src/wsa.h"))
+                   .replace("MATH_HEADER", str(ROOT / "src/os/math.h"))
+                   .replace("/* PLAYBACK */", playback))
+        with tempfile.TemporaryDirectory(prefix="intro-timing-") as directory:
+            c_file, binary = Path(directory) / "test.c", Path(directory) / "test"
+            c_file.write_text(harness)
+            compiler = shlex.split(os.environ.get("CC", "cc"))
+            flags = shlex.split(os.environ.get("TEST_CFLAGS", ""))
+            subprocess.run(compiler + ["-std=c99", "-DTOS", "-O2", "-Wall", "-Wextra", "-Werror",
+                                      *flags, "-I", str(ROOT / "include"), str(c_file),
+                                      "-o", str(binary)], check=True)
+            subprocess.run([str(binary)], check=True)
+
     def test_original_and_planar_replay(self):
         video = (ROOT / "src/video/video_atari.c").read_text()
         presenter = "\n".join(function(video, name) for name in (
+            "Video_Atari_CopyColourRun", "Video_Atari_CopyMonoRun",
+            "Video_Atari_MonoPenWords", "Video_Atari_PaintColour", "Video_Atari_PaintMono")) + r"""
+static unsigned copyRuns;
+static void counted_colour_copy(uint8 *dst, uint16 ds, const uint8 *src, uint16 ss,
+                                uint16 groups, uint16 height) {
+    copyRuns++;
+    Video_Atari_CopyColourRun(dst, ds, src, ss, groups, height);
+}
+static void counted_mono_copy(uint8 *dst, uint16 ds, const uint8 *src, uint16 ss,
+                              uint16 groups, uint16 height) {
+    copyRuns++;
+    Video_Atari_CopyMonoRun(dst, ds, src, ss, groups, height);
+}
+static const struct {
+    void (*copyRun)(uint8 *, uint16, const uint8 *, uint16, uint16, uint16);
+    void (*paint)(uint16 *, uint16, uint16, uint16, uint16, uint16, const uint16 *, uint16, uint8, int16, int16);
+    uint8 xShift;
+} rectangleBackend[] = {{counted_colour_copy, Video_Atari_PaintColour, 1},
+    {counted_mono_copy, Video_Atari_PaintMono, 2}},
+    *s_planarBackend = &rectangleBackend[0];
+static inline uint16 Video_Atari_GroupWords(void) { return g_videoAtariMono ? 2 : 4; }
+""" + "\n".join(function(video, name) for name in (
+            "Video_Atari_PlanarOffset", "Video_Atari_CopyPlanar", "Video_Atari_PaintPlanar",
+            "Video_Atari_MergePlanarRows", "Video_Atari_GetPlanarCacheInfo",
+            "Video_Atari_PlanarMappingHash", "Video_Atari_PlanarDeltaChanged",
+            "Video_Atari_EncodePlanarDelta", "Video_Atari_ApplyPlanarDelta",
+            "Video_Atari_LiveBegin", "Video_Atari_LiveEnd",
+            "Video_Atari_PublishPlanarRun", "Video_Atari_PublishPlanarRect",
             "Video_Atari_PresentRestoreStrided", "Video_Atari_PresentPlanarSubRect",
             "Video_Atari_PresentPlanarRect"))
         gui = (ROOT / "src/gui/gui.c").read_text()
@@ -78,6 +311,8 @@ class WSAPlanarTest(unittest.TestCase):
 #include <stdlib.h>
 #include <string.h>
 #include "types.h"
+#include "atari_mono.h"
+#include "atari_mono_palette.h"
 static int failAllocation = -1, allocationCalls, liveAllocations;
 static void *checked_malloc(size_t size) {
     if (allocationCalls++ == failAllocation) return NULL;
@@ -96,7 +331,11 @@ static void checked_free(void *p) {
     free(p);
 }
 #include "CODEC_HEADER"
-static unsigned decompressions;
+static unsigned decompressions, imageCopies;
+static void *counted_memcpy(void *dst, const void *src, size_t size) {
+    if (size == 19200) imageCopies++;
+    return memcpy(dst, src, size);
+}
 static uint16 counted_format80(uint8 *dst, const uint8 *src, uint16 size) {
     decompressions++;
     return Format80_Decode(dst, src, size);
@@ -105,11 +344,13 @@ static uint16 counted_format80(uint8 *dst, const uint8 *src, uint16 size) {
 #define calloc checked_calloc
 #define free checked_free
 #define Format80_Decode counted_format80
+#define memcpy counted_memcpy
 #include "WSA_SOURCE"
 #undef malloc
 #undef calloc
 #undef free
 #undef Format80_Decode
+#undef memcpy
 WidgetProperties g_widgetProperties[22] = {{0, 0, 40, 200, 0, 0, 0}};
 Screen g_screenActiveID = SCREEN_0;
 static uint8 screens[4][64000];
@@ -123,6 +364,13 @@ static unsigned cacheOpens, cacheWrites, cacheDeletes;
 static bool failCacheOpen, failCacheRead;
 static int failCacheWord = -1, cacheWords;
 static bool direct = true, cursorActive;
+bool g_videoAtariMono;
+static bool s_monoWhiteIsOne = true;
+static AtariDitherLookup s_palette4BitDither;
+static void Video_Atari_PublishNativeRect(const uint16 *, const uint16 *,
+    uint16, uint16, uint16, uint16, int16, int16);
+#define Video_Atari_DisplayListFlush() ((void)0)
+#define Video_Atari_RestoreTileCursor() ((void)0)
 enum { MCH_ST, MCH_STE, MCH_MEGA_STE, MCH_TT, MCH_FALCON };
 static int s_machine_type = MCH_STE;
 static bool s_presentMode, s_screen_needrepaint;
@@ -131,6 +379,13 @@ static unsigned s_paletteGeneration;
 static uint8 Palette_FindClosestColor(uint8 r, uint8 g, uint8 b) { return (r + g + b) & 15; }
 static void Rebuild_Palette4BitPairMap(int first, int count) {
     assert(first >= 0 && count > 0 && first + count <= 256);
+}
+static void set_mapping(void) {
+    for (unsigned c = 0; c < 256; c++)
+        for (unsigned y = 0; y < 4; y++)
+            for (unsigned x = 0; x < 4; x++)
+                s_palette4BitDither.pens[y][x][c] = g_videoAtariMono ?
+                    ((pens[c] >> ((y & 1) * 2 + (x & 1))) ^ (x >> 1) ^ (y >> 1)) & 1 : pens[c];
 }
 void Video_Atari_CursorPreloadIcons(void) {}
 static void VsetRGB(int first, int count, uint8 *rgb) {
@@ -157,7 +412,7 @@ static void exercise_palette(void) {
     for (unsigned i = 0; i < 256; i++) palette[i * 3] = 3;
     s_presentMode = false;
     Video_SetPalette(palette, 0, 256);
-    assert(s_screen_needrepaint && pens[215] == 3);
+    assert(s_screen_needrepaint == !g_videoAtariMono && pens[215] == 3);
     s_screen_needrepaint = false;
 }
 FILE *fopendatadir(enum SearchDirectory directory, const char *name, const char *mode) {
@@ -233,17 +488,60 @@ bool Video_Atari_PresentChunky(const void *src, uint16 stride, int16 x, int16 y,
     (void)src; (void)stride; (void)x; (void)y; (void)width; (void)height;
     assert(false); return false;
 }
+static unsigned native_word(unsigned stride, unsigned x, unsigned y, unsigned p) {
+    return g_videoAtariMono ? y * stride + (p / 2) * (stride / 2) + (x * 2 + (p & 1)) / 16 :
+        y * stride + (x / 16) * 4 + p;
+}
+static uint16 native_mask(unsigned x, unsigned p) {
+    return 0x8000u >> (g_videoAtariMono ? (x * 2 + (p & 1)) & 15 : x & 15);
+}
+static bool native_pixel(const uint16 *src, unsigned stride, unsigned x, unsigned y, unsigned p) {
+    return (src[native_word(stride, x, y, p)] & native_mask(x, p)) != 0;
+}
+static void native_put(uint16 *dst, unsigned stride, unsigned x, unsigned y, unsigned p, bool value) {
+    uint16 *word = &dst[native_word(stride, x, y, p)], bit = native_mask(x, p);
+    *word = (*word & ~bit) | (value ? bit : 0);
+}
+static bool expected_pixel(uint8 index, unsigned x, unsigned y, unsigned p) {
+    if (g_videoAtariMono)
+        return s_palette4BitDither.pens[(y * 2 + p / 2) & 3][(x * 2 + (p & 1)) & 3][index] ^
+            !s_monoWhiteIsOne;
+    return (s_palette4BitDither.pens[y & 3][x & 3][index] & (1u << p)) != 0;
+}
+void Video_Atari_PreparePlanar(const AtariDitherSource *source,
+                              const AtariDitherLookup *lookup, uint16 *dst) {
+    assert(lookup == NULL);
+    encodes++;
+    unsigned stride = ((source->width + 15) / 16) * 4;
+    if (g_videoAtariMono) {
+        AtariMonoPackedLookup packed;
+        Video_Atari_MonoPreparePackedLookup(&packed, &s_palette4BitDither, 0, 256, s_monoWhiteIsOne);
+        Video_Atari_MonoPackNative(source, &packed, dst, stride);
+        return;
+    }
+    memset(dst, 0, stride * source->height * 2);
+    for (unsigned y = 0; y < source->height; y++)
+        for (unsigned x = 0; x < source->width; x++)
+            for (unsigned p = 0; p < 4; p++)
+                native_put(dst, stride, x, y, p,
+                    expected_pixel(source->pixels[y * source->stride + x],
+                        source->originX + x, source->originY + y, p));
+}
 void Video_Atari_EncodePlanarStrided(const uint8 *src, uint16 stride, uint16 *dst,
                                     uint16 width, uint16 height) {
-    encodes++;
-    memset(dst, 0, width * height / 2);
-    for (unsigned y = 0; y < height; y++)
-        for (unsigned x = 0; x < width; x++)
-            for (unsigned p = 0; p < 4; p++)
-                if (pens[src[y * stride + x]] & (1u << p))
-                    dst[y * (width / 4) + (x / 16) * 4 + p] |= 0x8000u >> (x & 15);
+    const AtariDitherSource source = {src, width, height, stride, 0, 0, 1, 1};
+    Video_Atari_PreparePlanar(&source, NULL, dst);
 }
 static uint8 *Video_Atari_PlanarBase(void) { return (uint8 *)visible; }
+static bool s_viewportBlitter;
+static bool Video_Atari_CursorRectOverlap(uint8 *base, uint16 first, uint16 end,
+                                         uint16 y, uint16 height) {
+    assert(base == (uint8 *)visible && first == 0 && end == 20 && y + height <= 200);
+    assert(!cursorActive);
+    return false;
+}
+static void Video_Atari_CursorEraseFull(void) { assert(false); }
+static void Video_Atari_CursorSync(uint8 *base) { (void)base; assert(false); }
 static void Video_Atari_PlanarFinishRun(uint8 *base, uint16 x, uint16 y,
                                        uint16 width, uint16 height) {
     assert(base == (uint8 *)visible);
@@ -271,12 +569,32 @@ static void Video_Atari_PlanarMergePlain(uint16 *dst, uint16 mask, const uint16 
 }
 static void Video_Atari_PlanarMergeGroup(uint8 *base, uint16 y, uint16 group,
                                        uint16 mask, const uint16 *src) {
+    if (g_videoAtariMono) {
+        for (unsigned x = 0; x < 16; x++)
+            if (mask & (0x8000u >> x))
+                for (unsigned p = 0; p < 4; p++)
+                    native_put((uint16 *)base, 80, group * 16 + x, y, p,
+                        native_pixel(src, 4, x, 0, p));
+        publications++; publishedGroups++;
+        return;
+    }
     uint16 *dst = (uint16 *)base + y * 80 + group * 4;
     if (cursorActive && y == CURSOR_ROW && group == CURSOR_GROUP) {
         Video_Atari_PlanarMergePlain(cursorSaved, mask, src);
         cursor_draw();
     } else Video_Atari_PlanarMergePlain(dst, mask, src);
     publications++; publishedGroups++;
+}
+static void Video_Atari_PublishNativeRect(const uint16 *pixels, const uint16 *masks,
+    uint16 sourceWidth, uint16 sourceX, uint16 width, uint16 height, int16 x, int16 y) {
+    assert(masks == NULL && x >= 0 && y >= 0);
+    for (unsigned row = 0; row < height; row++)
+        for (unsigned col = 0; col < width; col++)
+            for (unsigned p = 0; p < 4; p++)
+                native_put(visible, 80, x + col, y + row, p,
+                    native_pixel(pixels, sourceWidth / 4, sourceX + col, row, p));
+    GFX_Screen_ClearDirtyRect_(x & ~15, y, (x + width + 15) & ~15, y + height);
+    publications++; publishedGroups += ((x + width + 15) / 16 - x / 16) * height;
 }
 /* PRESENTER */
 static unsigned cells, sleeps, randomState;
@@ -326,16 +644,16 @@ static void exercise_fade(WSAHeader *wsa) {
     }
     assert(encodes == beforeEncodes && decompressions == beforeDecodes && fileReads == beforeReads);
 }
-static void check_window(WSAHeader *wsa, unsigned left, unsigned top) {
+static void check_window(WSAHeader *wsa, unsigned left, unsigned top, bool padded) {
     for (unsigned y = 0; y < 200; y++)
         for (unsigned x = 0; x < 320; x++) {
-            unsigned bit = 0x8000u >> (x & 15);
             bool inside = x >= left && x < left + wsa->width && y >= top && y < top + wsa->height;
             for (unsigned plane = 0; plane < 4; plane++) {
                 bool expected = inside ?
-                    !!(pens[screens[SCREEN_1][(y - top) * 320 + x - left]] & (1u << plane)) :
-                    !!(0xa55a & bit);
-                assert(!!(visible[y * 80 + (x / 16) * 4 + plane] & bit) == expected);
+                    expected_pixel(screens[SCREEN_1][(y - top) * 320 + x - left], x - left, y - top, plane) :
+                    padded && y >= top && y < top + wsa->height ?
+                        g_videoAtariMono && !s_monoWhiteIsOne : !!(0xa55a & native_mask(x, plane));
+                assert(native_pixel(visible, 80, x, y, plane) == expected);
             }
         }
 }
@@ -377,17 +695,17 @@ static void exercise_intro(const char *name, const char *const *parents, unsigne
         assert(WSA_DisplayFrame(prepared, frame, x, y, SCREEN_0));
         assert(!memcmp(untouched, screens, sizeof(screens)));
         assert(encodes == beforeEncodes && decompressions == beforeDecodes && fileReads == beforeReads);
-        check_window(prepared, x, y);
+        check_window(prepared, x, y, false);
         if (step == 1 && x == 8 && prepared->width == 304) {
-            visible[y * 80 + 19 * 4] ^= 0xff00;
+            native_put(visible, 80, 304, y, 0, !native_pixel(visible, 80, 304, y, 0));
             dirtyScreen[y] = 1u << 19;
             assert(WSA_DisplayFrame(prepared, frame, x, y, SCREEN_0));
-            check_window(prepared, x, y);
+            check_window(prepared, x, y, false);
         }
         if (step == 0 && x == 8 && prepared->width == 304 && prepared->height == 120) {
             for (unsigned i = 0; i < 16000; i++) visible[i] = 0xa55a;
             exercise_fade(prepared);
-            check_window(prepared, x, y);
+            check_window(prepared, x, y, false);
             assert(!memcmp(untouched, screens, sizeof(screens)));
         }
     }
@@ -410,6 +728,143 @@ static void exercise_intro(const char *name, const char *const *parents, unsigne
     WSA_Unload(cached); WSA_Unload(prepared);
     assert(liveAllocations == 0);
 }
+static void check_padded_image(WSAHeader *wsa) {
+    for (unsigned row = 0; row < wsa->height; row++)
+        for (unsigned x = 0; x < 320; x++)
+            for (unsigned p = 0; p < 4; p++) {
+                bool expected = x >= 8 && x < 312 ?
+                    expected_pixel(screens[SCREEN_1][row * 320 + x - 8], x - 8, row, p) :
+                    g_videoAtariMono && !s_monoWhiteIsOne;
+                assert(native_pixel(wsa->planar->pixels, 80, x, row, p) == expected);
+            }
+}
+static void exercise_padded_intro(const char *name, const char *const *parents, unsigned count) {
+    cursorActive = false;
+    memset(screens, 0, sizeof(screens));
+    memset(dirtyScreen, 0, sizeof(dirtyScreen));
+    for (unsigned i = 0; i < 16000; i++) visible[i] = 0xa55a;
+    /* A previous compact cache must be recoded, not mistaken for screen-stride data. */
+    WSAHeader *compact = WSA_LoadFile(name, NULL, 1, true, true);
+    assert(compact);
+    if (count != 0) assert(WSA_PreparePlanarContinuation(compact, parents, count));
+    assert(compact->planar && compact->planar->groups == 19 && !compact->intro);
+    WSA_Unload(compact);
+    unsigned beforeWarnings = warnings, beforeWrites = cacheWrites;
+    WSAHeader *prepared = WSA_LoadIntro(name, true);
+    assert(prepared && prepared->intro && warnings == beforeWarnings + 1);
+    if (count != 0) assert(WSA_PreparePlanarContinuation(prepared, parents, count));
+    assert(prepared->planar && prepared->planar->groups == 20 && prepared->planar->composed == NULL);
+    assert(cacheWrites == beforeWrites + 1);
+    char cache[13];
+    assert(WSA_PlanarFilename(name, cache));
+    FILE *file = fopen(cache, "rb");
+    uint8 header[56];
+    assert(file && fread(header, 1, sizeof(header), file) == sizeof(header));
+    fclose(file);
+    assert((READ_LE_UINT16(header + 10) & 4) != 0 && READ_LE_UINT32(header + 52) == 19200);
+    assert(READ_LE_UINT16(header + 6) == 304 && READ_LE_UINT16(header + 8) == 120);
+    for (unsigned parent = 0; parent < count; parent++) {
+        WSAHeader *previous = WSA_LoadFile(parents[parent], NULL, 1, false, false);
+        assert(previous);
+        for (unsigned frame = 0; frame < previous->frames; frame++)
+            assert(WSA_DisplayFrame(previous, frame, 0, 0, SCREEN_1));
+        WSA_Unload(previous);
+    }
+    WSAHeader *original = WSA_LoadFile(name, NULL, 1, false, false);
+    assert(original);
+    uint16 unstarted = prepared->frameCurrent;
+    unsigned unstartedCopies = imageCopies;
+    assert(!WSA_DisplayFrame(prepared, 0, 0, 24, SCREEN_0));
+    assert(prepared->frameCurrent == unstarted && imageCopies == unstartedCopies);
+    unsigned initial = prepared->frames - 1;
+    assert(WSA_DisplayFrame(original, initial, 0, 0, SCREEN_1));
+    unsigned oldPublications = publications, oldCopies = copyRuns;
+    assert(WSA_DisplayFrame(prepared, initial, 8, 24, SCREEN_1));
+    assert(prepared->planar->screen == NULL && publications == oldPublications && copyRuns == oldCopies);
+    check_padded_image(prepared);
+    for (unsigned i = 0; i < 16000; i++) assert(visible[i] == 0xa55a);
+    exercise_fade(prepared);
+    check_window(prepared, 8, 24, false);
+    uint16 retained[9600];
+    memcpy(retained, prepared->planar->pixels, sizeof(retained));
+    static uint8 untouched[sizeof(screens)];
+    for (unsigned step = 0; step < prepared->frames * 3u + 4; step++) {
+        unsigned frame = step < prepared->frames ? step :
+            step < prepared->frames * 2u ? prepared->frames * 2u - step - 1 :
+            (step * 7) % prepared->frames;
+        assert(WSA_DisplayFrame(original, frame, 0, 0, SCREEN_1));
+        memcpy(untouched, screens, sizeof(screens));
+        unsigned beforeEncodes = encodes, beforeReads = fileReads, beforeDecodes = decompressions;
+        unsigned beforeImages = imageCopies;
+        oldPublications = publications; oldCopies = copyRuns;
+        dirtyScreen[23] = dirtyScreen[24] = dirtyScreen[143] = dirtyScreen[144] = 0xfffff;
+        assert(WSA_DisplayFrame(prepared, frame, 8, 24, SCREEN_ACTIVE));
+        assert(prepared->planar->screen == visible + 24 * 80);
+        assert(!memcmp(retained, prepared->planar->pixels, sizeof(retained)));
+        assert(imageCopies == beforeImages + (step == 0));
+        assert(copyRuns == oldCopies && publications == oldPublications);
+        assert(encodes == beforeEncodes && fileReads == beforeReads && decompressions == beforeDecodes);
+        assert(!memcmp(untouched, screens, sizeof(screens)));
+        assert(dirtyScreen[23] == 0xfffff && dirtyScreen[144] == 0xfffff);
+        assert(dirtyScreen[24] == 0 && dirtyScreen[143] == 0);
+        check_window(prepared, 8, 24, true);
+    }
+    /* Repeated frames remain copy-free; private preparation detaches only once. */
+    unsigned frame = prepared->frameCurrent, beforeImages = imageCopies;
+    assert(WSA_DisplayFrame(prepared, frame, 8, 24, SCREEN_0));
+    assert(imageCopies == beforeImages);
+    assert(!WSA_DisplayFrame(prepared, prepared->frames, 8, 24, SCREEN_0));
+    assert(!WSA_DisplayFrame(prepared, frame, 0, 24, SCREEN_0));
+    assert(!WSA_DisplayFrame(prepared, frame, 8, 81, SCREEN_0));
+    assert(prepared->frameCurrent == frame && imageCopies == beforeImages);
+    static uint16 unchanged[16000];
+    memcpy(unchanged, visible, sizeof(visible));
+    assert(WSA_DisplayFrame(prepared, frame, 8, 24, SCREEN_2));
+    assert(prepared->planar->screen == NULL && imageCopies == beforeImages + 1);
+    assert(!memcmp(unchanged, visible, sizeof(visible)));
+    check_padded_image(prepared);
+    frame = (frame + 1) % prepared->frames;
+    assert(WSA_DisplayFrame(original, frame, 0, 0, SCREEN_1));
+    assert(WSA_DisplayFrame(prepared, frame, 8, 24, SCREEN_2));
+    check_padded_image(prepared);
+    exercise_fade(prepared);
+    assert(WSA_DisplayFrame(prepared, frame, 8, 24, SCREEN_0));
+    check_window(prepared, 8, 24, true);
+    /* A regional request also recovers the current image from the live accumulator. */
+    beforeImages = imageCopies;
+    assert(WSA_PresentPlanarRegion(prepared, 8, 24, 0, 0, 8, 2));
+    assert(prepared->planar->screen == NULL && imageCopies == beforeImages + 1);
+    check_padded_image(prepared);
+    WSA_Unload(original);
+    assert(rename(name, "PADDED.TMP") == 0);
+    unsigned beforeReads = fileReads, beforeDecodes = decompressions, beforeEncodes = encodes;
+    WSAHeader *cached = WSA_LoadIntro(name, false);
+    assert(cached && cached->intro && cached->planar && cached->buffer == NULL);
+    assert(WSA_IsContinuation(cached) == (count != 0));
+    assert(fileReads == beforeReads && decompressions == beforeDecodes && encodes == beforeEncodes);
+    for (unsigned step = 0; step < cached->frames * 2u + 3; step++) {
+        frame = (step * 7) % cached->frames;
+        assert(WSA_DisplayFrame(prepared, frame, 8, 24, SCREEN_2));
+        assert(WSA_DisplayFrame(cached, frame, 8, 24, SCREEN_0));
+        assert(!memcmp(visible + 24 * 80, prepared->planar->pixels, 19200));
+    }
+    assert(fileReads == beforeReads && decompressions == beforeDecodes && encodes == beforeEncodes);
+    assert(rename("PADDED.TMP", name) == 0);
+    WSA_Unload(cached); WSA_Unload(prepared);
+    /* General loading must never interpret an intro canvas as a compact image. */
+    beforeWarnings = warnings;
+    compact = WSA_LoadFile(name, NULL, 1, true, true);
+    assert(compact && !compact->intro && warnings == beforeWarnings + 1);
+    if (count != 0) assert(WSA_PreparePlanarContinuation(compact, parents, count));
+    assert(compact->planar && compact->planar->groups == 19);
+    WSA_Unload(compact);
+    prepared = WSA_LoadIntro(name, false);
+    assert(prepared && prepared->intro);
+    if (count != 0) assert(WSA_PreparePlanarContinuation(prepared, parents, count));
+    assert(prepared->planar && prepared->planar->groups == 20);
+    WSA_Unload(prepared);
+    assert(liveAllocations == 0);
+}
 static void exercise_subrect(void) {
     uint8 source[128];
     uint16 pixels[32];
@@ -425,12 +880,11 @@ static void exercise_subrect(void) {
                 assert(Video_Atari_PresentPlanarSubRect(pixels, 32, sx, x, 100, width, 2));
                 for (unsigned y = 0; y < 2; y++)
                     for (unsigned dx = 0; dx < 112; dx++) {
-                        unsigned bit = 0x8000u >> (dx & 15);
                         for (unsigned p = 0; p < 4; p++) {
                             bool expected = dx >= x && dx < x + width ?
-                                !!(pens[source[y * 64 + sx + dx - x]] & (1u << p)) :
-                                !!(0xa55a & bit);
-                            assert(!!(visible[(100 + y) * 80 + (dx / 16) * 4 + p] & bit) == expected);
+                                expected_pixel(source[y * 64 + sx + dx - x], sx + dx - x, y, p) :
+                                !!(0xa55a & native_mask(dx, p));
+                            assert(native_pixel(visible, 80, dx, 100 + y, p) == expected);
                         }
                     }
             }
@@ -442,27 +896,27 @@ static void compare_frame(WSAHeader *prepared, const uint16 *overlay, const uint
     for (unsigned y = 0; y < prepared->height; y++)
         for (unsigned x = 0; x < prepared->width; x++) {
             unsigned bit = 0x8000u >> (x & 15), group = x / 16;
-            uint8 expected = pens[screens[SCREEN_1][y * 320 + x]];
+            uint8 expected = screens[SCREEN_1][y * 320 + x];
             for (unsigned p = 0; p < 4; p++) {
-                unsigned index = (y * groups + group) * 4 + p;
-                assert(!!(prepared->planar->pixels[index] & bit) == !!(expected & (1u << p)));
+                assert(native_pixel(prepared->planar->pixels, groups * 4, x, y, p) ==
+                    expected_pixel(expected, x, y, p));
                 bool output = (masks[y * groups + group] & bit) ?
-                    !!(overlay[index] & bit) : !!(expected & (1u << p));
-                uint16 word = visible[(y + 48) * 80 + (group + 8) * 4 + p];
+                    native_pixel(overlay, groups * 4, x, y, p) : expected_pixel(expected, x, y, p);
+                bool shown = native_pixel(visible, 80, x + 128, y + 48, p);
                 if (cursorActive && y + 48 == CURSOR_ROW && group + 8 == CURSOR_GROUP)
-                    word = cursorSaved[p];
-                assert(!!(word & bit) == output);
+                    shown = (cursorSaved[p] & bit) != 0;
+                assert(shown == output);
             }
         }
     if (prepared->width & 15) {
-        uint16 outside = (1u << (16 - (prepared->width & 15))) - 1;
         for (unsigned y = 0; y < prepared->height; y++)
-            for (unsigned p = 0; p < 4; p++) {
-                uint16 word = visible[(y + 48) * 80 + (groups + 7) * 4 + p];
-                if (cursorActive && y + 48 == CURSOR_ROW && groups + 7 == CURSOR_GROUP)
-                    word = cursorSaved[p];
-                assert((word & outside) == (0xa55a & outside));
-            }
+            for (unsigned x = prepared->width; x < groups * 16; x++)
+                for (unsigned p = 0; p < 4; p++) {
+                    bool shown = native_pixel(visible, 80, x + 128, y + 48, p);
+                    if (cursorActive && y + 48 == CURSOR_ROW && x / 16 + 8 == CURSOR_GROUP)
+                        shown = (cursorSaved[p] & native_mask(x + 128, p)) != 0;
+                    assert(shown == !!(0xa55a & native_mask(x + 128, p)));
+                }
     }
 }
 static void exercise(const char *name, bool disk) {
@@ -483,7 +937,7 @@ static void exercise(const char *name, bool disk) {
     free(saved);
     memset(screens, 0, sizeof(screens));
     for (unsigned i = 0; i < 16000; i++) visible[i] = 0xa55a;
-    cursorActive = width == 184 && height == 112;
+    cursorActive = !g_videoAtariMono && width == 184 && height == 112;
     memcpy(cursorSaved, cursor_words(), 8);
     if (cursorActive) cursor_draw();
     unsigned groups = prepared->planar->groups;
@@ -520,7 +974,9 @@ static void exercise(const char *name, bool disk) {
     assert(!WSA_DisplayFrame(prepared, prepared->frames, 128, 48, SCREEN_2));
     /* Foreground redraw after playback stopped: no new WSA frame or overlay build. */
     unsigned damagedRow = 48 + height - 1;
-    for (unsigned p = 0; p < 4; p++) visible[damagedRow * 80 + 8 * 4 + p] ^= 0xffff;
+    for (unsigned x = 128; x < 144; x++)
+        for (unsigned p = 0; p < 4; p++)
+            native_put(visible, 80, x, damagedRow, p, !native_pixel(visible, 80, x, damagedRow, p));
     dirtyScreen[damagedRow] = (1u << 8) | (1u << 7);
     unsigned oldEncodes = encodes, oldDecodes = decompressions, oldReads = fileReads;
     unsigned oldGroups = publishedGroups;
@@ -549,8 +1005,8 @@ static void exercise_cache(const char *name) {
     FILE *file = fopen(cache, "rb");
     assert(file);
     char magic[4];
-    assert(fread(magic, 1, 4, file) == 4 && !memcmp(magic, "PWS4", 4));
-    assert(fseek(file, 16, SEEK_SET) == 0);
+    assert(fread(magic, 1, 4, file) == 4 && !memcmp(magic, "PWS5", 4));
+    assert(fseek(file, 56, SEEK_SET) == 0);
     for (unsigned i = 0; i < prepared->planar->groups * prepared->height * 4u; i++) {
         uint8 bytes[2];
         uint16 word = prepared->planar->frames[0][i];
@@ -621,20 +1077,24 @@ static void cache_failures(const char *name) {
     uint8 *good = malloc(size), *bad = malloc(size + 1);
     assert(fread(good, 1, size, file) == size);
     fclose(file);
-    unsigned imageBytes = READ_LE_UINT32(good + 12);
-    for (unsigned variant = 0; variant < 9; variant++) {
+    unsigned imageBytes = READ_LE_UINT32(good + 52);
+    for (unsigned variant = 0; variant < 12; variant++) {
         memcpy(bad, good, size);
         unsigned length = size;
         switch (variant) {
             case 0: bad[0] = 'X'; break;
             case 1: bad[4] = bad[5] = 0xff; break; /* Invalid frame count. */
             case 2: bad[6] = bad[7] = 0; break; /* Invalid geometry. */
-            case 3: bad[10] = 4; break; /* Unknown flags. */
-            case 4: memset(bad + 12, 0xff, 4); break; /* Oversized/odd block. */
+            case 3: bad[10] = 8; break; /* Unknown flags. */
+            case 4: memset(bad + 52, 0xff, 4); break; /* Oversized/odd block. */
             case 5: length = 11; break;
             case 6: length--; break;
             case 7: bad[size] = 0; length++; break; /* Trailing data. */
-            case 8: bad[16 + imageBytes + 6] = 0xff; break; /* Delta exceeds its row. */
+            case 8: bad[56 + imageBytes + 6] = 0xff; break; /* Delta exceeds its row. */
+            case 9: bad[12] ^= 1; break; /* Native layout / mono polarity mismatch. */
+            case 10: bad[16] ^= 1; break; /* Palette/dither mapping mismatch. */
+            case 11: /* Unidentified legacy mapping is rebuilt. */
+                bad[3] = '4'; length -= 40; memmove(bad + 12, good + 52, length - 12); break;
         }
         file = fopen(cache, "wb"); assert(file);
         assert(fwrite(bad, 1, length, file) == length); fclose(file);
@@ -682,11 +1142,61 @@ static void cache_failures(const char *name) {
     direct = true;
     assert(liveAllocations == 0);
 }
+static void exercise_mapping_cache(void) {
+    WSAHeader *prepared = WSA_LoadFile("TEST.WSA", NULL, 0, false, true);
+    assert(prepared && prepared->planar);
+    assert(prepared->planar->colours[31 / 8] & (1u << (31 & 7)));
+    assert(!(prepared->planar->colours[200 / 8] & (1u << (200 & 7))));
+    WSA_Unload(prepared);
+    unsigned oldReads = fileReads, oldEncodes = encodes, oldWrites = cacheWrites, before = warnings;
+    s_palette4BitDither.pens[0][0][200] ^= 1; /* An unused slot must not invalidate. */
+    assert(rename("TEST.WSA", "MAPPING.TMP") == 0);
+    prepared = WSA_LoadFile("TEST.WSA", NULL, 0, false, true);
+    assert(prepared && prepared->planar && prepared->buffer == NULL);
+    assert(fileReads == oldReads && encodes == oldEncodes &&
+        cacheWrites == oldWrites && warnings == before);
+    WSA_Unload(prepared);
+    assert(rename("MAPPING.TMP", "TEST.WSA") == 0);
+    s_palette4BitDither.pens[0][0][200] ^= 1;
+    s_palette4BitDither.pens[0][0][31] ^= 1; /* Same flat pens, different dither policy. */
+    prepared = WSA_LoadFile("TEST.WSA", NULL, 0, false, true);
+    assert(prepared && prepared->planar && prepared->buffer != NULL);
+    assert(fileReads > oldReads && encodes > oldEncodes &&
+        cacheWrites == oldWrites + 1 && warnings == before + 1);
+    assert(WSA_DisplayFrame(prepared, 0, 0, 0, SCREEN_2));
+    for (unsigned p = 0; p < 4; p++)
+        assert(native_pixel(prepared->planar->pixels, prepared->planar->groups * 4, 0, 0, p) ==
+            expected_pixel(31, 0, 0, p));
+    WSA_Unload(prepared);
+    s_palette4BitDither.pens[0][0][31] ^= 1;
+    assert(liveAllocations == 0);
+}
 int main(int argc, char **argv) {
-    assert(argc > 1);
+    assert(argc > 2);
+    bool hitOnly = strstr(argv[1], "-hit") != NULL;
+    g_videoAtariMono = !strncmp(argv[1], "mono", 4);
+    s_monoWhiteIsOne = strcmp(argv[1], "mono-inverted") != 0;
+    s_planarBackend = &rectangleBackend[g_videoAtariMono];
+    argc--; argv++;
     exercise_palette();
     for (unsigned i = 0; i < 256; i++) pens[i] = (i * i + i * 3 + 5) & 15;
     pens[0] = pens[12] = 0;
+    set_mapping();
+    if (hitOnly) {
+        const char *names[] = {"COEXIST.WSA", "PADDED.WSA"};
+        for (unsigned i = 0; i < 2; i++) {
+            assert(rename(names[i], "COEXIST.TMP") == 0);
+            unsigned oldReads = fileReads, oldEncodes = encodes, oldWrites = cacheWrites;
+            WSAHeader *cached = i == 0 ? WSA_LoadFile(names[i], NULL, 0, false, true) :
+                WSA_LoadIntro(names[i], false);
+            assert(cached && cached->planar && cached->buffer == NULL);
+            assert(cached->intro == (i == 1));
+            assert(fileReads == oldReads && encodes == oldEncodes && cacheWrites == oldWrites);
+            WSA_Unload(cached);
+            assert(rename("COEXIST.TMP", names[i]) == 0 && liveAllocations == 0);
+        }
+        return 0;
+    }
     unsigned initialWarnings = warnings;
     assert(WSA_LoadFile("BAD.WSA", NULL, 0, false, false) == NULL);
     assert(warnings == initialWarnings + 1 && liveAllocations == 0);
@@ -696,10 +1206,14 @@ int main(int argc, char **argv) {
         exercise_cache(argv[i]);
     }
     cache_failures(argv[1]);
+    exercise_mapping_cache();
     exercise_subrect();
     const char *one[] = {"TEST.WSA"}, *two[] = {"TEST.WSA", "CONT1.WSA"};
     exercise_intro("CONT1.WSA", one, 1);
     exercise_intro("CONT2.WSA", two, 2);
+    exercise_padded_intro("PADDED.WSA", NULL, 0);
+    const char *paddedParents[] = {"PADDED.WSA"};
+    exercise_padded_intro("PADCONT.WSA", paddedParents, 1);
     if (File_Exists("INTRO1.WSA")) {
         const char *independent[] = {"INTRO1.WSA", "INTRO2.WSA", "INTRO3.WSA", "INTRO4.WSA",
             "INTRO5.WSA", "INTRO6.WSA", "INTRO7A.WSA", "INTRO8A.WSA", "INTRO9.WSA",
@@ -710,6 +1224,11 @@ int main(int argc, char **argv) {
         exercise_intro("INTRO7B.WSA", seven, 1);
         exercise_intro("INTRO8B.WSA", eight, 1);
         exercise_intro("INTRO8C.WSA", eight, 2);
+        for (unsigned i = 1; i < sizeof(independent) / sizeof(*independent) - 1; i++)
+            exercise_padded_intro(independent[i], NULL, 0);
+        exercise_padded_intro("INTRO7B.WSA", seven, 1);
+        exercise_padded_intro("INTRO8B.WSA", eight, 1);
+        exercise_padded_intro("INTRO8C.WSA", eight, 2);
     }
     for (int fault = 0; fault < 16; fault++) {
         allocationCalls = 0;
@@ -763,6 +1282,7 @@ int main(int argc, char **argv) {
             c_file, binary = folder / "test.c", folder / "test"
             c_file.write_text(harness)
             files = {"TEST.WSA": fixture()}
+            files["COEXIST.WSA"] = fixture()
             bad = bytearray(fixture())
             struct.pack_into("<H", bad, 6, 32)
             (folder / "BAD.WSA").write_bytes(bad)
@@ -773,16 +1293,35 @@ int main(int argc, char **argv) {
                 (folder / name).write_bytes(data)
             for name in ("CONT1.WSA", "CONT2.WSA"):
                 (folder / name).write_bytes(continuation_fixture())
+            (folder / "PADDED.WSA").write_bytes(intro_fixture())
+            (folder / "PADCONT.WSA").write_bytes(continuation_fixture(intro_fixture()))
             intro = ROOT / "INTRO.PAK"
             if intro.exists():
                 for name, data in archive_wsas(intro).items():
                     (folder / name).write_bytes(data)
             compiler = shlex.split(os.environ.get("CC", "cc"))
-            subprocess.run(compiler + ["-std=c99", "-DTOS", "-O2", "-Wall", "-Wextra", "-Werror",
-                                      "-I", str(ROOT / "include"), str(c_file),
+            subprocess.run(compiler + shlex.split(os.environ.get("TEST_CFLAGS", "")) +
+                                     ["-std=c99", "-DTOS", "-O2", "-Wall", "-Wextra", "-Werror",
+                                      "-I", str(ROOT / "include"), "-I", str(ROOT / "src/video"), str(c_file),
                                       str(ROOT / "src/codec/format40.c"),
-                                      str(ROOT / "src/codec/format80.c"), "-o", str(binary)], check=True)
-            subprocess.run([str(binary), *files], cwd=folder, check=True)
+                                      str(ROOT / "src/codec/format80.c"),
+                                      str(ROOT / "src/video/atari_mono.c"),
+                                      str(ROOT / "src/video/atari_dither.c"), "-o", str(binary)], check=True)
+            subprocess.run([str(binary), "colour", *files], cwd=folder, check=True)
+            colour_cache = (folder / "COEXIST.PWS").read_bytes()
+            colour_intro_cache = (folder / "PADDED.PWS").read_bytes()
+            subprocess.run([str(binary), "mono", *files], cwd=folder, check=True)
+            self.assertEqual((folder / "COEXIST.PWS").read_bytes(), colour_cache)
+            self.assertEqual((folder / "PADDED.PWS").read_bytes(), colour_intro_cache)
+            mono_cache = (folder / "COEXIST.PWM").read_bytes()
+            mono_intro_cache = (folder / "PADDED.PWM").read_bytes()
+            subprocess.run([str(binary), "colour-hit", *files], cwd=folder, check=True)
+            self.assertEqual((folder / "COEXIST.PWM").read_bytes(), mono_cache)
+            self.assertEqual((folder / "PADDED.PWM").read_bytes(), mono_intro_cache)
+            subprocess.run([str(binary), "mono-hit", *files], cwd=folder, check=True)
+            subprocess.run([str(binary), "mono-inverted", *files], cwd=folder, check=True)
+            self.assertEqual((folder / "COEXIST.PWS").read_bytes(), colour_cache)
+            self.assertEqual((folder / "PADDED.PWS").read_bytes(), colour_intro_cache)
 
     def test_mentat_overlay_cache(self):
         source = (ROOT / "src/gui/mentat.c").read_text()

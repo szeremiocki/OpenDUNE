@@ -27,18 +27,33 @@ class CreditsPlanarTest(unittest.TestCase):
                 extracted = extracted.replace("\n{", "\n{\n    digitCalls[position]++;", 1)
             functions.append(extracted)
         video = (ROOT / "src/video/video_atari.c").read_text()
-        functions = [function(video, name) for name in
-                     ("Video_Atari_PresentRestore", "Video_Atari_PresentRestoreStrided")] + functions
+        functions = [function(video, "Video_Atari_CopyColourRun"), r"""
+static const struct {
+    void (*copyRun)(uint8 *, uint16, const uint8 *, uint16, uint16, uint16);
+    uint8 xShift;
+} rectangleBackend = {Video_Atari_CopyColourRun, 1}, *s_planarBackend = &rectangleBackend;
+"""] + [function(video, name) for name in (
+            "Video_Atari_PlanarOffset", "Video_Atari_MergePlanarRows", "Video_Atari_ShiftPlanarGroup",
+            "Video_Atari_PublishPlanarRun", "Video_Atari_PublishPlanarRect",
+            "Video_Atari_PresentRestore", "Video_Atari_PresentRestoreStrided")] + functions
         harness = r"""
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+#include "atari_mono.h"
 typedef uint8_t uint8;
 typedef uint16_t uint16;
 typedef int16_t int16;
 typedef uint32_t uint32;
 #define lengthof(a) (sizeof(a) / sizeof((a)[0]))
+#define min(a,b) ((a) < (b) ? (a) : (b))
+#define max(a,b) ((a) > (b) ? (a) : (b))
+#define Video_Atari_Mono() false
+#define Video_Atari_GroupWords() 4
+#define Video_Atari_PublishNativeRect(...) assert(false)
+#define Video_Atari_DisplayListFlush() ((void)0)
+#define Video_Atari_RestoreTileCursor() ((void)0)
 static uint8 mapping[256];
 static unsigned encodes;
 static unsigned digitCalls[6], publications, publishedBytes;
@@ -61,6 +76,11 @@ static void GFX_Screen_ClearDirtyRect(uint16 left, uint16 top, uint16 right, uin
     for (unsigned y = top; y < bottom; y++)
         for (unsigned group = left / 16; group < right / 16; group++)
             dirty[y] &= ~(1u << group);
+}
+static void Video_Atari_PlanarMergeGroup(uint8 *base, uint16 y, uint16 group,
+                                       uint16 mask, const uint16 *src) {
+    uint16 *dst = (uint16 *)base + y * 80 + group * 4;
+    for (unsigned p = 0; p < 4; p++) dst[p] = (dst[p] & ~mask) | (src[p] & mask);
 }
 static bool Video_Atari_PresentRestoreStrided(int16, int16, uint16, uint16, const uint8 *, uint16);
 #define Warning(...) assert(false)
@@ -281,7 +301,9 @@ int main(void) {
             test.write_text(harness)
             compiler = shlex.split(os.environ.get("CC", "cc"))
             subprocess.run([*compiler, "-std=c99", "-O2", "-Wall", "-Wextra", "-Werror",
-                            str(test), "-o", str(binary)], check=True)
+                            "-I", str(ROOT / "include"), "-I", str(ROOT / "src/video"),
+                            str(ROOT / "src/video/atari_mono.c"), str(test),
+                            "-o", str(binary)], check=True)
             subprocess.run([str(binary)], check=True)
 
 

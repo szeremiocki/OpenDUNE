@@ -6,7 +6,7 @@
 ; void Planar_DrawBorder(uint16 *dst, uint16 stride, uint16 x, uint16 width, uint16 height,
 ;                        const uint16 groups[16]);
 ;
-; See planar.h for the contract. Each row is  left group | middle groups | right group  (one group
+; See atari_planar.h for the contract. Each row is  left group | middle groups | right group  (one group
 ; when the rectangle fits in a single 16-pixel group). Per plane a group is
 ;   (margin & ~span) | the class masks anded with that class group's plane word
 ; with, for the three row types (fill, bottom/right, top/left, corner),

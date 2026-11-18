@@ -382,6 +382,7 @@ static void GameLoop_PlayAnimation(const HouseAnimation_Animation *animation, bo
 
 #ifdef TOS
 			if (native) {
+				Video_Atari_PresentPalette(g_palette1);
 				wsa = NULL;
 				wsaSize = 1;
 			} else
@@ -400,6 +401,11 @@ static void GameLoop_PlayAnimation(const HouseAnimation_Animation *animation, bo
 			}
 
 			snprintf(filenameBuffer, sizeof(filenameBuffer), "%.8s.WSA", animation->string);
+#ifdef TOS
+			if (native && posX == 8 && posY == 24)
+				wsa = WSA_LoadIntro(filenameBuffer, wsaReservedDisplayFrame);
+			else
+#endif
 			wsa = WSA_LoadFile(filenameBuffer, wsa, wsaSize, wsaReservedDisplayFrame, allowPlanar);
 #ifdef TOS
 			if (native) {
@@ -425,6 +431,7 @@ static void GameLoop_PlayAnimation(const HouseAnimation_Animation *animation, bo
 					sourceCount = 0;
 				}
 				/* Cold recoding must not consume narration/playback time. */
+				sleepIdle();
 				timeout = g_timerGUI + animation->duration * 6;
 				timeout2 = timeout + 30;
 			}
@@ -457,10 +464,18 @@ static void GameLoop_PlayAnimation(const HouseAnimation_Animation *animation, bo
 
 #ifdef TOS
 			if (native) {
+				uint32 dissolveTick, dissolveTicks;
+				sleepIdle();
+				dissolveTick = g_timerGUI;
 				if (!GUI_Screen_FadeInPlanar(wsa, posX >> 3, posY, 38, 120)) {
 					WSA_Unload(wsa);
 					return;
 				}
+				/* Include the final unpumped patch work before extending the budget. */
+				sleepIdle();
+				dissolveTicks = g_timerGUI - dissolveTick;
+				timeout += dissolveTicks;
+				timeout2 += dissolveTicks;
 			} else
 #endif
 			if ((animation->flags & (HOUSEANIM_FLAGS_FADEIN2 | HOUSEANIM_FLAGS_FADEIN)) == HOUSEANIM_FLAGS_FADEIN2) {
@@ -509,11 +524,25 @@ static void GameLoop_PlayAnimation(const HouseAnimation_Animation *animation, bo
 				exit(0);
 		}
 
+#ifdef TOS
+		if (native) {
+			if (mode == 2 && timeLeftForFrame == 0) {
+				Warning("Intro %.8s: playback budget exhausted; using nominal frame delay\n",
+				    animation->string);
+				timeLeftForFrame = max(1, (uint32)animation->duration * 6 / frameCount);
+			}
+			g_timerTimeout = 0;
+		}
+#endif
 		while (timeout > g_timerGUI) {
+			bool displayed;
 			g_timerTimeout = timeLeftForFrame;
 
 			GameLoop_PlaySubtitle(animationStep);
-			WSA_DisplayFrame(wsa, frame++, posX, posY, SCREEN_0);
+			displayed = WSA_DisplayFrame(wsa, frame++, posX, posY, SCREEN_0);
+#ifndef TOS
+			VARIABLE_NOT_USED(displayed);
+#endif
 
 			if (mode == 1 && frame == frameCount) {
 				frame = 0;
@@ -526,17 +555,38 @@ static void GameLoop_PlayAnimation(const HouseAnimation_Animation *animation, bo
 				return;
 			}
 
-			do {
+			GameLoop_PalettePart_Update(false);
+			sleepIdle();
+#ifdef TOS
+			/* A frame whose render exhausted its delay still needs visible hold time. */
+			if (native && displayed && g_timerTimeout == 0) g_timerTimeout = timeLeftForFrame;
+#endif
+			while (g_timerTimeout != 0 && timeout > g_timerGUI) {
 				GameLoop_PalettePart_Update(false);
 				sleepIdle();
-			} while (g_timerTimeout != 0 && timeout > g_timerGUI);
+			}
 		}
 
 		if (mode == 2) {
 			bool displayed;
+#ifdef TOS
+			while (native && g_timerTimeout != 0) {
+				GameLoop_PalettePart_Update(false);
+				sleepIdle();
+			}
+#endif
 			do {
+#ifdef TOS
+				if (native && frame < WSA_GetFrameCount(wsa)) g_timerTimeout = timeLeftForFrame;
+#endif
 				GameLoop_PlaySubtitle(animationStep);
 				displayed = WSA_DisplayFrame(wsa, frame++, posX, posY, SCREEN_0);
+#ifdef TOS
+				if (native && displayed && Input_Keyboard_NextKey() != 0 && g_canSkipIntro) {
+					WSA_Unload(wsa);
+					return;
+				}
+#endif
 				/* This tail loop drains the remaining WSA frames after the
 				 * timed loop above has ended. Unlike that loop it never ran
 				 * GameLoop_PalettePart_Update(), which is the only thing that
@@ -549,6 +599,13 @@ static void GameLoop_PlayAnimation(const HouseAnimation_Animation *animation, bo
 				 * during INTRO9, which is a mode 2 step). */
 				GameLoop_PalettePart_Update(false);
 				sleepIdle();
+#ifdef TOS
+				if (native && displayed && g_timerTimeout == 0) g_timerTimeout = timeLeftForFrame;
+				while (native && displayed && g_timerTimeout != 0) {
+					GameLoop_PalettePart_Update(false);
+					sleepIdle();
+				}
+#endif
 			} while (displayed);
 		}
 

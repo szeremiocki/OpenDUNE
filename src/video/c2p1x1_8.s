@@ -4,6 +4,7 @@
 	xdef	_c2p1x1_8_tt_partial		;export symbol
 	xdef	_c2p1x1_4_st		;export symbol
 	xdef	_c2p1x1_4_st_strided
+	xdef	_c2p1x1_1_st
 	;code
 
 
@@ -834,3 +835,42 @@ _c2p1x1_4_st_strided:
 ;	bss
 ;offset_end:
 ;	ds.l	1
+
+; One logical row -> two physical mono rows, eight logical pixels per group.
+; void c2p1x1_1_st(uint16 *top, uint16 *bottom, const uint8 *src,
+;                  uint32 groups, const uint32 *even, const uint32 *odd);
+; LUT values carry top/bottom two-bit cells in the high/low words.
+_c2p1x1_1_st:
+	movem.l	d2/a2-a4,-(sp)
+	move.l	20(sp),a1
+	move.l	24(sp),a2
+	move.l	28(sp),a0
+	move.l	32(sp),d2
+	move.l	36(sp),a3
+	move.l	40(sp),a4
+	tst.l	d2
+	beq.s	.done
+	subq.w	#1,d2
+.group:
+	moveq	#0,d0
+	rept	4
+	moveq	#0,d1
+	move.b	(a0)+,d1
+	add.w	d1,d1
+	add.w	d1,d1
+	lsl.l	#2,d0
+	or.l	(a3,d1.w),d0
+	moveq	#0,d1
+	move.b	(a0)+,d1
+	add.w	d1,d1
+	add.w	d1,d1
+	lsl.l	#2,d0
+	or.l	(a4,d1.w),d0
+	endr
+	move.w	d0,(a2)+
+	swap	d0
+	move.w	d0,(a1)+
+	dbra	d2,.group
+.done:
+	movem.l	(sp)+,d2/a2-a4
+	rts

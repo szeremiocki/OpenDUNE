@@ -9,6 +9,7 @@ import tempfile
 import unittest
 
 from tools.test_viewport_sprite_cache import function
+from tools.test_dither_preparation import colour_tile_compositor
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -449,7 +450,7 @@ int main(void) {
         harness = harness.replace("/* VIDEO */", "\n".join(function(video, name) for name in (
             "Video_Atari_EncodePlanarWithLookup", "Video_Atari_EncodePlanar", "Video_Atari_EncodePlanarStrided",
             "Video_Atari_InitTileMapping", "Video_Atari_DecodePlanarTile")))
-        harness = harness.replace("/* GFX */", "\n".join(function(gfx, name) for name in (
+        harness = harness.replace("/* GFX */", colour_tile_compositor(video) + "\n" + "\n".join(function(gfx, name) for name in (
             "GFX_TileHouseColor", "GFX_FreePlanarTiles", "GFX_PlanarTilesReady",
             "GFX_FillPlanarTile", "GFX_GetPlanarTile",
             "GFX_DrawPlanarTile", "GFX_ComposePlanarTile", "GFX_DrawPlanarTileFogged", "GFX_PreparePlanarFogTile",

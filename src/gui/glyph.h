@@ -18,8 +18,8 @@ extern void GUI_Glyph_FontFree(Font *f);
  * planar destination, as GUI_DrawChar() would with colours[0] == 0: colours are indexed by glyph
  * pixel value, colour 0 is transparent, and a later glyph overwrites the pixels it draws (so
  * negative character spacing overlaps). The line starts at pixel `phase` (0..15) of group 0.
- * Destination: planes[row * planeStride + group * 4 + plane] for `rows` rows at most (bit 15 =
- * leftmost pixel); only drawn pixels are changed. masks (may be NULL) gets the drawn pixels
+ * Destination uses the selected native layout and a word stride per logical row;
+ * only drawn pixels are changed. masks (may be NULL) gets the drawn pixels
  * OR-ed in at masks[row * maskStride + group]; the caller clears it beforehand.
  * The line ends at the first '\n' or '\r'. A glyph that does not fit entirely within maxGroups (<= GLYPH_MAX_GROUPS) groups is skipped,
  * as GUI_DrawChar() does at the screen edge. Returns the groups the text spans, 0 if nothing is

@@ -1751,7 +1751,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 	    GUI_Widget_Viewport_SpriteDamageRect((int16)(s_tileCursorCol << 4), (int16)((s_tileCursorRow << 4) + 40),
 	                                         (int16)((s_tileCursorCol << 4) + 16), (int16)((s_tileCursorRow << 4) + 56),
 	                                         !s_viewportSpriteFilterActive)) {
-		if (g_videoDisplayListActive) {
+		if (g_videoDisplayListActive && g_videoTileCursorTail != NULL) {
 			Video_Atari_DisplayListCheck(VIDEO_ATARI_DISPLAY_CURSOR_BYTES);
 			Video_Atari_QueueTileCursor();
 		} else {

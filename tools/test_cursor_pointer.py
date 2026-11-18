@@ -31,6 +31,8 @@ typedef uint32_t uint32;
 #define CURSOR_PHASES 16
 #define CURSOR_MAX_GROUPS 6
 #define CURSOR_MAX_H 32
+#define Video_Atari_Mono() false
+#define Video_Atari_MonoPenWords(p,x,y,out) ((void)(p), (void)(x), (void)(y), (void)(out), assert(false))
 static uint8 s_palette4BitMap[256];
 static bool s_curPointer;
 static uint16 s_curH, s_curW, s_curShift, s_curGroups;

@@ -10,7 +10,10 @@ typedef enum WSAFrameFormat {
 
 extern uint16 WSA_GetFrameCount(void *wsa);
 extern WSAFrameFormat WSA_GetFrameFormat(void *wsa);
-/* allowPlanar opts ST/STE callers into standalone PWS loading or preparation.
+/* allowPlanar opts ST/STE callers into standalone native loading/preparation
+ * under the currently installed, fixed asset mapping. Install the picture's
+ * source palette first; palette-animated callers must retain indexed playback.
+ * Colour .PWS and mono .PWM recordings coexist in the personal directory.
  * Continuation cache misses require WSA_PreparePlanarContinuation() afterwards.
  * Other platforms and opted-out callers retain original chunky playback. */
 extern void *WSA_LoadFile(const char *filename, void *wsa, uint32 wsaSize, bool reserveDisplayFrame, bool allowPlanar);
@@ -20,8 +23,13 @@ extern void WSA_Unload(void *wsa);
 extern bool WSA_DisplayFrame(void *wsa, uint16 frameNext, uint16 posX, uint16 posY, Screen screenID);
 
 #ifdef TOS
+/* The exclusive 304x120 intro window at x=8 records a black-padded, screen-width
+ * canvas; other geometries stay compact. SCREEN_0 becomes the XOR accumulator
+ * for a padded canvas until an offscreen operation.
+ * The caller must not overwrite that window during direct playback. */
+extern void *WSA_LoadIntro(const char *filename, bool reserveDisplayFrame);
 /* Prepare an independent, undecoded WSA matching this window. Keep its original
- * payload for fallback; the shared frame traversal then uses planar deltas. */
+ * payload for fallback; the shared frame traversal then uses native deltas. */
 extern bool WSA_PreparePlanar(void *wsa, uint16 width, uint16 height);
 extern bool WSA_IsContinuation(void *wsa);
 /* A continuation cache miss needs the original final image of its source chain.

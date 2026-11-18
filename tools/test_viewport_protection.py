@@ -273,16 +273,16 @@ int main(void) {
     def test_shared_fog_masks_and_metadata_refresh(self):
         gfx = (ROOT / "src/gfx.c").read_text()
         video = (ROOT / "src/video/video_atari.c").read_text()
-        state = video[video.index("static const uint16 s_tileCursorPatterns"):
-                      video.index("/* Battlefield tile cursor:")]
+        state = "\n".join(function(video, name) for name in (
+            "Video_Atari_ResetViewportProtection", "Video_Atari_SetViewportFog",
+            "Video_Atari_BeginViewportProtection", "Video_Atari_EndViewportProtection",
+            "Video_Atari_ViewportProtectionOverlap", "Video_Atari_ViewportWritable"))
         header = (ROOT / "src/video/video.h").read_text()
         state = header[header.index("typedef enum VideoAtariTileCursorShape"):
                        header.index("} VideoAtariTileCursorShape;") +
                        len("} VideoAtariTileCursorShape;")] + "\n" + state
         state = state.replace("void Video_Atari_SetViewportFog(",
                               "static void SetViewportFogRaw(")
-        state = state.replace("s_tileCursorMaskKey = key;",
-                              "s_tileCursorMaskKey = key; cursorBuilds++;")
         harness = r"""
 #include <assert.h>
 #include <string.h>
@@ -297,16 +297,25 @@ uint16 *g_iconMap = icons;
 static uint16 *s_planarTileMasks = tileMasks;
 static bool g_debugScenario;
 static const uint16 *s_blitterHalftonePattern;
-static unsigned metadataUpdates, cursorBuilds;
+static unsigned metadataUpdates, cursorPrepares;
 #define ST_PLANAR_LINE_BYTES 160
-typedef struct Video_Atari_TileCursorBlit {
-    uint8 *dst; const uint16 *pattern; const uint8 *operations;
-} Video_Atari_TileCursorBlit;
 static bool s_viewportBlitter;
 static uint16 g_tileCursorPen, g_tileCursorTargetPen;
-static uint8 *Video_Atari_PlanarBase(void) { return NULL; }
+static const uint16 *s_viewportFogWritable[10][15], *s_tileCursorPattern;
+static uint16 s_viewportProtectedRows[10], s_viewportHiddenRows[10];
+static bool s_viewportProtectionActive, g_videoTileCursorRestored;
+static void (*g_videoTileCursorTail)(void);
+static const uint16 s_tileCursorPatterns[6][16] = {{0}};
+static void prepare_cursor(uint16 col, uint16 row, const uint16 *pattern, uint16 pen) {
+    assert(col < 15 && row < 10 && pattern != NULL && pen <= 15);
+    cursorPrepares++;
+}
+#define Video_Atari_PrepareTileCursor prepare_cursor
+static void blit_cursor(void) { assert(false); }
+static void Video_Atari_DrawTileCursorCPU(void) { assert(false); }
+static const struct { void (*blit)(void); } cursorBackend = {blit_cursor},
+    *s_tileCursorBackend = &cursorBackend;
 void Video_Atari_EndViewportProtection(void);
-static void Video_Atari_TileCursorTail(void) { assert(false); }
 /* VIDEO STATE */
 void Video_Atari_SetViewportFog(uint16 col, uint16 row, const uint16 *writable) {
     metadataUpdates++;
@@ -374,58 +383,38 @@ int main(void) {
     g_viewportPosition++;
     GFX_PrepareViewportProtection(false);
     assert(s_viewportHiddenRows[0] == 1);
-    /* Cursor masks intersect fog; cursor mutation invalidates RAM residency. */
-    Video_Atari_BeginViewportProtection(true,3,2,false);
-    assert(cursorBuilds == 1);
-    for (unsigned line = 0; line < 16; line++)
-        assert(s_tileCursorFogWritable[line] ==
-            ((uint16)~s_tileCursorPatterns[0][line] & s_viewportFogWritable[2][3][line]));
-    s_blitterHalftonePattern = s_tileCursorFogWritable;
-    Video_Atari_EndViewportProtection();
-    Video_Atari_BeginViewportProtection(true,3,2,false);
-    assert(cursorBuilds == 1 && s_blitterHalftonePattern == s_tileCursorFogWritable);
-    assert(g_videoTileCursorTiles[2] == (1u << 3));
-    Video_Atari_EndViewportProtection();
-    Video_Atari_BeginViewportProtection(false,0,0,false);
-    assert(cursorBuilds == 1 && !g_videoTileCursorTiles[2]);
-    Video_Atari_EndViewportProtection();
-    Video_Atari_BeginViewportProtection(true,3,2,false);
-    assert(cursorBuilds == 1);
-    /* Fog changes under a stationary cursor must rebuild combined masks. */
-    Video_Atari_SetViewportFog(3,2,NULL);
-    Video_Atari_EndViewportProtection();
-    Video_Atari_BeginViewportProtection(true,3,2,false);
-    assert(cursorBuilds == 2 && s_blitterHalftonePattern == NULL);
-    for (unsigned line = 0; line < 16; line++)
-        assert(s_tileCursorFogWritable[line] == s_tileCursorWritable[line]);
-    s_blitterHalftonePattern = s_tileCursorWritable;
-    /* Beginning another pass without End still releases the old active row. */
-    Video_Atari_BeginViewportProtection(true,4,3,true);
-    assert(cursorBuilds == 3 && s_blitterHalftonePattern == NULL);
-    assert(!g_videoTileCursorTiles[2] && g_videoTileCursorTiles[3] == (1u << 4));
-    Video_Atari_ResetViewportProtection();
-    assert(!s_viewportProtectionActive);
-    for (unsigned row = 0; row < 10; row++)
-        assert(!s_viewportProtectedRows[row] && !s_viewportHiddenRows[row] &&
-               !g_videoTileCursorTiles[row]);
-    Video_Atari_BeginViewportProtection(true,4,3,true);
-    assert(cursorBuilds == 4);
+    /* Cursor preparation never changes the fog-only protection metadata. */
     uint16 fog[16];
     for (unsigned line = 0; line < 16; line++) fog[line] = 0x5a5a ^ (line * 117);
+    Video_Atari_ResetViewportProtection();
     Video_Atari_SetViewportFog(4,3,fog);
-    for (VideoAtariTileCursorShape shape = TILE_CURSOR_SCROLL_UP;
+    for (unsigned hardware = 0; hardware < 2; hardware++)
+    for (VideoAtariTileCursorShape shape = TILE_CURSOR_NORMAL;
          shape <= TILE_CURSOR_SCROLL_LEFT; shape++) {
-        s_blitterHalftonePattern = s_tileCursorFogWritable;
-        unsigned before = cursorBuilds;
+        s_viewportBlitter = hardware;
+        s_blitterHalftonePattern = fog;
+        unsigned before = cursorPrepares;
         Video_Atari_BeginViewportProtection(true,4,3,shape);
-        assert(cursorBuilds == before+1 && s_blitterHalftonePattern == NULL);
-        for (unsigned line = 0; line < 16; line++)
-            assert(s_tileCursorFogWritable[line] ==
-                   (fog[line] & (uint16)~s_tileCursorPatterns[shape][line]));
+        assert(cursorPrepares == before+1 && s_blitterHalftonePattern == fog);
+        assert(g_videoTileCursorTail == (hardware ? blit_cursor : Video_Atari_DrawTileCursorCPU));
+        assert(!g_videoTileCursorRestored);
+        assert(Video_Atari_ViewportWritable(4,3) == fog);
+        assert(Video_Atari_ViewportProtectionOverlap(64,88,16,16));
+        Video_Atari_BeginViewportProtection(true,3,2,shape);
+        assert(!Video_Atari_ViewportProtectionOverlap(48,72,16,16));
+        assert(Video_Atari_ViewportWritable(3,2) == NULL);
+        assert(Video_Atari_ViewportWritable(4,3) == fog);
         Video_Atari_EndViewportProtection();
-        Video_Atari_BeginViewportProtection(true,4,3,shape);
-        assert(cursorBuilds == before+1);
+        assert(!g_videoTileCursorTail && !s_viewportProtectionActive);
+        Video_Atari_BeginViewportProtection(false,0,0,shape);
+        assert(!g_videoTileCursorTail && s_viewportProtectionActive);
     }
+    Video_Atari_ResetViewportProtection();
+    assert(!s_viewportProtectionActive && !g_videoTileCursorTail && !s_blitterHalftonePattern);
+    for (unsigned row = 0; row < 10; row++)
+        for (unsigned col = 0; col < 15; col++)
+            assert(!s_viewportProtectedRows[row] && !s_viewportHiddenRows[row] &&
+                Video_Atari_ViewportWritable(col,row) == NULL);
     return 0;
 }
 """

@@ -9,6 +9,7 @@ import tempfile
 import unittest
 
 from tools.test_viewport_sprite_cache import function
+from tools.test_dither_preparation import glyph_backend, surface_backend
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -71,8 +72,10 @@ class SidebarPlanarTest(unittest.TestCase):
             )
             for name in names
         )
-        compose = function(video, "Video_Atari_BlitPlanarSprite")
-        functions = functions.replace(compose, compose.replace("{", "{\nsidebarCompositions++;", 1))
+        # Count uncached sprite composition, not native glyph publication.
+        sprite_merge = "\tVideo_Atari_BlitPlanarSprite(s_dst + localY * s_stride"
+        assert sprite_merge in sidebar
+        sidebar = sidebar.replace(sprite_merge, "\tsidebarCompositions++;\n" + sprite_merge)
         measure = function(font, "Font_GetStringWidth")
         functions = functions.replace(measure, measure.replace("{", "{\ntextMeasurements++;", 1))
         layout = "\tif (strchr(string, '%') == NULL"
@@ -90,9 +93,10 @@ class SidebarPlanarTest(unittest.TestCase):
 #include "gui/widget.h"
 #include "gui/sidebar.h"
 #include "gui/glyph.h"
-#include "gui/planar.h"
+#include "video/atari_planar.h"
 #include "video/video.h"
 #include "video/atari_sidebar.h"
+static AtariDitherLookup s_palette4BitDither;
 #include "gui/font.h"
 #include "unit.h"
 #include "structure.h"
@@ -853,7 +857,9 @@ int main(int argc, char **argv) {
     assert(g_curWidgetFGColourBlink==setupBlink && g_curWidgetFGColourNormal==setupNormal);
     assert(batchBegins==setupBegins && liveEnds==setupEnds);
     if(g_videoViewportBlitter) {
-        assert(encodes-setupEncodes==86 && preparedBlits-setupCompiles==89);
+        /* Each asset is sized before relocation, then compiled at its final address.
+         * One additional query sizes the three borrowed background commands. */
+        assert(encodes-setupEncodes==86 && preparedBlits-setupCompiles==86*2+3+1);
         assert(sidebarCaptures-setupCaptures==86);
         assert(!s_prepared && !s_chrome && !s_buttonTemplate);
     }
@@ -1333,11 +1339,12 @@ int main(int argc, char **argv) {
         wrap = "\t\tif (x + width > SCREEN_WIDTH) {\n\t\t\tx = left;\n\t\t\ty += g_fontCurrent->height;\n\t\t}\n"
         assert wrap in functions
         functions = functions.replace(wrap, "\t\tif (x + width > SCREEN_WIDTH) { x += width; s++; continue; }\n")
-        harness = harness.replace("/* PRODUCTION */", functions)
+        harness = harness.replace("/* PRODUCTION */", surface_backend(video) +
+                                  function(video, "Video_Atari_DrawPlanarBorder") + functions)
         glyph = "\n".join(line for line in (ROOT / "src/gui/glyph.c").read_text().splitlines()
                           if not line.startswith("#include "))
-        harness = harness.replace("/* GLYPH */", glyph)
-        planar = "\n".join(line for line in (ROOT / "src/gui/planar.c").read_text().splitlines()
+        harness = harness.replace("/* GLYPH */", glyph_backend(video) + glyph)
+        planar = "\n".join(line for line in (ROOT / "src/video/atari_planar.c").read_text().splitlines()
                            if not line.startswith("#include "))
         harness = harness.replace("/* PLANAR */", planar)
         harness = harness.replace("/* SIDEBAR */", sidebar)
@@ -1387,7 +1394,8 @@ int main(int argc, char **argv) {
         with tempfile.TemporaryDirectory(prefix="sidebar-planar-", dir=ROOT / "objs") as directory:
             source = Path(directory) / "test.c"
             binary = Path(directory) / "test"
-            source.write_text(harness)
+            from tools.test_sidebar_blitter import SUPPORT
+            source.write_text(SUPPORT + harness)
             compiler = shlex.split(os.environ.get("CC", "cc"))
             flags = shlex.split(os.environ.get("TEST_CFLAGS", ""))
             for blitter in (False, True):
@@ -1395,7 +1403,7 @@ int main(int argc, char **argv) {
                     subprocess.run(
                         [*compiler, "-std=gnu17", "-DTOS", "-O2", "-Wall", "-Wextra",
                          "-Werror", "-Wno-sign-compare", "-ffunction-sections",
-                         "-fdata-sections", "-I", str(ROOT / "include"),
+                         "-fdata-sections", "-I", str(ROOT / "include"), "-I", str(ROOT),
                          "-iquote", str(ROOT / "src"), *flags,
                          *(["-DTEST_SIDEBAR_BLITTER"] if blitter else []), str(source),
                          "-Wl,--gc-sections", "-o", str(binary)], check=True,

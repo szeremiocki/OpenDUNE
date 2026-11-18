@@ -41,6 +41,7 @@ static bool s_blitterDestinationWord;
 static uint16 destinationHigh;
 static int s_machine_type;
 bool g_videoViewportBlitter, g_videoScrollPending;
+bool g_videoAtariMono;
 #define s_viewportBlitter g_videoViewportBlitter
 static bool s_blitterTileSetup, s_placeVisible, s_curVisible;
 static const uint16 *s_displayStream;
@@ -63,7 +64,7 @@ static unsigned takeoverPolls;
 static bool erased, completed, originalPlacement, originalCursor, started;
 static uint32 sourceLatch = 0xa39fbc71;
 static bool prefetched;
-static uint16 expectedRows, expectedWords;
+static uint16 expectedRows, expectedWords, physicalStride;
 static int direction;
 static uint8 *sourceStart, *destinationStart;
 static uintptr_t readPointer, writePointer;
@@ -80,10 +81,10 @@ static volatile uint8 *control(void) {
                    registers.last == 0xffff);
             assert(registers.words == expectedWords && registers.rows == expectedRows);
             assert(registers.sx == direction * 2 && registers.dx == direction * 2);
-            assert(registers.sy == direction * (160 - (expectedWords - 1) * 2));
+            assert(registers.sy == direction * (physicalStride - (expectedWords - 1) * 2));
             assert(registers.dy == registers.sy);
             uint32 last = direction < 0 ?
-                (uint32)(expectedRows - 1) * 160 + (expectedWords - 1) * 2 : 0;
+                (uint32)(expectedRows - 1) * physicalStride + (expectedWords - 1) * 2 : 0;
             readPointer = (uintptr_t)(sourceStart + last);
             writePointer = (uintptr_t)(destinationStart + last);
             assert((uintptr_t)s_planarBlit.pixels == readPointer);
@@ -113,7 +114,7 @@ static volatile uint8 *control(void) {
 static void fetch_source(void) {
     unsigned row = processed / expectedWords;
     if (direction < 0) row = expectedRows - row - 1;
-    uintptr_t rowStart = (uintptr_t)(sourceStart + row * 160);
+    uintptr_t rowStart = (uintptr_t)(sourceStart + row * physicalStride);
     uint16 value;
     assert(readPointer >= rowStart && readPointer + 2 <= rowStart + expectedWords * 2);
     memcpy(&value, (const void *)readPointer, 2);
@@ -246,14 +247,16 @@ static void reset(unsigned offset) {
 }
 static void prepare(unsigned offset, int x, int y, int w, int h, int dx, int dy) {
     reset(offset);
-    sourceStart = base + y * 160 + x / 2;
-    destinationStart = base + (y + dy) * 160 + (x + dx) / 2;
-    expectedRows = h;
-    expectedWords = w / 4;
+    unsigned divisor = g_videoAtariMono ? 4 : 2;
+    physicalStride = g_videoAtariMono ? 80 : 160;
+    sourceStart = base + y * 160 + x / divisor;
+    destinationStart = base + (y + dy) * 160 + (x + dx) / divisor;
+    expectedRows = g_videoAtariMono ? h * 2 : h;
+    expectedWords = w / divisor / 2;
     direction = destinationStart > sourceStart ? -1 : 1;
-    for (int row = 0; row < h; row++)
-        memcpy(expected + offset + (y + dy + row) * 160 + (x + dx) / 2,
-               before + offset + (y + row) * 160 + x / 2, w / 2);
+    for (unsigned row = 0; row < expectedRows; row++)
+        memcpy(expected + offset + (y + dy) * 160 + row * physicalStride + (x + dx) / divisor,
+               before + offset + y * 160 + row * physicalStride + x / divisor, w / divisor);
 }
 static void check(unsigned offset, int x, int y, int w, int h, int dx, int dy) {
     prepare(offset, x, y, w, h, dx, dy);
@@ -279,7 +282,7 @@ static void check(unsigned offset, int x, int y, int w, int h, int dx, int dy) {
     assert(placementCalls == 1u + originalPlacement && cursorSyncs == originalCursor);
     assert(s_placeVisible == originalPlacement);
     assert(launches == (unsigned)s_viewportBlitter);
-    assert(moves == (s_viewportBlitter ? 0u : (unsigned)h));
+    assert(moves == (s_viewportBlitter ? 0u : expectedRows));
     assert(s_blitterTileSetup == !s_viewportBlitter);
 }
 static void check_barriers(void) {
@@ -342,9 +345,11 @@ static void check_barriers(void) {
     s_blitterDestinationWord = false;
 }
 int main(void) {
+    for (unsigned mono = 0; mono < 2; mono++)
     for (unsigned mode = 0; mode < 2; mode++)
     for (unsigned offset = 0; offset <= 256; offset += 256)
     for (unsigned overlays = 0; overlays < 4; overlays++) {
+        g_videoAtariMono = mono;
         s_viewportBlitter = mode;
         originalPlacement = overlays & 1;
         originalCursor = overlays & 2;
@@ -374,6 +379,7 @@ int main(void) {
         assert(!erased && !launches && !moves && !placementCalls && !supervisorCalls);
         assert(!memcmp(screen.bytes, before, sizeof(before)));
     }
+    g_videoAtariMono = false;
     check_barriers();
     Video_Atari_DisplayListFree();
     return 0;

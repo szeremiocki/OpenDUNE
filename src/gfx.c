@@ -247,18 +247,12 @@ static uint8 GFX_ComposePlanarTile(const uint16 *pixels, const uint16 *masks,
                                   const uint16 *overlay, const uint16 *overlayMasks,
                                   uint16 *result, uint16 *resultMasks)
 {
-	uint16 row, plane, allMask = 0xffff, anyMask = 0;
+	uint16 row, allMask = 0xffff, anyMask = 0;
 
+	Video_Atari_ComposePlanarTile(pixels, masks, overlay, overlayMasks, result, resultMasks);
 	for (row = 0; row < 16; row++) {
-		uint16 mask = masks[row], overlayMask = overlayMasks == NULL ? 0 : overlayMasks[row];
-		resultMasks[row] = mask | overlayMask;
 		allMask &= resultMasks[row];
 		anyMask |= resultMasks[row];
-		for (plane = 0; plane < 4; plane++) {
-			uint16 value = pixels[row * 4 + plane] & mask;
-			if (overlay != NULL) value = (value & ~overlayMask) | (overlay[row * 4 + plane] & overlayMask);
-			result[row * 4 + plane] = value;
-		}
 	}
 	return allMask == 0xffff ? PLANAR_TILE_OPAQUE :
 	       anyMask == 0 ? PLANAR_TILE_EMPTY : PLANAR_TILE_MIXED;
@@ -359,7 +353,7 @@ void GFX_DrawPlanarSelectionTile(uint16 tileID, uint16 overlayID, uint16 x, uint
 	assert(overlayID == 0xffff || overlayID < s_planarTileCount);
 	if (s_selectionTiles[slot].tiles != tiles || s_selectionTiles[slot].style != style) {
 		const uint16 *pixels, *masks, *overlay = NULL, *overlayMasks = NULL;
-		uint16 row, plane, allMask = 0xffff;
+		uint16 row, edges[16], allMask = 0xffff;
 		if (s_selectionTiles[slot].style != 0) Video_Atari_DisplayListFlush();
 		if (overlayID == 0xffff) {
 			GFX_PreparePlanarFogTile();
@@ -385,13 +379,10 @@ void GFX_DrawPlanarSelectionTile(uint16 tileID, uint16 overlayID, uint16 x, uint
 			    (row == 15 && (selection & GFX_SELECTION_BOTTOM))) edge = 0xffff;
 			s_selectionTiles[slot].masks[row] |= edge;
 			allMask &= s_selectionTiles[slot].masks[row];
-			if (edge == 0) continue;
-			for (plane = 0; plane < 4; plane++) {
-				uint16 value = s_selectionTiles[slot].pixels[row * 4 + plane];
-				s_selectionTiles[slot].pixels[row * 4 + plane] =
-				    (value & ~edge) | ((pen & (1 << plane)) ? edge : 0);
-			}
+			edges[row] = edge;
 		}
+		Video_Atari_PaintPlanar(s_selectionTiles[slot].pixels, 4, 0, 0, 16, 16,
+		    edges, 1, pen, 0, 0);
 		s_selectionTiles[slot].tiles = tiles;
 		s_selectionTiles[slot].style = style;
 		s_selectionTiles[slot].opaque = allMask == 0xffff;

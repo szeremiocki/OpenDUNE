@@ -1,7 +1,7 @@
-/** @file src/gui/planar.h Write-only planar drawing primitives (TOS). */
+/** @file src/video/atari_planar.h Private native colour border kernels (TOS). */
 
-#ifndef GUI_PLANAR_H
-#define GUI_PLANAR_H
+#ifndef VIDEO_ATARI_PLANAR_H
+#define VIDEO_ATARI_PLANAR_H
 
 #ifdef TOS
 /* Draws a filled bordered rectangle (as GUI_DrawBorder with fill) into a planar target.

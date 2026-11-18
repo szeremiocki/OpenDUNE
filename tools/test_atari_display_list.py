@@ -10,11 +10,90 @@ import unittest
 
 from tools.test_unit_smoke_damage import run_harness
 from tools.test_viewport_sprite_cache import function
+from tools.test_dither_preparation import colour_tile_compositor
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class DisplayListTest(unittest.TestCase):
+    def test_cpu_cursor_handoff_with_an_active_display_list(self):
+        viewport = (ROOT / "src/gui/viewport.c").read_text()
+        start = viewport.index("\tif (planarViewport && s_tileCursorShown &&")
+        handoff = viewport[start:viewport.index("\n\ts_viewportSpriteFilterActive = false;", start)]
+        harness = r"""
+#include <assert.h>
+#include <stdint.h>
+#include <string.h>
+#include "types.h"
+#include "src/video/video.h"
+#include "src/os/endian.h"
+bool g_videoViewportBlitter, g_videoScrollPending;
+void (*g_videoTileCursorTail)(void);
+static unsigned cpuFrames, nativeFrames, terrainWrites;
+static bool planarViewport = true, s_tileCursorShown = true, damage = true;
+static bool s_viewportSpriteFilterActive;
+static uint16 s_tileCursorCol = 3, s_tileCursorRow = 2;
+static VideoAtariTileCursorShape s_tileCursorShape = TILE_CURSOR_TARGET;
+uint16 endian_bswap16(uint16 v) { return __builtin_bswap16(v); }
+uint32 endian_bswap32(uint32 v) { return __builtin_bswap32(v); }
+void Video_Atari_FinishScroll(void) { assert(false); }
+static void native_cursor(void) { nativeFrames++; }
+void Video_Atari_ExecuteDisplayList(const uint16 *stream)
+{
+    assert(!g_videoDisplayListActive && *stream++ == HTOBE16(0x4e71));
+    terrainWrites++;
+    if (*stream == HTOBE16(0x4eb9)) {
+        uint32 address;
+        memcpy(&address, stream + 1, sizeof(address));
+        assert(BETOH32(address) == (uint32)(uintptr_t)native_cursor);
+        native_cursor();
+        stream += 3;
+    }
+    assert(*stream == HTOBE16(0x4e75));
+}
+#include "src/video/atari_display_list.c"
+void Video_Atari_TileCursorFrame(uint16 col, uint16 row, VideoAtariTileCursorShape shape)
+{
+    assert(col == 3 && row == 2 && shape == TILE_CURSOR_TARGET);
+    Video_Atari_DisplayListFlush();
+    assert(!Video_Atari_DisplayListPending());
+    cpuFrames++;
+}
+static bool GUI_Widget_Viewport_SpriteDamageRect(int16 l, int16 t, int16 r, int16 b, bool force)
+{
+    assert(l == 48 && t == 72 && r == 64 && b == 88 && force);
+    return damage;
+}
+static void handoff(void)
+{
+/* HANDOFF */
+}
+int main(void)
+{
+    for (unsigned active = 0; active < 2; active++)
+        for (unsigned native = 0; native < 2; native++)
+            for (unsigned damaged = 0; damaged < 2; damaged++) {
+                cpuFrames = nativeFrames = terrainWrites = 0;
+                damage = damaged;
+                g_videoViewportBlitter = active;
+                g_videoTileCursorTail = native ? native_cursor : NULL;
+                Video_Atari_DisplayListBegin();
+                if (active) *g_videoDisplayListNext++ = HTOBE16(0x4e71);
+                handoff();
+                if (damaged && (!active || !native)) {
+                    assert(cpuFrames == 1 && nativeFrames == 0);
+                    assert(terrainWrites == active);
+                } else assert(cpuFrames == 0 && nativeFrames == 0);
+                Video_Atari_DisplayListEnd();
+                assert(nativeFrames == (active && native && damaged));
+                assert(terrainWrites == active);
+            }
+    Video_Atari_DisplayListFree();
+    return 0;
+}
+"""
+        run_harness(harness.replace("/* HANDOFF */", handoff))
+
     def test_native_cursor_tail_longword_store(self):
         compiler = shutil.which("m68k-atari-mint-gcc")
         if compiler is None:
@@ -48,7 +127,21 @@ bool g_videoViewportBlitter;
 bool g_videoScrollPending;
 void Video_Atari_FinishScroll(void) { assert(false); }
 static unsigned executions, commands;
-static uint16 screen[8], source = 0x5678;
+static uint16 screen[16000], source = 0x5678;
+#undef Video_Atari_Mono
+#define Video_Atari_Mono() false
+#define min(a,b) ((a) < (b) ? (a) : (b))
+#define max(a,b) ((a) > (b) ? (a) : (b))
+#define Video_Atari_GroupWords() 4
+#define Video_Atari_PlanarBase() ((uint8 *)screen)
+#define Video_Atari_ViewportProtectionOverlap(...) false
+#define Video_Atari_PresentProtectedSprite(p,m,...) ((void)(p), (void)(m), assert(false))
+#define Video_Atari_PlanarOverlaysOverlap(...) false
+#define Video_Atari_PresentPlanarSpriteOverlays(...) assert(false)
+#define Video_Atari_PublishMonoSpriteRows(...) assert(false)
+#define Video_Atari_PublishSpriteRows(...) assert(false)
+#define GFX_Screen_ClearDirtyRect(...) ((void)0)
+#define s_spriteHighlightEffect 0
 uint16 endian_bswap16(uint16 v) { return (v >> 8) | (v << 8); }
 uint32 endian_bswap32(uint32 v) { return __builtin_bswap32(v); }
 void Error(const char *fmt, ...) { (void)fmt; abort(); }
@@ -59,7 +152,7 @@ void Video_Atari_ExecuteDisplayList(const uint16 *stream) {
     executions++;
     while (*stream != HTOBE16(0x4e75)) {
         assert(*stream++ == HTOBE16(0x4e71));
-        commands++; screen[0] = source;
+        commands++; screen[40 * 80] = source;
     }
 }
 #include "src/video/atari_display_list.c"
@@ -87,12 +180,12 @@ int main(void) {
     append();
     assert(executions == 1);
     uint16 pixels[4] = {0xabcd,1,2,3}, masks[1] = {0x00ff};
-    Video_Atari_PublishPlanarSpritePlain(screen, pixels, masks, 1, 1, 1);
-    assert(executions == 2 && screen[0] == 0x56cd);
+    Video_Atari_PresentPlanarSpriteStrided(pixels, masks, 16, 1, 0, 40, 16);
+    assert(executions == 2 && screen[40 * 80] == 0x56cd);
     source = 0x1357; append();
     Video_Atari_DisplayListFlush(); /* eviction barrier precedes mutation */
     source = 0xffff;
-    assert(screen[0] == 0x1357 && executions == 3);
+    assert(screen[40 * 80] == 0x1357 && executions == 3);
     Video_Atari_DisplayListEnd();
     Video_Atari_DisplayListBegin();
     Video_Atari_DisplayListEnd();
@@ -109,7 +202,8 @@ int main(void) {
 """
         cpu = "\n".join(function(video, name) for name in (
             "Video_Atari_PlanarMergePlain", "Video_Atari_PlanarCopyGroup",
-            "Video_Atari_PublishPlanarSpritePlain"))
+            "Video_Atari_PublishPlanarSpritePlain", "Video_Atari_PublishCompactSpriteRows",
+            "Video_Atari_PresentPlanarSpriteStrided"))
         run_harness(harness.replace("/* CPU */", cpu))
 
     def test_unconditional_eviction_and_terrain_retag(self):
@@ -128,6 +222,8 @@ int main(void) {
 #include "src/os/endian.h"
 bool g_videoViewportBlitter = true;
 bool g_videoScrollPending;
+bool g_videoAtariMono;
+#include "src/video/atari_mono.c"
 void Video_Atari_FinishScroll(void) { assert(false); }
 static unsigned executions;
 static const uint16 *queued;
@@ -195,7 +291,8 @@ int main(void) {
     return 0;
 }
 """
-        terrain = "\n".join(function(gfx, name) for name in (
+        terrain = colour_tile_compositor((ROOT / "src/video/video_atari.c").read_text())
+        terrain += "\n" + "\n".join(function(gfx, name) for name in (
             "GFX_ComposePlanarTile", "GFX_PlanarCompositeSlot"))
         run_harness(harness.replace("/* VICTIM */", choose).replace("/* TERRAIN */", terrain))
 
@@ -260,11 +357,12 @@ int main(void) {
             "Video_Atari_QueueSpriteBlitCode", "Video_Atari_QueueSpriteBlitGeometry",
             "Video_Atari_ExecuteSpriteBlitCode", "Video_Atari_ExecuteSpriteBlitGeometry",
             "Video_Atari_BlitCompiledSprite", "Video_Atari_BlitterSetup", "Video_Atari_BlitterStart",
-            "Video_Atari_BlitMaskedHighlight", "Video_Atari_PresentPlanarSpriteUnshifted",
+            "Video_Atari_BlitMaskedHighlight", "Video_Atari_SpriteWordOffset",
+            "Video_Atari_PresentPlanarSpriteUnshifted",
             "Video_Atari_SetHalftonePattern",
             "Video_Atari_QueueTintBlit", "Video_Atari_PlacementTintBlit"))
         production += "\n" + video[video.index("static const uint8 s_tileCursorOperations"):
-                                  video.index("uint16 g_videoTileCursorTiles")]
+                                  video.index("static const uint16 *s_viewportFogWritable")]
         macros = video[video.index("#define BLITTER_SRC_XINC"):video.index("#define BLITTER_SKEW")]
         macros += video[video.index("#define BLITTER_SKEW"):video.index("\n", video.index("#define BLITTER_SKEW"))]
         source = r"""
@@ -279,12 +377,17 @@ enum { SCREEN_HEIGHT = 200 };
 bool g_videoDisplayListActive, g_videoBlitterTileSetup;
 bool g_videoScrollPending;
 bool g_videoViewportBlitter, g_atariSupervisorResident;
+bool g_videoAtariMono;
+static uint16 s_spriteHighlightEffect;
+static const struct { uint8 spriteYShift; bool blitterSpriteEffects; }
+    testBackend[2] = {{0, true}, {1, false}};
+#define s_planarBackend (&testBackend[g_videoAtariMono])
 uint8 *g_videoPlanarBase;
 #define s_planarBase g_videoPlanarBase
 #define s_viewportBlitter g_videoViewportBlitter
 static bool s_blitterDestinationWord;
-extern void Video_Atari_ConfigureBlitterDestination(uint32 wordOnly);
-uint16 s_curViewportTiles[10], g_videoTileCursorTiles[10];
+extern void Video_Atari_ConfigureBlitterDestination(uint32 wordOnly, uint32 mono);
+uint16 s_curViewportTiles[10];
 uint16 *s_planarTileHouse[6], *s_planarTiles;
 uint8 *s_planarTileReady;
 uint32 restoredCursor;
@@ -301,10 +404,12 @@ static const uint16 *s_displayStream;
 #define Video_Atari_ViewportProtectionOverlap(...) false
 #define Video_Atari_CursorRectOverlap(...) false
 #define Video_Atari_PlacementRectOverlap(...) false
+#define Video_Atari_PlanarOverlaysOverlap(...) false
 static unsigned unexpectedFallback;
+void Video_Atari_DisplayListFlush(void) { unexpectedFallback++; }
 #define Video_Atari_PresentProtectedSprite(...) (unexpectedFallback++)
 #define Video_Atari_RefreshViewportCursorUnshifted(...) (unexpectedFallback++)
-#define Video_Atari_PresentPlanarSpriteUnshiftedCPU(...) (unexpectedFallback++)
+#define Video_Atari_PublishSpriteRows(...) (unexpectedFallback++)
 #define GFX_Screen_ClearDirtyRect(...) ((void)0)
 extern void Video_Atari_RunDisplayList(const uint16 *stream);
 void Video_Atari_FinishScroll(void) { assert(false); }
@@ -333,7 +438,7 @@ void TestMasked(const uint16 *pixels, const uint16 *masks, uint16 *dst,
     s_planarBlit.pixels=pixels; s_planarBlit.masks=masks; s_planarBlit.dst=dst;
     s_planarBlit.plan=plan; s_planarBlit.code=code; s_planarBlit.height=4;
     s_planarBlit.writable=pattern; s_planarBlit.firstLine=line;
-    s_spriteHighlight=effect ? s_highlightRecipes[effect-1] : NULL;
+    s_spriteHighlightEffect=effect;
     Video_Atari_QueueMaskedBlit(protected);
 }
 void TestTint(uint16 *dst, const uint16 *pattern) {
@@ -353,7 +458,7 @@ void TestHalftone(const uint16 *pattern) {
     Video_Atari_SetHalftonePattern(pattern);
 }
 void TestHighlight(uint16 effect) {
-    s_spriteHighlight=effect ? s_highlightRecipes[effect-1] : NULL;
+    s_spriteHighlightEffect=effect;
 }
 unsigned TestFallback(void) {
     return unexpectedFallback;
@@ -486,8 +591,8 @@ void TestCursorFrame(uint8 *dst, const uint16 *pattern, uint16 pen) {
             cpu.hook_add(unicorn.UC_HOOK_MEM_WRITE, mmio, begin=0xffff8a00, end=0xffff8a3f)
             cpu.hook_add(unicorn.UC_HOOK_CODE, instruction)
             configure = symbols["_Video_Atari_ConfigureBlitterDestination"]
-            self.assertEqual(read(configure + 4, 2), 0x41fa)  # lea table(pc),a0
-            table = configure + 6 + struct.unpack(">h", cpu.mem_read(configure + 6, 2))[0]
+            lea = configure + bytes(cpu.mem_read(configure, 100)).index(b"\x41\xfa")
+            table = lea + 2 + struct.unpack(">h", cpu.mem_read(lea + 2, 2))[0]
             patches = tuple((read(table + i * 4, 4), opcode) for i, opcode in enumerate(
                 (0x21ca, 0x21ca, 0x21c8, 0x21c8, 0x21c8, 0x21c8)))
             for base, enabled, word_only in (
@@ -737,8 +842,7 @@ void TestCursorFrame(uint8 *dst, const uint16 *pattern, uint16 pen) {
             self.assertEqual(read(symbols["_g_videoDisplayListNext"],4),0x70012)
             for field, value, size in (("_g_videoViewportBlitter",0,1),
                                       ("_g_atariSupervisorResident",0,1),
-                                      ("_s_curViewportTiles",1,2),
-                                      ("_g_videoTileCursorTiles",1,2)):
+                                      ("_s_curViewportTiles",1,2)):
                 original = read(symbols[field],size)
                 write(symbols[field],value,size)
                 call("_GFX_QueueViewportPixelsFast",(0x52000,0,0),{"D2":0x12345678})
@@ -1000,6 +1104,80 @@ void TestCursorFrame(uint8 *dst, const uint16 *pattern, uint16 pen) {
                     self.assertEqual(bytes(cpu.mem_read(0x55002,32)),struct.pack(">16H",*mask_rows))
                     for name,value in saved.items():
                         self.assertEqual(cpu.reg_read(reg(name)),value,name)
+
+            # The same executable emits one-plane mono tiles and sprite recipes.
+            write(symbols["_g_videoAtariMono"], 1, 1)
+            call("_TestHighlight", (0,))
+            mono_masks = bytearray(64)
+            for y in range(8):
+                for x in range(64):
+                    if (x // 2 + y // 2) % 5:
+                        mono_masks[y * 8 + x // 8] |= 0x80 >> (x & 7)
+            mono_pixels = bytes(((i * 137 + 0x39) & 255) & mask
+                                for i, mask in enumerate(mono_masks))
+            cpu.mem_write(0x50000, mono_pixels)
+            cpu.mem_write(0x60000, bytes(mono_masks))
+            initial = bytes((i * 113 + 17) & 255 for i in range(32000))
+            for base, word_only in ((0x48262, False), (0x48260, True)):
+                call("_TestDestination", (base, 1))
+                cpu.ctl_remove_cache(0x10000, 0x20000)
+                self.assertEqual(cpu.reg_read(reg("D0")), word_only)
+                call("_Video_Atari_CompileSpriteBlitCode", (0x20000, 0x11))
+                cpu.ctl_remove_cache(0x20000, 0x20200)
+                cpu.mem_write(base, initial)
+                write(symbols["_g_videoBlitterTileSetup"], 0, 1)
+                write(symbols["_g_videoDisplayListActive"], 1, 1)
+                write(symbols["_g_videoDisplayListNext"], 0x70000, 4)
+                call("_Video_Atari_QueueTile", (0x52000, base + 40 * 160))
+                write(0x70012, 0x4e75, 2)
+                cpu.ctl_remove_cache(0x70000, 0x70014)
+                hardware_launches.clear()
+                call("_Video_Atari_RunDisplayList", (0x70000,))
+                expected = bytearray(initial)
+                for y in range(32):
+                    off = 40 * 160 + y * 80
+                    expected[off:off + 4] = tile[y * 4:y * 4 + 4]
+                self.assertEqual(bytes(cpu.mem_read(base, 32000)), bytes(expected))
+                self.assertEqual(hardware_launches, [(base + 40 * 160, 2, 32, 2, 3)])
+                before = read(symbols["_g_videoDisplayListNext"], 4)
+                call("_GFX_QueueViewportPixelsFast", (0x52000, 0, 0))
+                self.assertEqual(cpu.reg_read(reg("D0")), 0)
+                self.assertEqual(read(symbols["_g_videoDisplayListNext"], 4), before)
+                for sx in (*range(8), 8, 15, 16, 23, 31):
+                    for width in dict.fromkeys((1, min(8, 32 - sx), 32 - sx)):
+                        call("_Video_Atari_BuildSpriteBlitGeometry", (0x31000, 32, sx, width))
+                        cpu.ctl_remove_cache(0x31000, 0x31320)
+                        for phase in range(16):
+                            x, y = 64 + phase, 40
+                            expected = bytearray(initial)
+                            for py in range(8):
+                                for px in range(width * 2):
+                                    source = sx * 2 + px
+                                    sb = 0x80 >> (source & 7)
+                                    src = py * 8 + source // 8
+                                    if not mono_masks[src] & sb:
+                                        continue
+                                    dx = x * 2 + px
+                                    off = (y * 2 + py) * 80 + dx // 8
+                                    bit = 0x80 >> (dx & 7)
+                                    expected[off] = (expected[off] & ~bit) | (
+                                        bit if mono_pixels[src] & sb else 0)
+                            for queued, cached in ((True, False), (True, True), (False, True)):
+                                cpu.mem_write(base, initial)
+                                write(symbols["_g_videoDisplayListActive"], int(queued), 1)
+                                write(symbols["_g_videoDisplayListNext"], 0x70000, 4)
+                                call("_Video_Atari_PresentPlanarSpriteUnshifted",
+                                     (0x50000, 0x60000, 32, sx, width, 4, x, y,
+                                      0x31000 + phase * 50 if cached else 0, 0x20000))
+                                if queued:
+                                    end = read(symbols["_g_videoDisplayListNext"], 4)
+                                    write(end, 0x4e75, 2)
+                                    cpu.ctl_remove_cache(0x70000, end + 2)
+                                    call("_Video_Atari_RunDisplayList", (0x70000,))
+                                self.assertEqual(bytes(cpu.mem_read(base, 32000)), bytes(expected),
+                                                 (word_only, sx, width, phase, queued, cached))
+            call("_TestFallback")
+            self.assertEqual(cpu.reg_read(reg("D0")), 0)
 
 
 if __name__ == "__main__":

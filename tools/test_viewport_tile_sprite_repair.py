@@ -5,6 +5,7 @@ import unittest
 
 from tools.test_unit_smoke_damage import run_harness
 from tools.test_viewport_sprite_cache import blit_plan_type, blitter_model, function, inactive_display_list
+from tools.test_dither_preparation import colour_tile_compositor
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -123,9 +124,8 @@ static bool Video_Atari_TileOverlaysOverlap(uint8 *base, uint16 x, uint16 y) {
 }
 #define Video_Atari_BlitTile(...) assert(false)
 """
-        tail += "\n".join(function(video, name) for name in (
-            "Video_Atari_DrawPlanarTileFoggedCursor",
-            "Video_Atari_DrawPlanarTile", "Video_Atari_DrawPlanarTileFogged"))
+        tail += colour_tile_compositor(video)
+        tail += function(video, "Video_Atari_DrawPlanarTile")
         placement = video[video.index("typedef struct PlacementBlock"):
                           video.index("} PlacementBlock;") + len("} PlacementBlock;")]
         limits = "\n".join(line for line in header.splitlines()
@@ -533,9 +533,11 @@ int main(void) {
             }
             awaitingSprite = true;
             unsigned beforeMerges = mergeGroups;
-            if (fogged)
-                Video_Atari_DrawPlanarTileFogged(tile,tileMask,fogPixels,fogMask,64,72,NULL);
-            else
+            if (fogged) {
+                uint16 combined[64], written[16];
+                Video_Atari_ComposePlanarTile(tile,tileMask,fogPixels,fogMask,combined,written);
+                Video_Atari_DrawPlanarTile(combined,written,64,72,NULL);
+            } else
                 Video_Atari_DrawPlanarTile(tile,tileMask,64,72,opaque ? tile : NULL);
             assert(overlayMode ? mergeGroups > beforeMerges : mergeGroups == beforeMerges);
             composite();

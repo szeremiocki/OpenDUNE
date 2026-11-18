@@ -4,9 +4,9 @@
 	xdef	_Video_Atari_ExpandTileNibbles
 	xref	_g_videoViewportBlitter
 	xref	_g_videoPlanarBase
+	xref	_g_videoAtariMono
 	xref	_g_atariSupervisorResident
 	xref	_s_curViewportTiles
-	xref	_g_videoTileCursorTiles
 	xref	_s_planarTileHouse
 	xref	_s_planarTileReady
 	xref	_s_planarTiles
@@ -28,6 +28,8 @@ PLANAR_TILE_OPAQUE	equ	3
 
 _GFX_QueueViewportTileFast:
 	move.l	d2,-(sp)
+	tst.b	_g_videoAtariMono
+	bne	tile_fail
 	tst.b	_g_videoViewportBlitter
 	beq	tile_fail
 	tst.b	_g_atariSupervisorResident
@@ -40,8 +42,6 @@ _GFX_QueueViewportTileFast:
 	add.w	d1,d1
 	lea	_s_curViewportTiles,a0
 	move.w	(a0,d1.w),d0
-	lea	_g_videoTileCursorTiles,a0
-	or.w	(a0,d1.w),d0
 	btst	d2,d0
 	bne	tile_fail
 	lea	tile_rows(pc),a0
@@ -76,6 +76,8 @@ tile_fail:	moveq	#0,d0
 ; Same as above for an already composed opaque tile image at "pixels".
 _GFX_QueueViewportPixelsFast:
 	move.l	d2,-(sp)
+	tst.b	_g_videoAtariMono
+	bne	tile_fail
 	tst.b	_g_videoViewportBlitter
 	beq	tile_fail
 	tst.b	_g_atariSupervisorResident
@@ -88,8 +90,6 @@ _GFX_QueueViewportPixelsFast:
 	add.w	d1,d1
 	lea	_s_curViewportTiles,a0
 	move.w	(a0,d1.w),d0
-	lea	_g_videoTileCursorTiles,a0
-	or.w	(a0,d1.w),d0
 	btst	d2,d0
 	bne	tile_fail
 	lea	tile_rows(pc),a0

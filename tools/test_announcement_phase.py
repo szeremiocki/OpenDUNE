@@ -8,6 +8,7 @@ import tempfile
 import unittest
 
 from tools.test_viewport_sprite_cache import function
+from tools.test_dither_preparation import surface_backend
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,6 +31,7 @@ class AnnouncementPhaseTest(unittest.TestCase):
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include "table/strings.h"
 typedef uint8_t uint8;
 typedef int8_t int8;
 typedef uint16_t uint16;
@@ -127,6 +129,25 @@ static void GUI_Screen_Copy(int xs, int ys, int xd, int yd, int width, int heigh
     present(ys, height);
 }
 #else
+#include "video/atari_mono.h"
+#include "video/atari_mono_palette.h"
+#ifdef BANNER_MONO
+#define Video_Atari_Mono() true
+#else
+#define Video_Atari_Mono() false
+#endif
+#ifdef MONO_WHITE_IS_ZERO
+static bool s_monoWhiteIsOne = false;
+#else
+static bool s_monoWhiteIsOne = true;
+#endif
+/* MONO PEN */
+void *GFX_Screen_Get_ByIndex(Screen screenID) {
+    (void)screenID; assert(false); return NULL;
+}
+void Video_Atari_EncodePlanar(const uint8 *src, uint16 *dst, uint16 w, uint16 h) {
+    (void)src; (void)dst; (void)w; (void)h; assert(false);
+}
 static bool direct;
 static uint16 *s_planarTarget;
 static uint16 s_planarTargetStride, s_planarTargetRows, s_planarGroups;
@@ -151,7 +172,14 @@ static void Video_Atari_PresentPlanarWindow(const uint16 *pixels, uint16 x, uint
     unsigned offset = (pixels - encoded) / 80 + g_curWidgetYBase - y;
     for (unsigned row = 0; row < height; row++)
         for (unsigned col = x; col < x + width; col++)
-            for (unsigned p = 0; p < 4; p++) {
+            if (Video_Atari_Mono()) {
+                for (unsigned dy = 0; dy < 2; dy++) {
+                    unsigned mask = 3u << (14 - (col & 7) * 2);
+                    unsigned off = (y + row) * 80 + dy * 40 + col / 8;
+                    unsigned src = row * 80 + dy * 40 + col / 8;
+                    screen[off] = (screen[off] & ~mask) | (pixels[src] & mask);
+                }
+            } else for (unsigned p = 0; p < 4; p++) {
                 uint16 mask = 0x8000u >> (col & 15);
                 uint16 *dst = &screen[(y + row) * 80 + (col >> 4) * 4 + p];
                 *dst = (*dst & (uint16)~mask) | (pixels[row * 80 + (col >> 4) * 4 + p] & mask);
@@ -194,7 +222,14 @@ void GUI_DrawText(const char *text, int16 x, int16 y, uint8 fg, uint8 bg) {
                 unsigned ch = text[(col - x) / (6 + g_fontCharOffset)];
                 if ((ch + col + row) % 3 == 0) continue;
                 uint8 pen = Video_Atari_GetPalettePen(fg + g_colours[4] + (ch & 1));
-                for (unsigned p = 0; p < 4; p++) {
+                if (Video_Atari_Mono()) {
+                    uint16 fill[4], words[4];
+                    unsigned relative = (col - x) % (6 + g_fontCharOffset);
+                    Video_Atari_MonoPenWords(pen, relative - (col & 15), row - y, fill);
+                    Video_Atari_MonoReadGroup(s_planarTarget, 80, row, col / 16, words);
+                    Video_Atari_MonoMergeWords(words, fill, 0x8000u >> (col & 15));
+                    Video_Atari_MonoWriteGroup(s_planarTarget, 80, row, col / 16, words);
+                } else for (unsigned p = 0; p < 4; p++) {
                     uint16 mask = 0x8000u >> (col & 15);
                     uint16 *dst = &s_planarTarget[row * 80 + (col >> 4) * 4 + p];
                     *dst = (*dst & (uint16)~mask) | ((pen & (1u << p)) ? mask : 0);
@@ -212,6 +247,43 @@ void GUI_DrawText(const char *text, int16 x, int16 y, uint8 fg, uint8 bg) {
 }
 /* TEXT WRAPPER */
 /* ANIMATOR */
+enum { UNIT_TANK, UNIT_HARVESTER = 16, UNIT_SANDWORM = 25 };
+enum { ACTION_MOVE, ACTION_HARVEST, ACTION_STOP };
+enum { LST_ROCK, LST_SPICE, LST_THICK_SPICE, LANGUAGE_FRENCH = 1 };
+typedef struct {
+    struct { uint8 type; uint16 position; struct { uint16 variables[5]; } script; } o;
+    uint8 amount, actionID, house;
+    uint16 targetMove;
+} Unit;
+typedef struct { struct { uint16 stringID_abbrev; } o; } UnitInfo;
+static const UnitInfo g_table_unitInfo[26] = {
+    [UNIT_TANK] = {{1000}}, [UNIT_HARVESTER] = {{1001}}, [UNIT_SANDWORM] = {{1002}}
+};
+static const struct { const char *name; } g_table_houseInfo[] = {{"Atreides"}, {"Harkonnen"}};
+static struct { unsigned language; } g_config;
+static unsigned stringLookups, landscape;
+static bool targetStructure;
+static uint8 Unit_GetHouseID(Unit *unit) { return unit->house; }
+static uint16 Tile_PackTile(uint16 position) { return position; }
+static uint16 Map_GetLandscapeType(uint16 position) { (void)position; return landscape; }
+static void *Tools_Index_GetStructure(uint16 target) {
+    (void)target; return targetStructure ? &targetStructure : NULL;
+}
+static const char *String_Get_ByIndex(uint16 id) {
+    stringLookups++;
+    switch (id) {
+        case 1000: return "tank";
+        case 1001: return "harvester";
+        case 1002: return "sandworm";
+        case STR_IS_D_PERCENT_FULL: return " %u%% full";
+        case STR_IS_D_PERCENT_FULL_AND_HARVESTING: return " %u%% harvesting";
+        case STR_IS_D_PERCENT_FULL_AND_HEADING_BACK: return " %u%% returning";
+        case STR_IS_D_PERCENT_FULL_AND_AWAITING_PICKUP: return " %u%% waiting";
+        case STR_IS_D_PERCENT_FULL_AND_AWAITING_PICKUP + 4: return " empty waiting";
+        default: assert(false); return NULL;
+    }
+}
+/* UNIT STATUS */
 static void reset(unsigned phase) {
     g_announcementPhase = phase;
     GUI_DisplayText(NULL, -1);
@@ -274,6 +346,9 @@ int main(void) {
     /* Run both Atari backends, or the ordinary non-TOS renderer. */
     for (unsigned backend = 0; backend < 2; backend++) {
 #ifdef TOS
+#ifdef BANNER_MONO
+        if (backend == 0) continue;
+#endif
         direct = backend != 0;
 #else
         (void)backend;
@@ -328,6 +403,9 @@ int main(void) {
     }
     for (unsigned backend = 0; backend < 2; backend++) {
 #ifdef TOS
+#ifdef BANNER_MONO
+        if (backend == 0) continue;
+#endif
         direct = backend != 0;
 #else
         (void)backend;
@@ -445,6 +523,106 @@ int main(void) {
 #else
     (void)otherFont;
 #endif
+    /* Unchanged status skips formatting, but still renews its display hold. */
+#ifdef TOS
+    g_fontNew8p = &font;
+    g_curWidgetXBase = 1; g_curWidgetWidth = 38;
+    unsupported = false;
+#endif
+    reset(0);
+    Unit unit = {0};
+    unit.o.type = UNIT_TANK;
+    Unit_DisplayStatusText(&unit);
+    assert(!strcmp(displayed, "Atreides tank."));
+    unsigned lookups = stringLookups, oldFrames = frames;
+    uint32 completed = g_timerGUI;
+    g_timerGUI += 300;
+    Unit_DisplayStatusText(&unit);
+    assert(stringLookups == lookups && frames == oldFrames);
+    g_timerGUI = completed + 901;
+    poll();
+    assert(frames == oldFrames); /* The fast path extended the hold. */
+    unit.house = 1;
+    Unit_DisplayStatusText(&unit);
+    assert(stringLookups == lookups + 1 && !strcmp(displayed, "Harkonnen tank."));
+    lookups = stringLookups;
+    GUI_DisplayText(NULL, -1);
+    Unit_DisplayStatusText(&unit);
+    assert(stringLookups == lookups + 1 && !strcmp(displayed, "Harkonnen tank."));
+
+    /* Queued and replacement messages must prevent the early-out. */
+    reset(0);
+    Unit_DisplayStatusText(&unit);
+    completed = g_timerGUI;
+    GUI_DisplayText("notice", 1);
+    lookups = stringLookups; oldFrames = frames;
+    g_timerGUI += 300;
+    Unit_DisplayStatusText(&unit);
+    assert(stringLookups == lookups + 1 && frames == oldFrames);
+    g_timerGUI = completed + 901;
+    poll();
+    assert(!strcmp(displayed, "notice")); /* The queued message was not postponed. */
+    lookups = stringLookups;
+    Unit_DisplayStatusText(&unit);
+    assert(stringLookups == lookups + 1 && !strcmp(displayed, "Harkonnen tank."));
+    GUI_DisplayText("urgent", 8);
+    lookups = stringLookups;
+    Unit_DisplayStatusText(&unit);
+    assert(stringLookups == lookups + 1 && !strcmp(displayed, "urgent"));
+    assert(!strcmp(s_displayTextLine2, "Harkonnen tank."));
+
+    /* A repeated submission during a scroll still follows normal processing. */
+    reset(1);
+    Unit_DisplayStatusText(&unit);
+    lookups = stringLookups;
+    Unit_DisplayStatusText(&unit);
+    assert(stringLookups == lookups + 1 && frames == 1 && offsets[0] == 10);
+
+    /* Harvester text depends on amount and the resolved state, not movement alone. */
+    reset(0);
+    unit.o.type = UNIT_HARVESTER; unit.amount = 50; unit.actionID = ACTION_STOP;
+    Unit_DisplayStatusText(&unit);
+    assert(!strcmp(displayed, "Harkonnen harvester 50% full."));
+    lookups = stringLookups;
+    unit.o.position++;
+    Unit_DisplayStatusText(&unit);
+    assert(stringLookups == lookups);
+    unit.amount++;
+    Unit_DisplayStatusText(&unit);
+    assert(!strcmp(displayed, "Harkonnen harvester 51% full."));
+    unit.actionID = ACTION_HARVEST; landscape = LST_SPICE;
+    Unit_DisplayStatusText(&unit);
+    assert(!strcmp(displayed, "Harkonnen harvester 51% harvesting."));
+    landscape = LST_ROCK;
+    Unit_DisplayStatusText(&unit);
+    assert(!strcmp(displayed, "Harkonnen harvester 51% full."));
+    unit.actionID = ACTION_MOVE; targetStructure = true;
+    Unit_DisplayStatusText(&unit);
+    assert(!strcmp(displayed, "Harkonnen harvester 51% returning."));
+    unit.o.script.variables[4] = 1;
+    lookups = stringLookups;
+    Unit_DisplayStatusText(&unit);
+    assert(stringLookups == lookups); /* Returning takes precedence over pickup. */
+    targetStructure = false;
+    Unit_DisplayStatusText(&unit);
+    assert(!strcmp(displayed, "Harkonnen harvester 51% waiting."));
+    unit.amount = 0;
+    Unit_DisplayStatusText(&unit);
+    assert(!strcmp(displayed, "Harkonnen harvester empty waiting."));
+    reset(0);
+    unit.o.type = UNIT_SANDWORM;
+    Unit_DisplayStatusText(&unit);
+    assert(!strcmp(displayed, "sandworm."));
+    lookups = stringLookups;
+    unit.house ^= 1;
+    Unit_DisplayStatusText(&unit);
+    Unit_DisplayStatusText(NULL);
+    assert(stringLookups == lookups);
+    /* A new gameplay session rebuilds text after the message bar was reset. */
+    reset(0);
+    unit.o.type = UNIT_TANK; g_config.language = LANGUAGE_FRENCH;
+    Unit_DisplayStatusText(&unit);
+    assert(!strcmp(displayed, "tank Atreides."));
     return 0;
 }
 """
@@ -454,32 +632,48 @@ int main(void) {
         box = gui[gui.index("typedef struct PlanarBox"):
                   gui.index("\n#endif", gui.index("typedef struct PlanarBox"))]
         harness = harness.replace("/* PLANAR BOX */", box)
+        video = (ROOT / "src/video/video_atari.c").read_text()
+        harness = harness.replace("/* MONO PEN */",
+                                  function(video, "Video_Atari_MonoPenWords") + surface_backend(video))
         harness = harness.replace("/* TEXT WRAPPER */", function(gui, "GUI_DrawText_Wrapper"))
-        harness = harness.replace("/* ANIMATOR */", "\n".join(
+        state = gui[gui.index("static uint32 s_displayTextTimer;"):
+                    gui.index("\nbool GUI_KeepDisplayTextLiteral")]
+        harness = harness.replace("/* ANIMATOR */", state + "\n" + "\n".join(
             function(gui, name) for name in (
-                "GUI_DisplayTextBuffer", "GUI_DisplayText", "GUI_DisplayTextLiteral")))
+                "GUI_KeepDisplayTextLiteral", "GUI_DisplayTextBuffer",
+                "GUI_DisplayText", "GUI_DisplayTextLiteral")))
+        harness = harness.replace("/* UNIT STATUS */", function(
+            (ROOT / "src/unit.c").read_text(), "Unit_DisplayStatusText"))
         with tempfile.TemporaryDirectory(prefix="announcement-phase-") as directory:
             source = Path(directory) / "test.c"
             binary = Path(directory) / "test"
             source.write_text(harness)
             compiler = shlex.split(os.environ.get("CC", "cc"))
             flags = shlex.split(os.environ.get("TEST_CFLAGS", ""))
-            output = None
-            for platform in ([], ["-DTOS"], ["-DTOS", "-DBANNER_NO_RETENTION"]):
+            output = {}
+            for platform in ([], ["-DTOS"], ["-DTOS", "-DBANNER_NO_RETENTION"],
+                             ["-DTOS", "-DBANNER_MONO"],
+                             ["-DTOS", "-DBANNER_MONO", "-DBANNER_NO_RETENTION"],
+                             ["-DTOS", "-DBANNER_MONO", "-DMONO_WHITE_IS_ZERO"],
+                             ["-DTOS", "-DBANNER_MONO", "-DMONO_WHITE_IS_ZERO", "-DBANNER_NO_RETENTION"]):
                 source.write_text(harness.replace(
                     "retain = bannerLines", "retain = false && bannerLines"
                 ) if "-DBANNER_NO_RETENTION" in platform else harness)
                 subprocess.run(
                     [*compiler, "-std=c99", "-O2", "-Wall", "-Wextra", "-Werror",
-                     *flags, *platform, str(source), "-o", str(binary)],
+                     "-iquote", str(ROOT / "src"),
+                     "-I", str(ROOT / "include"),
+                     *flags, *platform, str(source), str(ROOT / "src/video/atari_mono.c"),
+                     "-o", str(binary)],
                     check=True
                 )
                 run = subprocess.run([str(binary)], capture_output=True, text=True)
                 self.assertEqual(run.returncode, 0, run.stderr)
-                if platform == ["-DTOS"]:
-                    output = run.stdout
-                elif "-DBANNER_NO_RETENTION" in platform:
-                    self.assertEqual(run.stdout, output)
+                key = tuple(flag for flag in platform if flag != "-DBANNER_NO_RETENTION")
+                if "-DBANNER_NO_RETENTION" in platform:
+                    self.assertEqual(run.stdout, output[key])
+                else:
+                    output[key] = run.stdout
 
 
 if __name__ == "__main__":

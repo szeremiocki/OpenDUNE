@@ -5,6 +5,7 @@ import unittest
 
 from tools.test_unit_smoke_damage import run_harness
 from tools.test_viewport_sprite_cache import function
+from tools.test_dither_preparation import colour_tile_compositor
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +35,7 @@ class TileCursorTailTest(unittest.TestCase):
             "Video_Atari_RestoreTileCursor",
             "Video_Atari_BlitTile",
             "Video_Atari_PublishViewportCursorRect", "Video_Atari_DrawPlanarTile"))
+        production += "\n" + colour_tile_compositor(video)
         production += "\n" + function(gfx, "GFX_ComposePlanarTile")
         production += "\n" + function(gfx, "GFX_DrawPlanarSelectionTile")
         harness = r"""
@@ -193,7 +195,6 @@ int main(void) {
     assert(g_videoTileCursorTail == Video_Atari_TileCursorTail);
     assert((uint16 *)g_videoTileCursorBlit.dst == screen + 72*80 + 16);
     Video_Atari_TileCursorBlit retainedFrame = g_videoTileCursorBlit;
-    assert(!g_videoTileCursorTiles[2]);
     assert(!Video_Atari_ViewportProtectionOverlap(64,72,16,16));
     Video_Atari_DisplayListBegin();
     s_placeTint.dst = (uint8 *)screen;
@@ -323,9 +324,8 @@ int main(void) {
     Video_Atari_EndViewportProtection();
     g_videoViewportBlitter = false;
     Video_Atari_BeginViewportProtection(true,4,2,false);
-    assert(!g_videoTileCursorTail && g_videoTileCursorTiles[2] == (1u << 4));
-    for (unsigned y = 0; y < 16; y++)
-        assert(s_tileCursorFogWritable[y] == (fog[y] & (uint16)~s_tileCursorPatterns[0][y]));
+    assert(g_videoTileCursorTail == Video_Atari_DrawTileCursorCPU);
+    assert(Video_Atari_ViewportWritable(4,2) == fog);
     Video_Atari_EndViewportProtection();
     Video_Atari_ResetViewportProtection();
 
@@ -404,7 +404,6 @@ int main(void) {
         g_videoViewportBlitter = false;
         Video_Atari_BeginViewportProtection(true,4,2,shape);
         for (unsigned y = 0; y < 16; y++) {
-            assert(s_tileCursorWritable[y] == (uint16)~s_tileCursorPatterns[shape][y]);
             memcpy(screen+(72+y)*80+16,tile+y*4,8);
         }
         Video_Atari_TileCursorFrame(4,2,shape);

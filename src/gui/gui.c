@@ -333,16 +333,24 @@ static void PlanarBox_Intersect(PlanarBox *b, const PlanarBox *o)
 }
 #endif
 
+static uint32 s_displayTextTimer;
+static bool s_displayTextScrolling;
+static char s_displayTextLine1[80], s_displayTextLine2[80], s_displayTextLine3[80];
+
+bool GUI_KeepDisplayTextLiteral(const char *str)
+{
+	assert(str != NULL);
+	if (str[0] == '\0' || s_displayTextScrolling ||
+	    s_displayTextLine2[0] != '\0' || s_displayTextLine3[0] != '\0' ||
+	    strcasecmp(str, s_displayTextLine1) != 0) return false;
+	s_displayTextTimer = g_timerGUI + 900;
+	return true;
+}
+
 /* Both entry points supply a terminated message of at most 79 characters. */
 static void GUI_DisplayTextBuffer(const char *buffer, int importance, bool keepAlive)
 {
-	static uint32 displayTimer = 0;  /* Timeout value for next update of the display. */
 	static uint16 textOffset;        /* Vertical position of text being scrolled. */
-	static bool scrollInProgress;    /* Text is being scrolled (and partly visible to the user). */
-
-	static char displayLine1[80];    /* Current line being displayed. */
-	static char displayLine2[80];    /* Next line (if scrollInProgress, it is scrolled up). */
-	static char displayLine3[80];    /* Next message to display (after scrolling next line has finished). */
 	static int16 line1Importance;    /* Importance of the displayed line of text. */
 	static int16 line2Importance;    /* Importance of the next line of text. */
 	static int16 line3Importance;    /* Importance of the next message. */
@@ -373,12 +381,12 @@ static void GUI_DisplayTextBuffer(const char *buffer, int importance, bool keepA
 		line2Importance = -1;
 		line3Importance = -1;
 
-		displayLine1[0] = '\0';
-		displayLine2[0] = '\0';
-		displayLine3[0] = '\0';
+		s_displayTextLine1[0] = '\0';
+		s_displayTextLine2[0] = '\0';
+		s_displayTextLine3[0] = '\0';
 
-		scrollInProgress = false;
-		displayTimer = 0;
+		s_displayTextScrolling = false;
+		s_displayTextTimer = 0;
 #ifdef TOS
 		bannerPlanarReady = false;
 		bannerBoxValid = false;
@@ -387,60 +395,60 @@ static void GUI_DisplayTextBuffer(const char *buffer, int importance, bool keepA
 	}
 
 	if (importance == -2) { /* Remove next line and next message. */
-		if (!scrollInProgress) {
+		if (!s_displayTextScrolling) {
 			line2Importance = -1;
-			displayLine2[0] = '\0';
+			s_displayTextLine2[0] = '\0';
 		}
 		line3Importance = -1;
-		displayLine3[0] = '\0';
+		s_displayTextLine3[0] = '\0';
 	}
 
-	if (!scrollInProgress) {
+	if (!s_displayTextScrolling) {
 		if (buffer[0] != '\0') {
 			/* Insert a new, distinct message according to its importance. */
-			if (strcasecmp(buffer, displayLine1) != 0 && strcasecmp(buffer, displayLine2) != 0 && strcasecmp(buffer, displayLine3) != 0) {
+			if (strcasecmp(buffer, s_displayTextLine1) != 0 && strcasecmp(buffer, s_displayTextLine2) != 0 && strcasecmp(buffer, s_displayTextLine3) != 0) {
 				if (importance >= line2Importance) {
-					strncpy(displayLine3, displayLine2, sizeof(displayLine3));
+					strncpy(s_displayTextLine3, s_displayTextLine2, sizeof(s_displayTextLine3));
 					fgColour3 = fgColour2;
 					line3Importance = line2Importance;
-					strcpy(displayLine2, buffer);
+					strcpy(s_displayTextLine2, buffer);
 					fgColour2 = 12;
 					line2Importance = importance;
 				} else if (importance >= line3Importance) {
-					strcpy(displayLine3, buffer);
+					strcpy(s_displayTextLine3, buffer);
 					line3Importance = importance;
 					fgColour3 = 12;
 				}
-			} else if (keepAlive && displayLine2[0] == '\0' && displayLine3[0] == '\0') {
-				displayTimer = g_timerGUI + 900;
+			} else if (keepAlive && s_displayTextLine2[0] == '\0' && s_displayTextLine3[0] == '\0') {
+				s_displayTextTimer = g_timerGUI + 900;
 			}
 		} else {
-			if (displayLine1[0] == '\0' && displayLine2[0] == '\0') return;
+			if (s_displayTextLine1[0] == '\0' && s_displayTextLine2[0] == '\0') return;
 		}
 
-		if (line2Importance <= line1Importance && displayTimer >= g_timerGUI) return;
+		if (line2Importance <= line1Importance && s_displayTextTimer >= g_timerGUI) return;
 
-		scrollInProgress = true;
+		s_displayTextScrolling = true;
 #ifdef TOS
 		bannerPlanarReady = false;
 		bannerInternal = bannerInternal || !g_textDisplayNeedsUpdate;
 #endif
 		textOffset = (g_announcementPhase == 0) ? 0 : 10;
-		displayTimer = 0;
+		s_displayTextTimer = 0;
 		if (g_announcementPhase != 0) return;
 	}
 
-	if (scrollInProgress) {
+	if (s_displayTextScrolling) {
 		uint16 oldWidgetId;
 		uint16 height;
 
 		if (buffer[0] != '\0') {
-			if (strcasecmp(buffer, displayLine2) != 0 && importance >= line3Importance) {
-				strcpy(displayLine3, buffer);
+			if (strcasecmp(buffer, s_displayTextLine2) != 0 && importance >= line3Importance) {
+				strcpy(s_displayTextLine3, buffer);
 				line3Importance = importance;
 			}
 		}
-		if (displayTimer > g_timerGUI) return;
+		if (s_displayTextTimer > g_timerGUI) return;
 
 		oldWidgetId = Widget_SetCurrentWidget(7);
 
@@ -462,15 +470,8 @@ static void GUI_DisplayTextBuffer(const char *buffer, int importance, bool keepA
 				uint8 pass;
 
 				if (pen != bannerBackgroundPen) {
-					uint16 *d = bannerBackground;
-					uint16 n;
-
-					for (n = 0; n < 24 * SCREEN_WIDTH / 16; n++) {
-						*d++ = (pen & 1) ? 0xFFFF : 0;
-						*d++ = (pen & 2) ? 0xFFFF : 0;
-						*d++ = (pen & 4) ? 0xFFFF : 0;
-						*d++ = (pen & 8) ? 0xFFFF : 0;
-					}
+					Video_Atari_PaintPlanar(bannerBackground, SCREEN_WIDTH / 4,
+					    0, 0, SCREEN_WIDTH, 24, NULL, 0, pen, 0, 0);
 					bannerBackgroundPen = pen;
 				}
 
@@ -493,7 +494,7 @@ static void GUI_DisplayTextBuffer(const char *buffer, int importance, bool keepA
 					done = true;
 					for (line = 0; line < 2; line++) {
 						const uint16 y = line == 0 ? 2 : 13;
-						const char *text = line == 0 ? displayLine2 : displayLine1;
+						const char *text = line == 0 ? s_displayTextLine2 : s_displayTextLine1;
 						const uint8 colour = line == 0 ? fgColour2 : fgColour1;
 						bool retain;
 
@@ -508,13 +509,10 @@ static void GUI_DisplayTextBuffer(const char *buffer, int importance, bool keepA
 						}
 						if (bannerLines[line].groups != 0 && !full) {
 							PlanarBox cleared = { left & ~15, y, (left & ~15) + bannerLines[line].groups * 16, y + g_fontNew8p->height };
-							uint16 row;
-
 							if (cleared.bottom > 24) cleared.bottom = 24;
-							for (row = cleared.top; row < cleared.bottom; row++)
-								memcpy(bannerPlanar + row * (SCREEN_WIDTH / 4) + (cleared.left >> 2),
-								       bannerBackground + row * (SCREEN_WIDTH / 4) + (cleared.left >> 2),
-								       bannerLines[line].groups * 4 * sizeof(uint16));
+							Video_Atari_CopyPlanar(bannerPlanar, SCREEN_WIDTH / 4, cleared.left, cleared.top,
+							    bannerBackground, SCREEN_WIDTH / 4, cleared.left, cleared.top,
+							    cleared.right - cleared.left, cleared.bottom - cleared.top);
 							PlanarBox_Union(&touched, &cleared);
 						}
 						memset(&bannerLines[line].box, 0, sizeof(bannerLines[line].box));
@@ -556,9 +554,9 @@ static void GUI_DisplayTextBuffer(const char *buffer, int importance, bool keepA
 			GUI_DrawFilledRectangle(0, 0, SCREEN_WIDTH - 1, 23, g_curWidgetFGColourNormal);
 
 			GUI_DrawText_Wrapper("", g_curWidgetXBase << 3, 2, fgColour2, 0, 0x012);
-			GUI_DrawText(displayLine2, g_curWidgetXBase << 3, 2, fgColour2, 0);
+			GUI_DrawText(s_displayTextLine2, g_curWidgetXBase << 3, 2, fgColour2, 0);
 			GUI_DrawText_Wrapper("", g_curWidgetXBase << 3, 13, fgColour1, 0, 0x012);
-			GUI_DrawText(displayLine1, g_curWidgetXBase << 3, 13, fgColour1, 0);
+			GUI_DrawText(s_displayTextLine1, g_curWidgetXBase << 3, 13, fgColour1, 0);
 
 			g_textDisplayNeedsUpdate = false;
 #ifdef TOS
@@ -609,30 +607,30 @@ static void GUI_DisplayTextBuffer(const char *buffer, int importance, bool keepA
 
 		if (textOffset != 0) {
 			if (line3Importance <= line2Importance) {
-				displayTimer = g_timerGUI + 1;
+				s_displayTextTimer = g_timerGUI + 1;
 			}
 			textOffset -= min(textOffset, g_announcementPhase);
 			return;
 		}
 
 		/* Finished scrolling, move line 2 to line 1. */
-		strncpy(displayLine1, displayLine2, sizeof(displayLine1));
+		strncpy(s_displayTextLine1, s_displayTextLine2, sizeof(s_displayTextLine1));
 		fgColour1 = fgColour2;
 		line1Importance = (line2Importance != 0) ? line2Importance - 1 : 0;
 
 		/* And move line 3 to line 2. */
-		strncpy(displayLine2, displayLine3, sizeof(displayLine2));
+		strncpy(s_displayTextLine2, s_displayTextLine3, sizeof(s_displayTextLine2));
 		line2Importance = line3Importance;
 		fgColour2 = fgColour3;
-		displayLine3[0] = '\0';
+		s_displayTextLine3[0] = '\0';
 
 		line3Importance = -1;
 #ifdef TOS
 		bannerInternal = bannerInternal || !g_textDisplayNeedsUpdate;
 #endif
 		g_textDisplayNeedsUpdate = true;
-		displayTimer = g_timerGUI + (line2Importance <= line1Importance ? 900 : 1);
-		scrollInProgress = false;
+		s_displayTextTimer = g_timerGUI + (line2Importance <= line1Importance ? 900 : 1);
+		s_displayTextScrolling = false;
 		return;
 	}
 }
@@ -683,7 +681,7 @@ static uint16 GUI_PlanarTarget_Text(const char *text, uint16 x, uint16 y)
 
 	if (firstGroup >= available || y >= s_planarTargetRows) return 0;
 	groups = GUI_Glyph_Line(g_fontCurrent, g_colours, text, x & 15, min(available - firstGroup, (uint16)GLYPH_MAX_GROUPS),
-	                        s_planarTargetRows - y, s_planarTarget + y * s_planarTargetStride + firstGroup * 4,
+	                        s_planarTargetRows - y, s_planarTarget + Video_Atari_PlanarOffset(s_planarTargetStride, firstGroup * 16, y),
 	                        s_planarTargetStride, NULL, 0);
 	if (groups == 0 || groups == GLYPH_LINE_UNSUPPORTED) return groups;
 	if (s_planarTouch != NULL) {
@@ -696,30 +694,20 @@ static uint16 GUI_PlanarTarget_Text(const char *text, uint16 x, uint16 y)
 
 static void GUI_RenderGlyph(const FontChar *fc, uint8 *screen, uint16 x, uint16 remainingWidth);
 
-/* Slow path for a glyph the planar renderer cannot draw: renders it chunky and merges the pixels. */
+/* Individual-glyph fallback through the same native preparation boundary. */
 static void GUI_PlanarTarget_Chunky(const FontChar *fc, uint16 x, uint16 y)
 {
 	uint8 chunky[32 * 32];
-	uint16 i, j;
+	uint16 width, height;
 
 	if (fc->width > 32 || g_fontCurrent->height > 32 || (x >> 4) * 4 + 4 > s_planarTargetStride) return;
+	if (y >= s_planarTargetRows || fc->width == 0 || g_fontCurrent->height == 0) return;
+	width = min(fc->width, s_planarTargetStride * 4 - x);
+	height = min(g_fontCurrent->height, s_planarTargetRows - y);
 	memset(chunky, 0, (size_t)fc->width * g_fontCurrent->height);
 	GUI_RenderGlyph(fc, chunky, 0, 0);
-	for (j = 0; j < g_fontCurrent->height && y + j < s_planarTargetRows; j++) {
-		for (i = 0; i < fc->width && x + i < SCREEN_WIDTH; i++) {
-			const uint8 colour = chunky[j * fc->width + i];
-			const uint8 pen = Video_Atari_GetPalettePen(colour);
-			uint16 *dst = s_planarTarget + (y + j) * s_planarTargetStride + ((x + i) >> 4) * 4;
-			const uint16 bit = 0x8000u >> ((x + i) & 15);
-			uint16 plane;
-
-			if (colour == 0) continue;
-			for (plane = 0; plane < 4; plane++) {
-				if (pen & (1 << plane)) dst[plane] |= bit;
-				else dst[plane] &= ~bit;
-			}
-		}
-	}
+	Video_Atari_BlitChunkyTransparent(s_planarTarget + y * s_planarTargetStride,
+	    s_planarTargetStride, s_planarTargetStride / 4, chunky, fc->width, width, height, x);
 	if (s_planarTouch != NULL) {
 		PlanarBox box = { x & ~15, y, (x + fc->width + 15) & ~15, min(y + g_fontCurrent->height, s_planarTargetRows) };
 
@@ -807,7 +795,11 @@ static void GUI_TextPlanar_PresentGlyph(const uint8 *src, uint16 width, uint16 h
 				masks[row * groups + (bit >> 4)] |= 0x8000u >> (bit & 15);
 		}
 	}
-	Video_Atari_EncodePlanar(chunky.bytes, pixels, alignedWidth, height);
+	{
+		const AtariDitherSource source = {chunky.bytes, alignedWidth, height, alignedWidth,
+			-(int16)phase, 0, 1, 1};
+		Video_Atari_PreparePlanar(&source, NULL, pixels);
+	}
 	Video_Atari_PresentPlanarText(pixels, masks, alignedWidth, height, x & ~15, y);
 }
 #endif
@@ -990,9 +982,9 @@ static bool GUI_DrawTextPlanarCached(const char *string, int16 left, int16 top)
 			uint16 *masks = pixels + groups * height * 4;
 			const uint16 firstGroup = i * (TEXT_PLANAR_STRIP_WIDTH >> 4);
 
+			Video_Atari_CopyPlanar(pixels, groups * 4, 0, 0,
+			    canvas.pixels, TEXT_PLANAR_MAX_WIDTH / 4, firstGroup * 16, 0, stripWidth, height);
 			for (row = 0; row < height; row++) {
-				memcpy(pixels + row * groups * 4, canvas.pixels + (row * (TEXT_PLANAR_MAX_WIDTH / 16) + firstGroup) * 4,
-				       (size_t)groups * 4 * sizeof(uint16));
 				memcpy(masks + row * groups, canvas.masks + row * (TEXT_PLANAR_MAX_WIDTH / 16) + firstGroup,
 				       (size_t)groups * sizeof(uint16));
 			}
@@ -2135,6 +2127,17 @@ static uint16 GUI_ViewportResidentSpriteID(uint16 slot)
 	return 183 + slot - 27;
 }
 
+static void GUI_ViewportEncodePlanar(const uint8 *chunky, uint16 *pixels,
+	uint16 stride, uint16 sourceWidth, uint16 height, int flags)
+{
+	const AtariDitherSource source = {chunky, stride, height, stride,
+		(flags & DRAWSPRITE_FLAG_RTL) ? sourceWidth - 1 : 0,
+		(flags & DRAWSPRITE_FLAG_BOTTOMUP) ? height - 1 : 0,
+		(flags & DRAWSPRITE_FLAG_RTL) ? -1 : 1,
+		(flags & DRAWSPRITE_FLAG_BOTTOMUP) ? -1 : 1};
+	Video_Atari_PreparePlanar(&source, NULL, pixels);
+}
+
 static void GUI_InitViewportResidentSprites(void)
 {
 	uint32 bytes = 0;
@@ -2219,7 +2222,7 @@ static void GUI_InitViewportResidentSprites(void)
 			memset(scratch.bytes, 0, stride * mask->height);
 			GUI_ViewportDecodeLayer(scratch.bytes, stride, mask->height,
 			    mask->sprite, 0, 0, flags, NULL);
-			Video_Atari_EncodePlanar(scratch.bytes, pixels, stride, mask->height);
+			GUI_ViewportEncodePlanar(scratch.bytes, pixels, stride, mask->width, mask->height, flags);
 			for (row = 0; row < mask->height; row++) {
 				uint16 sourceRow = (flags & DRAWSPRITE_FLAG_BOTTOMUP) ?
 				    mask->height - 1 - row : row;
@@ -2234,13 +2237,7 @@ static void GUI_InitViewportResidentSprites(void)
 				Error("Inconsistent resident sprite plane recipe %u/%u\n", id, flags);
 				exit(1);
 			}
-			for (word = 0; word < groups * mask->height; word++) {
-				uint16 plane;
-				for (plane = 0; plane < 4; plane++) {
-					masks[word * 4 + plane] = compact[word];
-					pixels[word * 4 + plane] &= compact[word];
-				}
-			}
+			Video_Atari_ExpandSpriteMasks(pixels, masks, compact, stride, mask->height);
 			image->width = stride;
 			image->height = mask->height;
 			image->bounds = *bounds;
@@ -2317,7 +2314,7 @@ static ViewportPlanarComponent *GUI_ViewportPlanarComponent(ViewportSpriteMask *
 		memset(scratch.bytes, 0, stride * mask->height);
 		GUI_ViewportDecodeLayer(scratch.bytes, stride, mask->height, mask->sprite, 0, 0,
 		                        flags, palette);
-		Video_Atari_EncodePlanar(scratch.bytes, entry->pixels, stride, mask->height);
+		GUI_ViewportEncodePlanar(scratch.bytes, entry->pixels, stride, mask->width, mask->height, flags);
 		for (row = 0; row < mask->height; row++) {
 			uint16 sourceRow = (flags & DRAWSPRITE_FLAG_BOTTOMUP) ? mask->height - 1 - row : row;
 			uint16 group;
@@ -2608,7 +2605,7 @@ static void GUI_ViewportPlanarSpriteRepair(const ViewportPlanarImage *entry, con
 				    &entry->blitGeometry[x & 15] : NULL, entry->blitCode);
 			} else {
 				offset = (y - top) * groups + ((x - left) >> 4);
-				Video_Atari_PresentPlanarSpriteStrided(pixels + offset * 4,
+				Video_Atari_PresentPlanarSpriteStrided(pixels + Video_Atari_PlanarOffset(groups * 4, x - left, y - top),
 				    entry->masks + offset, endX - x, endY - y, x, y, entry->width);
 			}
 #ifdef VIEWPORT_DEBUG_DAMAGE
@@ -2666,7 +2663,7 @@ static void GUI_ViewportPresentPlanarSprite(const ViewportPlanarImage *entry,
 			uint16 offset = (row - top) * groups + ((column - left) >> 4);
 			GUI_Widget_Viewport_RepairTiles(column, row, column + 16, end);
 			GFX_Screen_SetDirtySource(DIRTY_SRC_SPRITE);
-			Video_Atari_PresentPlanarSpriteStrided(pixels + offset * 4,
+			Video_Atari_PresentPlanarSpriteStrided(pixels + Video_Atari_PlanarOffset(groups * 4, column - left, row - top),
 			    entry->masks + offset, 16, end - row, column, row, entry->width);
 			row = end;
 		}
@@ -2856,11 +2853,7 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 				uint8 passes = Video_Atari_BuildSpriteBlitRecipe(entry->pixels, entry->masks, word);
 				Video_Atari_CompileSpriteBlitCode(&entry->blitCode, passes);
 			}
-			while (word != 0) {
-				uint16 plane, opacity = entry->masks[--word];
-				for (plane = 0; plane < 4; plane++)
-					entry->masks[word * 4 + plane] = opacity;
-			}
+			Video_Atari_ExpandSpriteMasks(entry->pixels, entry->masks, entry->masks, stride, height);
 			Video_Atari_BuildSpriteBlitGeometry(entry->blitGeometry, stride,
 			    boundsLeft - minX, boundsRight - boundsLeft);
 		}
@@ -4495,8 +4488,9 @@ static void GUI_BuildCreditsPlanarCache(uint16 paletteGeneration)
 	uint32 chunkyWords[16 * CREDITS_CACHE_GLYPH_SIZE / sizeof(uint32)] = {0};
 	uint8 *chunky = (uint8 *)chunkyWords;
 	uint16 pixels[CREDITS_CACHE_GLYPH_SIZE * 4];
-	uint16 glyph, position, line, plane;
+	uint16 masks[CREDITS_CACHE_GLYPH_SIZE], glyph, position, line;
 
+	for (line = 0; line < CREDITS_CACHE_GLYPH_SIZE; line++) masks[line] = 0xff00;
 	Video_Atari_EncodePlanar((const uint8 *)s_creditsBackground, s_creditsPlanarBackground,
 	                         CREDITS_CACHE_WIDTH, CREDITS_CACHE_HEIGHT);
 	for (glyph = 0; glyph < lengthof(s_creditsGlyphs); glyph++) {
@@ -4509,14 +4503,8 @@ static void GUI_BuildCreditsPlanarCache(uint16 paletteGeneration)
 
 			s_creditsPlanarMasks[position][0] = 0xff00u >> shift;
 			s_creditsPlanarMasks[position][1] = shift > 8 ? (uint16)(0xff00u << (16 - shift)) : 0;
-			for (line = 0; line < CREDITS_CACHE_GLYPH_SIZE; line++) {
-				uint16 *row = s_creditsPlanarGlyphs[position][glyph][line];
-				for (plane = 0; plane < 4; plane++) {
-					uint16 bits = pixels[line * 4 + plane] & 0xff00u;
-					row[plane] = bits >> shift;
-					row[plane + 4] = shift > 8 ? (uint16)(bits << (16 - shift)) : 0;
-				}
-			}
+			Video_Atari_ShiftPlanarGroup(pixels, masks, CREDITS_CACHE_GLYPH_SIZE,
+			    shift, &s_creditsPlanarGlyphs[position][glyph][0][0]);
 		}
 	}
 	s_creditsPlanarPaletteGeneration = paletteGeneration;
@@ -4527,25 +4515,13 @@ static void GUI_BuildCreditsPlanarCache(uint16 paletteGeneration)
 static void GUI_DrawCreditsPlanarRows(uint16 *buffer, uint16 position, uint16 glyph,
                                      uint16 sourceRow, uint16 top, uint16 height)
 {
-	const uint16 (*rows)[8];
-	uint16 *dst;
-	uint16 keepFirst, keepSecond;
+	uint16 group = (position * 10 + 4) >> 4;
 
 	assert(position < 6 && glyph < lengthof(s_creditsGlyphs));
 	assert(sourceRow + height <= CREDITS_CACHE_GLYPH_SIZE && top + height <= CREDITS_CACHE_HEIGHT);
-	rows = &s_creditsPlanarGlyphs[position][glyph][sourceRow];
-	dst = buffer + top * (CREDITS_CACHE_WIDTH / 4) + ((position * 10 + 4) >> 4) * 4;
-	keepFirst = (uint16)~s_creditsPlanarMasks[position][0];
-	keepSecond = (uint16)~s_creditsPlanarMasks[position][1];
-	while (height-- != 0) {
-		const uint16 *src = *rows++;
-		uint16 plane;
-		for (plane = 0; plane < 4; plane++) dst[plane] = (dst[plane] & keepFirst) | src[plane];
-		if (keepSecond != 0xffff) {
-			for (plane = 0; plane < 4; plane++) dst[plane + 4] = (dst[plane + 4] & keepSecond) | src[plane + 4];
-		}
-		dst += CREDITS_CACHE_WIDTH / 4;
-	}
+	Video_Atari_MergePlanarRows(buffer + Video_Atari_PlanarOffset(CREDITS_CACHE_WIDTH / 4, group * 16, top),
+	    CREDITS_CACHE_WIDTH / 4, &s_creditsPlanarGlyphs[position][glyph][sourceRow][0], 8,
+	    s_creditsPlanarMasks[position], 0, min(2, CREDITS_CACHE_WIDTH / 16 - group), height);
 }
 
 static uint16 GUI_ComposeCreditsPlanar(const char *oldText, const char *newText,
@@ -4581,17 +4557,10 @@ static uint16 GUI_ComposeCreditsPlanar(const char *oldText, const char *newText,
 		} else {
 			/* Opaque glyphs replace rows 1..8; remove any old scrolling pixels in row 0. */
 			if (!force && lastOld[position] != lastNew[position]) {
-				uint16 plane, part;
-				for (part = 0; part < 2; part++) {
-					uint16 mask = s_creditsPlanarMasks[position][part];
-					if (mask == 0) continue;
-					for (plane = 0; plane < 4; plane++) {
-						uint16 index = (group + part) * 4 + plane;
-						s_creditsPlanarDisplay[index] =
-						    (s_creditsPlanarDisplay[index] & (uint16)~mask) |
-						    (s_creditsPlanarBackground[index] & mask);
-					}
-				}
+				uint32 start = Video_Atari_PlanarOffset(CREDITS_CACHE_WIDTH / 4, group * 16, 0);
+				Video_Atari_MergePlanarRows(s_creditsPlanarDisplay + start, CREDITS_CACHE_WIDTH / 4,
+				    s_creditsPlanarBackground + start, CREDITS_CACHE_WIDTH / 4,
+				    s_creditsPlanarMasks[position], 0, min(2, CREDITS_CACHE_WIDTH / 16 - group), 1);
 			}
 			GUI_DrawCreditsPlanarRows(s_creditsPlanarDisplay, position, glyph, 0, 1, CREDITS_CACHE_GLYPH_SIZE);
 		}
@@ -4618,7 +4587,8 @@ static bool GUI_PresentCreditsPlanar(uint16 groups, uint16 x, uint16 y)
 		} while ((groups & (1u << end)) != 0);
 		if (!Video_Atari_PresentRestoreStrided(x + first * 16, y, (end - first) * 16,
 		                                     CREDITS_CACHE_HEIGHT,
-		                                     (const uint8 *)(s_creditsPlanarDisplay + first * 4),
+		                                     (const uint8 *)(s_creditsPlanarDisplay +
+		                                         Video_Atari_PlanarOffset(CREDITS_CACHE_WIDTH / 4, first * 16, 0)),
 		                                     CREDITS_CACHE_WIDTH / 2)) {
 			s_creditsPlanarDisplayReady = false;
 			Warning("Credits planar presentation failed\n");

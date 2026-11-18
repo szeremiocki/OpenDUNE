@@ -18,7 +18,7 @@ class HalftoneCursorTest(unittest.TestCase):
         end = video.index("static PlacementTint s_placeTint;", start)
         production = inactive_display_list() + video[start:end + len("static PlacementTint s_placeTint;")]
         production += "\n" + video[video.index("static const uint16 s_tileCursorPatterns"):
-                                  video.index("uint16 g_videoTileCursorTiles")]
+                                  video.index("static const uint16 *s_viewportFogWritable")]
         header = (ROOT / "src/video/video.h").read_text()
         production = header[header.index("typedef enum VideoAtariTileCursorShape"):
                             header.index("} VideoAtariTileCursorShape;") +

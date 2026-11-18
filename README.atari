@@ -877,7 +877,10 @@ pointers prepared once per viewport, without a C wrapper or backup merging.
 Tile-cursor mode suppresses the classic battlefield pointer and excludes
 placement mode. Halftone upload/reuse policy is unchanged. Immediate
 compatibility writers restore it before returning and invalidate
-halftone cache knowledge. CPU viewport cursor protection is unchanged.
+halftone cache knowledge. CPU writers use the same draw-last tile cursor,
+not per-pixel cursor exclusion masks. Obsolete cursor-protection checks have
+been removed together from C and assembly; active mouse/placement backup
+protection and sprite fog masks remain.
 Masked viewport tiles, including cached structure-selection borders, use a
 24-byte command calling a fixed aligned CPU merge kernel in the same list as
 BLITTER launches. They no longer force an immediate draw or cursor repair.
@@ -1054,10 +1057,14 @@ Other channels and PSG I/O mixer bits are preserved. Sound stop/shutdown
 also cancels an owned list and explicitly mutes the tone. No busy wait or
 framerate limit is introduced.
 
-The ST/STE Mentat picture loop prototypes predecoded planar WSA playback.
+The ST/STE Mentat picture loop and intro support predecoded native WSA playback
+in both ST-Low colour and ST-High mono.
 WSA_LoadFile() has an allowPlanar argument: false preserves original
 chunky loading; true opts compatible ST/STE callers into prepared assets.
-The picture loop checks for a standalone NAME.PWS recording first. On a
+The picture loop checks for a standalone NAME.PWS (colour) or NAME.PWM
+(mono) recording first. Both use TOS-compatible 8.3 names and coexist:
+switching display modes never replaces or deletes the other mode's cache.
+On a
 miss, all frames are reconstructed with the original decoder, converted
 through the shared palette-map/c2p encoder, and saved immediately. These
 files live in the personal/save directory (SAVES on TOS by default, or
@@ -1065,7 +1072,7 @@ savedir from opendune.ini), never inside or in place of the original PAK.
 A cache hit loads the recording without loading or decoding the source WSA.
 The initial chunky Mentat composition remains opted out.
 
-The recording stores its initial planar image and aligned native skip/XOR
+The recording stores its initial native image and logical-group skip/XOR
 transitions, without Format80 compression. During first-time preparation
 it is allocated beside the original WSA payload; cache hits need no source
 payload or decoder workspace. The WSA object's frame format selects the
@@ -1075,25 +1082,44 @@ publication: no WSA decompression, file reads, quantization or c2p.
 Leaving a subject frees its runtime recording and overlay, but keeps the
 PWS file for subsequent visits and game sessions.
 
-PWS files contain a PWS4 marker, little-endian 16-bit frame count, width,
-height and flags (bit 0: non-looping route; bit 1: continuation source),
-followed by frameCount+1 blocks. Each
+Both extensions use a PWS5 marker, little-endian 16-bit frame count, width,
+height and flags (bit 0: non-looping route; bit 1: continuation source;
+bit 2: screen-width intro canvas),
+a little-endian 32-bit native layout/polarity identifier and 32-bit mapping
+fingerprint, and a 32-byte bitmap of original palette slots used by the
+animation. The fingerprint covers every dither phase of those slots, not
+just their flat 16-pen assignments; unrelated palette slots and hardware
+palette brightness do not invalidate a recording.
+These are followed by frameCount+1 blocks. Each
 block has a little-endian 32-bit byte length and big-endian words. Block 0
 is the initial image; blocks 1..frameCount-1 are transitions and the last
 block returns to frame 0. Commands and planes use the same native player
 as live preparation. File bounds, dimensions and command runs are checked;
 invalid/truncated recordings warn and are rebuilt from the original.
 Write failures warn and retain working in-memory playback.
-There are no build, source-content or palette/mapping revision checks:
-delete the corresponding PWS files when testing changed assets or mapping.
+Incompatible layouts, mono polarity or palette/dither mappings warn and are
+rebuilt from the original WSA. Older PWS4 colour recordings lack a mapping
+identity and are upgraded by a one-time rebuild, only when colour mode loads
+them; mono never opens them. Source-content changes are not fingerprinted:
+delete the corresponding cache when replacing the original animation.
+
+Prepared objects retain their asset mapping for their lifetime. Install the
+source palette before loading; callers needing palette-animated indexed
+pixels must leave allowPlanar false. This does not change the existing
+mono fade policy. The intro reinstalls INTRO.PAL's mapping before each
+recording lookup/preparation, including after mono's uniform-colour effects.
+No new direct-VGA dither policy is selected by this recording refactor.
 
 A private clean animation image prevents descriptions and shoulders from
-corrupting XOR history. Their planar overlay is built once and refreshed
+corrupting XOR history. Their native overlay is built once and refreshed
 when the description's visible line count changes. Opaque black shoulder
 pixels retain their opacity. Contiguous changed groups and matching row
 bands are published with masked right edges and normal cursor protection;
 unchanged frames do not republish the picture. A non-looping animation
 retains its final image until the subject closes.
+Native group access and masked overlay composition handle both mono physical
+rows without representation-specific loops in WSA. Dither is anchored to the
+animation's source origin, not to the location of each published dirty region.
 Pending legacy dirty groups inside the picture are repaired from its
 retained planar image, never from SCREEN_1's WSA storage.
 The direct-sprite scratch buffer holds 4,608 bytes, enough for the 96x48
@@ -1121,10 +1147,45 @@ original XOR seed. Preparation does not consume the scene's playback budget.
 The intro stops with a warning if native preparation fails, rather than
 resuming the broken SCREEN_0 accumulator path.
 
-Native publication supports the intro's X=8 placement with masked left and
-right edges. The existing GUI dissolve loop is shared by chunky and native
-sources: the native variant publishes 8x2 patches from the retained WSA
-image, preserving the original shuffle and delays without SCREEN_1 or c2p.
+For the standard 304x120 intro window at (8,24), WSA_LoadIntro() records a
+320-pixel-wide native canvas with the picture's placement baked in and eight
+black pixels on each side. Borders use native black, including inverted mono
+polarity, independently of palette slot zero; picture dithering retains its
+original source phase. Original WSA dimensions and continuation seeds remain
+304x120. The canvas flag distinguishes these recordings from older compact
+intro caches, which are rebuilt once in the selected display mode only.
+Colour and mono caches still coexist. The first shot at (0,0), other source
+geometries, Mentat pictures, logos and non-intro callers keep their compact or
+original paths.
+
+The padded canvas matches the live screen's native stride in both modes.
+Its complete initial/current image establishes the screen once; subsequent
+forward/reverse/loop transitions XOR directly into screen memory, without
+copying through the retained/composed publication path. The intro exclusively
+owns that 320x120 region during direct playback; subtitles remain below it.
+The intro recording needs no separate composed buffer. Its initial and retained
+images occupy 37.5 KiB together, plus variable transition streams and metadata.
+Offscreen frame requests or regional publication first retain the live image,
+then use private reconstruction again; the next onscreen request reestablishes
+the complete baseline before direct XOR resumes.
+
+The existing GUI dissolve loop is shared by chunky and native sources: the
+native variant publishes 8x2 patches from the retained WSA image, accounting
+for the baked-in border while preserving the original shuffle and delays
+without SCREEN_1 or c2p. Once the dissolve completes, a complete baseline
+publication includes the borders before direct XOR playback begins.
+Native intro scheduling drains pending cooperative timer ticks after loading
+before setting the scene deadline. Dissolve time is outside the animation
+budget, including the final unpumped patch work. Remaining mode-2 tail frames
+retain their calculated delay, speech pumping and keyboard skipping; rendering
+speed is no longer their only throttle. An exhausted budget warns and uses a
+nonzero nominal frame delay instead of unpaced draining.
+
+Temporary intro timing diagnostics are removed; normal playback does not log
+per-scene statistics or sample per-frame timing. Genuine failure warnings
+remain. The existing timer rates are unchanged: Video_Tick's configured cadence
+is not the animation clock, and the ST/STE Timer_Tick remains 50 Hz.
+
 For the ST/STE intro visibility experiment, subtitle entries 215..220 retain
 their original INTRO.PAL red ramp. They are neither initially blackened nor
 remapped to each subtitle's colour/fade ramp. Subtitle-only palette fades are

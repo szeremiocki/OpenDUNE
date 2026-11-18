@@ -86,7 +86,7 @@ gui/mentat.c
 gui/security.c
 #if TOS
 gui/glyph.c
-gui/planar.c
+video/atari_planar.c
 gui/sidebar.c
 #endif
 gui/viewport.c
@@ -208,6 +208,8 @@ unit.c
 video/video_fps.c
 #if TOS
 video/c2p1x1_8.s
+video/atari_dither.c
+video/atari_mono.c
 video/atari_viewport_tile.s
 video/atari_sprite_blit.s
 video/atari_display_list.c
@@ -216,7 +218,7 @@ video/atari_sidebar.c
 video/atari_sidebar_health.s
 video/atari_copyrows.s
 video/atari_cursor.s
-gui/planar_rows.s
+video/atari_planar_rows.s
 #else
 video/hqx_init.c
 video/hq2x_8b.c
@@ -248,7 +250,7 @@ gui/gui.h
 gui/mentat.h
 gui/security.h
 gui/glyph.h
-gui/planar.h
+video/atari_planar.h
 gui/sidebar.h
 gui/widget.h
 house.h
@@ -289,6 +291,10 @@ timer.h
 tools.h
 unit.h
 video/video.h
+video/atari_dither.h
+video/atari_dither_palette.h
+video/atari_mono.h
+video/atari_mono_palette.h
 video/atari_sidebar.h
 video/video_fps.h
 video/hqx_common.h

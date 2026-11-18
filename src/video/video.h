@@ -19,6 +19,69 @@ extern void Video_SetOffset(uint16 offset);
 extern void * Video_GetFrameBuffer(uint16 size);
 
 #ifdef TOS
+#include "atari_dither.h"
+
+/* Selected once from the existing ST/STE resolution, before asset loading. */
+extern bool g_videoAtariMono;
+#define Video_Atari_Mono() (g_videoAtariMono)
+extern void Video_Atari_ExpandSpriteMasks(uint16 *pixels, uint16 *expanded,
+	const uint16 *compact, uint16 width, uint16 height);
+/* Private native surfaces use word strides per logical row in either layout.
+ * Offset/copy X coordinates and copy width are multiples of 16. Copy sources
+ * and destinations must not overlap. These operations never publish or drain. */
+extern uint32 Video_Atari_PlanarOffset(uint16 stride, uint16 x, uint16 y);
+extern void Video_Atari_CopyPlanar(uint16 *dst, uint16 dstStride, uint16 dstX, uint16 dstY,
+	const uint16 *src, uint16 srcStride, uint16 srcX, uint16 srcY, uint16 width, uint16 height);
+/* Paint a preclipped rectangle, preserving pixels outside compact logical masks.
+ * NULL masks fills the rectangle. Masks start at the group containing x.
+ * originX/Y are stable asset coordinates at (x,y), not screen coordinates.
+ * Opacity updates and destination initialization remain the caller's policy. */
+extern void Video_Atari_PaintPlanar(uint16 *dst, uint16 stride, uint16 x, uint16 y,
+	uint16 width, uint16 height, const uint16 *masks, uint16 maskStride,
+	uint8 pen, int16 originX, int16 originY);
+/* Filled border; dst starts at its first logical row. Colours are logical
+ * fill, bottom/right, top/left and corner indices. Requires width>=2,height>=3.
+ * The colour bulk kernel requires vertically repeating margins in edge groups. */
+extern void Video_Atari_DrawPlanarBorder(uint16 *dst, uint16 stride, uint16 x,
+	uint16 width, uint16 height, const uint8 colours[4]);
+typedef struct VideoAtariGlyph {
+	const uint16 *masks;
+	uint16 x;
+} VideoAtariGlyph;
+
+typedef struct VideoAtariGlyphValue {
+	uint16 offset;
+	uint8 colour;
+} VideoAtariGlyphValue;
+
+typedef struct VideoAtariGlyphRun {
+	const VideoAtariGlyph *glyphs;
+	const VideoAtariGlyphValue *values;
+	uint16 count, valueCount, firstRow, rows;
+} VideoAtariGlyphRun;
+
+/* A shared layout of logical glyph masks, in overwrite order. Each value has
+ * one mask per row; colours are original palette slots, zero is transparent.
+ * Dither phase starts at each glyph's source origin, not its destination x.
+ * The caller owns fit checks and optional compact-mask accumulation storage. */
+extern void Video_Atari_DrawPlanarGlyphs(const VideoAtariGlyphRun *run,
+	uint16 *dst, uint16 stride, uint16 *masks, uint16 maskStride);
+/* Private transparent chunky merge, at most 32x32 logical source pixels.
+ * Source byte zero is transparent; nonzero pixels may map to an opaque zero.
+ * Geometry is preclipped to the target; source origin is (0,0). */
+extern void Video_Atari_BlitChunkyTransparent(uint16 *dst, uint16 stride, uint16 dstGroups,
+	const uint8 *src, uint16 srcStride, uint16 width, uint16 height, uint16 x);
+/* Group-aligned private row merge. Pointers select the first logical group;
+ * native row strides retain the full surfaces. A zero mask stride repeats
+ * the first compact mask row. No opacity accumulation or screen publication. */
+extern void Video_Atari_MergePlanarRows(uint16 *dst, uint16 dstStride,
+	const uint16 *src, uint16 srcStride, const uint16 *masks, uint16 maskStride,
+	uint16 groups, uint16 height);
+/* Shift a masked 16-pixel source into a 32-pixel private surface. Writes all
+ * eight native words per logical row, including transparent zero padding. */
+extern void Video_Atari_ShiftPlanarGroup(const uint16 *src, const uint16 *masks,
+	uint16 height, uint16 shift, uint16 *dst);
+
 /* Direct-to-planar mouse cursor, see src/video/video_atari.c.
  * On ST/STE the cursor is composited straight into the planar screen after
  * the chunky to planar conversion, so it never dirties SCREEN_0. */
@@ -158,16 +221,41 @@ extern bool Video_Atari_PresentRestore(int16 x, int16 y, uint16 width, uint16 he
  * The buffer points to the first published group, not the start of its row. */
 extern bool Video_Atari_PresentRestoreStrided(int16 x, int16 y, uint16 width, uint16 height,
                                             const uint8 *buffer, uint16 srcStride);
-/* Encode tightly packed, word-aligned chunky rows with the current mapping
- * in one call, with byte strides width (source) and width/2 (output).
- * Width must be a multiple of 16. The full-width window API below retains
- * screen x coordinates, with masked edges and cursor-aware presentation. */
+/* Compatibility asset encoders: current palette, source origin (0,0), steps
+ * (+1,+1). Existing callers supply group-aligned widths and compact output.
+ * Use PreparePlanar below for explicit source phases and partial widths.
+ * These prepare private assets, not destination-screen rectangles. */
 extern uint16 Video_Atari_GetPaletteGeneration(void);
 extern uint8 Video_Atari_GetPalettePen(uint8 colour);
 extern void Video_Atari_EncodePlanar(const uint8 *src, uint16 *pixels, uint16 width, uint16 height);
-/* Encode a rectangle from even-strided chunky rows into tightly packed planar rows. */
+/* As above, reading source rows with an explicit byte stride. */
 extern void Video_Atari_EncodePlanarStrided(const uint8 *src, uint16 srcStride,
                                            uint16 *pixels, uint16 width, uint16 height);
+typedef struct VideoAtariPlanarCacheInfo {
+	const char *extension;
+	uint32 format;
+} VideoAtariPlanarCacheInfo;
+
+/* Stable disk identity; hardware brightness does not affect prepared pixels.
+ * The mapping hash covers all phases of the original slots in colours[32]. */
+extern void Video_Atari_GetPlanarCacheInfo(VideoAtariPlanarCacheInfo *info);
+extern uint32 Video_Atari_PlanarMappingHash(const uint8 colours[32]);
+/* Native transitions use logical group skip/count pairs, four opaque words
+ * per changed group, and a zero/zero terminator. Runs never cross a logical
+ * row. NULL output measures bytes. Replay reports changed logical groups. */
+extern uint32 Video_Atari_EncodePlanarDelta(uint16 *dst, const uint16 *previous,
+	const uint16 *next, uint16 groups, uint16 height);
+extern void Video_Atari_ApplyPlanarDelta(uint16 *pixels, const uint16 *delta,
+	uint16 groups, uint32 *dirty);
+/* Phase-aware private asset preparation for the startup-selected ST backend.
+ * NULL lookup selects the active palette's constant-pen baseline. Explicit
+ * lookups select an asset policy, not a destination-screen phase.
+ * Output has ceil(width/16)*4 words per logical row: four planes in ST-Low,
+ * or two consecutive physical one-plane rows in ST-High. Right padding is zero.
+ * Opacity remains owned by the caller. Source limits are 320x200, with no
+ * source alignment requirement. Does not publish pixels or alter caches. */
+extern void Video_Atari_PreparePlanar(const AtariDitherSource *source,
+	const AtariDitherLookup *lookup, uint16 *pixels);
 extern void Video_Atari_PresentPlanarWindow(const uint16 *pixels, uint16 x, uint16 y,
                                            uint16 width, uint16 height);
 /* Compact planar rows; X is group aligned, a partial right group is masked. */
@@ -193,16 +281,16 @@ extern void Video_Atari_FinishScroll(void);
  * opacity masks so an opaque logical colour 0 remains opaque. */
 extern void Video_Atari_InitTileMapping(const uint8 *palette);
 extern void Video_Atari_DecodePlanarTile(const uint8 *src, const uint8 *palette, uint16 *pixels);
+/* Compose private native 16x16 tiles, overwriting all 64 pixel words and
+ * 16 compact opacity words. No output initialization is required.
+ * overlay and overlayMasks must either both be present or both be NULL. */
+extern void Video_Atari_ComposePlanarTile(const uint16 *pixels, const uint16 *masks,
+	const uint16 *overlay, const uint16 *overlayMasks, uint16 *result, uint16 *resultMasks);
 /* copyPixels is NULL or a ground/overlay source proven fully opaque by
  * cached tile mask classifications. */
 extern bool Video_Atari_QueueViewportTile(const uint16 *pixels, uint16 col, uint16 row);
 extern void Video_Atari_DrawPlanarTile(const uint16 *pixels, const uint16 *masks, uint16 x, uint16 y,
                                       const uint16 *copyPixels);
-/* Fog-covered ground never reaches the screen: merge both cached images
- * before the single destination write, preserving overlay backgrounds. */
-extern void Video_Atari_DrawPlanarTileFogged(const uint16 *pixels, const uint16 *masks,
-                                          const uint16 *fogPixels, const uint16 *fogMasks,
-                                          uint16 x, uint16 y, const uint16 *copyPixels);
 extern void Video_Atari_ResetViewportProtection(void);
 extern void Video_Atari_SetViewportFog(uint16 col, uint16 row, const uint16 *writable);
 extern void Video_Atari_BeginViewportProtection(bool cursor, uint16 col, uint16 row, VideoAtariTileCursorShape shape);
@@ -223,7 +311,7 @@ extern void Video_Atari_ComposePlanarSpriteClipped(uint16 *dstPixels, uint16 *ds
                                                  uint16 width, uint16 height, int16 x, int16 y);
 extern void Video_Atari_BlitPlanarSprite(uint16 *dst, uint16 dstStride, uint16 dstGroups,
                                          const uint16 *pixels, const uint16 *masks,
-                                         uint16 width, uint16 height, uint16 x);
+                                         uint16 width, uint16 height, int16 x);
 /* Live planar screen, row stride in words. Begin restores a cursor drawn over the rectangle and
  * returns the group containing x at row y; End drops the c2p dirty state of the rectangle. */
 #define VIDEO_ATARI_LIVE_STRIDE 80
@@ -312,8 +400,8 @@ typedef struct Video_Atari_SpriteBlitGeometry {
 extern void Video_Atari_BuildSpriteBlitGeometry(Video_Atari_SpriteBlitGeometry geometry[16],
                                               uint16 sourceWidth, uint16 sourceX, uint16 width);
 extern void Video_Atari_CompileSpriteBlitCode(Video_Atari_SpriteBlitCode *code, uint8 passes);
-/* Visible rectangle of an unshifted composite, up to 80x64. Masks duplicate
- * opacity across four interleaved planes; colour bits outside opacity are zero.
+/* Visible rectangle of an unshifted composite, up to 80x64. Masks expand
+ * opacity into the native bitmap layout; pixel bits outside opacity are zero.
  * sourceX and x are pixel offsets. geometry is NULL for calculated geometry,
  * or matching full-image phase code; vertical clipping is OK. */
 extern void Video_Atari_PresentPlanarSpriteUnshifted(const uint16 *pixels, const uint16 *masks,
@@ -321,12 +409,12 @@ extern void Video_Atari_PresentPlanarSpriteUnshifted(const uint16 *pixels, const
                                                    uint16 width, uint16 height, uint16 x, uint16 y,
                                                    const Video_Atari_SpriteBlitGeometry *geometry,
                                                    const Video_Atari_SpriteBlitCode *code);
-/* Cheap target-highlight effects done on bitplanes instead of a palette remap.
- * effect 0 is off, 1..VIDEO_ATARI_HIGHLIGHT_EFFECTS select a plane recipe. */
+/* Target-highlight IDs, implemented by the native backend without a palette remap.
+ * effect 0 is off, 1..VIDEO_ATARI_HIGHLIGHT_EFFECTS select a native effect. */
 #define VIDEO_ATARI_HIGHLIGHT_EFFECTS 9
 /* Applies to the following Video_Atari_PresentPlanarSprite*() calls; 0 resets. */
 extern void Video_Atari_SetSpriteHighlight(uint16 effect);
-/* Writes `groups` interleaved 4-plane groups of pixels recoloured by effect. */
+/* Recolours `groups` native 16-logical-pixel groups without changing opacity. */
 extern void Video_Atari_HighlightPixels(uint16 *dst, const uint16 *pixels, const uint16 *masks,
                                         uint16 groups, uint16 effect);
 #endif /* TOS */

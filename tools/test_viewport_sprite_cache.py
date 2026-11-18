@@ -71,7 +71,7 @@ def inactive_display_list():
 """
 
 
-def blitter_model(video, tiles=False, protected=False):
+def blitter_model(video, tiles=False, protected=False, native=False):
     """Execute production register setup against a persistent 32-bit latch."""
     model = r"""
 #define ST_PLANAR_LINE_BYTES 160
@@ -183,7 +183,7 @@ static void Video_Atari_ExecuteSpriteBlitCode(const Video_Atari_SpriteBlitCode *
                                              const Video_Atari_SpriteBlitPlan *plan) {
     const uint16 *pc = code->words;
     uintptr_t scratch = 0;
-    Video_Atari_BlitterSetup(plan, 8);
+    Video_Atari_BlitterSetup(plan, plan->destinationXinc);
     for (;;) {
         uint16 opcode = test_be_word(*pc++);
         if (opcode == 0x4e75) return;
@@ -253,10 +253,20 @@ static bool Video_Atari_CursorRectOverlap(uint8 *base, uint16 first, uint16 end,
 }
 #define Video_Atari_RefreshViewportCursorUnshifted(...) assert(false)
 """
+    if not native:
+        production += """
+static const struct { unsigned spriteYShift; bool blitterSpriteEffects, blitterProtectedSprites; }
+    testSpriteBackend = {0, true, true};
+#define s_planarBackend (&testSpriteBackend)
+#define Video_Atari_PublishMonoSpriteRows(...) assert(false)
+"""
     for name in ("Video_Atari_BlitCompiledSprite",
                  "Video_Atari_BlitMaskedHighlight", "Video_Atari_ShiftSpriteWord",
+                 "Video_Atari_ReadColourSpriteMask", "Video_Atari_ReadSpriteMask", "Video_Atari_ReadColourSprite",
                  "Video_Atari_RefreshViewportCursorUnshifted",
-                 "Video_Atari_PresentPlanarSpriteUnshiftedCPU",
+                 * (("Video_Atari_PublishMonoSpriteRows",) if native else ()),
+                 "Video_Atari_PublishColourSpriteRows", "Video_Atari_PublishSpriteRows",
+                 "Video_Atari_SpriteWordOffset",
                  "Video_Atari_PresentPlanarSpriteUnshifted"):
         if name == "Video_Atari_RefreshViewportCursorUnshifted" and not tiles:
             continue
@@ -265,7 +275,7 @@ static bool Video_Atari_CursorRectOverlap(uint8 *base, uint16 first, uint16 end,
             body = body.replace("\n{\n", "\n{\n"
                 "    if (geometry != NULL) cachedPlanDraws++;\n"
                 "    blitterPixels = (uintptr_t)pixels; blitterMasks = (uintptr_t)masks;\n"
-                "    blitterReadStride = sourceWidth / 2;\n", 1)
+                "    blitterReadStride = Video_Atari_Mono() ? sourceWidth / 4 : sourceWidth / 2;\n", 1)
         production += "\n" + body
     return (inactive_display_list() + ("" if protected else
             inactive_protection()) + blit_plan_type() + model +

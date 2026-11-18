@@ -5,6 +5,7 @@
 #include <string.h>
 #include "types.h"
 #include "video.h"
+#include "atari_mono.h"
 #include "atari_sidebar.h"
 #include "../os/common.h"
 #include "../os/endian.h"
@@ -49,8 +50,8 @@ static uint16 *Sidebar_Interleaved(uint16 *out, uint16 width)
 	out = Sidebar_Long(out, 0x21fc, 0x00020002, 0x8a20);
 	out = Sidebar_Long(out, 0x21fc, 0xffffffff, 0x8a28);
 	out = Sidebar_Long(out, 0x21fc, 0xffff0002, 0x8a2c);
-	out = Sidebar_Word(out, 0x31fc, 162 - width / 2, 0x8a30);
-	out = Sidebar_Word(out, 0x31fc, width / 4, 0x8a36);
+	out = Sidebar_Word(out, 0x31fc, Video_Atari_Mono() ? 82 - width / 4 : 162 - width / 2, 0x8a30);
+	out = Sidebar_Word(out, 0x31fc, Video_Atari_Mono() ? width / 8 : width / 4, 0x8a36);
 	return Sidebar_Word(out, 0x11fc, 0, 0x8a3d);
 }
 
@@ -70,10 +71,32 @@ size_t Video_Atari_CompileSidebarBlit(VideoAtariSidebarBlit *code,
 	*out++ = HTOBE16(0x4239); /* Invalidate the shared BLITTER register residency at playback. */
 	*out++ = HTOBE16((uint32)(uintptr_t)&g_videoBlitterTileSetup >> 16);
 	*out++ = HTOBE16((uint32)(uintptr_t)&g_videoBlitterTileSetup);
-	if (masks == NULL && phase == 0 && width == sourceWidth) {
+	if (Video_Atari_Mono() && (phase != 0 || width != sourceWidth)) {
+		uint16 physicalPhase = (phase * 2) & 15;
+		words = (physicalPhase + width * 2 + 15) / 16;
+		sourceWords = (width * 2 + 15) / 16;
+		suppress = sourceWords < words;
+		first = 0xffffu >> physicalPhase;
+		last = 0xffffu << (15 - ((physicalPhase + width * 2 - 1) & 15));
+		if (phase >= 8) {
+			*out++ = HTOBE16(0x41e8); /* lea 2(a0),a0 */
+			*out++ = HTOBE16(2);
+		}
+		out = Sidebar_Long(out, 0x21fc, ((uint32)2 << 16) |
+			(uint16)(sourceWidth / 4 - (words - 1) * 2 + (suppress ? 2 : 0)), 0x8a20);
+		out = Sidebar_Long(out, 0x21fc, ((uint32)(words == 1 ? first & last : first) << 16) | 0xffff, 0x8a28);
+		out = Sidebar_Long(out, 0x21fc, ((uint32)last << 16) | 2, 0x8a2c);
+		out = Sidebar_Word(out, 0x31fc, 80 - (words - 1) * 2, 0x8a30);
+		out = Sidebar_Word(out, 0x31fc, words, 0x8a36);
+		out = Sidebar_Word(out, 0x11fc, physicalPhase | (suppress ? 0x40 : 0), 0x8a3d);
+		for (pass = 0; pass < (masks == NULL ? 1 : 2); pass++) {
+			out = Sidebar_Word(out, 0x31fc, masks == NULL ? 0x0203 : pass == 0 ? 0x0204 : 0x0207, 0x8a3a);
+			out = Sidebar_Launch(out, masks != NULL && pass == 0 ? masks : pixels, 0, height * 2);
+		}
+	} else if (masks == NULL && phase == 0 && width == sourceWidth) {
 		out = Sidebar_Interleaved(out, width);
 		out = Sidebar_Word(out, 0x31fc, 0x0203, 0x8a3a);
-		out = Sidebar_Launch(out, pixels, 0, height);
+		out = Sidebar_Launch(out, pixels, 0, Video_Atari_Mono() ? height * 2 : height);
 	} else {
 		uint16 set[4] = {0}, clear[4] = {0};
 		uint16 group, groups = sourceWidth / 16 * height;
@@ -91,7 +114,7 @@ size_t Video_Atari_CompileSidebarBlit(VideoAtariSidebarBlit *code,
 				const uint16 *needed = pass == 0 ? clear : set;
 				if ((needed[0] | needed[1] | needed[2] | needed[3]) == 0) continue;
 				out = Sidebar_Word(out, 0x31fc, pass == 0 ? 0x0204 : 0x0207, 0x8a3a);
-				out = Sidebar_Launch(out, pass == 0 ? masks : pixels, 0, height);
+				out = Sidebar_Launch(out, pass == 0 ? masks : pixels, 0, Video_Atari_Mono() ? height * 2 : height);
 			}
 		} else {
 			out = Sidebar_Long(out, 0x21fc,
@@ -135,12 +158,41 @@ void Video_Atari_QueueSidebarBlit(const uint16 *code, uint16 *dst)
 	g_videoDisplayListNext = out + 2;
 }
 
+typedef struct MonoSidebarHealth {
+	uint16 *dst;
+	uint16 pixels[7 * 8], masks[7 * 2];
+} MonoSidebarHealth;
+
+static void Sidebar_MonoHealth(const void *parameters)
+{
+	const MonoSidebarHealth *health = parameters;
+	Video_Atari_MonoCompose(health->dst, VIDEO_ATARI_LIVE_STRIDE, NULL, 0, 32, 7,
+		health->pixels, health->masks, 32, 7, 0, 0);
+}
+
 void Video_Atari_QueueSidebarHealth(uint16 *dst, uint16 width, uint8 foreground, uint8 background)
 {
 	uint32 patterns[4] = {0}, address, fill;
 	uint16 *out, plane;
 
 	assert(g_videoDisplayListActive && width <= 24 && foreground < 16 && background < 16);
+	if (Video_Atari_Mono()) {
+		MonoSidebarHealth *health = Video_Atari_QueueSidebarCPU(Sidebar_MonoHealth, sizeof(*health));
+		uint16 row, group;
+		uint32 logicalFill = width == 0 ? 0 : ((1UL << width) - 1) << (27 - width);
+		health->dst = dst;
+		for (row = 0; row < 7; row++) {
+			for (group = 0; group < 2; group++) {
+				uint16 words[4], fg[4], mask = group == 0 ? 0x07ff : 0xfff8;
+				Video_Atari_MonoPenWords(background, group * 16 - 5, row, words);
+				Video_Atari_MonoPenWords(foreground, group * 16 - 5, row, fg);
+				Video_Atari_MonoMergeWords(words, fg, logicalFill >> (group == 0 ? 16 : 0));
+				Video_Atari_MonoWriteGroup(health->pixels, 8, row, group, words);
+				health->masks[row * 2 + group] = mask;
+			}
+		}
+		return;
+	}
 	fill = ((1UL << width) - 1) << (27 - width);
 	for (plane = 0; plane < 4; plane++) {
 		const uint16 shift = (plane & 1) == 0 ? 16 : 0;

@@ -51,6 +51,7 @@ typedef struct WSAHeader {
 	uint16 lengthHeader;									/*!< length of file header (8 or 10) */
 #ifdef TOS
 	struct WSAPlanarRecording *planar;
+	bool intro;
 #endif
 } WSAHeader;
 
@@ -59,9 +60,22 @@ typedef struct WSAPlanarRecording {
 	uint16 **frames;
 	uint16 *pixels;
 	uint16 *composed;
+	uint16 *screen;
 	uint16 groups;
+	VideoAtariPlanarCacheInfo native;
+	uint32 mapping;
+	uint8 colours[32];
 	uint32 dirty[SCREEN_HEIGHT];
 } WSAPlanarRecording;
+
+static void WSA_RetainIntroFrame(WSAHeader *header)
+{
+	WSAPlanarRecording *recording = header->planar;
+	if (recording->screen == NULL) return;
+	memcpy(recording->pixels, recording->screen,
+	    (uint32)recording->groups * header->height * 8);
+	recording->screen = NULL;
+}
 
 static void WSA_FreePlanar(WSAPlanarRecording *recording, uint16 frames)
 {
@@ -77,71 +91,17 @@ static void WSA_FreePlanar(WSAPlanarRecording *recording, uint16 frames)
 	free(recording);
 }
 
-static uint32 WSA_EncodePlanarDelta(uint16 *dst, const uint16 *previous,
-                                   const uint16 *next, uint16 groups, uint16 height)
-{
-	uint16 group = 0, end = 0, total = groups * height;
-	uint32 words = 0;
-
-	while (group < total) {
-		uint16 first, count, i;
-
-		if (memcmp(previous + group * 4, next + group * 4, 8) == 0) {
-			group++;
-			continue;
-		}
-		first = group;
-		do {
-			group++;
-		} while (group < total && group % groups != 0 &&
-		         memcmp(previous + group * 4, next + group * 4, 8) != 0);
-		count = group - first;
-		if (dst != NULL) {
-			dst[words] = first - end;
-			dst[words + 1] = count;
-			for (i = 0; i < count * 4; i++)
-				dst[words + 2 + i] = previous[first * 4 + i] ^ next[first * 4 + i];
-		}
-		words += 2 + count * 4;
-		end = group;
-	}
-	if (dst != NULL) dst[words] = dst[words + 1] = 0;
-	return (words + 2) * sizeof(uint16);
-}
-
-static void WSA_ApplyPlanarDelta(WSAPlanarRecording *recording, uint16 frame)
-{
-	const uint16 *src = recording->frames[frame];
-	uint16 group = 0;
-
-	while (true) {
-		uint16 count, row, first, words;
-		uint16 *dst;
-
-		group += *src++;
-		count = *src++;
-		if (count == 0) break;
-		row = group / recording->groups;
-		first = group % recording->groups;
-		recording->dirty[row] |= ((1UL << count) - 1) << first;
-		dst = recording->pixels + group * 4;
-		words = count * 4;
-		do {
-			*dst++ ^= *src++;
-		} while (--words != 0);
-		group += count;
-	}
-}
-
 static bool WSA_PlanarFilename(const char *filename, char name[13])
 {
 	const char *extension = strrchr(filename, '.');
 	size_t length = extension != NULL ? (size_t)(extension - filename) : strlen(filename);
+	VideoAtariPlanarCacheInfo native;
 
 	if (length == 0 || length > 8 || strchr(filename, '/') != NULL ||
 	    strchr(filename, '\\') != NULL) return false;
+	Video_Atari_GetPlanarCacheInfo(&native);
 	memcpy(name, filename, length);
-	memcpy(name + length, ".PWS", 5);
+	memcpy(name + length, native.extension, 5);
 	return true;
 }
 
@@ -199,12 +159,15 @@ static void WSA_SavePlanar(WSAHeader *header, const char *name)
 		Warning("Planar WSA %s: cannot create %s; using in-memory recording\n", header->filename, name);
 		return;
 	}
-	saved = fwrite("PWS4", 1, 4, file) == 4 &&
+	saved = fwrite("PWS5", 1, 4, file) == 4 &&
 	    fwrite_le_uint16(header->frames, file) &&
 	    fwrite_le_uint16(header->width, file) &&
 	    fwrite_le_uint16(header->height, file) &&
 	    fwrite_le_uint16((header->flags.noAnimation ? 1 : 0) |
-	        (header->flags.hasNoFirstFrame ? 2 : 0), file);
+	        (header->flags.hasNoFirstFrame ? 2 : 0) | (header->intro ? 4 : 0), file) &&
+	    fwrite_le_uint32(recording->native.format, file) &&
+	    fwrite_le_uint32(recording->mapping, file) &&
+	    fwrite(recording->colours, 1, sizeof(recording->colours), file) == sizeof(recording->colours);
 	for (frame = 0; saved && frame <= header->frames; frame++) {
 		uint32 bytes = frame == 0 ? (uint32)recording->groups * header->height * 8 :
 		    WSA_PlanarDeltaLength(recording->frames[frame]);
@@ -217,7 +180,7 @@ static void WSA_SavePlanar(WSAHeader *header, const char *name)
 	}
 }
 
-static void *WSA_LoadPlanar(const char *filename, const char *name, void *wsa, uint32 wsaSize)
+static void *WSA_LoadPlanar(const char *filename, const char *name, void *wsa, uint32 wsaSize, bool intro)
 {
 	FILE *file = fopendatadir(SEARCHDIR_PERSONAL_DATA_DIR, name, "rb");
 	WSAPlanarRecording *recording = NULL;
@@ -226,6 +189,9 @@ static void *WSA_LoadPlanar(const char *filename, const char *name, void *wsa, u
 	uint32 remaining, imageBytes;
 	long size;
 	char magic[4];
+	VideoAtariPlanarCacheInfo native;
+	uint32 format, mapping;
+	uint8 colours[32];
 	const char *failure = "invalid or incomplete recording";
 
 	if (file == NULL) {
@@ -236,25 +202,45 @@ static void *WSA_LoadPlanar(const char *filename, const char *name, void *wsa, u
 	if (fseek(file, 0, SEEK_END) != 0 || (size = ftell(file)) < 12 ||
 	    (unsigned long)size > 0xffffffffUL ||
 	    fseek(file, 0, SEEK_SET) != 0 ||
-	    fread(magic, 1, 4, file) != 4 || memcmp(magic, "PWS4", 4) != 0 ||
-	    !fread_le_uint16(&frames, file) || !fread_le_uint16(&width, file) ||
+	    fread(magic, 1, 4, file) != 4) goto fail;
+	if (memcmp(magic, "PWS5", 4) != 0) {
+		failure = memcmp(magic, "PWS4", 4) == 0 ?
+		    "legacy recording has no palette/dither identity" : "unsupported recording version";
+		goto fail;
+	}
+	if (size < 52 || !fread_le_uint16(&frames, file) || !fread_le_uint16(&width, file) ||
 	    !fread_le_uint16(&height, file) || !fread_le_uint16(&flags, file) ||
 	    frames == 0 || frames > 0x7fff || width == 0 || width > SCREEN_WIDTH ||
-	    height == 0 || height > SCREEN_HEIGHT || flags > 3) goto fail;
-	remaining = (uint32)size - 12;
+	    height == 0 || height > SCREEN_HEIGHT || flags > 7 ||
+	    !fread_le_uint32(&format, file) || !fread_le_uint32(&mapping, file) ||
+	    fread(colours, 1, sizeof(colours), file) != sizeof(colours)) goto fail;
+	intro = intro && width == 304 && height == 120;
+	if (((flags & 4) != 0) != intro) {
+		failure = "incompatible intro canvas layout";
+		goto fail;
+	}
+	Video_Atari_GetPlanarCacheInfo(&native);
+	if (format != native.format || mapping != Video_Atari_PlanarMappingHash(colours)) {
+		failure = "incompatible native layout or palette/dither mapping";
+		goto fail;
+	}
+	remaining = (uint32)size - 52;
 	if (wsa != NULL && wsaSize > 1 && wsaSize < sizeof(WSAHeader)) {
 		failure = "caller buffer too small";
 		goto fail;
 	}
 	recording = calloc(1, sizeof(*recording));
 	if (recording == NULL) goto memory_fail;
-	recording->groups = (width + 15) >> 4;
+	recording->native = native;
+	recording->mapping = mapping;
+	memcpy(recording->colours, colours, sizeof(colours));
+	recording->groups = intro ? SCREEN_WIDTH / 16 : (width + 15) >> 4;
 	imageBytes = (uint32)recording->groups * height * 8;
 	recording->frames = calloc((uint32)frames + 1, sizeof(*recording->frames));
 	recording->pixels = malloc(imageBytes);
-	recording->composed = malloc(imageBytes);
-	if (recording->frames == NULL || recording->pixels == NULL || recording->composed == NULL)
-		goto memory_fail;
+	recording->composed = intro ? NULL : malloc(imageBytes);
+	if (recording->frames == NULL || recording->pixels == NULL ||
+	    (!intro && recording->composed == NULL)) goto memory_fail;
 	for (frame = 0; frame <= frames; frame++) {
 		uint32 bytes;
 		if (remaining < 4 || !fread_le_uint32(&bytes, file)) goto fail;
@@ -296,6 +282,7 @@ static void *WSA_LoadPlanar(const char *filename, const char *name, void *wsa, u
 	header->flags.noAnimation = (flags & 1) != 0;
 	header->flags.hasNoFirstFrame = (flags & 2) != 0;
 	header->planar = recording;
+	header->intro = intro;
 	strncpy(header->filename, filename, sizeof(header->filename) - 1);
 	return header;
 
@@ -402,7 +389,10 @@ static uint16 WSA_GotoNextFrame(void *wsa, uint16 frame, uint8 *dst)
 
 #ifdef TOS
 	if (header->planar != NULL) {
-		WSA_ApplyPlanarDelta(header->planar, frame);
+		WSAPlanarRecording *recording = header->planar;
+		Video_Atari_ApplyPlanarDelta(recording->screen != NULL ? recording->screen : recording->pixels,
+		    recording->frames[frame],
+		    recording->groups, recording->dirty);
 		return 1;
 	}
 #endif
@@ -470,7 +460,8 @@ static uint16 WSA_GotoNextFrame(void *wsa, uint16 frame, uint8 *dst)
  * @param reserveDisplayFrame True if we need to reserve the display frame.
  * @return Address of loaded WSA file, or NULL.
  */
-void *WSA_LoadFile(const char *filename, void *wsa, uint32 wsaSize, bool reserveDisplayFrame, bool allowPlanar)
+static void *WSA_LoadFileInternal(const char *filename, void *wsa, uint32 wsaSize,
+	bool reserveDisplayFrame, bool allowPlanar, bool intro)
 {
 	WSAFlags flags;
 	WSAFileHeader fileheader;
@@ -494,12 +485,13 @@ void *WSA_LoadFile(const char *filename, void *wsa, uint32 wsaSize, bool reserve
 			Warning("Planar WSA %s: unsupported cache filename; loading original\n", filename);
 			allowPlanar = false;
 		} else {
-			prepared = WSA_LoadPlanar(filename, planarFilename, wsa, wsaSize);
+			prepared = WSA_LoadPlanar(filename, planarFilename, wsa, wsaSize, intro);
 			if (prepared != NULL) return prepared;
 		}
 	}
 #else
 	VARIABLE_NOT_USED(allowPlanar);
+	VARIABLE_NOT_USED(intro);
 #endif
 
 	memset(&flags, 0, sizeof(flags));
@@ -528,6 +520,7 @@ void *WSA_LoadFile(const char *filename, void *wsa, uint32 wsaSize, bool reserve
 		File_Close(fileno);
 		return NULL;
 	}
+	intro = intro && fileheader.width == 304 && fileheader.height == 120;
 
 	lengthPalette = 0;
 	if (fileheader.hasPalette) {
@@ -611,6 +604,7 @@ void *WSA_LoadFile(const char *filename, void *wsa, uint32 wsaSize, bool reserve
 	header->buffer       = buffer;
 #ifdef TOS
 	header->planar       = NULL;
+	header->intro        = intro;
 #endif
 	strncpy(header->filename, filename, sizeof(header->filename) - 1);
 	header->filename[sizeof(header->filename) - 1] = '\0';
@@ -651,12 +645,42 @@ void *WSA_LoadFile(const char *filename, void *wsa, uint32 wsaSize, bool reserve
 	return wsa;
 }
 
+void *WSA_LoadFile(const char *filename, void *wsa, uint32 wsaSize, bool reserveDisplayFrame, bool allowPlanar)
+{
+	return WSA_LoadFileInternal(filename, wsa, wsaSize, reserveDisplayFrame, allowPlanar, false);
+}
+
 #ifdef TOS
+void *WSA_LoadIntro(const char *filename, bool reserveDisplayFrame)
+{
+	return WSA_LoadFileInternal(filename, NULL, 1, reserveDisplayFrame, true, true);
+}
+
+static void WSA_EncodePlanarFrame(WSAPlanarRecording *recording, const uint8 *chunky,
+	uint16 *pixels, uint16 width, uint16 height, bool intro)
+{
+	uint16 row, x, left = intro ? 8 : 0;
+	const AtariDitherSource source = {chunky, intro ? SCREEN_WIDTH : width,
+	    height, SCREEN_WIDTH, -(int16)left, 0, 1, 1};
+	for (row = 0; row < height; row++) {
+		for (x = 0; x < width; x++) {
+			uint8 colour = chunky[(uint32)row * SCREEN_WIDTH + left + x];
+			recording->colours[colour >> 3] |= 1u << (colour & 7);
+		}
+	}
+	Video_Atari_PreparePlanar(&source, NULL, pixels);
+	if (intro) {
+		/* Border black is a native pen, not the current mapping of slot zero. */
+		Video_Atari_PaintPlanar(pixels, SCREEN_WIDTH / 4, 0, 0, 8, height, NULL, 0, 0, 0, 0);
+		Video_Atari_PaintPlanar(pixels, SCREEN_WIDTH / 4, 312, 0, 8, height, NULL, 0, 0, 0, 0);
+	}
+}
+
 static bool WSA_PreparePlanarSeeded(void *wsa, uint16 width, uint16 height, const uint8 *seed)
 {
 	WSAHeader *header = wsa;
 	WSAPlanarRecording *recording = NULL;
-	uint8 *chunky = NULL, *saved = NULL;
+	uint8 *chunky = NULL, *saved = NULL, *image;
 	uint16 *next = NULL;
 	uint32 bytes, recordedBytes = 0;
 	uint16 frame;
@@ -674,25 +698,31 @@ static bool WSA_PreparePlanarSeeded(void *wsa, uint16 width, uint16 height, cons
 
 	recording = calloc(1, sizeof(*recording));
 	if (recording == NULL) goto cleanup;
-	recording->groups = (width + 15) >> 4;
+	Video_Atari_GetPlanarCacheInfo(&recording->native);
+	recording->groups = header->intro ? SCREEN_WIDTH / 16 : (width + 15) >> 4;
 	bytes = (uint32)recording->groups * height * 8;
 	recording->frames = calloc((uint32)header->frames + 1, sizeof(*recording->frames));
 	recording->pixels = malloc(bytes);
-	recording->composed = malloc(bytes);
+	recording->composed = header->intro ? NULL : malloc(bytes);
 	chunky = calloc(SCREEN_WIDTH, height);
 	saved = malloc(header->bufferLength);
 	next = malloc(bytes);
 	if (recording->frames == NULL || recording->pixels == NULL ||
-	    recording->composed == NULL || chunky == NULL || saved == NULL || next == NULL) goto cleanup;
+	    (!header->intro && recording->composed == NULL) ||
+	    chunky == NULL || saved == NULL || next == NULL) goto cleanup;
 	recording->frames[0] = malloc(bytes);
 	if (recording->frames[0] == NULL) goto cleanup;
 
 	memcpy(saved, header->buffer, header->bufferLength);
-	if (seed != NULL) memcpy(chunky, seed, (uint32)SCREEN_WIDTH * height);
+	image = chunky + (header->intro ? 8 : 0);
+	if (seed != NULL) {
+		uint16 row;
+		for (row = 0; row < height; row++)
+			memcpy(image + (uint32)row * SCREEN_WIDTH, seed + (uint32)row * SCREEN_WIDTH, width);
+	}
 	if (!header->flags.hasNoFirstFrame)
-		Format40_Decode_ToScreen(chunky, header->buffer, width);
-	Video_Atari_EncodePlanarStrided(chunky, SCREEN_WIDTH, recording->pixels,
-	                              recording->groups * 16, height);
+		Format40_Decode_ToScreen(image, header->buffer, width);
+	WSA_EncodePlanarFrame(recording, chunky, recording->pixels, width, height, header->intro);
 	memcpy(recording->frames[0], recording->pixels, bytes);
 	recordedBytes = bytes;
 	for (frame = 1; frame <= header->frames; frame++) {
@@ -702,23 +732,23 @@ static bool WSA_PreparePlanarSeeded(void *wsa, uint16 width, uint16 height, cons
 			bool reserved = header->flags.displayInBuffer;
 			bool decoded;
 			header->flags.displayInBuffer = false;
-			decoded = WSA_GotoNextFrame(wsa, frame, chunky);
+			decoded = WSA_GotoNextFrame(wsa, frame, image);
 			header->flags.displayInBuffer = reserved;
 			if (!decoded) break;
-			Video_Atari_EncodePlanarStrided(chunky, SCREEN_WIDTH, next,
-			                              recording->groups * 16, height);
+			WSA_EncodePlanarFrame(recording, chunky, next, width, height, header->intro);
 			target = next;
 		}
-		length = WSA_EncodePlanarDelta(NULL, recording->pixels, target, recording->groups, height);
+		length = Video_Atari_EncodePlanarDelta(NULL, recording->pixels, target, recording->groups, height);
 		recording->frames[frame] = malloc(length);
 		if (recording->frames[frame] == NULL) break;
-		WSA_EncodePlanarDelta(recording->frames[frame], recording->pixels, target,
+		Video_Atari_EncodePlanarDelta(recording->frames[frame], recording->pixels, target,
 		                     recording->groups, height);
 		memcpy(recording->pixels, target, bytes);
 		recordedBytes += length;
 	}
 	memcpy(header->buffer, saved, header->bufferLength);
 	if (frame > header->frames) {
+		recording->mapping = Video_Atari_PlanarMappingHash(recording->colours);
 		header->planar = recording;
 		ready = true;
 		Debug("Planar WSA %s: %u frames, %lu recording bytes\n",
@@ -811,9 +841,11 @@ bool WSA_PresentPlanarRegion(void *wsa, uint16 x, uint16 y,
 	    (uint32)left + width > header->width || (uint32)top + height > header->height ||
 	    (uint32)x + header->width > SCREEN_WIDTH || (uint32)y + header->height > SCREEN_HEIGHT)
 		return false;
+	if (header->intro) WSA_RetainIntroFrame(header);
 	return Video_Atari_PresentPlanarSubRect(
 	    header->planar->pixels + (uint32)top * header->planar->groups * 4,
-	    header->planar->groups * 8, left, x + left, y + top, width, height);
+	    header->planar->groups * 8, left + (header->intro ? 8 : 0),
+	    x + left, y + top, width, height);
 }
 
 bool WSA_PresentPlanar(void *wsa, uint16 x, uint16 y,
@@ -828,6 +860,15 @@ bool WSA_PresentPlanar(void *wsa, uint16 x, uint16 y,
 	    (uint32)y + header->height > SCREEN_HEIGHT ||
 	    (overlay == NULL) != (masks == NULL)) return false;
 	recording = header->planar;
+	if (header->intro) {
+		if (x != 8 || overlay != NULL) {
+			Warning("Intro WSA %s: unsupported native publication\n", header->filename);
+			return false;
+		}
+		WSA_RetainIntroFrame(header);
+		return Video_Atari_PresentPlanarRect(recording->pixels, SCREEN_WIDTH / 2,
+		    0, y, SCREEN_WIDTH, header->height);
+	}
 	stride = recording->groups * 8;
 	/* SCREEN_1 holds WSA data, not a shadow of this retained planar window. */
 	for (row = 0; row < header->height; row++) {
@@ -843,23 +884,19 @@ bool WSA_PresentPlanar(void *wsa, uint16 x, uint16 y,
 		while (bottom < header->height &&
 		       (force || recording->dirty[bottom] == dirty)) bottom++;
 		while (dirty != 0) {
-			uint16 end, line, group;
+			uint16 end, offset;
 			while ((dirty & (1UL << first)) == 0) first++;
 			end = first + 1;
 			while (end < recording->groups && (dirty & (1UL << end)) != 0) end++;
 			dirty &= ~(((1UL << (end - first)) - 1) << first);
-			for (line = row; line < bottom; line++) {
-				for (group = first; group < end; group++) {
-					uint16 index = line * recording->groups + group, plane;
-					uint16 mask = masks != NULL ? masks[index] : 0;
-					for (plane = 0; plane < 4; plane++) {
-						uint16 word = index * 4 + plane;
-						recording->composed[word] = (recording->pixels[word] & (uint16)~mask) |
-						    (overlay != NULL ? overlay[word] & mask : 0);
-					}
-				}
-			}
-			if (!Video_Atari_PresentPlanarRect(recording->composed + (row * recording->groups + first) * 4,
+			Video_Atari_CopyPlanar(recording->composed, stride / 2, first * 16, row,
+			    recording->pixels, stride / 2, first * 16, row, (end - first) * 16, bottom - row);
+			offset = Video_Atari_PlanarOffset(stride / 2, first * 16, row);
+			if (overlay != NULL)
+				Video_Atari_MergePlanarRows(recording->composed + offset, stride / 2,
+				    overlay + offset, stride / 2, masks + row * recording->groups + first,
+				    recording->groups, end - first, bottom - row);
+			if (!Video_Atari_PresentPlanarRect(recording->composed + offset,
 			        stride, x + first * 16, y + row,
 			        min((end - first) * 16, header->width - first * 16), bottom - row)) return false;
 			first = end;
@@ -972,6 +1009,13 @@ bool WSA_DisplayFrame(void *wsa, uint16 frameNext, uint16 posX, uint16 posY, Scr
 
 	if (wsa == NULL) return false;
 	if (frameNext >= header->frames) return false;
+#ifdef TOS
+	if (header->planar != NULL && header->intro &&
+	    (posX != 8 || (uint32)posY + header->height > SCREEN_HEIGHT)) {
+		Warning("Intro WSA %s: unsupported screen position\n", header->filename);
+		return false;
+	}
+#endif
 
 	if (header->flags.displayInBuffer) {
 		dst = (uint8 *)wsa + sizeof(WSAHeader);
@@ -1002,6 +1046,23 @@ bool WSA_DisplayFrame(void *wsa, uint16 frameNext, uint16 posX, uint16 posY, Scr
 
 		header->frameCurrent = 0;
 	}
+
+#ifdef TOS
+	if (header->planar != NULL && header->intro) {
+		WSAPlanarRecording *recording = header->planar;
+		if (GFX_Screen_Get_ByIndex(screenID) == GFX_Screen_Get_ByIndex(SCREEN_0)) {
+			uint16 *screen = Video_Atari_LiveBegin(0, posY, SCREEN_WIDTH, header->height);
+			if (recording->screen != screen) {
+				WSA_RetainIntroFrame(header);
+				memcpy(screen, recording->pixels,
+				    (uint32)recording->groups * header->height * 8);
+				recording->screen = screen;
+			}
+		} else {
+			WSA_RetainIntroFrame(header);
+		}
+	}
+#endif
 
 	frameDiff = abs(header->frameCurrent - frameNext);
 	direction = 1;
@@ -1047,6 +1108,11 @@ bool WSA_DisplayFrame(void *wsa, uint16 frameNext, uint16 posX, uint16 posY, Scr
 
 #ifdef TOS
 	if (header->planar != NULL) {
+		if (header->intro) {
+			if (header->planar->screen != NULL)
+				Video_Atari_LiveEnd(0, posY, SCREEN_WIDTH, header->height);
+			return true;
+		}
 		if (GFX_Screen_Get_ByIndex(screenID) == GFX_Screen_Get_ByIndex(SCREEN_0) &&
 		    !WSA_PresentPlanar(wsa, posX, posY, NULL, NULL, false)) {
 			Warning("Planar WSA %s: presentation failed\n", header->filename);
