@@ -627,6 +627,7 @@ const uint8 s_palette4BitPC[16*4] =
 };
 
 static uint8 s_palette4BitMap[256];
+static uint8 s_paletteMonoCoverage[256];
 
 /* 64K word pair-LUT for c2p1x1_4_st: indexed by a chunky pixel-pair
  * (pixelA<<8 | pixelB), returns (remap[pixelA]<<8 | remap[pixelB]).
@@ -635,7 +636,8 @@ static uint8 s_palette4BitMap[256];
 static uint16 s_palette4BitPairMap[65536];
 
 static AtariDitherLookup s_palette4BitDither = {.flat = true}, s_tileDither = {.flat = true};
-static AtariMonoPackedLookup s_paletteMonoPacked, s_tileMonoPacked;
+static AtariMonoPackedLookup s_paletteMonoPacked, s_tileMonoPacked, s_unitMonoPacked;
+static AtariMonoPackedLookup s_buildingMonoPacked;
 /* Prepared asset pixels are 0..15; the assembly's pair index still
  * has a 256-word row stride, so only the first 16 rows are needed. */
 static uint16 s_penPairMap[16 * 256];
@@ -697,17 +699,40 @@ static void Video_Atari_CopyMonoRun(uint8 *dst, uint16 dstStride, const uint8 *s
 	}
 }
 
-static void Video_Atari_SetDitherPen(AtariDitherLookup *lookup, uint8 colour, uint8 pen)
+static uint8 Video_Atari_MonoCoverage(uint8 r, uint8 g, uint8 b)
 {
-	uint16 x, y, pattern = s_paletteMonoST[pen];
-	if (!Video_Atari_Mono()) {
-		Video_Atari_DitherSetPen(lookup, colour, pen);
-		return;
-	}
+	uint32 luma = (r & 63) * 299UL + (g & 63) * 587UL + (b & 63) * 114UL;
+	return (luma * 16 + 31500) / 63000;
+}
+
+static void Video_Atari_SetMonoCoverage(AtariDitherLookup *lookup, uint8 colour, uint8 coverage)
+{
+	uint16 x, y, pattern = s_paletteMonoLuma[coverage];
 	lookup->flat = false;
 	for (y = 0; y < 4; y++)
 		for (x = 0; x < 4; x++)
 			lookup->pens[y][x][colour] = (pattern >> (15 - y * 4 - x)) & 1;
+}
+
+static uint8 Video_Atari_ReducedMonoCoverage(uint8 coverage)
+{
+	return coverage < 3 ? 0 : coverage < 6 ? 4 : coverage < 9 ? 8 : 12;
+}
+
+static void Video_Atari_SetPackedMonoCoverage(AtariMonoPackedLookup *lookup, uint8 colour, uint8 coverage)
+{
+	uint16 x, y;
+	uint16 pattern = s_paletteMonoLuma[coverage];
+	uint32 invert = s_monoWhiteIsOne ? 0 : 0x00030003UL;
+
+	for (y = 0; y < 2; y++) {
+		for (x = 0; x < 2; x++) {
+			uint16 shift = y * 8 + x * 2;
+			uint32 top = (pattern >> (14 - shift)) & 3;
+			uint32 bottom = (pattern >> (10 - shift)) & 3;
+			lookup->cells[y][x][colour] = ((top << 16) | bottom) ^ invert;
+		}
+	}
 }
 
 void Video_Atari_MonoPenWords(uint8 pen, int16 x, int16 y, uint16 words[4])
@@ -1041,14 +1066,20 @@ static void Rebuild_Palette4BitPairMap(int from, int length)
 	int hi, lo;
 	int to = from + length;
 
-	if (from == 0 && length == 256) s_palette4BitDither.flat = true;
-	for (hi = from; hi < to; hi++)
-		Video_Atari_SetDitherPen(&s_palette4BitDither, hi, s_palette4BitMap[hi]);
 	if (Video_Atari_Mono()) {
+		for (hi = from; hi < to; hi++) {
+			uint8 coverage = s_paletteMonoCoverage[hi];
+			Video_Atari_SetMonoCoverage(&s_palette4BitDither, hi, coverage);
+			Video_Atari_SetPackedMonoCoverage(&s_unitMonoPacked, hi,
+				Video_Atari_ReducedMonoCoverage(coverage));
+		}
 		Video_Atari_MonoPreparePackedLookup(&s_paletteMonoPacked, &s_palette4BitDither,
 			from, length, s_monoWhiteIsOne);
 		return;
 	}
+	if (from == 0 && length == 256) s_palette4BitDither.flat = true;
+	for (hi = from; hi < to; hi++)
+		Video_Atari_DitherSetPen(&s_palette4BitDither, hi, s_palette4BitMap[hi]);
 
 	if (length >= 64) {
 		/* large change (fade etc.): full rebuild is simpler and not much
@@ -3915,6 +3946,12 @@ void Video_Atari_PreparePlanar(const AtariDitherSource *source,
 	s_planarBackend->prepare(source, lookup, pixels, ((source->width + 15) & ~15) / 4);
 }
 
+void Video_Atari_PrepareUnitPlanar(const AtariDitherSource *source, uint16 *pixels)
+{
+	assert(Video_Atari_Mono());
+	Video_Atari_MonoPackNative(source, &s_unitMonoPacked, pixels, ((source->width + 15) & ~15) / 4);
+}
+
 void Video_Atari_EncodePlanar(const uint8 *src, uint16 *pixels, uint16 width, uint16 height)
 {
 	const AtariDitherSource source = {src, width, height, width, 0, 0, 1, 1};
@@ -4133,10 +4170,14 @@ void Video_Atari_InitTileMapping(const uint8 *palette)
 	assert(Video_Atari_CursorDirect() && palette != NULL);
 	s_tileDither.flat = true;
 	for (hi = 0; hi < 256; hi++) {
-		uint8 pen = Palette_FindClosestColor(palette[hi * 3] & 0x3f,
-		                                   palette[hi * 3 + 1] & 0x3f,
-		                                   palette[hi * 3 + 2] & 0x3f);
-		Video_Atari_SetDitherPen(&s_tileDither, hi, pen);
+		const uint8 *rgb = palette + hi * 3;
+		if (Video_Atari_Mono()) {
+			uint8 coverage = Video_Atari_MonoCoverage(rgb[0], rgb[1], rgb[2]);
+			Video_Atari_SetMonoCoverage(&s_tileDither, hi, coverage);
+			Video_Atari_SetPackedMonoCoverage(&s_buildingMonoPacked, hi,
+				Video_Atari_ReducedMonoCoverage(coverage));
+		} else
+			Video_Atari_DitherSetPen(&s_tileDither, hi, Palette_FindClosestColor(rgb[0] & 63, rgb[1] & 63, rgb[2] & 63));
 	}
 	if (Video_Atari_Mono())
 		Video_Atari_MonoPreparePackedLookup(&s_tileMonoPacked, &s_tileDither, 0, 256, s_monoWhiteIsOne);
@@ -4161,6 +4202,16 @@ void Video_Atari_DecodePlanarTile(const uint8 *src, const uint8 *palette, uint16
 	}
 	Video_Atari_ExpandTileNibbles(src, palette, chunky.bytes);
 	Video_Atari_PreparePlanar(&source, &s_tileDither, pixels);
+}
+
+void Video_Atari_DecodePlanarBuildingTile(const uint8 *src, const uint8 *palette, uint16 *pixels)
+{
+	union { uint32 aligned; uint8 bytes[16 * 16]; } chunky;
+	const AtariDitherSource source = {chunky.bytes, 16, 16, 16, 0, 0, 1, 1};
+
+	assert(Video_Atari_Mono());
+	Video_Atari_ExpandTileNibbles(src, palette, chunky.bytes);
+	Video_Atari_MonoPackNative(&source, &s_buildingMonoPacked, pixels, 4);
 }
 
 void Video_Atari_ComposePlanarTile(const uint16 *pixels, const uint16 *masks,
@@ -4430,6 +4481,16 @@ uint8 Video_Atari_BuildSpriteBlitRecipe(const uint16 *pixels, const uint16 *mask
 		if (set[plane] != 0) passes |= 0x10u << plane;
 	}
 	return passes;
+}
+
+bool Video_Atari_UnitOutlineEnabled(void)
+{
+	return Video_Atari_Mono();
+}
+
+void Video_Atari_OutlineUnit(uint16 *pixels, const uint16 *masks, uint16 width, uint16 height)
+{
+	Video_Atari_MonoOutline(pixels, masks, width, height, s_monoWhiteIsOne);
 }
 
 static void Video_Atari_CompileSpriteBlit(Video_Atari_SpriteBlitCode *code, uint8 passes,
@@ -6074,13 +6135,21 @@ void Video_SetPalette(void *palette, int from, int length)
 		for (i = from; i < from + length; i++)
 		{
 			uint8 pen;
+			bool changed;
 
 			red = *p++;
 			green = *p++;
 			blue = *p++;
 			pen = Palette_FindClosestColor(red, green, blue);
-			if (pen != s_palette4BitMap[i]) {
-				s_palette4BitMap[i] = pen;
+			changed = pen != s_palette4BitMap[i];
+			s_palette4BitMap[i] = pen;
+			/* Native UI helpers still use the ST pen map; imagery does not. */
+			if (Video_Atari_Mono()) {
+				uint8 coverage = Video_Atari_MonoCoverage(red, green, blue);
+				changed |= coverage != s_paletteMonoCoverage[i];
+				s_paletteMonoCoverage[i] = coverage;
+			}
+			if (changed) {
 				if (changedFrom < 0) changedFrom = i;
 				changedTo = i;
 			}

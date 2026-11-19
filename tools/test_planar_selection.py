@@ -327,6 +327,8 @@ static bool GFX_QueueViewportTileFast(uint16 id, uint16 col, uint16 row, uint8 h
     GFX_DrawPlanarTile(id, col * 16, 40 + row * 16, house);
     return true;
 }
+#define VIDEO_ATARI_DISPLAY_TILE_ROW_BYTES 1
+static void Video_Atari_DisplayListCheck(unsigned bytes) { assert(bytes != 0); }
 static void GFX_DrawPlanarViewportTile(uint16 id, uint16 overlay, uint16 col, uint16 row,
                                       uint8 house, uint16 packed) {
     (void)packed;

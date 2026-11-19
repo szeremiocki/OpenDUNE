@@ -199,10 +199,20 @@ static int capturedX, capturedY;
 static const ViewportPlanarImage *captured;
 static uint16 g_blinkEffect;
 #define Error(...) abort()
+bool g_videoAtariMono;
+void Video_Atari_MonoCompose(uint16 *dst,uint16 stride,uint16 *masks,uint16 maskStride,
+    uint16 width,uint16 height,const uint16 *src,const uint16 *srcMasks,
+    uint16 srcWidth,uint16 srcHeight,int16 x,int16 y) {
+    (void)dst;(void)stride;(void)masks;(void)maskStride;(void)width;(void)height;
+    (void)src;(void)srcMasks;(void)srcWidth;(void)srcHeight;(void)x;(void)y;abort();
+}
+void Video_Atari_MonoMaskBitmap(uint16 *p,uint16 *e,const uint16 *m,uint16 w,uint16 h) {
+    (void)p;(void)e;(void)m;(void)w;(void)h;abort();
+}
 static ViewportSpriteMask *GUI_ViewportSpriteMaskSlot(uint16 id) { return &spriteMasks[id]; }
 static ViewportPlanarComponent *GUI_ViewportPlanarComponent(ViewportSpriteMask *mask,
-    uint16 id,uint8 house,int flags,const uint8 *palette) {
-    (void)mask;(void)house;(void)flags;(void)palette;return &components[id];
+    uint16 id,uint8 house,int flags,const uint8 *palette,bool unitContrast) {
+    (void)mask;(void)house;(void)flags;(void)palette;assert(!unitContrast);return &components[id];
 }
 static const ViewportPlanarImage *GUI_ViewportResidentSprite(uint16 id,int flags) {
     (void)id;(void)flags;return NULL;
@@ -221,6 +231,10 @@ bool GUI_Widget_Viewport_ShouldDrawSprite(int16 l,int16 t,int16 r,int16 b) {
     (void)l;(void)t;(void)r;(void)b;return true;
 }
 void Video_Atari_DisplayListFlush(void) {}
+bool Video_Atari_UnitOutlineEnabled(void) { return false; }
+void Video_Atari_OutlineUnit(uint16 *p, const uint16 *m, uint16 w, uint16 h) {
+    (void)p; (void)m; (void)w; (void)h; abort();
+}
 void Video_Atari_BuildSpriteBlitGeometry(Video_Atari_SpriteBlitGeometry geometry[16],
     uint16 stride,uint16 sourceX,uint16 width) {
     (void)geometry;assert(stride<=48 && sourceX+width<=stride);
@@ -327,6 +341,7 @@ int main(void) {
         production = "\n".join((
             function(video, "Video_Atari_PlanarMergePlain"), composer, clipped,
             function(video, "Video_Atari_BuildSpriteBlitRecipe"),
+            function(video, "Video_Atari_ExpandSpriteMasks"),
             function(gui, "GUI_ViewportSetPlanarImage"),
             function(gui, "GUI_ViewportBuildCompositeKey"),
             function(gui, "GUI_ViewportBuildCompositeKeyBlitter"),

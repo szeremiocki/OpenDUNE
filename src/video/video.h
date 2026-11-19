@@ -256,6 +256,7 @@ extern void Video_Atari_ApplyPlanarDelta(uint16 *pixels, const uint16 *delta,
  * source alignment requirement. Does not publish pixels or alter caches. */
 extern void Video_Atari_PreparePlanar(const AtariDitherSource *source,
 	const AtariDitherLookup *lookup, uint16 *pixels);
+extern void Video_Atari_PrepareUnitPlanar(const AtariDitherSource *source, uint16 *pixels);
 extern void Video_Atari_PresentPlanarWindow(const uint16 *pixels, uint16 x, uint16 y,
                                            uint16 width, uint16 height);
 /* Compact planar rows; X is group aligned, a partial right group is masked. */
@@ -281,6 +282,7 @@ extern void Video_Atari_FinishScroll(void);
  * opacity masks so an opaque logical colour 0 remains opaque. */
 extern void Video_Atari_InitTileMapping(const uint8 *palette);
 extern void Video_Atari_DecodePlanarTile(const uint8 *src, const uint8 *palette, uint16 *pixels);
+extern void Video_Atari_DecodePlanarBuildingTile(const uint8 *src, const uint8 *palette, uint16 *pixels);
 /* Compose private native 16x16 tiles, overwriting all 64 pixel words and
  * 16 compact opacity words. No output initialization is required.
  * overlay and overlayMasks must either both be present or both be NULL. */
@@ -385,6 +387,8 @@ extern void Video_Atari_BuildSpriteBlitPlans(Video_Atari_SpriteBlitPlan plans[16
  * Classify the final image with one compact opacity word per four plane words. */
 extern uint8 Video_Atari_BuildSpriteBlitRecipe(const uint16 *pixels, const uint16 *masks,
                                               uint16 groups);
+extern bool Video_Atari_UnitOutlineEnabled(void);
+extern void Video_Atari_OutlineUnit(uint16 *pixels, const uint16 *masks, uint16 width, uint16 height);
 /* At most eight 17-word launches, two 3-word HOP/OP writes, and RTS.
  * Executable words are big-endian, including in host-side cache tests. */
 #define VIDEO_ATARI_SPRITE_BLIT_CODE_WORDS (8 * 17 + 2 * 3 + 1)

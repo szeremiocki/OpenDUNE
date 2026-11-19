@@ -48,6 +48,8 @@ extern void GFX_FreeDecodedTiles(void);
 #ifdef TOS
 /* Stable tile/house slots are allocated at load and filled on first draw. */
 extern void GFX_InitPlanarTiles(uint32 tilesDataLength, const uint8 *palette);
+extern void GFX_ClassifyPlanarBuildingTiles(uint32 iconMapWords);
+extern void GFX_InitPlanarRockArtwork(uint32 iconMapWords);
 extern void GFX_FreePlanarTiles(void);
 extern bool GFX_PlanarTilesReady(void);
 extern void GFX_InvalidateViewportProtection(uint16 packed);

@@ -40,7 +40,7 @@ def read_pak(path):
     return result
 
 
-def decode_format80(source, length):
+def decode_format80(source, length, *, exact=True):
     output = bytearray()
     cursor = 0
     while len(output) < length:
@@ -76,8 +76,8 @@ def decode_format80(source, length):
         for _ in range(size):
             output.append(output[offset])
             offset += 1
-    if len(output) != length:
-        raise ValueError(f"Format80 output length {len(output)} != {length}")
+    if len(output) > length or (exact and len(output) != length):
+        raise ValueError(f"Invalid Format80 output length {len(output)} (limit {length})")
     return bytes(output)
 
 

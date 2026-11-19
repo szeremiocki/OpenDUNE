@@ -213,6 +213,44 @@ void Video_Atari_MonoMaskWords(uint16 mask, uint16 words[4])
 	words[1] = words[3] = Mono_ExpandOpacity(mask & 255);
 }
 
+void Video_Atari_MonoOutline(uint16 *pixels, const uint16 *masks,
+	uint16 width, uint16 height, bool outlineIsOne)
+{
+	uint16 row, group, groups = width / 16;
+	uint16 stride = width / 4;
+
+	assert(width != 0 && (width & 15) == 0);
+	for (row = 0; row < height; row++, masks += groups, pixels += stride) {
+		for (group = 0; group < groups; group++) {
+			uint16 mask = masks[group];
+			uint16 left, right, top, bottom, half;
+			if (mask == 0) continue;
+
+			/* A logical pixel has two physical columns and rows. Only the
+			 * outer half of its 2x2 cell touches a transparent neighbour. */
+			left = mask & ~((mask >> 1) | (group != 0 ? (masks[group - 1] & 1u) << 15 : 0));
+			right = mask & ~((mask << 1) | (group + 1 < groups ? masks[group + 1] >> 15 : 0));
+			top = mask & ~(row != 0 ? (masks - groups)[group] : 0);
+			bottom = mask & ~(row + 1 < height ? masks[group + groups] : 0);
+			for (half = 0; half < 2; half++) {
+				uint16 shift = half == 0 ? 8 : 0;
+				uint16 side = (Mono_ExpandOpacity((left >> shift) & 255) & 0xaaaa) |
+				              (Mono_ExpandOpacity((right >> shift) & 255) & 0x5555);
+				uint16 upper = side | Mono_ExpandOpacity((top >> shift) & 255);
+				uint16 lower = side | Mono_ExpandOpacity((bottom >> shift) & 255);
+				uint16 *dst = pixels + group * 2 + half;
+				if (outlineIsOne) {
+					dst[0] |= upper;
+					dst[stride / 2] |= lower;
+				} else {
+					dst[0] &= ~upper;
+					dst[stride / 2] &= ~lower;
+				}
+			}
+		}
+	}
+}
+
 void Video_Atari_MonoComposeTile(const uint16 *pixels, const uint16 *masks,
 	const uint16 *overlay, const uint16 *overlayMasks, uint16 *result, uint16 *resultMasks)
 {

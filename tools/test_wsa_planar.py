@@ -302,7 +302,9 @@ static inline uint16 Video_Atari_GroupWords(void) { return g_videoAtariMono ? 2 
         gui = (ROOT / "src/gui/gui.c").read_text()
         fade = "\n".join(function(gui, name) for name in (
             "GUI_Screen_FadeInInternal", "GUI_Screen_FadeIn", "GUI_Screen_FadeInPlanar"))
-        palette_setter = function(video, "Video_SetPalette")
+        palette_setter = "\n".join(function(video, name) for name in (
+            "Video_Atari_MonoCoverage", "Video_Atari_SetMonoCoverage",
+            "Video_SetPalette"))
         harness = r"""
 #include <assert.h>
 #include <errno.h>
@@ -376,10 +378,9 @@ static int s_machine_type = MCH_STE;
 static bool s_presentMode, s_screen_needrepaint;
 static unsigned s_paletteGeneration;
 #define s_palette4BitMap pens
+static uint8 s_paletteMonoCoverage[256];
 static uint8 Palette_FindClosestColor(uint8 r, uint8 g, uint8 b) { return (r + g + b) & 15; }
-static void Rebuild_Palette4BitPairMap(int first, int count) {
-    assert(first >= 0 && count > 0 && first + count <= 256);
-}
+static void Rebuild_Palette4BitPairMap(int first, int count);
 static void set_mapping(void) {
     for (unsigned c = 0; c < 256; c++)
         for (unsigned y = 0; y < 4; y++)
@@ -403,6 +404,12 @@ static void cursor_draw(void) {
 void Warning(const char *format, ...) { (void)format; warnings++; }
 void Error(const char *format, ...) { (void)format; assert(false); }
 /* PALETTE */
+static void Rebuild_Palette4BitPairMap(int first, int count) {
+    assert(first >= 0 && count > 0 && first + count <= 256);
+    if (g_videoAtariMono)
+        for (int i = first; i < first + count; i++)
+            Video_Atari_SetMonoCoverage(&s_palette4BitDither, i, s_paletteMonoCoverage[i]);
+}
 static void exercise_palette(void) {
     uint8 palette[768] = {0};
     for (unsigned i = 0; i < 256; i++) palette[i * 3] = 15;
@@ -414,6 +421,21 @@ static void exercise_palette(void) {
     Video_SetPalette(palette, 0, 256);
     assert(s_screen_needrepaint == !g_videoAtariMono && pens[215] == 3);
     s_screen_needrepaint = false;
+    if (g_videoAtariMono) {
+        unsigned generation = s_paletteGeneration;
+        /* Same ST pen as (3,0,0) in the stub, but a much brighter source RGB. */
+        uint8 brighter[] = {51, 48, 48};
+        Video_SetPalette(brighter, 215, 1);
+        assert(pens[215] == 3 && s_paletteGeneration == generation + 1);
+        assert(s_paletteMonoCoverage[215] == 12 && s_paletteMonoCoverage[216] == 0);
+        unsigned white = 0;
+        for (unsigned y = 0; y < 4; y++)
+            for (unsigned x = 0; x < 4; x++)
+                white += s_palette4BitDither.pens[y][x][215];
+        assert(white == 12 && !s_screen_needrepaint);
+        Video_SetPalette(brighter, 215, 1);
+        assert(s_paletteGeneration == generation + 1);
+    }
 }
 FILE *fopendatadir(enum SearchDirectory directory, const char *name, const char *mode) {
     assert(directory == SEARCHDIR_PERSONAL_DATA_DIR);

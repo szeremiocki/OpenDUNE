@@ -954,10 +954,10 @@ void *File_ReadWholeFile(const char *filename)
  * 16bits unsigned integers. It is converted to host byte ordering if needed.
  *
  * @param filename The name of the file to open.
- * @param mallocFlags The type of memory to allocate.
+ * @param wordCount Receives the number of words on success, or NULL.
  * @return The pointer to allocated memory where the file has been read.
  */
-uint16 *File_ReadWholeFileLE16(const char *filename)
+uint16 *File_ReadWholeFileLE16(const char *filename, uint32 *wordCount)
 {
 	uint8 index;
 	uint32 count;
@@ -983,6 +983,7 @@ uint16 *File_ReadWholeFileLE16(const char *filename)
 	}
 #endif
 
+	if (wordCount != NULL) *wordCount = count;
 	return buffer;
 }
 

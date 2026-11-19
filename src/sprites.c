@@ -310,6 +310,7 @@ static void Tiles_LoadICNFile(const char *filename)
  */
 void Sprites_LoadTiles(void)
 {
+	uint32 iconMapWords;
 	if (s_iconLoaded) return;
 
 	s_iconLoaded = true;
@@ -317,7 +318,7 @@ void Sprites_LoadTiles(void)
 	Tiles_LoadICNFile("ICON.ICN");
 
 	free(g_iconMap);
-	g_iconMap = File_ReadWholeFileLE16("ICON.MAP");
+	g_iconMap = File_ReadWholeFileLE16("ICON.MAP", &iconMapWords);
 
 	g_veiledTileID    = g_iconMap[g_iconMap[ICM_ICONGROUP_FOG_OF_WAR] + 16];
 	g_bloomTileID     = g_iconMap[g_iconMap[ICM_ICONGROUP_SPICE_BLOOM]];
@@ -325,6 +326,10 @@ void Sprites_LoadTiles(void)
 	g_landscapeTileID = g_iconMap[g_iconMap[ICM_ICONGROUP_LANDSCAPE]];
 	g_wallTileID      = g_iconMap[g_iconMap[ICM_ICONGROUP_WALLS]];
 
+#ifdef TOS
+	GFX_ClassifyPlanarBuildingTiles(iconMapWords);
+	GFX_InitPlanarRockArtwork(iconMapWords);
+#endif
 	Script_LoadFromFile("UNIT.EMC", g_scriptUnit, g_scriptFunctionsUnit, GFX_Screen_Get_ByIndex(SCREEN_2));
 }
 

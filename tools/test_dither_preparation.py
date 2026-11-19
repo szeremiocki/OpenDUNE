@@ -157,16 +157,129 @@ int main(void)
 }
 """)
 
+    def test_building_classification_keeps_shared_and_nonbuilding_icons(self):
+        classify = function((ROOT / "src/gfx.c").read_text(), "GFX_ClassifyPlanarBuildingTiles")
+        run_harness(r"""
+#include <assert.h>
+#include "types.h"
+#include "../sprites.h"
+static uint16 map[] = {
+    [ICM_ICONGROUP_ROCK_CRATERS] = 27,
+    [ICM_ICONGROUP_HOUSE_PALACE] = 32,
+    [27] = 2, 33, 108, 125, 143,
+    [32] = 210, 125, 143, 354, 388, 389, 0xffff
+};
+uint16 *g_iconMap = map;
+static uint16 s_planarTileCount = 389;
+static uint8 s_planarBuildingTiles[64];
+static bool mono;
+#define Video_Atari_Mono() (mono)
+static bool GFX_PlanarTilesReady(void) { return true; }
+static unsigned warnings;
+static void Warning(const char *text, ...) { assert(text != 0); warnings++; }
+""" + classify + r"""
+int main(void)
+{
+    unsigned words = sizeof(map) / sizeof(*map);
+    GFX_ClassifyPlanarBuildingTiles(words);
+    assert(s_planarBuildingTiles[210 / 8] == 0);
+    mono = true;
+    GFX_ClassifyPlanarBuildingTiles(32);
+    assert(warnings == 1 && s_planarBuildingTiles[210 / 8] == 0);
+    GFX_ClassifyPlanarBuildingTiles(words);
+    for (unsigned id = 0; id < 512; id++)
+        assert(((s_planarBuildingTiles[id / 8] & (1u << (id & 7))) != 0) ==
+            (id == 210 || id == 354 || id == 388));
+    return 0;
+}
+""")
+
+    def test_mono_rock_uses_mountain_art_without_changing_tile_masks(self):
+        gfx = (ROOT / "src/gfx.c").read_text()
+        prepare = "\n".join(function(gfx, name) for name in (
+            "GFX_InitPlanarRockArtwork", "GFX_FillPlanarTile"))
+        run_harness(r"""
+#include <assert.h>
+#include <string.h>
+#include "types.h"
+#include "../sprites.h"
+enum { PLANAR_TILE_MIXED = 1, PLANAR_TILE_EMPTY, PLANAR_TILE_OPAQUE };
+static uint16 map[96];
+uint16 *g_iconMap = map;
+static uint16 s_planarTileCount = 4;
+static uint16 s_planarRockTile = 0xffff, s_planarRockArtwork;
+static uint8 s_planarBuildingTiles[64], s_planarTileReady[4];
+static uint16 s_planarTiles[4 * 64], s_planarTileMasks[4 * 16];
+static uint8 tileData[4 * 128], palettes[32], paletteIndices[4];
+uint8 *g_tilesPixels = tileData, *g_iconRPAL = palettes, *g_iconRTBL = paletteIndices;
+static uint16 s_tileByteSize = 128;
+static bool mono, reduced;
+static const uint8 *decodedSource;
+static uint8 decodedColour;
+static unsigned warnings;
+#define Video_Atari_Mono() (mono)
+static bool GFX_PlanarTilesReady(void) { return true; }
+static void Warning(const char *text, ...) { assert(text != 0); warnings++; }
+static uint8 GFX_TileHouseColor(uint8 colour, uint8 house)
+{
+    return colour + house;
+}
+static void Video_Atari_DecodePlanarTile(const uint8 *src, const uint8 *pal, uint16 *dst)
+{
+    reduced = false;
+    decodedSource = src;
+    decodedColour = pal[1];
+    *dst = decodedColour;
+}
+static void Video_Atari_DecodePlanarBuildingTile(const uint8 *src, const uint8 *pal, uint16 *dst)
+{
+    assert(mono);
+    Video_Atari_DecodePlanarTile(src, pal, dst);
+    reduced = true;
+}
+""" + prepare + r"""
+int main(void)
+{
+    map[ICM_ICONGROUP_LANDSCAPE] = 32;
+    map[32 + 16] = 1;
+    map[32 + 48] = 2;
+    g_iconRTBL[2] = 1;
+    g_iconRPAL[1] = 24;
+    g_iconRPAL[17] = 98;
+    memset(tileData, 0x11, sizeof(tileData));
+    GFX_InitPlanarRockArtwork(96);
+    GFX_FillPlanarTile(1, 1, 1);
+    assert(!reduced && decodedSource == g_tilesPixels + 128 && decodedColour == 25);
+    mono = true;
+    GFX_InitPlanarRockArtwork(80);
+    assert(warnings == 1 && s_planarRockTile == 0xffff);
+    GFX_InitPlanarRockArtwork(96);
+    GFX_FillPlanarTile(1, 1, 1);
+    assert(reduced && decodedSource == g_tilesPixels + 256 && decodedColour == 98);
+    assert(s_planarTileReady[1] == PLANAR_TILE_OPAQUE);
+    assert(s_planarTileMasks[16] == 0xffff && s_planarTileMasks[31] == 0xffff);
+    GFX_FillPlanarTile(2, 0, 2);
+    assert(!reduced && decodedSource == g_tilesPixels + 256 && decodedColour == 98);
+    g_tilesPixels[128] = 0x01;
+    GFX_FillPlanarTile(1, 0, 1);
+    assert(!reduced && decodedSource == g_tilesPixels + 128 && decodedColour == 24);
+    assert(s_planarTileReady[1] == PLANAR_TILE_MIXED && s_planarTileMasks[16] == 0x7fff);
+    return 0;
+}
+""")
+
     def test_st_backend_palette_updates_bands_padding_and_composition(self):
         video = (ROOT / "src/video/video_atari.c").read_text()
         production = "\n".join(function(video, name) for name in (
-            "Video_Atari_SetDitherPen",
+            "Video_Atari_MonoCoverage", "Video_Atari_SetMonoCoverage", "Video_Atari_ReducedMonoCoverage",
+            "Video_Atari_SetPackedMonoCoverage",
+            "Video_Atari_PrepareUnitPlanar",
             "Rebuild_Palette4BitPairMap", "Video_Atari_EncodePlanarWithLookup",
             "Video_Atari_InitPenPairMap", "Video_Atari_PreparePlanar",
             "Video_Atari_PrepareColour", "Video_Atari_PrepareMonoCustom",
             "Video_Atari_PrepareMono", "Video_Atari_ConvertColour", "Video_Atari_ColourReadGroup",
             "Video_Atari_EncodePlanar", "Video_Atari_EncodePlanarStrided",
-            "Video_Atari_InitTileMapping", "Video_Atari_DecodePlanarTile",
+            "Video_Atari_InitTileMapping", "Video_Atari_DecodePlanarTile", "Video_Atari_DecodePlanarBuildingTile",
             "Video_Atari_PlanarMergePlain", "Video_Atari_ComposePlanarSprite",
             "Video_Atari_ComposePlanarTile",
             "Video_Atari_PlanarOffset", "Video_Atari_CopyPlanar", "Video_Atari_PaintPlanar",
@@ -210,10 +323,10 @@ static void Video_Atari_DirtySweepBand(uint32 mask, uint16 top, uint16 bottom, u
 { assert(mask && top < bottom && width <= 320); }
 static bool mono, s_monoWhiteIsOne;
 #define Video_Atari_Mono() mono
-static uint8 s_palette4BitMap[256];
+static uint8 s_palette4BitMap[256], s_paletteMonoCoverage[256];
 static uint16 s_palette4BitPairMap[65536], s_penPairMap[4096];
 static AtariDitherLookup s_palette4BitDither = {.flat = true}, s_tileDither = {.flat = true};
-static AtariMonoPackedLookup s_paletteMonoPacked, s_tileMonoPacked;
+static AtariMonoPackedLookup s_paletteMonoPacked, s_tileMonoPacked, s_unitMonoPacked, s_buildingMonoPacked;
 static bool s_penPairMapReady;
 static unsigned mappedEncodes, penEncodes;
 /* BACKEND */
@@ -681,26 +794,66 @@ static void check_sweeps(void)
                     }
             }
 }
+static void check_unit_contrast(void)
+{
+    uint8 indices[32];
+    uint16 pixels[8], normal[8];
+    const uint8 sourceCoverage[] = {0, 2, 3, 5, 6, 8, 9, 16};
+    const unsigned coverage[] = {0, 4, 8, 12};
+    for (unsigned c = 0; c < 8; c++) {
+        indices[c * 2] = indices[c * 2 + 1] = sourceCoverage[c];
+        indices[16 + c * 2] = indices[16 + c * 2 + 1] = sourceCoverage[c];
+    }
+    const AtariDitherSource source = {indices, 16, 2, 16, 0, 0, 1, 1};
+    Video_Atari_PrepareUnitPlanar(&source, pixels);
+    Video_Atari_PreparePlanar(&source, NULL, normal);
+    for (unsigned c = 0; c < 8; c++) {
+        unsigned normalWhite = 0;
+        for (unsigned y = 0; y < 4; y++)
+            for (unsigned x = c * 4; x < (c + 1) * 4; x++) {
+                unsigned bit = 0x8000u >> (x & 15), offset = y * 2 + x / 16;
+                unsigned phase = 15 - y * 4 - (x & 3);
+                bool white = ((pixels[offset] & bit) != 0) == s_monoWhiteIsOne;
+                assert(white == ((s_paletteMonoLuma[coverage[c / 2]] & (1u << phase)) != 0));
+                normalWhite += ((normal[offset] & bit) != 0) == s_monoWhiteIsOne;
+            }
+        assert(normalWhite == sourceCoverage[c]);
+    }
+}
 static void check_frozen_mono_tiles(void)
 {
     uint8 rgb[768], colours[16], src[128];
-    uint16 baseline[64], after[64];
+    uint16 baseline[64], building[64], after[64];
+    const uint8 sourceLevels[16] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16};
+    const uint8 buildingLevels[16] = {0, 0, 0, 4, 4, 4, 8, 8, 8, 12, 12, 12, 12, 12, 12, 12};
     for (unsigned i = 0; i < sizeof(rgb); i++) rgb[i] = i * 19;
-    for (unsigned i = 0; i < 16; i++) colours[i] = i * 17;
+    for (unsigned i = 0; i < 16; i++) {
+        colours[i] = i * 17;
+        uint8 grey = (sourceLevels[i] * 63 + 8) / 16;
+        memset(rgb + colours[i] * 3, grey, 3);
+    }
     for (unsigned i = 0; i < sizeof(src); i++) src[i] = i * 37;
     Video_Atari_InitTileMapping(rgb);
     Video_Atari_DecodePlanarTile(src, colours, baseline);
+    Video_Atari_DecodePlanarBuildingTile(src, colours, building);
     for (unsigned y = 0; y < 32; y++)
         for (unsigned x = 0; x < 32; x++) {
             unsigned pair = src[y / 2 * 8 + x / 4];
-            unsigned colour = colours[(x & 2) ? pair & 15 : pair >> 4];
-            unsigned expected = s_tileDither.pens[y & 3][x & 3][colour] ^ !s_monoWhiteIsOne;
+            unsigned nibble = (x & 2) ? pair & 15 : pair >> 4;
+            unsigned coverage = sourceLevels[nibble];
+            unsigned bit = 15 - (y & 3) * 4 - (x & 3);
+            unsigned expected = ((s_paletteMonoLuma[coverage] >> bit) & 1) ^ !s_monoWhiteIsOne;
             assert(((baseline[y * 2 + x / 16] >> (15 - (x & 15))) & 1) == expected);
+            unsigned reduced = buildingLevels[nibble];
+            expected = ((s_paletteMonoLuma[reduced] >> bit) & 1) ^ !s_monoWhiteIsOne;
+            assert(((building[y * 2 + x / 16] >> (15 - (x & 15))) & 1) == expected);
         }
-    for (unsigned c = 0; c < 256; c++) s_palette4BitMap[c] ^= 15;
+    for (unsigned c = 0; c < 256; c++) s_paletteMonoCoverage[c] = 16 - s_paletteMonoCoverage[c];
     Rebuild_Palette4BitPairMap(0, 256);
     Video_Atari_DecodePlanarTile(src, colours, after);
     assert(!memcmp(baseline, after, sizeof(baseline)));
+    Video_Atari_DecodePlanarBuildingTile(src, colours, after);
+    assert(!memcmp(building, after, sizeof(building)));
 }
 int main(void)
 {
@@ -754,7 +907,9 @@ int main(void)
     Video_Atari_DitherPrepareLookup(&lookup, patterns);
     for (unsigned polarity = 0; polarity < 2; polarity++) {
         s_monoWhiteIsOne = polarity;
+        for (unsigned c = 0; c < 256; c++) s_paletteMonoCoverage[c] = c % 17;
         Rebuild_Palette4BitPairMap(0, 256);
+        check_unit_contrast();
         for (unsigned w = 0; w < sizeof(widths) / sizeof(*widths); w++) {
             check(patterns, NULL, widths[w], 67, -3, 32767, 1, 1);
             for (int stepY = -1; stepY <= 1; stepY += 2)

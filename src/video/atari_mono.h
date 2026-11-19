@@ -77,6 +77,8 @@ extern void Video_Atari_MonoReadGroup(const uint16 *pixels, uint16 stride,
 extern void Video_Atari_MonoWriteGroup(uint16 *pixels, uint16 stride,
 	uint16 row, uint16 group, const uint16 words[4]);
 extern void Video_Atari_MonoMaskWords(uint16 mask, uint16 words[4]);
+extern void Video_Atari_MonoOutline(uint16 *pixels, const uint16 *masks,
+	uint16 width, uint16 height, bool outlineIsOne);
 extern void Video_Atari_MonoComposeTile(const uint16 *pixels, const uint16 *masks,
 	const uint16 *overlay, const uint16 *overlayMasks, uint16 *result, uint16 *resultMasks);
 extern void Video_Atari_MonoMergeWords(uint16 dst[4], const uint16 pixels[4], uint16 mask);

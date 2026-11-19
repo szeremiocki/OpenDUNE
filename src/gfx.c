@@ -80,6 +80,8 @@ static uint16 *s_planarTileIndex;
 uint8 *s_planarTileReady;	/* zero = cold; otherwise cached mask classification */
 uint16 *s_planarTileHouse[HOUSE_MAX];	/* per-house base of s_planarTileIndex */
 static uint16 s_planarTileCount, s_planarVariants;
+static uint8 s_planarBuildingTiles[512 / 8];
+static uint16 s_planarRockTile = 0xffff, s_planarRockArtwork;
 static uint16 s_viewportFogPixels[64], s_viewportFogMasks[16];
 static bool s_viewportFogReady;
 static uint16 s_fogWritable[17][16];
@@ -129,6 +131,8 @@ void GFX_FreePlanarTiles(void)
 	memset(s_selectionTiles, 0, sizeof(s_selectionTiles));
 	memset(s_planarCompositeReady, 0, sizeof(s_planarCompositeReady));
 	memset(s_planarTileHouse, 0, sizeof(s_planarTileHouse));
+	memset(s_planarBuildingTiles, 0, sizeof(s_planarBuildingTiles));
+	s_planarRockTile = 0xffff;
 	free(s_planarTiles);
 	free(s_planarTileMasks);
 	free(s_planarTileIndex);
@@ -141,6 +145,54 @@ void GFX_FreePlanarTiles(void)
 bool GFX_PlanarTilesReady(void)
 {
 	return s_planarTiles != NULL;
+}
+
+void GFX_ClassifyPlanarBuildingTiles(uint32 iconMapWords)
+{
+	uint16 first, buildings;
+	uint32 i;
+
+	if (!GFX_PlanarTilesReady() || !Video_Atari_Mono()) return;
+	if (iconMapWords <= ICM_ICONGROUP_HOUSE_PALACE) goto bad_map;
+	first = g_iconMap[ICM_ICONGROUP_ROCK_CRATERS];
+	buildings = g_iconMap[ICM_ICONGROUP_HOUSE_PALACE];
+	if (first <= ICM_ICONGROUP_HOUSE_PALACE || first > buildings || buildings >= iconMapWords) goto bad_map;
+	/* Building groups run to the end of ICON.MAP, including animation
+	 * frames. Shared icons (e.g. slabs) keep their ordinary tile mapping. */
+	for (i = buildings; i < iconMapWords; i++) {
+		uint16 id = g_iconMap[i];
+		if (id < 512 && id < s_planarTileCount) s_planarBuildingTiles[id >> 3] |= 1u << (id & 7);
+	}
+	for (i = first; i < buildings; i++) {
+		uint16 id = g_iconMap[i];
+		if (id < 512) s_planarBuildingTiles[id >> 3] &= ~(1u << (id & 7));
+	}
+	s_planarBuildingTiles[0] &= ~1u;
+	return;
+
+bad_map:
+	Warning("Invalid ICON.MAP building range; using regular tile dithering\n");
+}
+
+void GFX_InitPlanarRockArtwork(uint32 iconMapWords)
+{
+	enum { ROCK_INTERIOR = 16, MOUNTAIN_INTERIOR = 48 };
+	uint32 landscape;
+	uint16 rock, mountain;
+
+	if (!GFX_PlanarTilesReady() || !Video_Atari_Mono()) return;
+	if (iconMapWords <= ICM_ICONGROUP_LANDSCAPE) goto bad_map;
+	landscape = g_iconMap[ICM_ICONGROUP_LANDSCAPE];
+	if (landscape + MOUNTAIN_INTERIOR >= iconMapWords) goto bad_map;
+	rock = g_iconMap[landscape + ROCK_INTERIOR] & 0x1ff;
+	mountain = g_iconMap[landscape + MOUNTAIN_INTERIOR] & 0x1ff;
+	if (rock == 0 || mountain == 0 || rock >= s_planarTileCount || mountain >= s_planarTileCount) goto bad_map;
+	s_planarRockTile = rock;
+	s_planarRockArtwork = mountain;
+	return;
+
+bad_map:
+	Warning("Invalid ICON.MAP rock or mountain tile; keeping original rock artwork\n");
 }
 
 static uint16 GFX_FillPlanarTile(uint16 tileID, uint8 houseID, uint16 index)
@@ -167,7 +219,15 @@ static uint16 GFX_FillPlanarTile(uint16 tileID, uint8 houseID, uint16 index)
 		allMask &= mask;
 		anyMask |= mask;
 	}
-	Video_Atari_DecodePlanarTile(source, colours, s_planarTiles + (uint32)index * 64);
+	if (tileID == s_planarRockTile && allMask == 0xffff) {
+		/* Replace only the pixels, keeping the rock tile's cache key and mask. */
+		source = g_tilesPixels + (uint32)s_planarRockArtwork * s_tileByteSize;
+		palette = g_iconRPAL + (g_iconRTBL[s_planarRockArtwork] << 4);
+		Video_Atari_DecodePlanarBuildingTile(source, palette, s_planarTiles + (uint32)index * 64);
+	} else if (tileID < 512 && (s_planarBuildingTiles[tileID >> 3] & (1u << (tileID & 7))) != 0)
+		Video_Atari_DecodePlanarBuildingTile(source, colours, s_planarTiles + (uint32)index * 64);
+	else
+		Video_Atari_DecodePlanarTile(source, colours, s_planarTiles + (uint32)index * 64);
 	s_planarTileReady[index] = allMask == 0xffff ? PLANAR_TILE_OPAQUE :
 	                          anyMask == 0 ? PLANAR_TILE_EMPTY : PLANAR_TILE_MIXED;
 	return index;

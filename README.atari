@@ -1057,6 +1057,27 @@ Other channels and PSG I/O mixer bits are preserved. Sound stop/shutdown
 also cancels an owned list and explicitly mutes the tone. No busy wait or
 framerate limit is introduced.
 
+ST-High prepares imagery directly from source RGB palette entries, without the
+ST-Low 16-pen quantization step. The 4x4 Bayer ramp has 17 coverage levels and
+keeps its phase anchored to the source asset. The live palette and the frozen
+terrain palette are prepared independently; explicit native UI pens and
+ST-Low colour are unchanged.
+
+ST-High ground-unit bodies and turrets use the building four-level ramp
+(0%, 25%, 50%, 75% white from darkest to brightest source RGB) and a solid
+white, one-physical-pixel inner outline. Both are baked into the
+cached unit before effects and selection markers, without expanding opacity
+or damage bounds.
+
+ST-High building tiles use the same four-level ramp when their native cache
+entries are prepared, including animation frames. Source luma buckets 0-2,
+3-5, 6-8, and 9-16 map to 0%, 25%, 50%, and 75% white coverage.
+Icons shared with terrain, slabs, walls, or fog keep the regular tile mapping.
+
+For the ST-High terrain experiment, solid rock interiors use mountain
+artwork with the building ramp. Terrain IDs, rock edges and ST-Low remain
+unchanged.
+
 The ST/STE Mentat picture loop and intro support predecoded native WSA playback
 in both ST-Low colour and ST-High mono.
 WSA_LoadFile() has an allowPlanar argument: false preserves original

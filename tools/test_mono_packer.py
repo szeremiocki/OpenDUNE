@@ -16,6 +16,44 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class MonoPackerTest(unittest.TestCase):
+    def test_inner_outline_matches_four_neighbour_silhouette(self):
+        run_harness(r"""
+#include <assert.h>
+#include <string.h>
+#include "atari_mono.h"
+enum { W = 48, H = 5, GROUPS = W / 16, STRIDE = W / 8, WORDS = STRIDE * 2 * H };
+static bool opaque(const uint16 *mask, int x, int y)
+{
+    if (x < 0 || x >= 2 * W || y < 0 || y >= 2 * H) return false;
+    return (mask[(y / 2) * GROUPS + x / 32] & (0x8000u >> ((x / 2) & 15))) != 0;
+}
+int main(void)
+{
+    uint16 mask[GROUPS * H], original[WORDS], guarded[WORDS + 2], *out = guarded + 1;
+    for (unsigned pattern = 0; pattern < 50; pattern++) {
+        for (unsigned i = 0; i < GROUPS * H; i++)
+            mask[i] = pattern == 0 ? 0 : pattern == 1 ? 0xffff :
+                (0x8123u * (i + 1) + 0x203bu * pattern) ^ (0x535au >> (i & 7));
+        for (unsigned i = 0; i < WORDS; i++) original[i] = 0x53a9u * (i + 13);
+        for (unsigned polarity = 0; polarity < 2; polarity++) {
+            memcpy(out, original, sizeof(original));
+            guarded[0] = guarded[WORDS + 1] = 0x769a;
+            Video_Atari_MonoOutline(out, mask, W, H, polarity);
+            assert(guarded[0] == 0x769a && guarded[WORDS + 1] == 0x769a);
+            for (int y = 0; y < 2 * H; y++)
+                for (int x = 0; x < 2 * W; x++) {
+                    unsigned index = y * STRIDE + x / 16, bit = 0x8000u >> (x & 15);
+                    bool edge = opaque(mask, x, y) && !(opaque(mask, x - 1, y) &&
+                        opaque(mask, x + 1, y) && opaque(mask, x, y - 1) && opaque(mask, x, y + 1));
+                    assert(((out[index] & bit) != 0) ==
+                        (edge ? polarity != 0 : (original[index] & bit) != 0));
+                }
+        }
+    }
+    return 0;
+}
+""")
+
     def test_packed_lookup_partial_updates(self):
         run_harness(r"""
 #include <assert.h>

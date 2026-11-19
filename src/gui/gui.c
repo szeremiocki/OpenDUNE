@@ -300,6 +300,17 @@ void GUI_DrawFilledRectangle(int16 left, int16 top, int16 right, int16 bottom, u
 }
 
 #ifdef TOS
+static void GUI_BuildMonoBannerBackground(uint16 *background, uint8 colour)
+{
+	uint32 rows[SCREEN_WIDTH * 2 / sizeof(uint32)];
+	uint16 y;
+
+	memset(rows, colour, sizeof(rows));
+	Video_Atari_EncodePlanar((const uint8 *)rows, background, SCREEN_WIDTH, 2);
+	for (y = 2; y < 24; y += 2)
+		memcpy(background + y * (SCREEN_WIDTH / 4), background, SCREEN_WIDTH);
+}
+
 /* While set, GUI_DrawChar() composes glyph cells into this planar buffer instead of drawing chunky. */
 static uint16 s_planarTargetStride;  /*!< Words per row. */
 static uint16 s_planarTargetRows;
@@ -457,7 +468,8 @@ static void GUI_DisplayTextBuffer(const char *buffer, int importance, bool keepA
 			if (g_textDisplayNeedsUpdate || !bannerPlanarReady) {
 				static uint16 bannerBackground[24 * SCREEN_WIDTH / 4];
 				static uint8 bannerBackgroundPen = 0xFF;
-				uint8 pen = Video_Atari_GetPalettePen(g_curWidgetFGColourNormal);
+				bool mono = Video_Atari_Mono();
+				uint8 pen = mono ? g_curWidgetFGColourNormal : Video_Atari_GetPalettePen(g_curWidgetFGColourNormal);
 				uint16 palette = Video_Atari_GetPaletteGeneration();
 				uint16 left = g_curWidgetXBase << 3;
 
@@ -469,9 +481,10 @@ static void GUI_DisplayTextBuffer(const char *buffer, int importance, bool keepA
 				            bannerLeft != left || g_fontNew8p->height > 11;
 				uint8 pass;
 
-				if (pen != bannerBackgroundPen) {
-					Video_Atari_PaintPlanar(bannerBackground, SCREEN_WIDTH / 4,
-					    0, 0, SCREEN_WIDTH, 24, NULL, 0, pen, 0, 0);
+				if (pen != bannerBackgroundPen || (mono && palette != bannerPalette)) {
+					if (mono) GUI_BuildMonoBannerBackground(bannerBackground, pen);
+					else Video_Atari_PaintPlanar(bannerBackground, SCREEN_WIDTH / 4,
+						    0, 0, SCREEN_WIDTH, 24, NULL, 0, pen, 0, 0);
 					bannerBackgroundPen = pen;
 				}
 
@@ -2128,14 +2141,15 @@ static uint16 GUI_ViewportResidentSpriteID(uint16 slot)
 }
 
 static void GUI_ViewportEncodePlanar(const uint8 *chunky, uint16 *pixels,
-	uint16 stride, uint16 sourceWidth, uint16 height, int flags)
+	uint16 stride, uint16 sourceWidth, uint16 height, int flags, bool unitContrast)
 {
 	const AtariDitherSource source = {chunky, stride, height, stride,
 		(flags & DRAWSPRITE_FLAG_RTL) ? sourceWidth - 1 : 0,
 		(flags & DRAWSPRITE_FLAG_BOTTOMUP) ? height - 1 : 0,
 		(flags & DRAWSPRITE_FLAG_RTL) ? -1 : 1,
 		(flags & DRAWSPRITE_FLAG_BOTTOMUP) ? -1 : 1};
-	Video_Atari_PreparePlanar(&source, NULL, pixels);
+	if (unitContrast) Video_Atari_PrepareUnitPlanar(&source, pixels);
+	else Video_Atari_PreparePlanar(&source, NULL, pixels);
 }
 
 static void GUI_InitViewportResidentSprites(void)
@@ -2222,7 +2236,7 @@ static void GUI_InitViewportResidentSprites(void)
 			memset(scratch.bytes, 0, stride * mask->height);
 			GUI_ViewportDecodeLayer(scratch.bytes, stride, mask->height,
 			    mask->sprite, 0, 0, flags, NULL);
-			GUI_ViewportEncodePlanar(scratch.bytes, pixels, stride, mask->width, mask->height, flags);
+			GUI_ViewportEncodePlanar(scratch.bytes, pixels, stride, mask->width, mask->height, flags, false);
 			for (row = 0; row < mask->height; row++) {
 				uint16 sourceRow = (flags & DRAWSPRITE_FLAG_BOTTOMUP) ?
 				    mask->height - 1 - row : row;
@@ -2270,11 +2284,11 @@ static const ViewportPlanarImage *GUI_ViewportResidentSprite(uint16 spriteID, in
 
 static ViewportPlanarComponent *GUI_ViewportPlanarComponent(ViewportSpriteMask *mask,
                                                            uint16 spriteID, uint8 colourHouse,
-                                                           int flags, const uint8 *palette)
+                                                           int flags, const uint8 *palette, bool unitContrast)
 {
 	uint32 key = 0x80000000UL | spriteID |
 	    ((uint32)(colourHouse == GUI_SPRITE_COLOUR_EMBEDDED ? 6 : colourHouse) << 9) |
-	    ((uint32)(flags & 3) << 12);
+	    ((uint32)(flags & 3) << 12) | ((uint32)unitContrast << 14);
 	ViewportPlanarComponent *entry = NULL;
 	uint16 i;
 
@@ -2314,7 +2328,7 @@ static ViewportPlanarComponent *GUI_ViewportPlanarComponent(ViewportSpriteMask *
 		memset(scratch.bytes, 0, stride * mask->height);
 		GUI_ViewportDecodeLayer(scratch.bytes, stride, mask->height, mask->sprite, 0, 0,
 		                        flags, palette);
-		GUI_ViewportEncodePlanar(scratch.bytes, entry->pixels, stride, mask->width, mask->height, flags);
+		GUI_ViewportEncodePlanar(scratch.bytes, entry->pixels, stride, mask->width, mask->height, flags, unitContrast);
 		for (row = 0; row < mask->height; row++) {
 			uint16 sourceRow = (flags & DRAWSPRITE_FLAG_BOTTOMUP) ? mask->height - 1 - row : row;
 			uint16 group;
@@ -2683,6 +2697,7 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 	int16 centreX = 0, centreY = 0;
 	uint16 highlight = 0;
 	bool blitter = Video_Atari_ViewportBlitter();
+	bool outline = layers != NULL && Video_Atari_UnitOutlineEnabled();
 
 	assert(s_viewportPlanar && s_viewportPlanarSprites != NULL && s_viewportPlanarComponents != NULL);
 	assert(sprite != NULL && spriteID != 0 && spriteID <= 354 && g_sprites[spriteID] == sprite);
@@ -2733,7 +2748,7 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 		       layer->colourHouse == GUI_SPRITE_COLOUR_EMBEDDED);
 	}
 #endif
-	if (blitter && count == 0) {
+	if (blitter && count == 0 && !outline) {
 		image = GUI_ViewportResidentSprite(spriteID, flags);
 		if (image != NULL) goto present;
 	}
@@ -2746,6 +2761,7 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 	} else {
 		GUI_ViewportBuildCompositeKeyCPU(key, spriteID, colourHouse, flags, x, layers);
 	}
+	if (outline) key->main |= 0x00004000UL; /* Unused bit between flip and phase. */
 	if (++s_viewportPlanarClock == 0) {
 		s_viewportPlanarClock = 1;
 		for (i = 0; i < VIEWPORT_PLANAR_SPRITES; i++) s_viewportPlanarSprites[i].used = 0;
@@ -2758,7 +2774,7 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 		int16 maxX = mask->width, maxY = mask->height;
 		int16 boundsLeft = 0, boundsTop = 0, boundsRight = 0, boundsBottom = 0;
 		uint16 stride, height, groups;
-		bool visible = false, cropped = false;
+		bool visible = false, cropped = false, outlinePending = outline;
 		masks[0] = mask;
 		left[0] = top[0] = 0;
 		for (i = 0; i < count; i++) {
@@ -2824,14 +2840,21 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 		}
 		for (i = 0; i <= count; i++) {
 			ViewportSpriteMask *m = masks[i];
+			uint16 layerID = i == 0 ? spriteID : layers->layer[i - 1].spriteID;
 			int layerFlags = i == 0 ? flags : layers->layer[i - 1].flags;
 			const uint8 *layerPalette = i == 0 ? palette :
 			    ((layerFlags & DRAWSPRITE_FLAG_PAL) && !(layerFlags & DRAWSPRITE_FLAG_PAL_DEFERRED) ?
 			    layers->layer[i - 1].palette : NULL);
-			ViewportPlanarComponent *component = GUI_ViewportPlanarComponent(m,
-			    i == 0 ? spriteID : layers->layer[i - 1].spriteID,
+			/* Finish the body/turret silhouette before smoke, harvest spray
+			 * or the selection marker. Harvesters have no turret layer. */
+			if (outlinePending && i != 0 && (layerID == 6 ||
+			    (layerID >= 180 && layerID <= 182) || (layerID >= 223 && layerID <= 237))) {
+				Video_Atari_OutlineUnit(entry->pixels, entry->masks, stride, height);
+				outlinePending = false;
+			}
+			ViewportPlanarComponent *component = GUI_ViewportPlanarComponent(m, layerID,
 			    i == 0 ? colourHouse : layers->layer[i - 1].colourHouse,
-			    layerFlags, layerPalette);
+			    layerFlags, layerPalette, outlinePending);
 			if (count == 0 && blitter && !cropped) {
 				assert(stride == component->width && height == component->height);
 				memcpy(entry->pixels, component->pixels, stride * height / 2);
@@ -2847,6 +2870,7 @@ static void GUI_ViewportPlanarSprite(const uint8 *sprite, uint16 spriteID, uint8
 				    left[i] - minX, top[i] - minY);
 			}
 		}
+		if (outlinePending) Video_Atari_OutlineUnit(entry->pixels, entry->masks, stride, height);
 		if (blitter) {
 			uint16 word = groups * height;
 			if (count != 0 || cropped) {
