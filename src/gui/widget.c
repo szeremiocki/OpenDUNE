@@ -211,8 +211,13 @@ void GUI_Widget_Draw(Widget *w)
 	switch (drawMode) {
 		case DRAW_MODE_NONE: break;
 
-		case DRAW_MODE_SPRITE: {
-			GUI_DrawSprite(SCREEN_ACTIVE, drawParam.sprite, GUI_SPRITE_ID_UNKNOWN, GUI_SPRITE_COLOUR_EMBEDDED, offsetX, offsetY, w->parentID, DRAWSPRITE_FLAG_REMAP | DRAWSPRITE_FLAG_WIDGETPOS, g_remap, 1);
+		case DRAW_MODE_SPRITE:
+		case DRAW_MODE_SPRITE_HOUSE_INK: {
+			uint8 *remap = g_remap;
+#ifdef TOS
+			if (drawMode == DRAW_MODE_SPRITE_HOUSE_INK && Video_Atari_Mono()) remap = g_monoWidgetRemap;
+#endif
+			GUI_DrawSprite(SCREEN_ACTIVE, drawParam.sprite, GUI_SPRITE_ID_UNKNOWN, GUI_SPRITE_COLOUR_EMBEDDED, offsetX, offsetY, w->parentID, DRAWSPRITE_FLAG_REMAP | DRAWSPRITE_FLAG_WIDGETPOS, remap, 1);
 		} break;
 
 		case DRAW_MODE_TEXT: {
@@ -657,6 +662,9 @@ Widget *GUI_Widget_Allocate(uint16 index, uint16 shortcut, uint16 offsetX, uint1
 			drawMode = DRAW_MODE_SPRITE;
 			drawParam1.sprite = g_sprites[spriteID];
 			drawParam2.sprite = g_sprites[spriteID + 1];
+#ifdef TOS
+			if (spriteID == 7 || spriteID == 9) drawMode = DRAW_MODE_SPRITE_HOUSE_INK; /* MENTAT / OPTIONS */
+#endif
 
 			if (drawParam1.sprite == NULL) break;
 

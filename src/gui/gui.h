@@ -91,6 +91,9 @@ extern const SelectionTypeStruct g_table_selectionType[SELECTIONTYPE_MAX];
 
 extern uint8 *g_palette_998A;
 extern uint8 g_remap[256];
+#ifdef TOS
+extern uint8 g_monoWidgetRemap[256];
+#endif
 extern FactoryWindowItem g_factoryWindowItems[25];
 extern uint16 g_factoryWindowOrdered;
 extern uint16 g_factoryWindowBase;

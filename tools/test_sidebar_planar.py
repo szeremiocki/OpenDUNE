@@ -63,7 +63,8 @@ class SidebarPlanarTest(unittest.TestCase):
                        "GUI_RenderGlyph", "GUI_DrawChar", "GUI_DrawText",
                        "GUI_DrawText_Wrapper", "GUI_DrawFilledRectangle",
                        "GUI_DrawWiredRectangle", "GUI_DrawBorder", "GUI_DrawBorderRepeating", "GUI_DrawProgressbar",
-                       "GUI_UpdateProductionStringID")),
+                       "GUI_UpdateProductionStringID", "GUI_Palette_CreateRemap",
+                       "GUI_DrawCreditsCaption", "GUI_Palette_RemapScreen")),
                 (widget, ("GUI_Widget_GetNext", "GUI_Widget_Get_ByIndex",
                           "GUI_Widget_MakeInvisible", "GUI_Widget_MakeVisible",
                           "GUI_Widget_Draw", "GUI_Widget_MakeSelected",
@@ -224,7 +225,8 @@ static uint8 screens[2][320 * 200], mapping[256], remapping[256];
 static uint8 assetData[355][5 + 32 * 24], *assets[355];
 uint8 **g_sprites = assets;
 uint8 *g_paletteMapping1 = remapping;
-uint8 g_remap[256];
+uint8 g_remap[256], g_monoWidgetRemap[256];
+bool g_videoAtariMono;
 uint8 Sprite_GetWidth(uint8 *sprite) { return sprite[3]; }
 static uint8 fontData[256][16 * 16];
 static FontChar chars[256];
@@ -800,6 +802,45 @@ int main(int argc, char **argv) {
         abort();
     }
     g_widgetProperties[0]=(WidgetProperties){0,0,40,200,15,12,0};
+    {
+        uint8 normal[] = {0,0,1,4,0,0,0x90,0x96,0x97};
+        uint8 down[] = {0,0,1,4,0,0,0x91,0x95,0x98};
+        Widget button = {.width=4, .height=1,
+            .drawModeNormal=DRAW_MODE_SPRITE_HOUSE_INK, .drawModeDown=DRAW_MODE_SPRITE_HOUSE_INK,
+            .drawParameterNormal.sprite=normal, .drawParameterDown.sprite=down};
+        uint8 *savedCaption = g_sprites[11];
+        g_sprites[11] = normal;
+        GFX_Screen_SetActive(SCREEN_1);
+        for (unsigned mono=0; mono<2; mono++) {
+            g_videoAtariMono=mono;
+            GUI_Palette_CreateRemap(HOUSE_ORDOS);
+            screens[1][191]=0x90; /* Chrome outside the caption. */
+            memset(screens[1]+192, 77, 4);
+            GUI_DrawCreditsCaption();
+            GUI_Palette_RemapScreen(191,0,5,1,SCREEN_1,g_remap);
+            assert(screens[1][191]==g_remap[0x90] && screens[1][192]==77);
+            assert(screens[1][193]==(mono?12:g_remap[0x90]));
+            assert(screens[1][194]==(mono?12:g_remap[0x96]) && screens[1][195]==0x97);
+            for (unsigned pressed=0; pressed<2; pressed++) {
+                button.state.hover2=pressed;
+                memset(screens[1], 77, 4);
+                GUI_Widget_Draw(&button);
+                assert(screens[1][0]==77);
+                assert(screens[1][1]==(mono?12:g_remap[0x90+pressed]));
+                assert(screens[1][2]==(mono?12:g_remap[0x96-pressed]));
+                assert(screens[1][3]==0x97+pressed);
+            }
+        }
+        button.state.hover2=false;
+        button.drawModeNormal=DRAW_MODE_SPRITE;
+        GUI_Widget_Draw(&button);
+        assert(screens[1][1]==g_remap[0x90]);
+        g_sprites[11] = savedCaption;
+        g_videoAtariMono=false;
+        memset(screens[1], 0, 4);
+        memset(screens[1]+191, 0, 5);
+        GFX_Screen_SetActive(SCREEN_0);
+    }
     g_widgetProperties[6]=(WidgetProperties){32,42,8,82,15,12,0};
     house.creditsStorage=1000; house.credits=425; house.windtrapCount=2;
     house.powerUsage=150; house.starportLinkedID=1; house.starportTimeLeft=12;

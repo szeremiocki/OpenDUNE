@@ -584,6 +584,11 @@ int main(void) {
         production = "\n".join(function(video, name) for name in (
             "Video_Atari_CursorSuppressed", "Video_Atari_CursorSync",
             "Video_Atari_PlacementCursor"))
+        viewport = (ROOT / "src/gui/viewport.c").read_text()
+        sprites = (ROOT / "src/sprites.c").read_text()
+        production += "\nstatic void Video_Atari_PlacementHide(void) { Video_Atari_PlacementCursor(false); }\n"
+        production += "\n" + function(viewport, "GUI_Widget_Viewport_ReleaseCursor")
+        production += "\n" + function(sprites, "Sprites_UnloadTiles")
         harness = r"""
 #include <assert.h>
 #include <stddef.h>
@@ -591,6 +596,8 @@ int main(void) {
 #define SELECTIONTYPE_PLACE 2
 static uint8 screen[1];
 static bool s_curSuppress = true, s_curDrawn, s_curVisible = true, s_curDirty;
+static bool s_tileCursorOwns = true, s_tileCursorShown = true, s_iconLoaded = true;
+static void GFX_FreePlanarTiles(void) {}
 static uint16 g_tileCursor = 1, g_selectionType = 3;
 static uint16 g_mouseX, g_mouseY, g_mouseSpriteIconIndex;
 static uint16 g_mouseHiddenDepth, g_mouseLock;
@@ -652,8 +659,9 @@ int main(void) {
     }
     /* Returning to controls/radar restores the ordinary/target pointer. */
     check(280,60,0,false); check(280,150,5,false);
-    /* Menu/presentation release wins even with an old scroll icon selected. */
-    Video_Atari_PlacementCursor(false);
+    /* Leaving the battlefield discards its cursor state even with an old scroll icon. */
+    Sprites_UnloadTiles();
+    assert(!s_tileCursorOwns && !s_tileCursorShown && !s_iconLoaded);
     check(64,72,1,false); check(249,72,0,false);
     /* Taking ownership erases a sprite wholly outside the battlefield too. */
     g_mouseSpriteIconIndex = 2;

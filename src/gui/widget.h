@@ -45,7 +45,8 @@ typedef enum DrawMode {
 	DRAW_MODE_WIRED_RECTANGLE     = 5,                      /*!< Draw a wired rectangle. */
 	DRAW_MODE_XORFILLED_RECTANGLE = 6,                      /*!< Draw a filled rectangle using xor. */
 
-	DRAW_MODE_MAX             = 7
+	DRAW_MODE_SPRITE_HOUSE_INK   = 7,                      /*!< Sprite with a black house ramp in ST-High. */
+	DRAW_MODE_MAX                 = 8
 } DrawMode;
 
 struct Widget;
@@ -238,6 +239,7 @@ extern void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool pl
 #ifdef TOS
 extern bool GUI_Widget_Viewport_ScrollBlocked(uint16 widgetIndex);
 extern bool GUI_Widget_Viewport_TileCursorActive(void);
+extern void GUI_Widget_Viewport_ReleaseCursor(void);
 #endif
 #ifdef TOS
 extern bool GUI_Widget_Viewport_IsPlanar(void);

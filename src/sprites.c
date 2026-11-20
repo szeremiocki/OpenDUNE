@@ -25,6 +25,7 @@
 #include "ini.h"
 #include "input/mouse.h"
 #include "gui/gui.h"
+#include "gui/widget.h"
 #include "script/script.h"
 #include "string.h"
 #include "tile.h"
@@ -340,6 +341,7 @@ void Sprites_UnloadTiles(void)
 {
 	s_iconLoaded = false;
 #ifdef TOS
+	GUI_Widget_Viewport_ReleaseCursor();
 	GFX_FreePlanarTiles();
 #endif
 }

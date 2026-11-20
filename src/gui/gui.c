@@ -129,6 +129,9 @@ void GUI_TextState_Set(const GUITextState *state)
 static ClippingArea g_clipping = { 0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1 };
 uint8 *g_palette_998A = NULL;
 uint8 g_remap[256];
+#ifdef TOS
+uint8 g_monoWidgetRemap[256];
+#endif
 FactoryWindowItem g_factoryWindowItems[25];
 uint16 g_factoryWindowOrdered = 0;
 uint16 g_factoryWindowBase = 0;
@@ -4331,6 +4334,19 @@ void GUI_DrawProgressbar(uint16 current, uint16 max)
 	}
 }
 
+static void GUI_DrawCreditsCaption(void)
+{
+#ifdef TOS
+	if (Video_Atari_Mono()) {
+		/* Apply ink before the whole chrome is remapped to the player's house. */
+		GUI_DrawSprite(SCREEN_1, g_sprites[11], 11, GUI_SPRITE_COLOUR_EMBEDDED,
+		    192, 0, 0, DRAWSPRITE_FLAG_REMAP, g_monoWidgetRemap, 1);
+		return;
+	}
+#endif
+	GUI_DrawSprite(SCREEN_1, g_sprites[11], 11, GUI_SPRITE_COLOUR_EMBEDDED, 192, 0, 0, 0);
+}
+
 /**
  * Draw the interface (borders etc etc) and radar on the screen.
  * @param screenID The screen to draw the radar on. if SCREEN_0, SCREEN_1 is used as back buffer
@@ -4351,7 +4367,7 @@ void GUI_DrawInterfaceAndRadar(Screen screenID)
 	g_viewport_forceRedraw = true;
 
 	Sprites_LoadImage("SCREEN.CPS", SCREEN_1, NULL);
-	GUI_DrawSprite(SCREEN_1, g_sprites[11], 11, GUI_SPRITE_COLOUR_EMBEDDED, 192, 0, 0, 0); /* "Credits" */
+	GUI_DrawCreditsCaption();
 
 	GUI_Palette_RemapScreen(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, SCREEN_1, g_remap);
 
@@ -5507,9 +5523,9 @@ static uint32 GUI_FactoryWindow_CreateWidgets(void)
 			w->drawModeSelected = DRAW_MODE_NONE;
 			w->drawModeDown     = DRAW_MODE_NONE;
 		} else {
-			w->drawModeNormal   = DRAW_MODE_SPRITE;
-			w->drawModeSelected = DRAW_MODE_SPRITE;
-			w->drawModeDown     = DRAW_MODE_SPRITE;
+			w->drawModeNormal   = DRAW_MODE_SPRITE_HOUSE_INK;
+			w->drawModeSelected = DRAW_MODE_SPRITE_HOUSE_INK;
+			w->drawModeDown     = DRAW_MODE_SPRITE_HOUSE_INK;
 			w->drawParameterNormal.sprite   = g_sprites[wi->spriteID];
 			w->drawParameterSelected.sprite = g_sprites[wi->spriteID + 1];
 			w->drawParameterDown.sprite     = g_sprites[wi->spriteID + 1];
@@ -5632,7 +5648,7 @@ static void GUI_FactoryWindow_Init(void)
 	oldScreenID = GFX_Screen_SetActive(SCREEN_1);
 
 	Sprites_LoadImage("CHOAM.CPS", SCREEN_1, NULL);
-	GUI_DrawSprite(SCREEN_1, g_sprites[11], 11, GUI_SPRITE_COLOUR_EMBEDDED, 192, 0, 0, 0); /* "Credits" */
+	GUI_DrawCreditsCaption();
 
 	GUI_Palette_RemapScreen(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, SCREEN_1, g_remap);
 
@@ -7573,8 +7589,15 @@ void GUI_Palette_CreateRemap(uint8 houseID)
 
 		loc6 = i / 16;
 		loc4 = i % 16;
+#ifdef TOS
+		g_monoWidgetRemap[i] = *remap;
+#endif
 		if (loc6 == 9 && loc4 <= 6) {
 			*remap = (houseID << 4) + 0x90 + loc4;
+#ifdef TOS
+			/* Use opaque black; index zero would disappear in native sprite masks. */
+			g_monoWidgetRemap[i] = 12;
+#endif
 		}
 	}
 }

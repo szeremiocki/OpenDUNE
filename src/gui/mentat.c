@@ -494,6 +494,10 @@ void GUI_Mentat_Display(const char *wsaFilename, uint8 houseID)
 	Screen oldScreenID;
 	int i;
 
+#ifdef TOS
+	/* Some callers, notably security, enter without unloading the map tiles. */
+	GUI_Widget_Viewport_ReleaseCursor();
+#endif
 	snprintf(textBuffer, sizeof(textBuffer), "MENTAT%c.CPS", g_table_houseInfo[houseID].name[0]);
 	Sprites_LoadImage(textBuffer, SCREEN_1, g_palette_998A);
 

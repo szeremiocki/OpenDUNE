@@ -1263,6 +1263,12 @@ bool GUI_Widget_Viewport_TileCursorActive(void)
 	return s_tileCursorOwns;
 }
 
+void GUI_Widget_Viewport_ReleaseCursor(void)
+{
+	s_tileCursorOwns = s_tileCursorShown = false;
+	Video_Atari_PlacementHide();
+}
+
 /* Runs before the dirty scan so old and new footprints get repaired. */
 static bool GUI_Widget_Viewport_PlacementPrepare(void)
 {
