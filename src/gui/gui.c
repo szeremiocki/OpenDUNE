@@ -50,6 +50,9 @@
 #include "../tools.h"
 #include "../unit.h"
 #include "../video/video.h"
+#ifdef TOS
+#include "../video/atari_mono.h"
+#endif
 #include "../wsa.h"
 
 MSVC_PACKED_BEGIN
@@ -4426,7 +4429,10 @@ enum {
 	CREDITS_CACHE_HEIGHT = 9,
 	CREDITS_CACHE_GLYPH_SIZE = 8,
 	CREDITS_CACHE_PADDING = 8,
-	CREDITS_CACHE_BUFFER_HEIGHT = 24
+	CREDITS_CACHE_BUFFER_HEIGHT = 24,
+	CREDITS_CELL_COLOUR = 81,
+	CREDITS_STROKE_COLOUR = 31,
+	CREDITS_MONO_FIELD_COLOUR = 116 /* Message-bar palette index. */
 };
 
 static uint32 s_creditsBackground[CREDITS_CACHE_WIDTH * CREDITS_CACHE_HEIGHT / sizeof(uint32)];
@@ -4435,6 +4441,7 @@ static bool s_creditsCacheReady = false;
 static uint16 s_creditsPlanarBackground[CREDITS_CACHE_WIDTH * CREDITS_CACHE_HEIGHT / 4];
 static uint16 s_creditsPlanarGlyphs[6][11][CREDITS_CACHE_GLYPH_SIZE][8];
 static uint16 s_creditsPlanarMasks[6][2];
+static uint16 s_creditsMonoBlack;
 static uint16 s_creditsPlanarPaletteGeneration;
 static bool s_creditsPlanarReady = false;
 static uint16 s_creditsPlanarDisplay[CREDITS_CACHE_WIDTH * CREDITS_CACHE_HEIGHT / 4];
@@ -4513,15 +4520,38 @@ static void GUI_BuildCreditsPlanarCache(uint16 paletteGeneration)
 	uint8 *chunky = (uint8 *)chunkyWords;
 	uint16 pixels[CREDITS_CACHE_GLYPH_SIZE * 4];
 	uint16 masks[CREDITS_CACHE_GLYPH_SIZE], glyph, position, line;
+	const bool mono = Video_Atari_Mono();
 
-	for (line = 0; line < CREDITS_CACHE_GLYPH_SIZE; line++) masks[line] = 0xff00;
-	Video_Atari_EncodePlanar((const uint8 *)s_creditsBackground, s_creditsPlanarBackground,
-	                         CREDITS_CACHE_WIDTH, CREDITS_CACHE_HEIGHT);
+	if (mono) {
+		uint32 field[lengthof(s_creditsBackground)];
+		uint8 *dst = (uint8 *)field;
+		const uint8 *src = (const uint8 *)s_creditsBackground;
+		uint16 i, black[4];
+
+		for (i = 0; i < sizeof(field); i++)
+			dst[i] = src[i] == CREDITS_CELL_COLOUR ? CREDITS_MONO_FIELD_COLOUR : src[i];
+		Video_Atari_EncodePlanar(dst, s_creditsPlanarBackground, CREDITS_CACHE_WIDTH, CREDITS_CACHE_HEIGHT);
+		Video_Atari_MonoPenWords(0, 0, 0, black);
+		s_creditsMonoBlack = black[0];
+		memset(pixels, 0xff, sizeof(pixels));
+	} else {
+		for (line = 0; line < CREDITS_CACHE_GLYPH_SIZE; line++) masks[line] = 0xff00;
+		Video_Atari_EncodePlanar((const uint8 *)s_creditsBackground, s_creditsPlanarBackground,
+		                         CREDITS_CACHE_WIDTH, CREDITS_CACHE_HEIGHT);
+	}
 	for (glyph = 0; glyph < lengthof(s_creditsGlyphs); glyph++) {
 		for (line = 0; line < CREDITS_CACHE_GLYPH_SIZE; line++) {
-			memcpy(chunky + line * 16, (const uint8 *)s_creditsGlyphs[glyph] + line * 8, 8);
+			const uint8 *src = (const uint8 *)s_creditsGlyphs[glyph] + line * 8;
+			if (mono) {
+				uint16 x, stroke = 0;
+				for (x = 0; x < 8; x++)
+					if (src[x] == CREDITS_STROKE_COLOUR) stroke |= 0x8000u >> x;
+				masks[line] = stroke;
+			} else {
+				memcpy(chunky + line * 16, src, 8);
+			}
 		}
-		Video_Atari_EncodePlanar(chunky, pixels, 16, CREDITS_CACHE_GLYPH_SIZE);
+		if (!mono) Video_Atari_EncodePlanar(chunky, pixels, 16, CREDITS_CACHE_GLYPH_SIZE);
 		for (position = 0; position < 6; position++) {
 			uint16 shift = (position * 10 + 4) & 15;
 
@@ -4540,12 +4570,36 @@ static void GUI_DrawCreditsPlanarRows(uint16 *buffer, uint16 position, uint16 gl
                                      uint16 sourceRow, uint16 top, uint16 height)
 {
 	uint16 group = (position * 10 + 4) >> 4;
+	uint16 groups;
+	uint32 offset;
+	const uint16 *src;
 
 	assert(position < 6 && glyph < lengthof(s_creditsGlyphs));
 	assert(sourceRow + height <= CREDITS_CACHE_GLYPH_SIZE && top + height <= CREDITS_CACHE_HEIGHT);
-	Video_Atari_MergePlanarRows(buffer + Video_Atari_PlanarOffset(CREDITS_CACHE_WIDTH / 4, group * 16, top),
-	    CREDITS_CACHE_WIDTH / 4, &s_creditsPlanarGlyphs[position][glyph][sourceRow][0], 8,
-	    s_creditsPlanarMasks[position], 0, min(2, CREDITS_CACHE_WIDTH / 16 - group), height);
+	groups = s_creditsPlanarMasks[position][1] == 0 ? 1 : 2;
+	offset = Video_Atari_PlanarOffset(CREDITS_CACHE_WIDTH / 4, group * 16, top);
+	src = s_creditsPlanarGlyphs[position][glyph][sourceRow];
+	if (Video_Atari_Mono()) {
+		const uint16 *field = s_creditsPlanarBackground + offset;
+		uint16 *dst = buffer + offset;
+		uint16 cell[2][4], row, g, word;
+
+		for (g = 0; g < groups; g++)
+			Video_Atari_MonoMaskWords(s_creditsPlanarMasks[position][g], cell[g]);
+		/* Read the field at the destination row so its dither never rolls. */
+		for (row = 0; row < height; row++, src += 8, field += CREDITS_CACHE_WIDTH / 4, dst += CREDITS_CACHE_WIDTH / 4) {
+			for (g = 0; g < groups; g++) {
+				for (word = 0; word < 4; word++) {
+					uint16 i = g * 2 + (word / 2) * (CREDITS_CACHE_WIDTH / 8) + (word & 1);
+					uint16 ink = src[g * 2 + (word / 2) * 4 + (word & 1)];
+					dst[i] = (dst[i] & ~cell[g][word]) | (field[i] & cell[g][word] & ~ink) | (s_creditsMonoBlack & ink);
+				}
+			}
+		}
+		return;
+	}
+	Video_Atari_MergePlanarRows(buffer + offset, CREDITS_CACHE_WIDTH / 4, src, 8,
+	    s_creditsPlanarMasks[position], 0, groups, height);
 }
 
 static uint16 GUI_ComposeCreditsPlanar(const char *oldText, const char *newText,

@@ -28,7 +28,7 @@ class CreditsPlanarTest(unittest.TestCase):
             functions.append(extracted)
         video = (ROOT / "src/video/video_atari.c").read_text()
         functions = [function(video, "Video_Atari_CopyColourRun"), r"""
-static const struct {
+static struct {
     void (*copyRun)(uint8 *, uint16, const uint8 *, uint16, uint16, uint16);
     uint8 xShift;
 } rectangleBackend = {Video_Atari_CopyColourRun, 1}, *s_planarBackend = &rectangleBackend;
@@ -49,7 +49,9 @@ typedef uint32_t uint32;
 #define lengthof(a) (sizeof(a) / sizeof((a)[0]))
 #define min(a,b) ((a) < (b) ? (a) : (b))
 #define max(a,b) ((a) > (b) ? (a) : (b))
-#define Video_Atari_Mono() false
+static bool monoMode;
+static bool whiteIsOne;
+#define Video_Atari_Mono() monoMode
 #define Video_Atari_GroupWords() 4
 #define Video_Atari_PublishNativeRect(...) assert(false)
 #define Video_Atari_DisplayListFlush() ((void)0)
@@ -84,10 +86,28 @@ static void Video_Atari_PlanarMergeGroup(uint8 *base, uint16 y, uint16 group,
 }
 static bool Video_Atari_PresentRestoreStrided(int16, int16, uint16, uint16, const uint8 *, uint16);
 #define Warning(...) assert(false)
+void Video_Atari_MonoPenWords(uint8 pen, int16 x, int16 y, uint16 words[4]) {
+    assert(monoMode && pen == 0 && x == 0 && y == 0);
+    for (unsigned i = 0; i < 4; i++) words[i] = whiteIsOne ? 0 : 0xffff;
+}
 static void Video_Atari_EncodePlanar(const uint8 *src, uint16 *dst, uint16 width, uint16 height) {
     unsigned y, x, p;
     encodes++;
     memset(dst, 0, width * height / 2);
+    if (monoMode) {
+        /* Alternate the field by row so scrolling its dither fails the oracle. */
+        for (y = 0; y < height; y++) {
+            for (x = 0; x < width; x++) {
+                uint8 colour = src[y * width + x];
+                uint8 pen = colour == 12 ? 0 : mapping[colour] ^ ((y & 1) ? 5 : 0);
+                unsigned shift = 14 - 2 * (x & 7);
+                if (!whiteIsOne) pen ^= 15;
+                dst[(2 * y) * (width / 8) + x / 8] |= ((pen >> 2) & 3u) << shift;
+                dst[(2 * y + 1) * (width / 8) + x / 8] |= (pen & 3u) << shift;
+            }
+        }
+        return;
+    }
     for (y = 0; y < height; y++) {
         for (x = 0; x < width; x++) {
             uint8 pen = mapping[src[y * width + x]];
@@ -116,8 +136,11 @@ static void pixel_reference(unsigned pos, unsigned lower, unsigned higher, int p
             glyph = r < 8 ? lower : higher;
             row = (unsigned)r & 7;
         }
-        for (x = 0; x < 8; x++)
-            logical[y * 64 + left + x] = ((const uint8 *)s_creditsGlyphs[glyph])[row * 8 + x];
+        for (x = 0; x < 8; x++) {
+            uint8 colour = ((const uint8 *)s_creditsGlyphs[glyph])[row * 8 + x];
+            if (!monoMode || colour == 31)
+                logical[y * 64 + left + x] = monoMode ? 12 : colour;
+        }
     }
 }
 static void compose(unsigned pos, unsigned lower, unsigned higher, int phase) {
@@ -139,9 +162,15 @@ static void check(void) {
     assert(storage[0] == 0x1234 && storage[1] == 0x5678);
     assert(storage[146] == 0xabcd && storage[147] == 0xef01);
 }
+static void reference_background(void) {
+    memcpy(logical, s_creditsBackground, sizeof(logical));
+    if (monoMode)
+        for (unsigned i = 0; i < sizeof(logical); i++)
+            if (logical[i] == 81) logical[i] = 116;
+}
 static void reset(void) {
     memcpy(storage + 2, s_creditsPlanarBackground, sizeof(s_creditsPlanarBackground));
-    memcpy(logical, s_creditsBackground, sizeof(logical));
+    reference_background();
 }
 static unsigned glyph_for(char ch) { return ch == ' ' ? 0 : ch - '0' + 1; }
 static void frame(const char *old, const char *new, int phase, bool force,
@@ -152,7 +181,7 @@ static void frame(const char *old, const char *new, int phase, bool force,
     memset(digitCalls, 0, sizeof(digitCalls));
     uint16 groups = GUI_ComposeCreditsPlanar(old, new, phase, force);
     assert(groups == expectedGroups && encodes == before);
-    memcpy(logical, s_creditsBackground, sizeof(logical));
+    reference_background();
     for (pos = 0; pos < 6; pos++) {
         assert(digitCalls[pos] == ((expectedDigits & (1u << pos)) ?
                (old[pos] == new[pos] ? 1u : 2u) : 0u));
@@ -165,6 +194,7 @@ static void frame(const char *old, const char *new, int phase, bool force,
             if (!(groups & (1u << x)))
                 assert(!memcmp(retained + y * 16 + x * 4,
                                s_creditsPlanarDisplay + y * 16 + x * 4, 8));
+    if (monoMode) return;
     memcpy(savedScreen, screen, sizeof(screen));
     for (y = 0; y < 200; y++) dirty[y] = 0xfffff;
     publications = publishedBytes = 0;
@@ -261,12 +291,15 @@ int main(void) {
         ((uint8 *)s_creditsBackground)[i] = 1 + (i * 17) % 255;
     for (glyph = 0; glyph < 11; glyph++)
         for (i = 0; i < 64; i++) ((uint8 *)s_creditsGlyphs[glyph])[i] = 1 + (glyph * 43 + i * 7) % 255;
-    for (pass = 0; pass < 3; pass++) {
+    for (pass = 0; pass < 5; pass++) {
+        monoMode = pass >= 3;
+        whiteIsOne = pass == 3;
+        rectangleBackend.xShift = monoMode ? 2 : 1;
         for (i = 0; i < 256; i++) mapping[i] = (i * (pass * 2 + 1) + pass * 3) & 15;
         encodes = 0;
         GUI_BuildCreditsPlanarCache(pass);
         assert(s_creditsCacheReady && s_creditsPlanarReady);
-        assert(s_creditsPlanarPaletteGeneration == pass && encodes == 12);
+        assert(s_creditsPlanarPaletteGeneration == pass && encodes == (monoMode ? 1 : 12));
         for (pos = 0; pos < 6; pos++)
             for (low = 0; low < 11; low++)
                 for (high = 0; high < 11; high++)
@@ -288,8 +321,19 @@ int main(void) {
             }
             check();
         }
-        incremental();
+        if (!monoMode) incremental();
+        else {
+            frame(" 12345", " 12345", 0, true, 15, 63);
+            for (phase = 1; phase <= 7; phase++)
+                frame(" 12345", " 12346", phase, false, 8, 32);
+            frame(" 12346", " 12346", 0, false, 8, 32);
+            for (phase = -1; phase >= -7; phase--)
+                frame(" 12345", " 12346", phase, false, 8, 32);
+            frame(" 12345", " 12345", 0, false, 8, 32);
+        }
     }
+    monoMode = false;
+    rectangleBackend.xShift = 1;
     publisher_contract();
     return 0;
 }
