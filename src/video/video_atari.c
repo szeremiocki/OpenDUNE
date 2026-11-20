@@ -4077,6 +4077,46 @@ bool Video_Atari_PresentPlanarSubRect(const uint16 *pixels, uint16 srcStride, ui
 	    (uint32)x + width > SCREEN_WIDTH || (uint32)y + height > SCREEN_HEIGHT ||
 	    ((uint32)srcX + width + 15) / 16 * 8 > srcStride) return false;
 	if (((srcX ^ x) & 15) == 0) {
+		/* Half-group edges are full physical words in mono. In colour they
+		 * use constant masks, without staging or merging the full groups. */
+		if ((x & 15) == 8 && (width & 15) == 0) {
+			bool isMono = Video_Atari_Mono();
+			base = Video_Atari_PlanarBase();
+			if ((!isMono || (srcStride & 3) == 0) &&
+			    !Video_Atari_PlanarOverlaysOverlap(base, x, y, width, height)) {
+				uint8 *dst = base + (uint32)y * ST_PLANAR_LINE_BYTES;
+				Video_Atari_DisplayListFlush();
+				if (isMono) {
+					const uint8 *src = (const uint8 *)pixels + srcX / 4;
+					uint16 stride = srcStride / 2, bytes = width / 4;
+					dst += x / 4;
+					line = height * 2;
+					while (true) {
+						memcpy(dst, src, bytes);
+						if (--line == 0) break;
+						dst += ST_PLANAR_LINE_BYTES / 2;
+						src += stride;
+					}
+				} else {
+					const uint16 *src = pixels + (srcX >> 4) * 4;
+					uint16 *out = (uint16 *)dst + first * 4;
+					uint16 last = (width >> 4) * 4;
+					line = height;
+					while (true) {
+						Video_Atari_PlanarMergePlain(out, 0x00ff, src);
+						for (group = 4; group < last; group += 4)
+							memcpy(out + group, src + group, 8);
+						Video_Atari_PlanarMergePlain(out + last, 0xff00, src + last);
+						if (--line == 0) break;
+						out += ST_PLANAR_LINE_BYTES / 2;
+						src += srcStride / 2;
+					}
+				}
+				Video_Atari_RestoreTileCursor();
+				GFX_Screen_ClearDirtyRect(first * 16, y, end * 16, y + height);
+				return true;
+			}
+		}
 		Video_Atari_PublishPlanarRect((const uint8 *)pixels, srcStride, srcX, x, y, width, height);
 		return true;
 	}
@@ -4825,6 +4865,13 @@ void Video_Atari_DrawPlanarTile(const uint16 *pixels, const uint16 *masks, uint1
 			Video_Atari_QueueTile(copyPixels, (uint16 *)base + (uint32)y * 80 + (x >> 4) * Video_Atari_GroupWords());
 		else
 			Video_Atari_BlitTile(copyPixels, base, x, y);
+		GFX_Screen_ClearDirtyRect(x, y, x + 16, y + 16);
+		return;
+	}
+	if (copyPixels != NULL && !overlays) {
+		Video_Atari_DisplayListFlush();
+		Video_Atari_PublishPlanarRun(base, (const uint8 *)copyPixels, 8, x, y, 16, 16);
+		Video_Atari_RestoreTileCursor();
 		GFX_Screen_ClearDirtyRect(x, y, x + 16, y + 16);
 		return;
 	}

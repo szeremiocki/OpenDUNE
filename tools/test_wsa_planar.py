@@ -1022,6 +1022,8 @@ static void exercise_cache(const char *name) {
     WSAHeader *original = WSA_LoadFile(name, NULL, 0, false, false);
     assert(original && cacheOpens == oldOpens);
     unsigned oldWrites = cacheWrites;
+    assert(WSA_PresentPlanarPreview(name, NULL, 0, 128, 48, original->width, original->height));
+    assert(cacheWrites == oldWrites + 1);
     WSAHeader *prepared = WSA_LoadFile(name, NULL, 0, false, true);
     assert(prepared && prepared->planar && cacheWrites == oldWrites + 1);
     FILE *file = fopen(cache, "rb");
@@ -1038,6 +1040,13 @@ static void exercise_cache(const char *name) {
     fclose(file);
     assert(rename(name, "SOURCE.TMP") == 0);
     unsigned oldReads = fileReads, oldDecodes = decompressions, oldEncodes = encodes;
+    WSAHeader *preview = WSA_LoadPlanar(name, cache, NULL, 0, false, true);
+    assert(preview && preview->frames == 0 && preview->planar->pixels == NULL &&
+        preview->planar->composed == NULL);
+    assert(!memcmp(preview->planar->frames[0], prepared->planar->frames[0],
+        prepared->planar->groups * prepared->height * 8u));
+    WSA_Unload(preview);
+    assert(WSA_PresentPlanarPreview(name, NULL, 0, 128, 48, original->width, original->height));
     uint32 *caller = malloc(64000);
     assert(caller);
     memset(caller, 0xa5, 64000);

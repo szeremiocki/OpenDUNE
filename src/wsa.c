@@ -180,12 +180,13 @@ static void WSA_SavePlanar(WSAHeader *header, const char *name)
 	}
 }
 
-static void *WSA_LoadPlanar(const char *filename, const char *name, void *wsa, uint32 wsaSize, bool intro)
+static void *WSA_LoadPlanar(const char *filename, const char *name, void *wsa, uint32 wsaSize,
+	bool intro, bool firstOnly)
 {
 	FILE *file = fopendatadir(SEARCHDIR_PERSONAL_DATA_DIR, name, "rb");
 	WSAPlanarRecording *recording = NULL;
 	WSAHeader *header;
-	uint16 frames = 0, width, height, flags, frame;
+	uint16 frames, lastFrame = 0, width, height, flags, frame;
 	uint32 remaining, imageBytes;
 	long size;
 	char magic[4];
@@ -236,12 +237,15 @@ static void *WSA_LoadPlanar(const char *filename, const char *name, void *wsa, u
 	memcpy(recording->colours, colours, sizeof(colours));
 	recording->groups = intro ? SCREEN_WIDTH / 16 : (width + 15) >> 4;
 	imageBytes = (uint32)recording->groups * height * 8;
-	recording->frames = calloc((uint32)frames + 1, sizeof(*recording->frames));
-	recording->pixels = malloc(imageBytes);
-	recording->composed = intro ? NULL : malloc(imageBytes);
-	if (recording->frames == NULL || recording->pixels == NULL ||
-	    (!intro && recording->composed == NULL)) goto memory_fail;
-	for (frame = 0; frame <= frames; frame++) {
+	lastFrame = firstOnly ? 0 : frames;
+	recording->frames = calloc((uint32)lastFrame + 1, sizeof(*recording->frames));
+	if (recording->frames == NULL) goto memory_fail;
+	if (!firstOnly) {
+		recording->pixels = malloc(imageBytes);
+		recording->composed = intro ? NULL : malloc(imageBytes);
+		if (recording->pixels == NULL || (!intro && recording->composed == NULL)) goto memory_fail;
+	}
+	for (frame = 0; frame <= lastFrame; frame++) {
 		uint32 bytes;
 		if (remaining < 4 || !fread_le_uint32(&bytes, file)) goto fail;
 		remaining -= 4;
@@ -264,7 +268,8 @@ static void *WSA_LoadPlanar(const char *filename, const char *name, void *wsa, u
 		if (frame != 0 && !WSA_ValidatePlanarDelta(recording->frames[frame], bytes,
 		        recording->groups, height)) goto fail;
 	}
-	if (remaining != 0) goto fail;
+	/* Preview reads do not inspect the animation transitions. */
+	if (firstOnly ? remaining < (uint32)frames * 8 : remaining != 0) goto fail;
 	if (fclose(file) != 0) {
 		file = NULL;
 		goto fail;
@@ -273,8 +278,8 @@ static void *WSA_LoadPlanar(const char *filename, const char *name, void *wsa, u
 	header = wsa != NULL ? wsa : malloc(sizeof(*header));
 	if (header == NULL) goto memory_fail;
 	memset(header, 0, sizeof(*header));
-	header->frames = frames;
-	header->frameCurrent = frames;
+	header->frames = lastFrame;
+	header->frameCurrent = lastFrame;
 	header->width = width;
 	header->height = height;
 	header->flags.malloced = wsa == NULL;
@@ -290,7 +295,7 @@ memory_fail:
 	failure = "out of memory";
 fail:
 	if (file != NULL) fclose(file);
-	WSA_FreePlanar(recording, frames);
+	WSA_FreePlanar(recording, lastFrame);
 	Warning("Planar WSA %s: %s in %s; loading original\n", filename, failure, name);
 	return NULL;
 }
@@ -461,7 +466,7 @@ static uint16 WSA_GotoNextFrame(void *wsa, uint16 frame, uint8 *dst)
  * @return Address of loaded WSA file, or NULL.
  */
 static void *WSA_LoadFileInternal(const char *filename, void *wsa, uint32 wsaSize,
-	bool reserveDisplayFrame, bool allowPlanar, bool intro)
+	bool reserveDisplayFrame, bool allowPlanar, bool intro, bool firstOnly)
 {
 	WSAFlags flags;
 	WSAFileHeader fileheader;
@@ -485,13 +490,14 @@ static void *WSA_LoadFileInternal(const char *filename, void *wsa, uint32 wsaSiz
 			Warning("Planar WSA %s: unsupported cache filename; loading original\n", filename);
 			allowPlanar = false;
 		} else {
-			prepared = WSA_LoadPlanar(filename, planarFilename, wsa, wsaSize, intro);
+			prepared = WSA_LoadPlanar(filename, planarFilename, wsa, wsaSize, intro, firstOnly);
 			if (prepared != NULL) return prepared;
 		}
 	}
 #else
 	VARIABLE_NOT_USED(allowPlanar);
 	VARIABLE_NOT_USED(intro);
+	VARIABLE_NOT_USED(firstOnly);
 #endif
 
 	memset(&flags, 0, sizeof(flags));
@@ -647,13 +653,30 @@ static void *WSA_LoadFileInternal(const char *filename, void *wsa, uint32 wsaSiz
 
 void *WSA_LoadFile(const char *filename, void *wsa, uint32 wsaSize, bool reserveDisplayFrame, bool allowPlanar)
 {
-	return WSA_LoadFileInternal(filename, wsa, wsaSize, reserveDisplayFrame, allowPlanar, false);
+	return WSA_LoadFileInternal(filename, wsa, wsaSize, reserveDisplayFrame, allowPlanar, false, false);
 }
 
 #ifdef TOS
 void *WSA_LoadIntro(const char *filename, bool reserveDisplayFrame)
 {
-	return WSA_LoadFileInternal(filename, NULL, 1, reserveDisplayFrame, true, true);
+	return WSA_LoadFileInternal(filename, NULL, 1, reserveDisplayFrame, true, true, false);
+}
+
+bool WSA_PresentPlanarPreview(const char *filename, void *workspace, uint32 workspaceSize,
+	uint16 x, uint16 y, uint16 width, uint16 height)
+{
+	WSAHeader *header = WSA_LoadFileInternal(filename, workspace, workspaceSize,
+	    false, true, false, true);
+	bool presented = false;
+	if (header != NULL && header->planar != NULL) {
+		if (header->width == width && header->height == height)
+			presented = Video_Atari_PresentPlanarRect(header->planar->frames[0],
+			    header->planar->groups * 8, x, y, width, height);
+		else
+			Warning("Planar WSA %s: preview does not match the pane dimensions\n", filename);
+	}
+	WSA_Unload(header);
+	return presented;
 }
 
 static void WSA_EncodePlanarFrame(WSAPlanarRecording *recording, const uint8 *chunky,

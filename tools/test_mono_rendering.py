@@ -323,7 +323,7 @@ int main(void)
 #define min(a,b) ((a) < (b) ? (a) : (b))
 #define max(a,b) ((a) > (b) ? (a) : (b))
 enum { SCREEN_WIDTH = 320, SCREEN_HEIGHT = 200, ST_PLANAR_LINE_BYTES = 160 };
-static bool mono;
+static bool mono, overlays;
 #define Video_Atari_Mono() mono
 #define Video_Atari_PublishNativeRect(...) assert(false)
 static uint16 allocation[16002], expected[16000], original[16000];
@@ -363,7 +363,7 @@ static void Video_Atari_PlanarMergeGroup(uint8 *base, uint16 y, uint16 g,
     }
 }
 static bool Video_Atari_PlanarOverlaysOverlap(uint8 *b, uint16 x, uint16 y, uint16 w, uint16 h)
-{ (void)b; (void)x; (void)y; (void)w; (void)h; return false; }
+{ (void)b; (void)x; (void)y; (void)w; (void)h; return overlays; }
 static void Video_Atari_PlanarMergePlain(uint16 *dst, uint16 mask, const uint16 words[4])
 { for (unsigned p = 0; p < 4; p++) dst[p] = (dst[p] & ~mask) | (words[p] & mask); }
 /* PRODUCTION */
@@ -410,6 +410,7 @@ int main(void)
                 memset(sourceAllocation, 0x5a, bytes + 4);
                 for (unsigned i = 0; i < bytes; i++) src[i] = i * 37 + i / stride * 53;
                 mono = mode; backend.xShift = mono ? 2 : 1;
+                overlays = y == 39;
                 allocation[0] = allocation[16001] = 0xcafe;
                 memcpy(screen, original, 32000); memcpy(expected, original, 32000);
                 for (unsigned row = 0; row < h; row++)
@@ -437,8 +438,12 @@ int main(void)
                 {
                     unsigned full = right / 16 - (left + 15) / 16;
                     if ((left + 15) / 16 > right / 16) full = 0;
-                    assert(bulkGroups == full * h);
-                    assert(merges == ((right + 15) / 16 - left / 16 - full) * h);
+                    if (variant == 3 && phase == 8 && !(w & 15) && !overlays) {
+                        assert(bulkGroups == 0 && merges == 0);
+                    } else {
+                        assert(bulkGroups == full * h);
+                        assert(merges == ((right + 15) / 16 - left / 16 - full) * h);
+                    }
                 }
                 free(sourceAllocation);
               }
@@ -869,7 +874,7 @@ static Video_Atari_TileCursorBlit g_videoTileCursorBlit;
 static bool g_videoTileCursorRestored;
 static void Video_Atari_TileCursorTail(void);
 static bool g_videoDisplayListActive, g_videoScrollPending;
-static unsigned spriteQueues, spriteFallbacks, spriteMerges, spriteFlushes, scrollFinishes;
+static unsigned spriteQueues, spriteFallbacks, spriteMerges, spriteFlushes, scrollFinishes, opaqueRuns;
 static bool checkingSprite;
 static bool Video_Atari_PlanarOverlaysOverlap(uint8 *, uint16, uint16, uint16, uint16);
 static void Video_Atari_PublishSpriteRows(uint8 *, const uint16 *, const uint16 *,
@@ -1460,7 +1465,9 @@ static void check_mode_neutral_cursor(void)
             checkingSprite = false;
             assert(spriteFallbacks == 0 && spriteMerges == 0);
         } else {
+            unsigned before = opaqueRuns;
             Video_Atari_DrawPlanarTile(pixels, masks, 48, 72, pixels);
+            assert(opaqueRuns == before + 1);
             assert(g_videoTileCursorRestored);
         }
         memcpy(expected, original, sizeof(expected));
@@ -1579,6 +1586,8 @@ int main(void)
 """
         merge = function(VIDEO, "Video_Atari_PlanarMergeGroup")
         production = production.replace(merge, merge.replace("\n{", "\n{\n    if (checkingSprite) spriteMerges++;", 1))
+        bulk = function(VIDEO, "Video_Atari_PublishPlanarRun")
+        production = production.replace(bulk, bulk.replace("\n{", "\n{\n    opaqueRuns++;", 1))
         run_harness(harness.replace("/* BACKEND */", backend_declarations(VIDEO))
                     .replace("/* BLIT TYPES */", blit_plan_type())
                     .replace("/* CURSOR TYPES */", cursor_types)

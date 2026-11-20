@@ -286,6 +286,7 @@ extern void GUI_FactoryWindow_DrawCaption(const char *caption);
 extern void GUI_FactoryWindow_UpdateDetails(const FactoryWindowItem *item);
 extern void GUI_FactoryWindow_UpdateSelection(bool selectionChanged);
 extern void GUI_FactoryWindow_PrepareScrollList(void);
+extern void GUI_FactoryWindow_PresentScrollFrame(uint16 sourceY);
 extern void GUI_Mouse_Show(void);
 extern void GUI_Mouse_Hide(void);
 extern void GUI_Mouse_Show_Safe(void);

@@ -140,8 +140,15 @@ FactoryResult g_factoryWindowResult = FACTORY_RESUME;
 bool g_factoryWindowStarport = false;
 static uint8 s_factoryWindowGraymapTbl[256];
 static uint8 s_factoryWindowBackgroundColour;
+#ifdef TOS
+static bool s_factoryScrollPlanarReady;
+#endif
 static Widget s_factoryWindowWidgets[13];
 static uint8 s_factoryWindowWsaBuffer[64000];
+#ifdef TOS
+static uint16 s_factoryStatusBackground[12 * 4 * 9];
+static bool s_factoryStatusBackgroundReady;
+#endif
 static uint8 *s_palette1_houseColour;
 static uint32 s_tickCreditsAnimation = 0;                   /*!< Next tick when credits animation needs an update. */
 static uint32 s_arrowAnimationTimeout = 0;                  /*!< Timeout value for the next palette change in the animation of the arrows. */
@@ -5654,11 +5661,15 @@ static void GUI_FactoryWindow_Init(void)
 	g_factoryWindowBase = 0;
 	g_factoryWindowSelected = 0;
 
-	oi = g_factoryWindowItems[0].objectInfo;
-
-	wsa = WSA_LoadFile(oi->wsa, s_factoryWindowWsaBuffer, sizeof(s_factoryWindowWsaBuffer), false, false);
-	WSA_DisplayFrame(wsa, 0, 128, 48, SCREEN_1);
-	WSA_Unload(wsa);
+#ifdef TOS
+	if (!Video_Atari_CursorDirect())
+#endif
+	{
+		oi = g_factoryWindowItems[0].objectInfo;
+		wsa = WSA_LoadFile(oi->wsa, s_factoryWindowWsaBuffer, sizeof(s_factoryWindowWsaBuffer), false, false);
+		WSA_DisplayFrame(wsa, 0, 128, 48, SCREEN_1);
+		WSA_Unload(wsa);
+	}
 
 	GUI_Mouse_Hide_Safe();
 	GUI_Screen_Copy(0, 0, 0, 0, SCREEN_WIDTH / 8, SCREEN_HEIGHT, SCREEN_1, SCREEN_0);
@@ -6358,6 +6369,59 @@ FactoryWindowItem *GUI_FactoryWindow_GetItem(int16 offset)
 	return &g_factoryWindowItems[offset];
 }
 
+static void GUI_FactoryWindow_DrawFootprint(const FactoryWindowItem *item, Screen screen)
+{
+	const StructureInfo *si = &g_table_structureInfo[item->objectType];
+	uint8 *sprite = g_sprites[24];
+	uint16 width = Sprite_GetWidth(sprite) + 1;
+	uint16 i, j;
+
+	GUI_DrawSprite(screen, g_sprites[64], 64, GUI_SPRITE_COLOUR_EMBEDDED, 288, 136, 0, 0);
+	for (j = 0; j < g_table_structure_layoutSize[si->layout].height; j++) {
+		for (i = 0; i < g_table_structure_layoutSize[si->layout].width; i++)
+			GUI_DrawSprite(screen, sprite, GUI_SPRITE_ID_UNKNOWN, GUI_SPRITE_COLOUR_EMBEDDED,
+			    289 + i * width, 137 + j * width, 0, 0);
+	}
+}
+
+static void GUI_FactoryWindow_DrawUnavailable(void)
+{
+	if (g_factoryWindowStarport) {
+		GUI_DrawText_Wrapper(String_Get_ByIndex(STR_OUT_OF_STOCK), 220, 99, 6, 0, 0x132);
+		return;
+	}
+	GUI_DrawText_Wrapper(String_Get_ByIndex(STR_NEED_STRUCTURE_UPGRADE), 220, 94, 6, 0, 0x132);
+	if (g_factoryWindowUpgradeCost != 0)
+		GUI_DrawText_Wrapper(String_Get_ByIndex(STR_UPGRADE_COST_D), 220, 104, 6, 0, 0x132, g_factoryWindowUpgradeCost);
+	else
+		GUI_DrawText_Wrapper(String_Get_ByIndex(STR_REPAIR_STRUCTURE_FIRST), 220, 104, 6, 0, 0x132);
+}
+
+#ifdef TOS
+static bool GUI_FactoryWindow_DrawPlanarDetails(const FactoryWindowItem *item)
+{
+	const ObjectInfo *oi = item->objectInfo;
+
+	s_factoryStatusBackgroundReady = false;
+	GUI_Mouse_Hide_Safe();
+	if (!WSA_PresentPlanarPreview(oi->wsa, s_factoryWindowWsaBuffer,
+	        sizeof(s_factoryWindowWsaBuffer), 128, 48, 184, 112)) {
+		GUI_Mouse_Show_Safe();
+		return false;
+	}
+	if (g_factoryWindowConstructionYard) GUI_FactoryWindow_DrawFootprint(item, SCREEN_0);
+	if (oi->available == -1) {
+		GUI_FactoryWindow_DrawUnavailable();
+	} else if (g_factoryWindowStarport) {
+		s_factoryStatusBackgroundReady = Video_Atari_PresentSave(128, 99, 184, 9,
+		    (uint8 *)s_factoryStatusBackground);
+		if (s_factoryStatusBackgroundReady) GUI_FactoryWindow_UpdateDetails(item);
+	}
+	GUI_Mouse_Show_Safe();
+	return true;
+}
+#endif
+
 void GUI_FactoryWindow_DrawDetails(void)
 {
 	Screen oldScreenID;
@@ -6365,50 +6429,24 @@ void GUI_FactoryWindow_DrawDetails(void)
 	ObjectInfo *oi = item->objectInfo;
 	void *wsa;
 
+#ifdef TOS
+	if (GFX_Screen_IsActive(SCREEN_0) && Video_Atari_CursorDirect() &&
+	    GUI_FactoryWindow_DrawPlanarDetails(item)) {
+		GUI_FactoryWindow_DrawCaption(NULL);
+		return;
+	}
+#endif
 	oldScreenID = GFX_Screen_SetActive(SCREEN_1);
 
 	wsa = WSA_LoadFile(oi->wsa, s_factoryWindowWsaBuffer, sizeof(s_factoryWindowWsaBuffer), false, false);
 	WSA_DisplayFrame(wsa, 0, 128, 48, SCREEN_1);
 	WSA_Unload(wsa);
 
-	if (g_factoryWindowConstructionYard) {
-		const StructureInfo *si;
-		int16 x = 288;
-		int16 y = 136;
-		uint8 *sprite;
-		uint16 width;
-		uint16 i;
-		uint16 j;
-
-		GUI_DrawSprite(SCREEN_1, g_sprites[64], 64, GUI_SPRITE_COLOUR_EMBEDDED, x, y, 0, 0);
-		x++;
-		y++;
-
-		sprite = g_sprites[24];
-		width = Sprite_GetWidth(sprite) + 1;
-		si = &g_table_structureInfo[item->objectType];
-
-		for (j = 0; j < g_table_structure_layoutSize[si->layout].height; j++) {
-			for (i = 0; i < g_table_structure_layoutSize[si->layout].width; i++) {
-				GUI_DrawSprite(SCREEN_1, sprite, GUI_SPRITE_ID_UNKNOWN, GUI_SPRITE_COLOUR_EMBEDDED, x + i * width, y + j * width, 0, 0);
-			}
-		}
-	}
+	if (g_factoryWindowConstructionYard) GUI_FactoryWindow_DrawFootprint(item, SCREEN_1);
 
 	if (oi->available == -1) {
 		GUI_Palette_RemapScreen(128, 48, 184, 112, SCREEN_1, s_factoryWindowGraymapTbl);
-
-		if (g_factoryWindowStarport) {
-			GUI_DrawText_Wrapper(String_Get_ByIndex(STR_OUT_OF_STOCK), 220, 99, 6, 0, 0x132);
-		} else {
-			GUI_DrawText_Wrapper(String_Get_ByIndex(STR_NEED_STRUCTURE_UPGRADE), 220, 94, 6, 0, 0x132);
-
-			if (g_factoryWindowUpgradeCost != 0) {
-				GUI_DrawText_Wrapper(String_Get_ByIndex(STR_UPGRADE_COST_D), 220, 104, 6, 0, 0x132, g_factoryWindowUpgradeCost);
-			} else {
-				GUI_DrawText_Wrapper(String_Get_ByIndex(STR_REPAIR_STRUCTURE_FIRST), 220, 104, 6, 0, 0x132);
-			}
-		}
+		GUI_FactoryWindow_DrawUnavailable();
 	} else {
 		if (g_factoryWindowStarport) {
 			GUI_Screen_Copy(16, 99, 16, 160, 23, 9, SCREEN_1, SCREEN_1);
@@ -6479,6 +6517,19 @@ void GUI_FactoryWindow_UpdateDetails(const FactoryWindowItem *item)
 		if (h->unitCount >= h->unitCountMax) y = 178;
 	}
 	GUI_Mouse_Hide_Safe();
+#ifdef TOS
+	if (s_factoryStatusBackgroundReady && GFX_Screen_IsActive(SCREEN_0) &&
+	    Video_Atari_CursorDirect()) {
+		if (!Video_Atari_PresentPlanarRect(s_factoryStatusBackground, 96, 128, 99, 184, 9))
+			Warning("Factory: cannot restore planar stock notice background\n");
+		if (y == 169)
+			GUI_DrawText_Wrapper(String_Get_ByIndex(STR_OUT_OF_STOCK), 220, 99, 6, 0, 0x132);
+		else if (y == 178)
+			GUI_DrawText_Wrapper(String_Get_ByIndex(STR_UNABLE_TO_CREATE_MORE), 220, 99, 6, 0, 0x132);
+		GUI_Mouse_Show_Safe();
+		return;
+	}
+#endif
 	GUI_Screen_Copy(16, y, 16, 99, 23, 9, SCREEN_1, SCREEN_ACTIVE);
 	GUI_Mouse_Show_Safe();
 }
@@ -6667,6 +6718,9 @@ void GUI_FactoryWindow_PrepareScrollList(void)
 	Screen oldScreenID = GFX_Screen_SetActive(SCREEN_1);
 	int16 i;
 
+#ifdef TOS
+	s_factoryScrollPlanarReady = false;
+#endif
 	/* The scroll source is rebuilt, never sampled from the visible screen. */
 	GUI_DrawFilledRectangle(72, 0, 103, SCREEN_HEIGHT - 1, s_factoryWindowBackgroundColour);
 
@@ -6686,6 +6740,31 @@ void GUI_FactoryWindow_PrepareScrollList(void)
 	}
 
 	GFX_Screen_SetActive(oldScreenID);
+}
+
+void GUI_FactoryWindow_PresentScrollFrame(uint16 sourceY)
+{
+#ifdef TOS
+	if (Video_Atari_CursorDirect()) {
+		enum { LEFT = 64, WIDTH = 48, HEIGHT = 136, STRIDE = WIDTH / 4 };
+		static uint16 pixels[SCREEN_HEIGHT * STRIDE];
+		static uint16 paletteGeneration;
+		uint16 palette = Video_Atari_GetPaletteGeneration();
+
+		assert(sourceY <= SCREEN_HEIGHT - HEIGHT);
+		if (!s_factoryScrollPlanarReady || palette != paletteGeneration) {
+			const uint8 *source = GFX_Screen_Get_ByIndex(SCREEN_1);
+
+			Video_Atari_EncodePlanarStrided(source + LEFT, SCREEN_WIDTH, pixels, WIDTH, SCREEN_HEIGHT);
+			paletteGeneration = palette;
+			s_factoryScrollPlanarReady = true;
+		}
+		if (Video_Atari_PresentPlanarSubRect(pixels + sourceY * STRIDE, STRIDE * sizeof(*pixels),
+		                                  8, LEFT + 8, 16, WIDTH - 16, HEIGHT)) return;
+		Warning("Factory scroll: invalid planar rectangle\n");
+	}
+#endif
+	GFX_Screen_Copy2(72, sourceY, 72, 16, 32, 136, SCREEN_1, SCREEN_0, false);
 }
 
 /**

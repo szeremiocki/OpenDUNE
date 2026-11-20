@@ -1191,8 +1191,16 @@ static void GUI_FactoryWindow_ScrollList(int16 step)
 	GUI_Mouse_Hide_Safe();
 
 	for (i = 0; i < 32; i += pixelStep) {
+#ifdef TOS
+		uint32 tick = g_timerSleep;
+#endif
 		y += step * pixelStep;
-		GFX_Screen_Copy2(72, y, 72, 16, 32, 136, SCREEN_1, SCREEN_0, false);
+		GUI_FactoryWindow_PresentScrollFrame(y);
+#ifdef TOS
+		/* Keep the animation visible now that copies no longer pace it. */
+		if (pixelStep == 2 && i + pixelStep < 32)
+			while (g_timerSleep == tick) sleepIdle();
+#endif
 	}
 
 	GUI_Mouse_Show_Safe();
@@ -1228,6 +1236,22 @@ static void GUI_FactoryWindow_FailScrollList(int16 step)
 	GUI_FactoryWindow_UpdateSelection(true);
 }
 
+static void GUI_Production_FinishNavigation(bool drawDetails)
+{
+#ifdef TOS
+	/* Show the new preview before waiting out the input repeat delay. */
+	if (drawDetails && Video_Atari_CursorDirect()) {
+		GUI_FactoryWindow_DrawDetails();
+		drawDetails = false;
+	}
+#endif
+	for (; g_timerTimeout != 0; sleepIdle()) {
+		GUI_FactoryWindow_UpdateSelection(false);
+	}
+
+	if (drawDetails) GUI_FactoryWindow_DrawDetails();
+}
+
 /**
  * Handles Click event for the "Down" button in production window.
  *
@@ -1261,11 +1285,7 @@ bool GUI_Production_Down_Click(Widget *w)
 		}
 	}
 
-	for (; g_timerTimeout != 0; sleepIdle()) {
-		GUI_FactoryWindow_UpdateSelection(false);
-	}
-
-	if (drawDetails) GUI_FactoryWindow_DrawDetails();
+	GUI_Production_FinishNavigation(drawDetails);
 
 	GUI_Widget_MakeNormal(w, false);
 
@@ -1305,11 +1325,7 @@ bool GUI_Production_Up_Click(Widget *w)
 		}
 	}
 
-	for (; g_timerTimeout != 0; sleepIdle()) {
-		GUI_FactoryWindow_UpdateSelection(false);
-	}
-
-	if (drawDetails) GUI_FactoryWindow_DrawDetails();
+	GUI_Production_FinishNavigation(drawDetails);
 
 	GUI_Widget_MakeNormal(w, false);
 

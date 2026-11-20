@@ -28,6 +28,10 @@ extern bool WSA_DisplayFrame(void *wsa, uint16 frameNext, uint16 posX, uint16 po
  * for a padded canvas until an offscreen operation.
  * The caller must not overwrite that window during direct playback. */
 extern void *WSA_LoadIntro(const char *filename, bool reserveDisplayFrame);
+/* Publish frame 0 into an exact-size preview pane. On a miss, prepare and save
+ * the full animation for other callers, then publish only its first image. */
+extern bool WSA_PresentPlanarPreview(const char *filename, void *workspace, uint32 workspaceSize,
+                                    uint16 x, uint16 y, uint16 width, uint16 height);
 /* Prepare an independent, undecoded WSA matching this window. Keep its original
  * payload for fallback; the shared frame traversal then uses native deltas. */
 extern bool WSA_PreparePlanar(void *wsa, uint16 width, uint16 height);
