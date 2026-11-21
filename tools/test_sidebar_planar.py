@@ -460,6 +460,12 @@ void GFX_DrawTile(uint16 id,uint16 x,uint16 y,uint8 houseID) { (void)id;(void)x;
 void GUI_DrawXorFilledRectangle(int16 l,int16 t,int16 r,int16 b,uint8 c) { (void)l;(void)t;(void)r;(void)b;(void)c; abort(); }
 void GUI_DrawBlockedRectangle(int16 l,int16 t,int16 w,int16 h,uint8 c) { (void)l;(void)t;(void)w;(void)h;(void)c; abort(); }
 static void GUI_Widget_DrawBlocked(Widget *w,uint8 c) { (void)w;(void)c; abort(); }
+static bool GUI_Widget_DrawPreparedSprite(const Widget *w,const uint8 *s,const uint8 *r,uint16 x,uint16 y) {
+    (void)w;(void)s;(void)r;(void)x;(void)y; return false;
+}
+static uint8 *GUI_Widget_SpriteRemap(uint16 mode) {
+    return mode == DRAW_MODE_SPRITE_HOUSE_INK && g_videoAtariMono ? g_monoWidgetRemap : g_remap;
+}
 /* PRODUCTION */
 /* GLYPH */
 /* PLANAR */

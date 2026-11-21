@@ -1582,6 +1582,9 @@ static void check_mode_neutral_cursor(void)
         for (unsigned line = 0; line < 16; line++)
             for (unsigned col = 0; col < 16; col++) {
                 bool frame = !!(s_tileCursorPatterns[shape][line] & (0x8000u >> col));
+                if (shape == TILE_CURSOR_TARGET && line >= 4 && line < 12 && col >= 4 && col < 12)
+                    frame = (col == 8 && line >= 6 && line <= 10) ||
+                            (line == 8 && col >= 6 && col <= 10);
                 if (mode) {
                     for (unsigned py = 0; py < 2; py++) for (unsigned px = 0; px < 2; px++) {
                         unsigned value = pixel(pixels, 2, col * 2 + px, line * 2 + py);

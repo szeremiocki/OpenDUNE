@@ -154,15 +154,19 @@ static bool s_factoryStatusBackgroundReady;
 #endif
 static uint8 *s_palette1_houseColour;
 static uint32 s_tickCreditsAnimation = 0;                   /*!< Next tick when credits animation needs an update. */
+#ifndef TOS
 static uint32 s_arrowAnimationTimeout = 0;                  /*!< Timeout value for the next palette change in the animation of the arrows. */
 static uint16 s_arrowAnimationState = 0;                    /*!< State of the arrow animation. @see _arrowAnimationTimeout */
+#endif
 static uint16 s_temporaryColourBorderSchema[5][4];          /*!< Temporary storage for the #s_colourBorderSchema. */
 uint16 g_productionStringID;                                /*!< Descriptive text of activity of the active structure. */
 bool g_textDisplayNeedsUpdate;                              /*!< If set, text display needs to be updated. */
 uint32 g_strategicRegionBits;                               /*!< Region bits at the map. */
 static uint32 s_ticksPlayed;
 bool g_doQuitHOF;
+#ifndef TOS
 static uint8 s_strategicMapArrowColors[24];
+#endif
 static bool s_strategicMapFastForward;
 static uint8 s_strategicMapTextBgColor;	/*!< Chrome parchment colour under the message
                                              *   strip, sampled once from SCREEN_2 right after
@@ -1853,6 +1857,45 @@ void GUI_DrawSpriteToBuffer(uint8 *buffer, uint16 width, uint16 height,
 {
 	assert(buffer != NULL && width > 0 && width <= SCREEN_WIDTH && height > 0 && height <= SCREEN_HEIGHT);
 	GUI_DrawSpriteInternal(SCREEN_0, sprite, x, y, 0, 0, NULL, buffer, width, height);
+}
+
+bool GUI_PreparePlanarSprite(GUI_PlanarSprite *frame, uint8 *sprite,
+                             uint16 left, uint16 top, const uint8 *remap)
+{
+	uint16 width = Sprite_GetWidth(sprite), height = Sprite_GetHeight(sprite);
+	uint16 phase = left & 15, stride = (phase + width + 15) & ~15;
+	size_t cells = (size_t)(stride / 16) * height;
+	uint8 *chunky, *src;
+	uint16 *pixels, *masks;
+	size_t i;
+
+	if (width == 0 || height == 0 || left >= SCREEN_WIDTH || top >= SCREEN_HEIGHT ||
+	    (left & ~15) + stride > SCREEN_WIDTH || top + height > SCREEN_HEIGHT) return true;
+	chunky = calloc((size_t)stride, height);
+	pixels = calloc(cells * 5, sizeof(*pixels));
+	if (chunky == NULL || pixels == NULL) {
+		free(chunky);
+		free(pixels);
+		return false;
+	}
+	GUI_DrawSpriteToBuffer(chunky, stride, height, sprite, phase, 0);
+	masks = pixels + cells * 4;
+	src = chunky;
+	for (i = 0; i < cells; i++) {
+		uint16 mask = 0, bit;
+		for (bit = 0; bit < 16; bit++, src++) {
+			if (*src != 0 && remap != NULL) *src = remap[*src];
+			mask = (mask << 1) | (*src != 0);
+		}
+		*masks++ = mask;
+	}
+	{
+		const AtariDitherSource source = {chunky, stride, height, stride, -(int16)phase, 0, 1, 1};
+		Video_Atari_PreparePlanar(&source, NULL, pixels);
+	}
+	free(chunky);
+	*frame = (GUI_PlanarSprite){pixels, stride, height};
+	return true;
 }
 
 #define MINIMAP_ICON_FIRST 31
@@ -3798,12 +3841,19 @@ static void GUI_HallOfFame_DrawRank(uint16 score, bool fadeIn)
 	GUI_Screen_FadeIn(10, 49, 10, 49, 20, 12, SCREEN_1, SCREEN_0);
 }
 
+static bool GUI_HallOfFame_PulseEnabled(void)
+{
+#ifdef TOS
+	return !Video_Atari_CursorDirect();
+#else
+	return true;
+#endif
+}
+
 static void GUI_HallOfFame_DrawBackground(uint16 score, bool hallOfFame)
 {
 	Screen oldScreenID;
 	uint16 xSrc;
-	uint16 colour;
-	uint16 offset;
 
 	oldScreenID = GFX_Screen_SetActive(SCREEN_1);
 
@@ -3851,28 +3901,16 @@ static void GUI_HallOfFame_DrawBackground(uint16 score, bool hallOfFame)
 		GUI_DrawText_Wrapper(String_Get_ByIndex(STR_HALL_OF_FAME2), SCREEN_WIDTH / 2, 15, 15, 0, 0x122);
 	}
 
-	switch (g_playerHouseID) {
-		case HOUSE_HARKONNEN:
-			colour = 149;
-			offset = 0;
-			break;
+	if (GUI_HallOfFame_PulseEnabled()) {
+		uint16 colour = g_playerHouseID == HOUSE_HARKONNEN ? 149 : g_playerHouseID == HOUSE_ORDOS ? 181 : 165;
+		uint16 channel = g_playerHouseID == HOUSE_HARKONNEN ? 0 : g_playerHouseID == HOUSE_ORDOS ? 1 : 2;
 
-		default:
-			colour = 165;
-			offset = 2;
-			break;
+		s_palette1_houseColour = g_palette1 + 255 * 3;
+		memcpy(s_palette1_houseColour, g_palette1 + colour * 3, 3);
+		s_palette1_houseColour += channel;
 
-		case HOUSE_ORDOS:
-			colour = 181;
-			offset = 1;
-			break;
+		if (!hallOfFame) GUI_HallOfFame_Tick();
 	}
-
-	s_palette1_houseColour = g_palette1 + 255 * 3;
-	memcpy(s_palette1_houseColour, g_palette1 + colour * 3, 3);
-	s_palette1_houseColour += offset;
-
-	if (!hallOfFame) GUI_HallOfFame_Tick();
 
 	GFX_Screen_SetActive(oldScreenID);
 }
@@ -3976,6 +4014,15 @@ void GUI_EndStats_Show(uint16 killedAllied, uint16 killedEnemy, uint16 destroyed
 			GUI_HallOfFame_Tick();
 
 			colour = (j == 0) ? 255 : 209;
+#ifdef TOS
+			if (j == 0 && !GUI_HallOfFame_PulseEnabled()) {
+				/* Use existing bright inks instead of changing a global palette slot. */
+				if (Video_Atari_Mono()) colour = 15;
+				else if (g_playerHouseID == HOUSE_HARKONNEN) colour = 144;
+				else if (g_playerHouseID == HOUSE_ORDOS) colour = 176;
+				else colour = 168;
+			}
+#endif
 			posX = textLeft;
 			posY = 93 + (i * 36) + (j * 9);
 
@@ -4026,7 +4073,7 @@ void GUI_EndStats_Show(uint16 killedAllied, uint16 killedEnemy, uint16 destroyed
 
 	GUI_HallOfFame_Show(score);
 
-	memset(g_palette1 + 255 * 3, 0, 3);
+	if (GUI_HallOfFame_PulseEnabled()) memset(g_palette1 + 255 * 3, 0, 3);
 
 	GFX_Screen_SetActive(oldScreenID);
 
@@ -5859,6 +5906,7 @@ char *GUI_String_Get_ByIndex(int16 stringID)
 
 static void GUI_StrategicMap_AnimateArrows(void)
 {
+#ifndef TOS
 	if (s_arrowAnimationTimeout >= g_timerGUI) return;
 	s_arrowAnimationTimeout = g_timerGUI + 7;
 
@@ -5867,10 +5915,22 @@ static void GUI_StrategicMap_AnimateArrows(void)
 	memcpy(g_palette1 + 251 * 3, s_strategicMapArrowColors + s_arrowAnimationState * 3, 4 * 3);
 
 	GFX_SetPalette(g_palette1);
+#endif
+}
+
+static void GUI_StrategicMap_BuildArrowRemap(uint8 remap[256])
+{
+	GUI_Palette_CreateRemap(g_playerHouseID);
+	memcpy(remap, g_remap, 256);
+#ifdef TOS
+	/* Use the first phase's existing house ramp without changing the palette. */
+	for (uint16 i = 0; i < 4; i++) remap[251 + i] = remap[144 + i];
+#endif
 }
 
 static void GUI_StrategicMap_AnimateSelected(uint16 selected, StrategicMapData *data)
 {
+	uint8 arrowRemap[256];
 	char key[4];
 	char buffer[81];
 	int16 x;
@@ -5880,7 +5940,7 @@ static void GUI_StrategicMap_AnimateSelected(uint16 selected, StrategicMapData *
 	uint16 height;
 	uint16 i;
 
-	GUI_Palette_CreateRemap(g_playerHouseID);
+	GUI_StrategicMap_BuildArrowRemap(arrowRemap);
 
 	for (i = 0; i < 20; i++) {
 		GUI_StrategicMap_AnimateArrows();
@@ -5926,7 +5986,7 @@ static void GUI_StrategicMap_AnimateSelected(uint16 selected, StrategicMapData *
 
 		if (data[i].index != selected) continue;
 
-		GUI_DrawSprite(SCREEN_1, g_sprites[505 + data[i].arrow], 505 + data[i].arrow, GUI_SPRITE_COLOUR_EMBEDDED, data[i].offsetX + 16 - x, data[i].offsetY + 16 - y, 0, DRAWSPRITE_FLAG_REMAP, g_remap, 1);
+		GUI_DrawSprite(SCREEN_1, g_sprites[505 + data[i].arrow], 505 + data[i].arrow, GUI_SPRITE_COLOUR_EMBEDDED, data[i].offsetX + 16 - x, data[i].offsetY + 16 - y, 0, DRAWSPRITE_FLAG_REMAP, arrowRemap, 1);
 	}
 
 	for (i = 0; i < 4; i++) {
@@ -6031,6 +6091,7 @@ static void GUI_StrategicMap_DrawText(const char *string)
 
 static uint16 GUI_StrategicMap_ScenarioSelection(uint16 campaignID)
 {
+	uint8 arrowRemap[256];
 	uint16 count;
 	char key[6];
 	bool loop;
@@ -6041,7 +6102,7 @@ static uint16 GUI_StrategicMap_ScenarioSelection(uint16 campaignID)
 	uint16 region;
 	uint16 i;
 
-	GUI_Palette_CreateRemap(g_playerHouseID);
+	GUI_StrategicMap_BuildArrowRemap(arrowRemap);
 
 	snprintf(category, sizeof(category), "GROUP%hu", campaignID);
 
@@ -6060,7 +6121,7 @@ static uint16 GUI_StrategicMap_ScenarioSelection(uint16 campaignID)
 
 		GFX_Screen_Copy2(data[i].offsetX, data[i].offsetY, i * 16, 152, 16, 16, SCREEN_1, SCREEN_1, false);
 		GFX_Screen_Copy2(data[i].offsetX, data[i].offsetY, i * 16, 0, 16, 16, SCREEN_1, SCREEN_1, false);
-		GUI_DrawSprite(SCREEN_1, g_sprites[505 + data[i].arrow], 505 + data[i].arrow, GUI_SPRITE_COLOUR_EMBEDDED, i * 16, 152, 0, DRAWSPRITE_FLAG_REMAP, g_remap, 1);
+		GUI_DrawSprite(SCREEN_1, g_sprites[505 + data[i].arrow], 505 + data[i].arrow, GUI_SPRITE_COLOUR_EMBEDDED, i * 16, 152, 0, DRAWSPRITE_FLAG_REMAP, arrowRemap, 1);
 	}
 
 	count = i;
@@ -6235,7 +6296,9 @@ uint16 GUI_StrategicMap_Show(uint16 campaignID, bool win)
 	uint16 y;
 	Screen oldScreenID;
 	uint8 palette[3 * 256];
+#ifndef TOS
 	uint8 loc316[12];
+#endif
 
 	if (campaignID == 0) return 1;
 
@@ -6254,15 +6317,6 @@ uint16 GUI_StrategicMap_Show(uint16 campaignID, bool win)
 	GUI_Mouse_SetPosition(160, 84);
 
 	Sprites_LoadImage("MAPMACH.CPS", SCREEN_2, g_palette_998A);
-
-	GUI_Palette_RemapScreen(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, SCREEN_2, g_remap);
-
-	/* Cache the message-strip parchment colour now, while SCREEN_2 still
-	 * holds the just-loaded/remapped MAPMACH.CPS chrome: SCREEN_2 gets
-	 * reused as a scratch heap by Sprites_CPS_LoadRegionClick() (called
-	 * below), so this is the last point at which sampling it directly is
-	 * safe. GUI_StrategicMap_DrawText() reads this cached value instead. */
-	s_strategicMapTextBgColor = GFX_GetPixel(64, 165);
 
 	x = 0;
 	y = 0;
@@ -6284,9 +6338,11 @@ uint16 GUI_StrategicMap_Show(uint16 campaignID, bool win)
 			break;
 	}
 
+#ifndef TOS
 	memcpy(loc316, g_palette1 + 251 * 3, 12);
 	memcpy(s_strategicMapArrowColors, g_palette1 + (144 + (g_playerHouseID * 16)) * 3, 4 * 3);
 	memcpy(s_strategicMapArrowColors + 4 * 3, s_strategicMapArrowColors, 4 * 3);
+#endif
 
 	GUI_Screen_Copy(x, y, 0, 152, 7, 40, SCREEN_2, SCREEN_2);
 	GUI_Screen_Copy(x, y, 33, 152, 7, 40, SCREEN_2, SCREEN_2);
@@ -6302,6 +6358,14 @@ uint16 GUI_StrategicMap_Show(uint16 campaignID, bool win)
 
 		default: break;
 	}
+
+#ifdef TOS
+	if (Video_Atari_Mono())
+		GUI_Palette_RemapScreen(8, 0, 304, 24, SCREEN_2, g_monoWidgetRemap);
+#endif
+	/* Sample the remapped parchment before SCREEN_2 is reused for region data. */
+	s_strategicMapTextBgColor = g_remap[GFX_GetPixel(64, 165)];
+	GUI_Palette_RemapScreen(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, SCREEN_2, g_remap);
 
 	GUI_DrawFilledRectangle(8, 24, 311, 143, 12);
 
@@ -6386,7 +6450,9 @@ uint16 GUI_StrategicMap_Show(uint16 campaignID, bool win)
 
 	Input_History_Clear();
 
+#ifndef TOS
 	memcpy(g_palette1 + 251 * 3, loc316, 12);
+#endif
 
 	GUI_SetPaletteAnimated(palette, 15);
 
@@ -7290,6 +7356,7 @@ uint16 GUI_HallOfFame_Tick(void)
 	static uint32 l_timerNext = 0;
 	static int16 colouringDirection = 1;
 
+	if (!GUI_HallOfFame_PulseEnabled()) return 0;
 	if (l_timerNext >= g_timerGUI) return 0;
 	l_timerNext = g_timerGUI + 2;
 
@@ -7454,6 +7521,7 @@ void GUI_HallOfFame_Show(uint16 score)
 	if (editLine != 0) {
 		WidgetProperties backupProperties;
 		char *name;
+		Screen drawScreen = SCREEN_0;
 
 		name = data[editLine - 1].name;
 
@@ -7465,18 +7533,19 @@ void GUI_HallOfFame_Show(uint16 score)
 		g_widgetProperties[19].height = 11;
 		g_widgetProperties[19].fgColourBlink = 6;
 		g_widgetProperties[19].fgColourNormal = 116;
+#ifdef TOS
+		if (Video_Atari_Mono()) {
+			g_widgetProperties[19].fgColourBlink = 15;
+			drawScreen = SCREEN_1;
+		}
+#endif
 
 		GUI_DrawText_Wrapper(NULL, 0, 0, 0, 0, 0x22);
 
 		while (*name == '\0') {
 			char *nameEnd;
-			Screen oldScreenID;
 
-			oldScreenID = GFX_Screen_SetActive(SCREEN_0);
-			Widget_SetAndPaintCurrentWidget(19);
-			GFX_Screen_SetActive(oldScreenID);
-
-			GUI_EditBox(name, 5, 19, NULL, &GUI_HallOfFame_Tick, false);
+			GUI_EditBox(name, sizeof(data[0].name) - 1, 19, NULL, &GUI_HallOfFame_Tick, true, drawScreen);
 
 			if (*name == '\0') continue;
 
@@ -7512,9 +7581,7 @@ void GUI_HallOfFame_Show(uint16 score)
 
 	Input_History_Clear();
 
-	if (score == 0xFFFF) return;
-
-	memset(g_palette1 + 255 * 3, 0, 3);
+	if (score != 0xFFFF && GUI_HallOfFame_PulseEnabled()) memset(g_palette1 + 255 * 3, 0, 3);
 }
 
 uint16 GUI_HallOfFame_DrawData(HallOfFameStruct *data, bool show)

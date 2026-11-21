@@ -17,7 +17,7 @@
  * @param positionX Where to draw the cursor on the X position.
  * @param resetBlink If true, the blinking is reset and restarted.
  */
-static void GUI_EditBox_BlinkCursor(uint16 positionX, bool resetBlink)
+static void GUI_EditBox_BlinkCursor(uint16 positionX, bool resetBlink, Screen drawScreen, const char *text)
 {
 	static uint32 tickEditBox = 0;           /* Ticker for cursor blinking. */
 	static bool   editBoxShowCursor = false; /* Cursor is active. */
@@ -35,7 +35,23 @@ static void GUI_EditBox_BlinkCursor(uint16 positionX, bool resetBlink)
 	editBoxShowCursor = !editBoxShowCursor;
 
 	GUI_Mouse_Hide_Safe();
-	GUI_DrawFilledRectangle(positionX, g_curWidgetYBase, positionX + Font_GetCharWidth('W'), g_curWidgetYBase + g_curWidgetHeight - 1, (editBoxShowCursor) ? g_curWidgetFGColourBlink : g_curWidgetFGColourNormal);
+	if (drawScreen != SCREEN_0) {
+		uint16 left = g_curWidgetXBase * 8;
+		uint16 top = g_curWidgetYBase;
+		uint16 width = g_curWidgetWidth * 8;
+		uint16 height = g_curWidgetHeight;
+		Screen oldScreenID = GFX_Screen_SetActive(drawScreen);
+
+		/* Publish fill and glyphs together using the same conversion as the panel. */
+		Widget_PaintCurrentWidget();
+		if (editBoxShowCursor)
+			GUI_DrawFilledRectangle(positionX, top, positionX + Font_GetCharWidth('W'), top + height - 1, g_curWidgetFGColourBlink);
+		GUI_DrawText(text, left, top, g_curWidgetFGColourBlink, 0);
+		GFX_Screen_SetActive(oldScreenID);
+		GFX_Screen_Copy2(left, top, left, top, width, height, drawScreen, SCREEN_0, false);
+	} else {
+		GUI_DrawFilledRectangle(positionX, g_curWidgetYBase, positionX + Font_GetCharWidth('W'), g_curWidgetYBase + g_curWidgetHeight - 1, (editBoxShowCursor) ? g_curWidgetFGColourBlink : g_curWidgetFGColourNormal);
+	}
 	GUI_Mouse_Show_Safe();
 }
 
@@ -47,9 +63,10 @@ static void GUI_EditBox_BlinkCursor(uint16 positionX, bool resetBlink)
  * @param w The widget this editbox is attached to (for input events).
  * @param tickProc The function to call every tick, for animation etc.
  * @param paint Flag indicating if the widget need to be repainted.
+ * @param drawScreen SCREEN_0 for direct edits, or a scratch screen for composing the field before publishing.
  * @return Key code / Button press code.
  */
-uint16 GUI_EditBox(char *text, uint16 maxLength, uint16 widgetID, Widget *w, uint16 (*tickProc)(void), bool paint)
+uint16 GUI_EditBox(char *text, uint16 maxLength, uint16 widgetID, Widget *w, uint16 (*tickProc)(void), bool paint, Screen drawScreen)
 {
 	Screen oldScreenID;
 	uint16 oldWidgetID;
@@ -90,11 +107,13 @@ uint16 GUI_EditBox(char *text, uint16 maxLength, uint16 widgetID, Widget *w, uin
 
 	GUI_Mouse_Hide_Safe();
 
-	if (paint) Widget_PaintCurrentWidget();
+	if (drawScreen == SCREEN_0) {
+		if (paint) Widget_PaintCurrentWidget();
 
-	GUI_DrawText_Wrapper(text, positionX, g_curWidgetYBase, g_curWidgetFGColourBlink, g_curWidgetFGColourNormal, 0);
+		GUI_DrawText_Wrapper(text, positionX, g_curWidgetYBase, g_curWidgetFGColourBlink, g_curWidgetFGColourNormal, 0);
+	}
 
-	GUI_EditBox_BlinkCursor(positionX + textWidth, false);
+	GUI_EditBox_BlinkCursor(positionX + textWidth, drawScreen != SCREEN_0, drawScreen, text);
 
 	GUI_Mouse_Show_Safe();
 
@@ -109,7 +128,7 @@ uint16 GUI_EditBox(char *text, uint16 maxLength, uint16 widgetID, Widget *w, uin
 
 		key = GUI_Widget_HandleEvents(w);
 
-		GUI_EditBox_BlinkCursor(positionX + textWidth, false);
+		GUI_EditBox_BlinkCursor(positionX + textWidth, false, drawScreen, text);
 
 		if (key == 0x0) continue;
 
@@ -131,13 +150,14 @@ uint16 GUI_EditBox(char *text, uint16 maxLength, uint16 widgetID, Widget *w, uin
 		if (key == 0x0F) {
 			if (textLength == 0) continue;
 
-			GUI_EditBox_BlinkCursor(positionX + textWidth, true);
+			if (drawScreen == SCREEN_0)
+				GUI_EditBox_BlinkCursor(positionX + textWidth, true, drawScreen, text);
 
 			textWidth -= Font_GetCharWidth(*(t - 1));
 			textLength--;
 			*(--t) = '\0';
 
-			GUI_EditBox_BlinkCursor(positionX + textWidth, false);
+			GUI_EditBox_BlinkCursor(positionX + textWidth, drawScreen != SCREEN_0, drawScreen, text);
 			continue;
 		}
 
@@ -155,9 +175,15 @@ uint16 GUI_EditBox(char *text, uint16 maxLength, uint16 widgetID, Widget *w, uin
 		*(++t) = '\0';
 		textLength++;
 
+		if (drawScreen != SCREEN_0) {
+			textWidth += keyWidth;
+			GUI_EditBox_BlinkCursor(positionX + textWidth, true, drawScreen, text);
+			continue;
+		}
+
 		GUI_Mouse_Hide_Safe();
 
-		GUI_EditBox_BlinkCursor(positionX + textWidth, true);
+		GUI_EditBox_BlinkCursor(positionX + textWidth, true, drawScreen, text);
 
 		/* Draw new character */
 		GUI_DrawText_Wrapper(text + textLength - 1, positionX + textWidth, g_curWidgetYBase, g_curWidgetFGColourBlink, g_curWidgetFGColourNormal, 0x020);
@@ -166,7 +192,7 @@ uint16 GUI_EditBox(char *text, uint16 maxLength, uint16 widgetID, Widget *w, uin
 
 		textWidth += keyWidth;
 
-		GUI_EditBox_BlinkCursor(positionX + textWidth, false);
+		GUI_EditBox_BlinkCursor(positionX + textWidth, false, drawScreen, text);
 	}
 
 	/* Deinitialize */

@@ -214,6 +214,10 @@ extern Widget g_table_windowWidgets[9];
 extern Widget *GUI_Widget_GetNext(Widget *w);
 extern Widget *GUI_Widget_Get_ByIndex(Widget *w, uint16 index);
 extern uint16  GUI_Widget_HandleEvents(Widget *w);
+#ifdef TOS
+extern void GUI_Widget_PrepareSpriteDraws(Widget *w);
+extern void GUI_Widget_FreeSpriteDraws(void);
+#endif
 extern void    GUI_Widget_MakeInvisible(Widget *w);
 extern void    GUI_Widget_MakeVisible(Widget *w);
 extern void    GUI_Widget_Draw(Widget *w);

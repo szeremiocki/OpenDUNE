@@ -927,7 +927,7 @@ static bool GUI_Widget_Savegame_Click(uint16 index)
 
 		GUI_DrawText_Wrapper(NULL, 0, 0, 232, 235, 0x22);
 
-		eventKey = GUI_EditBox(saveDesc, 50, 15, g_widgetLinkedListTail, NULL, widgetPaint);
+		eventKey = GUI_EditBox(saveDesc, 50, 15, g_widgetLinkedListTail, NULL, widgetPaint, SCREEN_0);
 		widgetPaint = false;
 
 		if ((eventKey & 0x8000) == 0) continue;

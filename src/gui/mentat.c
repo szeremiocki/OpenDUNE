@@ -81,11 +81,7 @@ static uint16 s_selectedHelpSubject;
 static uint16 s_numberHelpSubjects;
 
 #ifdef TOS
-typedef struct MentatPlanarFrame {
-	uint16 *pixels;
-	uint16 width, height;
-} MentatPlanarFrame;
-static MentatPlanarFrame s_planarFrames[MENTAT_PARTS][MENTAT_FRAMES];
+static GUI_PlanarSprite s_planarFrames[MENTAT_PARTS][MENTAT_FRAMES];
 static uint16 s_framePaletteGeneration;
 
 void GUI_Mentat_FreePlanarFrames(void)
@@ -101,48 +97,11 @@ void GUI_Mentat_FreePlanarFrames(void)
 
 static bool GUI_Mentat_PreparePart(uint16 part, uint16 left, uint16 top)
 {
-	uint16 i, phase = left & 15;
+	uint16 i;
 
-	for (i = 0; i < MENTAT_FRAMES; i++) {
-		uint8 *sprite = s_mentatSprites[part][i];
-		uint16 width = Sprite_GetWidth(sprite), height = Sprite_GetHeight(sprite);
-		uint16 stride = (phase + width + 15) & ~15;
-		uint16 row, col, groups = stride / 16;
-		uint16 *pixels, *masks;
-		uint8 *chunky;
-		const size_t cells = (size_t)groups * height;
-
-		if (width == 0 || height == 0 || (left & ~15) + stride > SCREEN_WIDTH ||
-		    top + height > SCREEN_HEIGHT) continue;
-		chunky = calloc((size_t)stride, height);
-		pixels = calloc(cells * 5, sizeof(*pixels));
-		if (chunky == NULL || pixels == NULL) {
-			free(chunky);
-			free(pixels);
+	for (i = 0; i < MENTAT_FRAMES; i++)
+		if (!GUI_PreparePlanarSprite(&s_planarFrames[part][i], s_mentatSprites[part][i], left, top, NULL))
 			return false;
-		}
-		GUI_DrawSpriteToBuffer(chunky, stride, height, sprite, phase, 0);
-		masks = pixels + cells * 4;
-		/* The direct transparent path treats decoded index zero as a hole. */
-		for (row = 0; row < height; row++) {
-			const uint8 *src = chunky + (size_t)row * stride;
-			for (col = 0; col < groups; col++) {
-				uint16 mask = 0, bit;
-				for (bit = 0; bit < 16; bit++)
-					mask = (mask << 1) | (*src++ != 0);
-				*masks++ = mask;
-			}
-		}
-		{
-			/* The alignment padding is not part of the sprite's dither origin. */
-			const AtariDitherSource source = {chunky, stride, height, stride, -(int16)phase, 0, 1, 1};
-			Video_Atari_PreparePlanar(&source, NULL, pixels);
-		}
-		free(chunky);
-		s_planarFrames[part][i].pixels = pixels;
-		s_planarFrames[part][i].width = stride;
-		s_planarFrames[part][i].height = height;
-	}
 	return true;
 }
 
@@ -163,7 +122,7 @@ static void GUI_Mentat_DrawFrame(uint16 part, uint16 frame, uint16 left, uint16 
 	uint8 *sprite = s_mentatSprites[part][frame];
 
 #ifdef TOS
-	const MentatPlanarFrame *native = &s_planarFrames[part][frame];
+	const GUI_PlanarSprite *native = &s_planarFrames[part][frame];
 	if (native->pixels != NULL && !g_videoDisplayListActive &&
 	    s_framePaletteGeneration == Video_Atari_GetPaletteGeneration()) {
 		Video_Atari_PresentPlanarText(native->pixels,
@@ -521,6 +480,10 @@ bool GUI_Widget_Mentat_Click(Widget *w)
 uint16 GUI_Mentat_Show(char *stringBuffer, const char *wsaFilename, Widget *w)
 {
 	uint16 ret;
+	bool paletteBeforeCopy = false;
+#ifdef TOS
+	paletteBeforeCopy = Video_Atari_Mono();
+#endif
 
 	Sprites_UnloadTiles();
 
@@ -542,10 +505,12 @@ uint16 GUI_Mentat_Show(char *stringBuffer, const char *wsaFilename, Widget *w)
 	GFX_Screen_SetActive(SCREEN_0);
 
 	GUI_Mouse_Hide_Safe();
+	/* Mono bakes coverage into the background; palette changes cannot reveal it later. */
+	if (paletteBeforeCopy) GUI_SetPaletteAnimated(g_palette1, 15);
 	GUI_Screen_Copy(0, 0, 0, 0, SCREEN_WIDTH / 8, SCREEN_HEIGHT, SCREEN_1, SCREEN_0);
 	GUI_Mouse_Show_Safe();
 
-	GUI_SetPaletteAnimated(g_palette1, 15);
+	if (!paletteBeforeCopy) GUI_SetPaletteAnimated(g_palette1, 15);
 
 #ifdef TOS
 	GUI_Mentat_PreparePlanarFrames();
@@ -553,8 +518,12 @@ uint16 GUI_Mentat_Show(char *stringBuffer, const char *wsaFilename, Widget *w)
 	ret = GUI_Mentat_Loop(wsaFilename, NULL, stringBuffer, true, NULL);
 
 	if (w != NULL) {
+#ifdef TOS
+		GUI_Widget_PrepareSpriteDraws(w);
+#else
+		GUI_Widget_DrawAll(w);
+#endif
 		do {
-			GUI_Widget_DrawAll(w);
 			ret = GUI_Widget_HandleEvents(w);
 
 			GUI_PaletteAnimate();
@@ -562,6 +531,9 @@ uint16 GUI_Mentat_Show(char *stringBuffer, const char *wsaFilename, Widget *w)
 
 			sleepIdle();
 		} while ((ret & 0x8000) == 0);
+#ifdef TOS
+		GUI_Widget_FreeSpriteDraws();
+#endif
 	}
 
 	Input_History_Clear();

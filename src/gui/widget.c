@@ -69,6 +69,85 @@ uint8  g_curWidgetFGColourNormal; /*!< Normal colour of the currently selected w
 
 static bool s_widgetReset; /*!< If true, the widgets will be redrawn. */
 
+#ifdef TOS
+typedef struct WidgetSpriteDraw {
+	GUI_PlanarSprite frame;
+	uint8 *sprite;
+	const uint8 *remap;
+	uint16 phase;
+} WidgetSpriteDraw;
+
+static WidgetSpriteDraw s_spriteDraws[6];
+static uint16 s_spriteDrawCount, s_spriteDrawGeneration;
+
+void GUI_Widget_FreeSpriteDraws(void)
+{
+	while (s_spriteDrawCount != 0)
+		free(s_spriteDraws[--s_spriteDrawCount].frame.pixels);
+}
+
+static const WidgetSpriteDraw *GUI_Widget_FindSpriteDraw(const uint8 *sprite, const uint8 *remap, uint16 x)
+{
+	uint16 i;
+	for (i = 0; i < s_spriteDrawCount; i++) {
+		const WidgetSpriteDraw *entry = &s_spriteDraws[i];
+		if (entry->sprite == sprite && entry->remap == remap && entry->phase == (x & 15))
+			return entry;
+	}
+	return NULL;
+}
+
+static uint8 *GUI_Widget_SpriteRemap(uint16 drawMode)
+{
+	return drawMode == DRAW_MODE_SPRITE_HOUSE_INK && Video_Atari_Mono() ? g_monoWidgetRemap : g_remap;
+}
+
+static void GUI_Widget_PrepareSpriteDraw(uint16 mode, WidgetDrawParameter param, uint16 x, uint16 y)
+{
+	WidgetSpriteDraw entry = {0};
+	if (mode != DRAW_MODE_SPRITE && mode != DRAW_MODE_SPRITE_HOUSE_INK) return;
+	if (param.sprite == NULL || s_spriteDrawCount == sizeof(s_spriteDraws) / sizeof(*s_spriteDraws)) return;
+	entry.sprite = param.sprite;
+	entry.remap = GUI_Widget_SpriteRemap(mode);
+	entry.phase = x & 15;
+	if (GUI_Widget_FindSpriteDraw(entry.sprite, entry.remap, x) != NULL) return;
+	if (!GUI_PreparePlanarSprite(&entry.frame, entry.sprite, x, y, entry.remap)) {
+		Warning("Could not allocate a prepared widget sprite\n");
+		return;
+	}
+	if (entry.frame.pixels != NULL) s_spriteDraws[s_spriteDrawCount++] = entry;
+}
+
+void GUI_Widget_PrepareSpriteDraws(Widget *w)
+{
+	GUI_Widget_FreeSpriteDraws();
+	s_widgetReset = true;
+	if (!Video_Atari_CursorDirect()) return;
+	s_spriteDrawGeneration = Video_Atari_GetPaletteGeneration();
+	for (; w != NULL; w = GUI_Widget_GetNext(w)) {
+		if (w->parentID != 0 || w->offsetX < 0 || w->offsetY < 0) continue;
+		GUI_Widget_PrepareSpriteDraw(w->drawModeNormal, w->drawParameterNormal, w->offsetX, w->offsetY);
+		GUI_Widget_PrepareSpriteDraw(w->drawModeSelected, w->drawParameterSelected, w->offsetX, w->offsetY);
+		GUI_Widget_PrepareSpriteDraw(w->drawModeDown, w->drawParameterDown, w->offsetX, w->offsetY);
+	}
+}
+
+static bool GUI_Widget_DrawPreparedSprite(const Widget *w, const uint8 *sprite, const uint8 *remap, uint16 x, uint16 y)
+{
+	const WidgetSpriteDraw *entry;
+	const GUI_PlanarSprite *frame;
+	if (s_spriteDrawCount == 0 || w->parentID != 0 || !GFX_Screen_IsActive(SCREEN_0) ||
+	    g_videoDisplayListActive || s_spriteDrawGeneration != Video_Atari_GetPaletteGeneration()) return false;
+	entry = GUI_Widget_FindSpriteDraw(sprite, remap, x);
+	if (entry == NULL) return false;
+	frame = &entry->frame;
+	if ((x & ~15) + frame->width > SCREEN_WIDTH || y + frame->height > SCREEN_HEIGHT) return false;
+	Video_Atari_PresentPlanarText(frame->pixels, frame->pixels + (size_t)(frame->width / 4) * frame->height,
+	    frame->width, frame->height, x & ~15, y);
+	return true;
+}
+#endif
+
 Widget *GUI_Widget_GetNext(Widget *w)
 {
 	if (w->next == NULL) return NULL;
@@ -204,6 +283,13 @@ void GUI_Widget_Draw(Widget *w)
 	positionBottom = positionTop + w->height - 1;
 
 	assert(drawMode < DRAW_MODE_MAX);
+#ifdef TOS
+	if ((drawMode == DRAW_MODE_SPRITE || drawMode == DRAW_MODE_SPRITE_HOUSE_INK) &&
+	    GUI_Widget_DrawPreparedSprite(w, drawParam.sprite, GUI_Widget_SpriteRemap(drawMode), positionLeft, positionTop)) {
+		if (sidebar) GUI_Sidebar_End();
+		return;
+	}
+#endif
 	if (drawMode != DRAW_MODE_NONE && drawMode != DRAW_MODE_CUSTOM_PROC && GFX_Screen_IsActive(SCREEN_0)) {
 		GUI_Mouse_Hide_InRegion(positionLeft, positionTop, positionRight, positionBottom);
 	}
@@ -215,7 +301,7 @@ void GUI_Widget_Draw(Widget *w)
 		case DRAW_MODE_SPRITE_HOUSE_INK: {
 			uint8 *remap = g_remap;
 #ifdef TOS
-			if (drawMode == DRAW_MODE_SPRITE_HOUSE_INK && Video_Atari_Mono()) remap = g_monoWidgetRemap;
+			remap = GUI_Widget_SpriteRemap(drawMode);
 #endif
 			GUI_DrawSprite(SCREEN_ACTIVE, drawParam.sprite, GUI_SPRITE_ID_UNKNOWN, GUI_SPRITE_COLOUR_EMBEDDED, offsetX, offsetY, w->parentID, DRAWSPRITE_FLAG_REMAP | DRAWSPRITE_FLAG_WIDGETPOS, remap, 1);
 		} break;

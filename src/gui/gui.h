@@ -212,6 +212,12 @@ extern bool GUI_GetSpriteHousePalette(uint16 spriteID, uint8 houseID, uint8 *pal
 /* Plain sprite draw, clipped to a tightly packed private buffer. No present
  * or screen-buffer access; transparent pixels leave the buffer unchanged. */
 extern void GUI_DrawSpriteToBuffer(uint8 *buffer, uint16 width, uint16 height, const uint8 *sprite, int16 x, int16 y);
+typedef struct GUI_PlanarSprite {
+	uint16 *pixels;
+	uint16 width, height;
+} GUI_PlanarSprite;
+extern bool GUI_PreparePlanarSprite(GUI_PlanarSprite *frame, uint8 *sprite,
+                                   uint16 left, uint16 top, const uint8 *remap);
 /* Write 1 for drawn pixels, including opaque logical colour 0; leave holes unchanged. */
 extern void GUI_DrawSpriteOpacity(uint8 *buffer, uint16 width, uint16 height, const uint8 *sprite, int16 x, int16 y);
 /* Rebuild after loading SHAPES.SHP; unsupported assets retain sprite drawing. */
@@ -305,6 +311,6 @@ extern void GUI_HallOfFame_Show(uint16 score);
 extern uint16 GUI_HallOfFame_DrawData(HallOfFameStruct *data, bool show);
 
 /* editbox.c */
-extern uint16 GUI_EditBox(char *text, uint16 maxLength, uint16 widgetID, struct Widget *w, uint16 (*tickProc)(void), bool paint);
+extern uint16 GUI_EditBox(char *text, uint16 maxLength, uint16 widgetID, struct Widget *w, uint16 (*tickProc)(void), bool paint, Screen drawScreen);
 
 #endif /* GUI_GUI_H */

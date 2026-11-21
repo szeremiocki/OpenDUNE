@@ -96,6 +96,74 @@ def continuation_fixture(data=None):
 
 
 class WSAPlanarTest(unittest.TestCase):
+    def test_briefing_background_palette_order(self):
+        source = (ROOT / "src/gui/mentat.c").read_text()
+        harness = r"""
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stddef.h>
+typedef uint16_t uint16;
+typedef struct Widget Widget;
+enum { SCREEN_0, SCREEN_1, SCREEN_2, SCREEN_WIDTH = 320, SCREEN_HEIGHT = 200 };
+enum { GUI_SPRITE_COLOUR_EMBEDDED };
+static int g_playerHouseID, g_curWidgetXBase, g_curWidgetYBase, g_shoulderLeft, g_shoulderTop;
+static void *g_sprites[400];
+static bool mono, paletteLit, backgroundLit;
+static int g_palette1[768], copies, fades;
+#define Video_Atari_Mono() mono
+#define Sprites_UnloadTiles() ((void)0)
+#define GUI_Mentat_Display(...) ((void)0)
+#define GFX_Screen_SetActive(...) ((void)0)
+#define Widget_SetAndPaintCurrentWidget(...) ((void)0)
+#define GFX_Screen_Get_ByIndex(...) NULL
+#define GFX_Screen_GetSize_ByIndex(...) 0
+#define WSA_LoadFile(...) NULL
+#define WSA_DisplayFrame(...) ((void)wsa)
+#define WSA_Unload(...) ((void)0)
+#define GUI_DrawSprite(...) ((void)0)
+#define GUI_Mouse_Hide_Safe() ((void)0)
+#define GUI_Mouse_Show_Safe() ((void)0)
+#define GUI_Mentat_PreparePlanarFrames() ((void)0)
+#define GUI_Mentat_FreePlanarFrames() ((void)0)
+#define GUI_Widget_PrepareSpriteDraws(...) ((void)0)
+#define GUI_Widget_FreeSpriteDraws() ((void)0)
+#define GUI_Widget_HandleEvents(...) 0x8001
+#define GUI_PaletteAnimate() ((void)0)
+#define GUI_Mentat_Animation(...) ((void)0)
+#define sleepIdle() ((void)0)
+#define Input_History_Clear() ((void)0)
+#define Load_Palette_Mercenaries() ((void)0)
+#define Sprites_LoadTiles() ((void)0)
+static void GUI_SetPaletteAnimated(int *palette, int ticks) {
+    assert(palette == g_palette1 && ticks == 15);
+    assert(copies == !mono);
+    paletteLit = true;
+    fades++;
+}
+#define GUI_Screen_Copy(...) (copies++, backgroundLit = paletteLit)
+#define GUI_Mentat_Loop(...) ((void)stringBuffer, 0)
+""" + function(source, "GUI_Mentat_Show") + r"""
+int main(void) {
+    for (int mode = 0; mode < 2; mode++) {
+        mono = mode;
+        /* The win path explicitly blackens the palette after the map returns. */
+        paletteLit = false;
+        copies = fades = 0;
+        GUI_Mentat_Show(NULL, NULL, NULL);
+        assert(copies == 1 && fades == 1 && paletteLit);
+        if (mono) assert(backgroundLit);
+    }
+    return 0;
+}
+"""
+        compiler = shlex.split(os.environ.get("CC", "cc"))
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "briefing"
+            subprocess.run(compiler + ["-std=c99", "-DTOS", "-x", "c", "-", "-o", str(binary)],
+                           input=harness, text=True, check=True)
+            subprocess.run([str(binary)], check=True)
+
     def test_native_intro_playback_budget_and_tail_pacing(self):
         source = (ROOT / "src/cutscene.c").read_text()
         playback = function(source, "GameLoop_PlayAnimation")
@@ -1512,8 +1580,11 @@ int main(void) {
         draw = function(gui, "GUI_DrawSpriteInternal")
         mentat = (ROOT / "src/gui/mentat.c").read_text()
         sprites = mentat[mentat.index("enum { MENTAT_EYES"):mentat.index("\nbool g_interrogation")]
-        cache = mentat[mentat.index("typedef struct MentatPlanarFrame"):mentat.index(
+        cache = mentat[mentat.index("static GUI_PlanarSprite s_planarFrames"):mentat.index(
             "\n#endif", mentat.index("void GUI_Mentat_PreparePlanarFrames"))]
+        widget = (ROOT / "src/gui/widget.c").read_text()
+        widget_cache = widget[widget.index("typedef struct WidgetSpriteDraw"):widget.index(
+            "\n#endif", widget.index("static bool GUI_Widget_DrawPreparedSprite"))]
         harness = r"""
 #include <assert.h>
 #include <stdarg.h>
@@ -1569,8 +1640,8 @@ static AtariMonoPackedLookup packed;
 static unsigned left, top, spriteWidth, spriteHeight;
 static const uint8 *expectedSprite;
 #define Warning(...) assert(false)
-static uint8 Sprite_GetWidth(uint8 *sprite) { return sprite ? sprite[3] : 0; }
-static uint8 Sprite_GetHeight(uint8 *sprite) { return sprite ? sprite[2] : 0; }
+static uint8 Sprite_GetWidth(const uint8 *sprite) { return sprite ? sprite[3] : 0; }
+static uint8 Sprite_GetHeight(const uint8 *sprite) { return sprite ? sprite[2] : 0; }
 static uint16 Video_Atari_GetPaletteGeneration(void) { return generation; }
 void GUI_Mouse_Hide_InRegion(uint16 x, uint16 y, uint16 right, uint16 bottom) {
     assert(x == left && y == top && right == x + spriteWidth && bottom == y + spriteHeight);
@@ -1632,6 +1703,12 @@ static void Video_Atari_PresentPlanarText(const uint16 *pixels, const uint16 *ma
 }
 /* CACHE */
 /* DISPATCH */
+uint8 g_remap[256], g_monoWidgetRemap[256];
+static bool s_widgetReset;
+static bool Video_Atari_Mono(void) { return mono; }
+bool GFX_Screen_IsActive(Screen screenID) { return screenID == SCREEN_0; }
+Widget *GUI_Widget_GetNext(Widget *w) { return w->next; }
+/* WIDGET CACHE */
 static void check_frame(uint16 part, uint16 frame, uint16 x, uint16 y, const uint8 *sprite) {
     left = x; top = y; expectedSprite = sprite;
     spriteWidth = sprite == NULL ? 0 : sprite[3];
@@ -1697,6 +1774,27 @@ int main(void) {
     check_frame(MENTAT_OTHER, 0, s_otherLeft, s_otherTop, sprite);
     assert(preparations == 11 && publications == 13 && fallbacks == 13);
     GUI_Mentat_FreePlanarFrames();
+    Widget buttons[2] = {0};
+    for (unsigned i = 0; i < 256; i++) g_remap[i] = i;
+    g_remap[37] = 62;
+    buttons[0].offsetX = buttons[1].offsetX = 168;
+    buttons[0].offsetY = buttons[1].offsetY = 168;
+    buttons[0].next = &buttons[1];
+    for (unsigned i = 0; i < 2; i++) {
+        buttons[i].drawModeNormal = buttons[i].drawModeSelected = buttons[i].drawModeDown = DRAW_MODE_SPRITE;
+        buttons[i].drawParameterNormal.sprite = buttons[i].drawParameterSelected.sprite = i ? eyes : mouth;
+        buttons[i].drawParameterDown.sprite = i ? mouth : eyes;
+    }
+    GUI_Widget_PrepareSpriteDraws(buttons);
+    assert(s_widgetReset && preparations == 13 && s_spriteDrawCount == 2);
+    left = top = 168; spriteWidth = mouth[3]; spriteHeight = mouth[2];
+    assert(GUI_Widget_DrawPreparedSprite(&buttons[0], mouth, g_remap, left, top));
+    assert(publications == 14 && preparations == 13);
+    generation++;
+    assert(!GUI_Widget_DrawPreparedSprite(&buttons[0], mouth, g_remap, left, top));
+    generation--;
+    GUI_Widget_FreeSpriteDraws();
+    assert(!GUI_Widget_DrawPreparedSprite(&buttons[0], mouth, g_remap, left, top));
     /* Keep the fallback for sprites larger than the new 4,608-byte capacity. */
     sprite[2] = 40; sprite[3] = 128;
     memset(sprite + 10, 81, 128 * 40);
@@ -1710,7 +1808,8 @@ int main(void) {
             c_file.write_text(harness.replace("/* DRAW */", draw)
                               .replace("/* BUFFER */", function(gui, "GUI_DrawSpriteToBuffer"))
                               .replace("/* SPRITES */", sprites)
-                              .replace("/* CACHE */", cache)
+                              .replace("/* CACHE */", function(gui, "GUI_PreparePlanarSprite") + "\n" + cache)
+                              .replace("/* WIDGET CACHE */", widget_cache)
                               .replace("/* DISPATCH */", function(mentat, "GUI_Mentat_DrawFrame")))
             compiler = shlex.split(os.environ.get("CC", "cc"))
             subprocess.run(compiler + ["-std=c99", "-DTOS", "-O2", "-Wall", "-Wextra", "-Werror",
