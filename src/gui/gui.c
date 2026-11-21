@@ -2023,6 +2023,14 @@ static inline ViewportSpriteMask *GUI_ViewportSpriteMaskSlot(uint16 spriteID)
 	return &s_viewportSpriteCache[spriteID];
 }
 
+const uint16 *GUI_ViewportSpriteOpacity(uint16 spriteID, uint16 *width, uint16 *height)
+{
+	const ViewportSpriteMask *mask = GUI_ViewportSpriteMaskSlot(spriteID);
+	*width = mask->width;
+	*height = mask->height;
+	return mask->rows;
+}
+
 static void GUI_DrawSpriteMask(uint8 *buffer, uint16 width, uint16 height,
                                const uint8 *sprite, int16 x, int16 y, int flags, ...)
 {
@@ -2061,14 +2069,6 @@ void GUI_InitViewportSpriteCache(void)
 			exit(1);
 		}
 		words += ((width + 15) >> 4) * height * 2;
-const uint16 *GUI_ViewportSpriteOpacity(uint16 spriteID, uint16 *width, uint16 *height)
-{
-	const ViewportSpriteMask *mask = GUI_ViewportSpriteMaskSlot(spriteID);
-	*width = mask->width;
-	*height = mask->height;
-	return mask->rows;
-}
-
 	}
 	s_viewportSpriteMasks = malloc(words * sizeof(*s_viewportSpriteMasks));
 	if (s_viewportSpriteMasks == NULL) {
