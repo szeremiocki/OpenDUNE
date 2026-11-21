@@ -325,7 +325,7 @@ extern void Video_Atari_LiveEnd(uint16 x, uint16 y, uint16 width, uint16 height)
  * are multiples of 16. Clipping preserves cursor/placement backgrounds. */
 extern void Video_Atari_PresentPlanarSprite(const uint16 *pixels, const uint16 *masks,
                                           uint16 width, uint16 height, int16 x, int16 y);
-/* Aligned UI text, using only its own packed masks, not battlefield fog.
+/* Aligned UI text or sprites, using only their own packed masks, not battlefield fog.
  * Referenced pixels/masks must stay unchanged until the next display-list drain. */
 extern void Video_Atari_PresentPlanarText(const uint16 *pixels, const uint16 *masks,
                                         uint16 width, uint16 height, uint16 x, uint16 y);

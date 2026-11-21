@@ -6,7 +6,7 @@
 #ifdef TOS
 #include "font.h"
 
-enum { GLYPH_MAX_GROUPS = 20, GLYPH_LINE_UNSUPPORTED = 0xFFFF };
+enum { GLYPH_MAX_GROUPS = 20, GLYPH_MAX_CHARS = 128, GLYPH_LINE_UNSUPPORTED = 0xFFFF };
 
 /* Builds f->planar: per glyph one 16-bit mask word per row of the font's used row span
  * and per pixel value the font uses. Leaves f->planar NULL for fonts that do not fit

@@ -946,6 +946,43 @@ static bool GUI_TextPlanar_Usable(void)
 	return GFX_Screen_IsActive(SCREEN_0) && Video_Atari_CursorDirect() && !GUI_Sidebar_Active() && s_planarTarget == NULL;
 }
 
+static bool GUI_DrawTextPlanarLive(const char *string, uint16 left, uint16 top)
+{
+	uint16 pixels[GLYPH_MAX_GROUPS * 16 * 4], masks[GLYPH_MAX_GROUPS * 16];
+	const Font *font = g_fontCurrent;
+	uint16 height = font->height, first = left & ~15;
+	uint16 x = left, right = left, count = 0, groups, drawn;
+	const char *s;
+
+	if (g_videoDisplayListActive || !GUI_TextPlanar_Usable() ||
+	    !GUI_Glyph_Usable(font) || g_colours[0] != 0 ||
+	    height == 0 || height > 16 || top + height > SCREEN_HEIGHT) return false;
+
+	for (s = string; *s != '\0'; s++) {
+		const FontChar *fc = &font->chars[(unsigned char)*s];
+		int advance = (int)fc->width + g_fontCharOffset;
+
+		if (*s == '\n' || *s == '\r' || advance < 0 ||
+		    x + advance > SCREEN_WIDTH) return false;
+		if (fc->data != NULL && x + fc->width <= SCREEN_WIDTH) {
+			if (++count > GLYPH_MAX_CHARS) return false;
+			if (x + fc->width > right) right = x + fc->width;
+		}
+		x += advance;
+	}
+	if (right == left) return true;
+
+	groups = (right - first + 15) >> 4;
+	memset(pixels, 0, (size_t)groups * height * 4 * sizeof(*pixels));
+	memset(masks, 0, (size_t)groups * height * sizeof(*masks));
+	drawn = GUI_Glyph_Line(font, g_colours, string, left - first, groups, height,
+	                      pixels, groups * 4, masks, groups);
+	if (drawn == GLYPH_LINE_UNSUPPORTED) return false;
+	/* The display-list guard above guarantees immediate consumption of this scratch. */
+	if (drawn != 0) Video_Atari_PresentPlanarText(pixels, masks, groups * 16, height, first, top);
+	return true;
+}
+
 static void GUI_TextPlanar_Present(const TextPlanarEntry *entry)
 {
 	uint16 i, strips = (entry->width + TEXT_PLANAR_STRIP_WIDTH - 1) / TEXT_PLANAR_STRIP_WIDTH;
@@ -1070,6 +1107,7 @@ void GUI_DrawText(const char *string, int16 left, int16 top, uint8 fgColour, uin
 		if (GUI_Sidebar_Text(string, left, top, g_colours)) return;
 	} else if (GUI_DrawTextPlanarCached(string, left, top)) return;
 	if (s_planarTarget != NULL && GUI_PlanarTarget_Line(string, left, top)) return;
+	if (GUI_DrawTextPlanarLive(string, left, top)) return;
 #endif
 	s = string;
 	x = left;
@@ -4109,11 +4147,17 @@ uint8 GUI_PickHouse(void)
 
 		GUI_Mouse_Show_Safe();
 
+#ifdef TOS
+		GUI_Mentat_PreparePlanarFrames();
+#endif
 		for (;; sleepIdle()) {
 			yes_no = GUI_Mentat_Loop(House_GetWSAHouseFilename(houseID), NULL, NULL, true, w);
 
 			if ((yes_no & 0x8000) != 0) break;
 		}
+#ifdef TOS
+		GUI_Mentat_FreePlanarFrames();
+#endif
 
 		if (yes_no == 0x8001) {
 			Driver_Music_FadeOut();

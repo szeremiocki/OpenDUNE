@@ -50,7 +50,8 @@ static const uint8 s_mentatSpritePositions[6][8] = {
 };
 
 
-static uint8 *s_mentatSprites[3][5];
+enum { MENTAT_EYES, MENTAT_MOUTH, MENTAT_OTHER, MENTAT_PARTS, MENTAT_FRAMES = 5 };
+static uint8 *s_mentatSprites[MENTAT_PARTS][MENTAT_FRAMES];
 
 bool g_interrogation;      /*!< Asking a security question (changes mentat eye movement). */
 static uint8 s_eyesLeft;    /*!< Left of the changing eyes. */
@@ -78,6 +79,103 @@ static char s_mentatFilename[13];
 static uint16 s_topHelpList;
 static uint16 s_selectedHelpSubject;
 static uint16 s_numberHelpSubjects;
+
+#ifdef TOS
+typedef struct MentatPlanarFrame {
+	uint16 *pixels;
+	uint16 width, height;
+} MentatPlanarFrame;
+static MentatPlanarFrame s_planarFrames[MENTAT_PARTS][MENTAT_FRAMES];
+static uint16 s_framePaletteGeneration;
+
+void GUI_Mentat_FreePlanarFrames(void)
+{
+	uint16 part, i;
+
+	for (part = 0; part < MENTAT_PARTS; part++)
+		for (i = 0; i < MENTAT_FRAMES; i++) {
+			free(s_planarFrames[part][i].pixels);
+			s_planarFrames[part][i].pixels = NULL;
+		}
+}
+
+static bool GUI_Mentat_PreparePart(uint16 part, uint16 left, uint16 top)
+{
+	uint16 i, phase = left & 15;
+
+	for (i = 0; i < MENTAT_FRAMES; i++) {
+		uint8 *sprite = s_mentatSprites[part][i];
+		uint16 width = Sprite_GetWidth(sprite), height = Sprite_GetHeight(sprite);
+		uint16 stride = (phase + width + 15) & ~15;
+		uint16 row, col, groups = stride / 16;
+		uint16 *pixels, *masks;
+		uint8 *chunky;
+		const size_t cells = (size_t)groups * height;
+
+		if (width == 0 || height == 0 || (left & ~15) + stride > SCREEN_WIDTH ||
+		    top + height > SCREEN_HEIGHT) continue;
+		chunky = calloc((size_t)stride, height);
+		pixels = calloc(cells * 5, sizeof(*pixels));
+		if (chunky == NULL || pixels == NULL) {
+			free(chunky);
+			free(pixels);
+			return false;
+		}
+		GUI_DrawSpriteToBuffer(chunky, stride, height, sprite, phase, 0);
+		masks = pixels + cells * 4;
+		/* The direct transparent path treats decoded index zero as a hole. */
+		for (row = 0; row < height; row++) {
+			const uint8 *src = chunky + (size_t)row * stride;
+			for (col = 0; col < groups; col++) {
+				uint16 mask = 0, bit;
+				for (bit = 0; bit < 16; bit++)
+					mask = (mask << 1) | (*src++ != 0);
+				*masks++ = mask;
+			}
+		}
+		{
+			/* The alignment padding is not part of the sprite's dither origin. */
+			const AtariDitherSource source = {chunky, stride, height, stride, -(int16)phase, 0, 1, 1};
+			Video_Atari_PreparePlanar(&source, NULL, pixels);
+		}
+		free(chunky);
+		s_planarFrames[part][i].pixels = pixels;
+		s_planarFrames[part][i].width = stride;
+		s_planarFrames[part][i].height = height;
+	}
+	return true;
+}
+
+void GUI_Mentat_PreparePlanarFrames(void)
+{
+	GUI_Mentat_FreePlanarFrames();
+	if (!Video_Atari_CursorDirect()) return;
+	s_framePaletteGeneration = Video_Atari_GetPaletteGeneration();
+	if (!GUI_Mentat_PreparePart(MENTAT_MOUTH, s_mouthLeft, s_mouthTop) ||
+	    !GUI_Mentat_PreparePart(MENTAT_EYES, s_eyesLeft, s_eyesTop) ||
+	    (!g_disableOtherMovement && !GUI_Mentat_PreparePart(MENTAT_OTHER, s_otherLeft, s_otherTop)))
+		Warning("Mentat animation: could not allocate a planar frame\n");
+}
+#endif
+
+static void GUI_Mentat_DrawFrame(uint16 part, uint16 frame, uint16 left, uint16 top)
+{
+	uint8 *sprite = s_mentatSprites[part][frame];
+
+#ifdef TOS
+	const MentatPlanarFrame *native = &s_planarFrames[part][frame];
+	if (native->pixels != NULL && !g_videoDisplayListActive &&
+	    s_framePaletteGeneration == Video_Atari_GetPaletteGeneration()) {
+		Video_Atari_PresentPlanarText(native->pixels,
+		    native->pixels + (size_t)(native->width / 4) * native->height,
+		    native->width, native->height, left & ~15, top);
+		return;
+	}
+#endif
+	GUI_Mouse_Hide_InRegion(left, top, left + Sprite_GetWidth(sprite), top + Sprite_GetHeight(sprite));
+	GUI_DrawSprite(SCREEN_0, sprite, GUI_SPRITE_ID_UNKNOWN, GUI_SPRITE_COLOUR_EMBEDDED, left, top, 0, 0);
+	GUI_Mouse_Show_InRegion();
+}
 
 /**
  * Show the Mentat screen with a dialog (Proceed / Repeat).
@@ -248,6 +346,15 @@ static void GUI_Mentat_LoadHelpSubjects(bool init)
 	s_helpSubjects = helpSubjects;
 }
 
+static uint8 GUI_Mentat_HelpSubjectColour(bool highlighted)
+{
+	if (!highlighted) return 15; /* Opaque white. */
+#ifdef TOS
+	if (Video_Atari_Mono()) return 12; /* Opaque black, not the dithered red highlight. */
+#endif
+	return 8;
+}
+
 static void GUI_Mentat_Draw(bool force)
 {
 	static uint16 displayedHelpSubject = 0;
@@ -284,7 +391,7 @@ static void GUI_Mentat_Draw(bool force)
 			line->fgColourNormal   = 11;
 			line->stringID         = 0x30;
 		} else {
-			uint8 colour = (i == s_selectedHelpSubject) ? 8 : 15;
+			uint8 colour = GUI_Mentat_HelpSubjectColour(i == s_selectedHelpSubject);
 			line->offsetX          = 24;
 			line->fgColourSelected = colour;
 			line->fgColourDown     = colour;
@@ -341,7 +448,13 @@ static void GUI_Mentat_ShowHelpList(bool proceed)
 
 	GFX_Screen_SetActive(SCREEN_0);
 
+#ifdef TOS
+	GUI_Mentat_PreparePlanarFrames();
+#endif
 	GUI_Mentat_HelpListLoop();
+#ifdef TOS
+	GUI_Mentat_FreePlanarFrames();
+#endif
 
 	free(g_widgetMentatFirst); g_widgetMentatFirst = NULL;
 
@@ -434,6 +547,9 @@ uint16 GUI_Mentat_Show(char *stringBuffer, const char *wsaFilename, Widget *w)
 
 	GUI_SetPaletteAnimated(g_palette1, 15);
 
+#ifdef TOS
+	GUI_Mentat_PreparePlanarFrames();
+#endif
 	ret = GUI_Mentat_Loop(wsaFilename, NULL, stringBuffer, true, NULL);
 
 	if (w != NULL) {
@@ -450,6 +566,9 @@ uint16 GUI_Mentat_Show(char *stringBuffer, const char *wsaFilename, Widget *w)
 
 	Input_History_Clear();
 
+#ifdef TOS
+	GUI_Mentat_FreePlanarFrames();
+#endif
 	if (w != NULL) {
 		/* reset palette and tiles */
 		Load_Palette_Mercenaries();
@@ -513,27 +632,27 @@ void GUI_Mentat_Display(const char *wsaFilename, uint8 houseID)
 	s_eyesTop  = s_eyesBottom = s_mentatSpritePositions[houseID][1];
 
 	for (i = 0; i < 5; i++) {
-		s_mentatSprites[0][i] = g_sprites[387 + houseID * 15 + i];
+		s_mentatSprites[MENTAT_EYES][i] = g_sprites[387 + houseID * 15 + i];
 	}
 
-	s_eyesRight  += Sprite_GetWidth(s_mentatSprites[0][0]);
-	s_eyesBottom += Sprite_GetHeight(s_mentatSprites[0][0]);
+	s_eyesRight  += Sprite_GetWidth(s_mentatSprites[MENTAT_EYES][0]);
+	s_eyesBottom += Sprite_GetHeight(s_mentatSprites[MENTAT_EYES][0]);
 
 	s_mouthLeft = s_mouthRight  = s_mentatSpritePositions[houseID][2];
 	s_mouthTop  = s_mouthBottom = s_mentatSpritePositions[houseID][3];
 
 	for (i = 0; i < 5; i++) {
-		s_mentatSprites[1][i] = g_sprites[392 + houseID * 15 + i];
+		s_mentatSprites[MENTAT_MOUTH][i] = g_sprites[392 + houseID * 15 + i];
 	}
 
-	s_mouthRight  += Sprite_GetWidth(s_mentatSprites[1][0]);
-	s_mouthBottom += Sprite_GetHeight(s_mentatSprites[1][0]);
+	s_mouthRight  += Sprite_GetWidth(s_mentatSprites[MENTAT_MOUTH][0]);
+	s_mouthBottom += Sprite_GetHeight(s_mentatSprites[MENTAT_MOUTH][0]);
 
 	s_otherLeft = s_mentatSpritePositions[houseID][4];
 	s_otherTop  = s_mentatSpritePositions[houseID][5];
 
 	for (i = 0; i < 4; i++) {
-		s_mentatSprites[2][i] = g_sprites[398 + houseID * 15 + i];
+		s_mentatSprites[MENTAT_OTHER][i] = g_sprites[398 + houseID * 15 + i];
 	}
 
 	g_shoulderLeft = s_mentatSpritePositions[houseID][6];
@@ -574,19 +693,13 @@ void GUI_Mentat_Animation(uint16 speakingMode)
 
 	if (movingOtherTimer < g_timerGUI && !g_disableOtherMovement) {
 		if (movingOtherTimer != 0) {
-			uint8 *sprite;
-
-			if (s_mentatSprites[2][1 + abs(otherSprite)] == NULL) {
+			if (s_mentatSprites[MENTAT_OTHER][1 + abs(otherSprite)] == NULL) {
 				otherSprite = 1 - otherSprite;
 			} else {
 				otherSprite++;
 			}
 
-			sprite = s_mentatSprites[2][abs(otherSprite)];
-
-			GUI_Mouse_Hide_InRegion(s_otherLeft, s_otherTop, s_otherLeft + Sprite_GetWidth(sprite), s_otherTop + Sprite_GetHeight(sprite));
-			GUI_DrawSprite(SCREEN_0, sprite, GUI_SPRITE_ID_UNKNOWN, GUI_SPRITE_COLOUR_EMBEDDED, s_otherLeft, s_otherTop, 0, 0);
-			GUI_Mouse_Show_InRegion();
+			GUI_Mentat_DrawFrame(MENTAT_OTHER, abs(otherSprite), s_otherLeft, s_otherTop);
 		}
 
 		switch (g_playerHouseID) {
@@ -610,14 +723,8 @@ void GUI_Mentat_Animation(uint16 speakingMode)
 
 	if (speakingMode == 1) {
 		if (movingMouthTimer < g_timerGUI) {
-			uint8 *sprite;
-
 			movingMouthSprite = Tools_RandomLCG_Range(0, 4);
-			sprite = s_mentatSprites[1][movingMouthSprite];
-
-			GUI_Mouse_Hide_InRegion(s_mouthLeft, s_mouthTop, s_mouthLeft + Sprite_GetWidth(sprite), s_mouthTop + Sprite_GetHeight(sprite));
-			GUI_DrawSprite(SCREEN_0, sprite, GUI_SPRITE_ID_UNKNOWN, GUI_SPRITE_COLOUR_EMBEDDED, s_mouthLeft, s_mouthTop, 0, 0);
-			GUI_Mouse_Show_InRegion();
+			GUI_Mentat_DrawFrame(MENTAT_MOUTH, movingMouthSprite, s_mouthLeft, s_mouthTop);
 
 			switch (movingMouthSprite) {
 				case 0:
@@ -658,15 +765,8 @@ void GUI_Mentat_Animation(uint16 speakingMode)
 			}
 		}
 
-		if (partNeedsRedraw) {
-			uint8 *sprite;
-
-			sprite = s_mentatSprites[1][movingMouthSprite];
-
-			GUI_Mouse_Hide_InRegion(s_mouthLeft, s_mouthTop, s_mouthLeft + Sprite_GetWidth(sprite), s_mouthTop + Sprite_GetHeight(sprite));
-			GUI_DrawSprite(SCREEN_0, sprite, GUI_SPRITE_ID_UNKNOWN, GUI_SPRITE_COLOUR_EMBEDDED, s_mouthLeft, s_mouthTop, 0, 0);
-			GUI_Mouse_Show_InRegion();
-		}
+		if (partNeedsRedraw)
+			GUI_Mentat_DrawFrame(MENTAT_MOUTH, movingMouthSprite, s_mouthLeft, s_mouthTop);
 	}
 
 	partNeedsRedraw = false;
@@ -680,15 +780,8 @@ void GUI_Mentat_Animation(uint16 speakingMode)
 				movingEyesTimer = 0;
 			}
 
-			if (partNeedsRedraw) {
-				uint8 *sprite;
-
-				sprite = s_mentatSprites[0][movingEyesSprite];
-
-				GUI_Mouse_Hide_InRegion(s_eyesLeft, s_eyesTop, s_eyesLeft + Sprite_GetWidth(sprite), s_eyesTop + Sprite_GetHeight(sprite));
-				GUI_DrawSprite(SCREEN_0, sprite, GUI_SPRITE_ID_UNKNOWN, GUI_SPRITE_COLOUR_EMBEDDED, s_eyesLeft, s_eyesTop, 0, 0);
-				GUI_Mouse_Show_InRegion();
-			}
+			if (partNeedsRedraw)
+				GUI_Mentat_DrawFrame(MENTAT_EYES, movingEyesSprite, s_eyesLeft, s_eyesTop);
 
 			return;
 		}
@@ -788,15 +881,8 @@ void GUI_Mentat_Animation(uint16 speakingMode)
 		}
 	}
 
-	if (partNeedsRedraw) {
-		uint8 *sprite;
-
-		sprite = s_mentatSprites[0][movingEyesSprite];
-
-		GUI_Mouse_Hide_InRegion(s_eyesLeft, s_eyesTop, s_eyesLeft + Sprite_GetWidth(sprite), s_eyesTop + Sprite_GetHeight(sprite));
-		GUI_DrawSprite(SCREEN_0, sprite, GUI_SPRITE_ID_UNKNOWN, GUI_SPRITE_COLOUR_EMBEDDED, s_eyesLeft, s_eyesTop, 0, 0);
-		GUI_Mouse_Show_InRegion();
-	}
+	if (partNeedsRedraw)
+		GUI_Mentat_DrawFrame(MENTAT_EYES, movingEyesSprite, s_eyesLeft, s_eyesTop);
 }
 
 /**
@@ -1005,22 +1091,18 @@ bool GUI_Mentat_List_Click(Widget *w)
 	if (w->index != index) {
 		w2 = GUI_Widget_Get_ByIndex(g_widgetMentatTail, index);
 
-		GUI_Widget_MakeNormal(w, false);
-		GUI_Widget_MakeNormal(w2, false);
-
 		if (w2->stringID == 0x31) {
-			w2->fgColourDown   = 15;
-			w2->fgColourNormal = 15;
-
-			GUI_Widget_Draw(w2);
+			w2->fgColourDown   = GUI_Mentat_HelpSubjectColour(false);
+			w2->fgColourNormal = w2->fgColourDown;
 		}
 
 		if (w->stringID == 0x31) {
-			w->fgColourDown   = 8;
-			w->fgColourNormal = 8;
-
-			GUI_Widget_Draw(w);
+			w->fgColourDown   = GUI_Mentat_HelpSubjectColour(true);
+			w->fgColourNormal = w->fgColourDown;
 		}
+
+		GUI_Widget_MakeNormal(w2, false);
+		GUI_Widget_MakeNormal(w, false);
 
 		s_selectedHelpSubject = w->index - 3;
 		return true;

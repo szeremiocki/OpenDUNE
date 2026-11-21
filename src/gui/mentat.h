@@ -26,4 +26,10 @@ extern uint16 GUI_Mentat_Loop(const char *wsaFilename, char *pictureDetails, cha
 extern uint16 GUI_Mentat_SplitText(char *str, uint16 maxWidth);
 extern uint16 GUI_Mentat_Tick(void);
 
+#ifdef TOS
+/* Prepare after installing the scene palette; free when leaving the scene. */
+extern void GUI_Mentat_PreparePlanarFrames(void);
+extern void GUI_Mentat_FreePlanarFrames(void);
+#endif
+
 #endif /* GUI_MENTAT_H */

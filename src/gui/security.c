@@ -104,6 +104,9 @@ bool GUI_Security_Show(void)
 
 	GUI_SetPaletteAnimated(g_palette1, 15);
 
+#ifdef TOS
+	GUI_Mentat_PreparePlanarFrames();
+#endif
 	strncpy(g_readBuffer, String_Get_ByIndex(STR_SECURITY_TEXT_HARKONNEN + g_playerHouseID * 3), g_readBufferSize);
 	GUI_Mentat_Loop(wsaHouseFilename, NULL, g_readBuffer, true, NULL);
 
@@ -206,6 +209,9 @@ bool GUI_Security_Show(void)
 
 	Input_History_Clear();
 
+#ifdef TOS
+	GUI_Mentat_FreePlanarFrames();
+#endif
 	Load_Palette_Mercenaries();
 
 	g_disableOtherMovement = false;

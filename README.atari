@@ -1143,10 +1143,13 @@ rows without representation-specific loops in WSA. Dither is anchored to the
 animation's source origin, not to the location of each published dirty region.
 Pending legacy dirty groups inside the picture are repaired from its
 retained planar image, never from SCREEN_1's WSA storage.
-The direct-sprite scratch buffer holds 4,608 bytes, enough for the 96x48
-Atreides book to retain transparent planar drawing instead of the legacy
-chunky fallback. There is no Mentat-specific overlap repair masking
-foreground rendering deficiencies.
+Mentat's mouth, eyes, Atreides book and Ordos ring are sprites, not WSA
+frames. Mentat screens prepare their aligned native frames and transparency
+masks once on entry, then publish them through the shared masked UI path in both
+ST-Low and ST-High. Animation ticks need no sprite decode or chunky conversion.
+The frames are freed on exit; if preparation fails or the palette changes,
+the ordinary sprite draw still works. Its 4,608-byte direct scratch buffer
+holds the 96x48 book without falling back to the chunky screen.
 
 For a 184x112 picture, the initial/current/composition buffers occupy
 31.5 KiB; overlay pixels and masks add 15.75 KiB, plus variable transition

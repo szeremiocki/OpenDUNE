@@ -7,7 +7,7 @@
 #include "font.h"
 #include "../video/video.h"
 
-enum { GLYPH_MAX_VALUES = 8, GLYPH_MAX_CHARS = 128 };
+enum { GLYPH_MAX_VALUES = 8 };
 
 typedef struct GlyphFont {
 	uint8 values;                     /*!< Number of glyph pixel values in use (value 0 excluded). */

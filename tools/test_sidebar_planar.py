@@ -237,6 +237,7 @@ static uint16 *s_planarTarget;
 static uint16 s_planarGroups;
 static bool s_planarLineDone;
 static bool GUI_DrawTextPlanarCached(const char *s, int16 l, int16 t) { (void)s; (void)l; (void)t; return false; }
+static bool GUI_DrawTextPlanarLive(const char *s, uint16 l, uint16 t) { (void)s; (void)l; (void)t; return false; }
 static bool GUI_PlanarTarget_Line(const char *s, uint16 l, uint16 t) { (void)s; (void)l; (void)t; return false; }
 static uint16 GUI_PlanarTarget_Text(const char *s, uint16 l, uint16 t) { (void)s; (void)l; (void)t; return 0xFFFF; }
 static void GUI_PlanarTarget_Chunky(const FontChar *f, uint16 l, uint16 t) { (void)f; (void)l; (void)t; }

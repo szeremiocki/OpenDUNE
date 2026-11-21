@@ -1507,8 +1507,13 @@ int main(void) {
                                       str(c_file), "-o", str(binary)], check=True)
             subprocess.run([str(binary)], check=True)
 
-    def test_book_direct_sprite(self):
-        draw = function((ROOT / "src/gui/gui.c").read_text(), "GUI_DrawSpriteInternal")
+    def test_mentat_native_animation_sprites(self):
+        gui = (ROOT / "src/gui/gui.c").read_text()
+        draw = function(gui, "GUI_DrawSpriteInternal")
+        mentat = (ROOT / "src/gui/mentat.c").read_text()
+        sprites = mentat[mentat.index("enum { MENTAT_EYES"):mentat.index("\nbool g_interrogation")]
+        cache = mentat[mentat.index("typedef struct MentatPlanarFrame"):mentat.index(
+            "\n#endif", mentat.index("void GUI_Mentat_PreparePlanarFrames"))]
         harness = r"""
 #include <assert.h>
 #include <stdarg.h>
@@ -1519,8 +1524,10 @@ int main(void) {
 #include "gui/widget.h"
 #include "os/endian.h"
 #include "os/math.h"
+#include "video/atari_mono.h"
 WidgetProperties g_widgetProperties[22] = {{0, 0, 40, 200, 0, 0, 0}};
 static uint8 screen[64000];
+static uint8 reference[96 * 48];
 static unsigned presents, dirty;
 static uint8 *s_spriteBatchBuf;
 static uint16 s_spriteBatchStride;
@@ -1542,6 +1549,7 @@ static bool Video_Atari_PresentChunkyTransparent(const void *pixels, uint16 stri
                                                  int16 x, int16 y, uint16 width, uint16 height) {
     const uint8 *src = pixels;
     assert(x == 72 && y == 152 && width == 96 && height == 48 && stride == 96);
+    memcpy(reference, src, sizeof(reference));
     for (unsigned row = 0; row < height; row++)
         for (unsigned col = 0; col < width; col++)
             assert(src[row * stride + col] == (row < 8 && col >= 56 ? 0 : 81));
@@ -1549,8 +1557,93 @@ static bool Video_Atari_PresentChunkyTransparent(const void *pixels, uint16 stri
     return true;
 }
 /* DRAW */
+/* BUFFER */
+/* SPRITES */
+static uint8 s_otherLeft = 72, s_otherTop = 152;
+static uint8 s_eyesLeft = 40, s_eyesTop = 80, s_mouthLeft = 56, s_mouthTop = 96;
+static bool g_disableOtherMovement, g_videoDisplayListActive, mono, whiteIsOne;
+static uint16 generation;
+static unsigned preparations, publications, fallbacks, hides, shows;
+static AtariDitherLookup lookup;
+static AtariMonoPackedLookup packed;
+static unsigned left, top, spriteWidth, spriteHeight;
+static const uint8 *expectedSprite;
+#define Warning(...) assert(false)
+static uint8 Sprite_GetWidth(uint8 *sprite) { return sprite ? sprite[3] : 0; }
+static uint8 Sprite_GetHeight(uint8 *sprite) { return sprite ? sprite[2] : 0; }
+static uint16 Video_Atari_GetPaletteGeneration(void) { return generation; }
+void GUI_Mouse_Hide_InRegion(uint16 x, uint16 y, uint16 right, uint16 bottom) {
+    assert(x == left && y == top && right == x + spriteWidth && bottom == y + spriteHeight);
+    hides++;
+}
+void GUI_Mouse_Show_InRegion(void) { shows++; }
+void GUI_DrawSprite(Screen screenID, const uint8 *sprite, uint16 id, uint8 colour,
+                    int16 x, int16 y, uint16 window, int flags, ...) {
+    assert(screenID == SCREEN_0 && sprite == expectedSprite && id == GUI_SPRITE_ID_UNKNOWN);
+    assert(colour == GUI_SPRITE_COLOUR_EMBEDDED && x == (int)left && y == (int)top);
+    assert(window == 0 && flags == 0);
+    fallbacks++;
+}
+static void Video_Atari_PreparePlanar(const AtariDitherSource *src,
+                                     const AtariDitherLookup *dither, uint16 *dst) {
+    assert(dither == NULL);
+    preparations++;
+    if (mono) {
+        Video_Atari_MonoPackNative(src, &packed, dst, src->width / 4);
+    } else {
+        for (unsigned y = 0; y < src->height; y++)
+            for (unsigned x = 0; x < src->width; x++)
+                for (unsigned p = 0; p < 4; p++)
+                    if (src->pixels[y * src->stride + x] & (1u << p))
+                        dst[y * src->width / 4 + x / 16 * 4 + p] |= 0x8000u >> (x & 15);
+    }
+}
+static void Video_Atari_PresentPlanarText(const uint16 *pixels, const uint16 *masks,
+                                         uint16 width, uint16 height, uint16 x, uint16 y) {
+    unsigned phase = left & 15, groups = width / 16;
+    assert(x == (left & ~15u) && y == top &&
+           width == ((phase + spriteWidth + 15) & ~15u) && height == spriteHeight);
+    publications++;
+    for (unsigned row = 0; row < height; row++)
+        for (unsigned col = 0; col < width; col++) {
+            unsigned group = col / 16, bit = col & 15;
+            unsigned src = 0;
+            if (col >= phase && col < phase + spriteWidth) {
+                if (top == s_otherTop) src = reference[row * 96 + col - phase];
+                else if (col > phase) src = top == s_mouthTop ? 37 : 62;
+            }
+            assert(!!(masks[row * groups + group] & (0x8000u >> bit)) == (src != 0));
+            if (!src) continue; /* No writes over the existing picture or edge padding. */
+            if (mono) {
+                uint16 words[4];
+                Video_Atari_MonoReadGroup(pixels, width / 4, row, group, words);
+                for (unsigned dy = 0; dy < 2; dy++)
+                    for (unsigned dx = 0; dx < 2; dx++) {
+                        unsigned d = 2 * bit + dx;
+                        unsigned expected = lookup.pens[(2 * row + dy) & 3]
+                            [(2 * (col - phase) + dx) & 3][src] == whiteIsOne;
+                        assert(((words[2 * dy + d / 16] >> (15 - d % 16)) & 1) == expected);
+                    }
+            } else {
+                for (unsigned p = 0; p < 4; p++)
+                    assert(((pixels[row * width / 4 + group * 4 + p] >> (15 - bit)) & 1) == ((src >> p) & 1));
+            }
+        }
+}
+/* CACHE */
+/* DISPATCH */
+static void check_frame(uint16 part, uint16 frame, uint16 x, uint16 y, const uint8 *sprite) {
+    left = x; top = y; expectedSprite = sprite;
+    spriteWidth = sprite == NULL ? 0 : sprite[3];
+    spriteHeight = sprite == NULL ? 0 : sprite[2];
+    GUI_Mentat_DrawFrame(part, frame, x, y);
+}
 int main(void) {
     uint8 sprite[10 + 128 * 48] = {2, 0, 48, 96, 0};
+    uint8 mouth[] = {3, 0, 1, 9, 0, 0, 0, 0, 0, 0,
+                      0, 37, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                      2, 1, 1, 1, 1, 1, 1, 1, 1};
+    uint8 eyes[] = {2, 0, 2, 3, 0, 0, 0, 0, 0, 0, 0, 1, 62, 62, 0, 1, 62, 62};
     unsigned end = 10;
     for (unsigned row = 0; row < 48; row++) {
         unsigned opaque = row < 8 ? 56 : 96;
@@ -1565,6 +1658,45 @@ int main(void) {
                            DRAWSPRITE_FLAG_NO_PLANAR_DIRECT, NULL, NULL, 0, 0);
     assert(presents == 1 && dirty == 1);
     assert(screen[152 * 320 + 128] == 0x55); /* Transparent WSA overlap stays untouched. */
+    s_mentatSprites[MENTAT_OTHER][0] = sprite;
+    s_mentatSprites[MENTAT_MOUTH][4] = mouth; /* Palette index 2 decodes to zero. */
+    s_mentatSprites[MENTAT_EYES][3] = eyes;
+    for (unsigned mode = 0; mode < 3; mode++) {
+        mono = mode != 0;
+        whiteIsOne = mode == 1;
+        for (unsigned y = 0; y < 4; y++)
+            for (unsigned x = 0; x < 4; x++) {
+                lookup.pens[y][x][81] = (y + (x >> 1)) % 3 == 0;
+                lookup.pens[y][x][37] = (y ^ x) & 1;
+                lookup.pens[y][x][62] = ((y >> 1) ^ (x >> 1)) & 1;
+            }
+        Video_Atari_MonoPreparePackedLookup(&packed, &lookup, 0, 256, whiteIsOne);
+        GUI_Mentat_PreparePlanarFrames();
+        check_frame(MENTAT_OTHER, 0, s_otherLeft, s_otherTop, sprite);
+        check_frame(MENTAT_EYES, 3, s_eyesLeft, s_eyesTop, eyes);
+        check_frame(MENTAT_MOUTH, 4, s_mouthLeft, s_mouthTop, mouth);
+        mouth[11] = 99; /* Later draws use the predecoded embedded palette. */
+        check_frame(MENTAT_MOUTH, 4, s_mouthLeft, s_mouthTop, mouth);
+        mouth[11] = 37;
+        assert(preparations == 3 * (mode + 1) && publications == 4 * (mode + 1));
+        assert(fallbacks == 4 * mode);
+        check_frame(MENTAT_EYES, 0, s_eyesLeft, s_eyesTop, NULL);
+        g_videoDisplayListActive = true;
+        check_frame(MENTAT_MOUTH, 4, s_mouthLeft, s_mouthTop, mouth);
+        g_videoDisplayListActive = false;
+        generation++;
+        check_frame(MENTAT_EYES, 3, s_eyesLeft, s_eyesTop, eyes);
+        GUI_Mentat_FreePlanarFrames();
+        generation--;
+        check_frame(MENTAT_OTHER, 0, s_otherLeft, s_otherTop, sprite);
+        assert(fallbacks == 4 * (mode + 1) && hides == fallbacks && shows == fallbacks);
+    }
+    g_disableOtherMovement = true;
+    GUI_Mentat_PreparePlanarFrames();
+    check_frame(MENTAT_MOUTH, 4, s_mouthLeft, s_mouthTop, mouth);
+    check_frame(MENTAT_OTHER, 0, s_otherLeft, s_otherTop, sprite);
+    assert(preparations == 11 && publications == 13 && fallbacks == 13);
+    GUI_Mentat_FreePlanarFrames();
     /* Keep the fallback for sprites larger than the new 4,608-byte capacity. */
     sprite[2] = 40; sprite[3] = 128;
     memset(sprite + 10, 81, 128 * 40);
@@ -1573,13 +1705,18 @@ int main(void) {
     return 0;
 }
 """
-        with tempfile.TemporaryDirectory(prefix="mentat-book-direct-") as directory:
+        with tempfile.TemporaryDirectory(prefix="mentat-native-sprites-") as directory:
             c_file, binary = Path(directory) / "test.c", Path(directory) / "test"
-            c_file.write_text(harness.replace("/* DRAW */", draw))
+            c_file.write_text(harness.replace("/* DRAW */", draw)
+                              .replace("/* BUFFER */", function(gui, "GUI_DrawSpriteToBuffer"))
+                              .replace("/* SPRITES */", sprites)
+                              .replace("/* CACHE */", cache)
+                              .replace("/* DISPATCH */", function(mentat, "GUI_Mentat_DrawFrame")))
             compiler = shlex.split(os.environ.get("CC", "cc"))
             subprocess.run(compiler + ["-std=c99", "-DTOS", "-O2", "-Wall", "-Wextra", "-Werror",
                                       "-I", str(ROOT / "include"), "-iquote", str(ROOT / "src"),
-                                      str(c_file), "-o", str(binary)], check=True)
+                                      str(c_file), str(ROOT / "src/video/atari_mono.c"),
+                                      "-o", str(binary)], check=True)
             subprocess.run([str(binary)], check=True)
 
     def test_palette_quantization(self):

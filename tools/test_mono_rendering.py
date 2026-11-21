@@ -536,6 +536,25 @@ Font *g_fontCurrent;
 static uint8 g_colours[16];
 static void PlanarBox_Union(PlanarBox *dst, const PlanarBox *src)
 { *dst = *src; }
+static bool g_videoDisplayListActive;
+static unsigned publications;
+static uint16 live[24 * 80];
+static bool GUI_TextPlanar_Usable(void) { return true; }
+static void Video_Atari_PresentPlanarText(const uint16 *pixels, const uint16 *masks,
+    uint16 width, uint16 height, uint16 x, uint16 y)
+{
+    uint16 groups = width / 16;
+    assert((x & 15) == 0 && y + height <= 24 && x + width <= 320);
+    publications++;
+    for (unsigned row = 0; row < height; row++)
+        for (unsigned group = 0; group < groups; group++) {
+            uint16 words[4], old[4];
+            Video_Atari_MonoReadGroup(pixels, groups * 4, row, group, words);
+            Video_Atari_MonoReadGroup(live, 80, y + row, x / 16 + group, old);
+            Video_Atari_MonoMergeWords(old, words, masks[row * groups + group]);
+            Video_Atari_MonoWriteGroup(live, 80, y + row, x / 16 + group, old);
+        }
+}
 /* TARGET */
 int main(void)
 {
@@ -579,12 +598,32 @@ int main(void)
                     else assert(GUI_PlanarTarget_Text("A", x, y) == ((x & 15) + 7 + 15) / 16);
                     assert(!memcmp(pixels, expected, sizeof(pixels)));
                 }
+    for (unsigned polarity = 0; polarity < 2; polarity++) {
+        s_monoWhiteIsOne = polarity;
+        g_fontCharOffset = -1;
+        for (unsigned i = 0; i < 24 * 80; i++) pixels[i] = live[i] = i * 1973u;
+        GUI_PlanarTarget_Chunky(&chars['A'], 13, 5);
+        GUI_PlanarTarget_Chunky(&chars['A'], 19, 5);
+        publications = 0;
+        assert(GUI_DrawTextPlanarLive("AA", 13, 5));
+        assert(publications == 1 && !memcmp(pixels, live, sizeof(live)));
+        assert(!GUI_DrawTextPlanarLive("A\nA", 13, 5));
+        assert(!GUI_DrawTextPlanarLive("AA", 313, 5));
+        g_videoDisplayListActive = true;
+        assert(!GUI_DrawTextPlanarLive("AA", 13, 5));
+        g_videoDisplayListActive = false;
+        g_colours[0] = 12;
+        assert(!GUI_DrawTextPlanarLive("AA", 13, 5));
+        g_colours[0] = 0;
+        assert(publications == 1);
+    }
     GUI_Glyph_FontFree(&font);
     return 0;
 }
 """
         target = "\n".join(function(gui, name) for name in (
-            "GUI_RenderGlyph", "GUI_PlanarTarget_Text", "GUI_PlanarTarget_Chunky"))
+            "GUI_RenderGlyph", "GUI_PlanarTarget_Text", "GUI_PlanarTarget_Chunky",
+            "GUI_DrawTextPlanarLive"))
         backend = surface_backend(VIDEO) + "\n".join(function(VIDEO, name) for name in (
             "Video_Atari_PlanarMergePlain", "Video_Atari_BlitPlanarSprite", "Video_Atari_BlitChunkyTransparent"))
         run_harness(harness.replace("/* CELL */", function(VIDEO, "Video_Atari_MonoPenWords"))
