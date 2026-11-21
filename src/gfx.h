@@ -50,6 +50,7 @@ extern void GFX_FreeDecodedTiles(void);
 extern void GFX_InitPlanarTiles(uint32 tilesDataLength, const uint8 *palette);
 extern void GFX_ClassifyPlanarBuildingTiles(uint32 iconMapWords);
 extern void GFX_InitPlanarRockArtwork(uint32 iconMapWords);
+extern void GFX_InitPlanarSandArtwork(uint32 iconMapWords);
 extern void GFX_FreePlanarTiles(void);
 extern bool GFX_PlanarTilesReady(void);
 extern void GFX_InvalidateViewportProtection(uint16 packed);
@@ -60,7 +61,8 @@ extern void GFX_DrawPlanarTileFogged(uint16 tileID, uint16 fogTileID, uint16 x, 
 extern void GFX_DrawPlanarFogTile(uint16 x, uint16 y);
 /* Viewport repair draws; col 0..14, row 0..9 (tile units). */
 extern void GFX_DrawPlanarViewportFog(uint16 col, uint16 row);
-extern void GFX_DrawPlanarViewportTile(uint16 tileID, uint16 overlayID, uint16 col, uint16 row, uint8 houseID, uint16 packed, const uint16 *ripple);
+struct VideoAtariTerrainRipple;
+extern void GFX_DrawPlanarViewportTile(uint16 tileID, uint16 overlayID, uint16 col, uint16 row, uint8 houseID, uint16 packed, const struct VideoAtariTerrainRipple *ripple);
 /* Assembly fast path for an opaque overlay-free tile; 0 means use GFX_DrawPlanarViewportTile(). */
 extern long GFX_QueueViewportTileFast(unsigned long tileID, unsigned long col, unsigned long row, unsigned long house);
 /* Assembly blit of an opaque, already composed tile image; 0 means use the C path. */
@@ -70,7 +72,7 @@ enum {
 	GFX_SELECTION_LEFT = 0x40, GFX_SELECTION_RIGHT = 0x80
 };
 /* selection packs edge flags and a 0..8 footprint slot; overlayID 0xffff is flat fog. */
-extern void GFX_DrawPlanarSelectionTile(uint16 tileID, uint16 overlayID, uint16 x, uint16 y, uint8 houseID, uint8 selection, uint8 pen, const uint16 *ripple);
+extern void GFX_DrawPlanarSelectionTile(uint16 tileID, uint16 overlayID, uint16 x, uint16 y, uint8 houseID, uint8 selection, uint8 pen, const struct VideoAtariTerrainRipple *ripple);
 #endif
 
 /* One-shot measurement of the tile count and the RAM cost of pre-decoding

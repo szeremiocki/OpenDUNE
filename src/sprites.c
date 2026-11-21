@@ -330,6 +330,7 @@ void Sprites_LoadTiles(void)
 #ifdef TOS
 	GFX_ClassifyPlanarBuildingTiles(iconMapWords);
 	GFX_InitPlanarRockArtwork(iconMapWords);
+	GFX_InitPlanarSandArtwork(iconMapWords);
 #endif
 	Script_LoadFromFile("UNIT.EMC", g_scriptUnit, g_scriptFunctionsUnit, GFX_Screen_Get_ByIndex(SCREEN_2));
 }

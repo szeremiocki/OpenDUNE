@@ -293,8 +293,13 @@ extern void Video_Atari_ComposePlanarTile(const uint16 *pixels, const uint16 *ma
 extern bool Video_Atari_QueueViewportTile(const uint16 *pixels, uint16 col, uint16 row);
 extern void Video_Atari_DrawPlanarTile(const uint16 *pixels, const uint16 *masks, uint16 x, uint16 y,
                                       const uint16 *copyPixels);
+typedef struct VideoAtariTerrainRipple {
+	uint16 displacement[16];
+	uint16 worm[16];
+} VideoAtariTerrainRipple;
 extern void Video_Atari_DrawRippleTile(const uint16 *pixels, const uint16 *masks,
-                                      uint16 col, uint16 row, const uint16 *ripple, const uint16 *protected);
+                                      uint16 col, uint16 row, const VideoAtariTerrainRipple *ripple,
+                                      const uint16 *protected);
 extern void Video_Atari_ResetViewportProtection(void);
 extern void Video_Atari_SetViewportFog(uint16 col, uint16 row, const uint16 *writable);
 extern void Video_Atari_BeginViewportProtection(bool cursor, uint16 col, uint16 row, VideoAtariTileCursorShape shape);

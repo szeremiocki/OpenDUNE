@@ -439,20 +439,20 @@ static void GUI_Widget_Viewport_PrepareSelection(void)
 
 typedef struct ViewportRipple {
 	int16 x, y;
-	uint16 spriteID;
+	uint16 spriteID, worm;
 } ViewportRipple;
 
 /* Two worms with three stamps apiece, plus the four projectile slots. */
 static ViewportRipple s_viewportRipples[10];
 static uint16 s_viewportRippleCount, s_viewportRipplePosition;
 
-static bool GUI_Widget_Viewport_RippleRows(uint16 col, uint16 row, uint16 masks[16])
+static bool GUI_Widget_Viewport_RippleRows(uint16 col, uint16 row, VideoAtariTerrainRipple *masks)
 {
 	uint16 i;
 	bool any = false;
 	int16 x = col * 16, y = 40 + row * 16;
 
-	memset(masks, 0, 16 * sizeof(*masks));
+	memset(masks, 0, sizeof(*masks));
 	for (i = 0; i < s_viewportRippleCount; i++) {
 		const ViewportRipple *stamp = &s_viewportRipples[i];
 		uint16 width, height, groups, shift;
@@ -469,7 +469,8 @@ static bool GUI_Widget_Viewport_RippleRows(uint16 col, uint16 row, uint16 masks[
 			const uint16 *words = src + (sy + line) * groups;
 			uint16 mask = group >= 0 ? (uint16)(words[group] << shift) : 0;
 			if (shift != 0 && group + 1 < groups) mask |= words[group + 1] >> (16 - shift);
-			masks[line] |= mask;
+			masks->displacement[line] |= mask;
+			if (stamp->worm) masks->worm[line] |= mask;
 			any |= mask != 0;
 		}
 	}
@@ -506,8 +507,8 @@ void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 b
 			if ((remaining & 1) == 0) continue;
 			packed = packedRow + x;
 			uint16 tileLeft = x << 4, tileTop = (y << 4) + 40;
-			uint16 rippleMasks[16];
-			const uint16 *ripple = NULL;
+			VideoAtariTerrainRipple rippleMasks;
+			const VideoAtariTerrainRipple *ripple = NULL;
 			Tile *t;
 
 			/* Consume before drawing: later foreground must not restore
@@ -517,8 +518,8 @@ void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 b
 #endif
 			g_viewportTerrainDamage[y] &= (uint16)~column;
 			t = &g_map[packed];
-			if (s_viewportRippleCount != 0 && GUI_Widget_Viewport_RippleRows(x, y, rippleMasks))
-				ripple = rippleMasks;
+			if (s_viewportRippleCount != 0 && GUI_Widget_Viewport_RippleRows(x, y, &rippleMasks))
+				ripple = &rippleMasks;
 			if (s_viewportSelectionTiles[y][x] != 0) {
 				uint16 overlay = g_debugScenario ? 0 : t->overlayTileID;
 				if (!g_debugScenario && (overlay == g_veiledTileID || overlay == fullyFoggedTileID)) overlay = 0xffff;
@@ -1335,7 +1336,7 @@ static bool GUI_Widget_Viewport_PlacementPrepare(void)
 }
 
 static void GUI_Widget_Viewport_AddRipple(ViewportRipple *stamps, uint16 *count,
-                                          uint16 spriteID, tile32 position)
+                                          uint16 spriteID, tile32 position, bool worm)
 {
 	uint16 x, y, width, height;
 	int16 left, top;
@@ -1346,7 +1347,7 @@ static void GUI_Widget_Viewport_AddRipple(ViewportRipple *stamps, uint16 *count,
 	top = (int16)y + g_widgetProperties[2].yBase - height / 2;
 	if (left >= 240 || top >= 200 || left + width <= 0 || top + height <= 40) return;
 	assert(*count < lengthof(s_viewportRipples));
-	stamps[(*count)++] = (ViewportRipple){left, top, spriteID};
+	stamps[(*count)++] = (ViewportRipple){left, top, spriteID, worm};
 }
 
 static void GUI_Widget_Viewport_DirtyRipples(const ViewportRipple *stamps, uint16 count)
@@ -1377,9 +1378,9 @@ static void GUI_Widget_Viewport_PrepareRipples(bool forceRedraw)
 		if (!u->o.flags.s.used || u->o.type != UNIT_SANDWORM ||
 		    (u->o.flags.s.isNotOnMap && g_validateStrictIfZero == 0)) continue;
 		if (!g_map[Unit_PackedTile(u)].isUnveiled && !g_debugScenario) continue;
-		GUI_Widget_Viewport_AddRipple(stamps, &count, worm->groundSpriteID, u->o.position);
-		GUI_Widget_Viewport_AddRipple(stamps, &count, worm->groundSpriteID, u->targetLast);
-		GUI_Widget_Viewport_AddRipple(stamps, &count, worm->groundSpriteID, u->targetPreLast);
+		GUI_Widget_Viewport_AddRipple(stamps, &count, worm->groundSpriteID, u->o.position, true);
+		GUI_Widget_Viewport_AddRipple(stamps, &count, worm->groundSpriteID, u->targetLast, true);
+		GUI_Widget_Viewport_AddRipple(stamps, &count, worm->groundSpriteID, u->targetPreLast, true);
 	}
 	for (i = sonic->indexStart; i <= sonic->indexEnd; i++) {
 		Unit *u = Unit_Get_ByIndex(i);
@@ -1388,7 +1389,7 @@ static void GUI_Widget_Viewport_PrepareRipples(bool forceRedraw)
 		if (!u->o.flags.s.used || u->o.flags.s.isNotOnMap || u->o.type != UNIT_SONIC_BLAST) continue;
 		if (!g_map[Unit_PackedTile(u)].isUnveiled && !g_debugScenario) continue;
 		spriteID = GUI_Widget_Viewport_AirSprite(u, &flags);
-		GUI_Widget_Viewport_AddRipple(stamps, &count, spriteID, u->o.position);
+		GUI_Widget_Viewport_AddRipple(stamps, &count, spriteID, u->o.position, false);
 	}
 	if (!forceRedraw) {
 		int16 dx = (Tile_GetPackedX(s_viewportRipplePosition) - Tile_GetPackedX(g_viewportPosition)) * 16;

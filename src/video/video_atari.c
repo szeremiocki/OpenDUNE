@@ -4854,12 +4854,13 @@ static void __attribute__((noinline)) Video_Atari_PublishViewportCursorRect(
 }
 
 static void Video_Atari_RippleTile(uint16 pixels[64], const uint16 *opacity,
-    const uint16 *ripple, const uint16 *writable, const uint16 *protected, bool mono)
+    const VideoAtariTerrainRipple *ripple, const uint16 *writable, const uint16 *protected, bool mono)
 {
+	static const uint16 specks[8] = {0x8422, 0x2920, 0x1094, 0x4209, 0x8910, 0x2441, 0x1288, 0x4054};
 	uint16 row, plane;
 
 	for (row = 0; row < 16; row += 2) {
-		uint16 mask = ripple[row] & opacity[row];
+		uint16 mask = ripple->displacement[row] & opacity[row];
 		uint16 *dst = pixels + row * 4;
 		if (!mono) mask &= opacity[row + 1];
 		if (writable != NULL) {
@@ -4876,13 +4877,19 @@ static void Video_Atari_RippleTile(uint16 pixels[64], const uint16 *opacity,
 			Video_Atari_MonoMaskWords(mask, expanded);
 			for (plane = 0; plane < 4; plane++) dst[plane] ^= expanded[plane];
 		} else {
+			uint16 accent = mask & ripple->worm[row] & specks[row >> 1];
 			Video_Atari_PlanarMergePlain(dst, mask, dst + 4);
+			if (accent != 0) {
+				/* Replace sand pen 8 with dark brown pen 7, not the light flecks. */
+				accent &= dst[3] & ~(dst[0] | dst[1] | dst[2]);
+				for (plane = 0; plane < 4; plane++) dst[plane] ^= accent;
+			}
 		}
 	}
 }
 
 void Video_Atari_DrawRippleTile(const uint16 *pixels, const uint16 *masks,
-    uint16 col, uint16 row, const uint16 *ripple, const uint16 *protected)
+    uint16 col, uint16 row, const VideoAtariTerrainRipple *ripple, const uint16 *protected)
 {
 	uint16 result[64], y = 40 + 16 * row;
 	uint8 *base = Video_Atari_PlanarBase();

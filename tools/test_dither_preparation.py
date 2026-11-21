@@ -194,20 +194,21 @@ int main(void)
 }
 """)
 
-    def test_mono_rock_uses_mountain_art_without_changing_tile_masks(self):
+    def test_terrain_artwork_substitutions_preserve_masks_and_donor_tiles(self):
         gfx = (ROOT / "src/gfx.c").read_text()
         prepare = "\n".join(function(gfx, name) for name in (
-            "GFX_InitPlanarRockArtwork", "GFX_FillPlanarTile"))
+            "GFX_InitPlanarRockArtwork", "GFX_InitPlanarSandArtwork", "GFX_FillPlanarTile"))
         run_harness(r"""
 #include <assert.h>
 #include <string.h>
 #include "types.h"
 #include "../sprites.h"
 enum { PLANAR_TILE_MIXED = 1, PLANAR_TILE_EMPTY, PLANAR_TILE_OPAQUE };
-static uint16 map[96];
+static uint16 map[97];
 uint16 *g_iconMap = map;
 static uint16 s_planarTileCount = 4;
 static uint16 s_planarRockTile = 0xffff, s_planarRockArtwork;
+static uint16 s_planarSandTile = 0xffff, s_planarSandArtwork;
 static uint8 s_planarBuildingTiles[64], s_planarTileReady[4];
 static uint16 s_planarTiles[4 * 64], s_planarTileMasks[4 * 16];
 static uint8 tileData[4 * 128], palettes[32], paletteIndices[4];
@@ -215,7 +216,7 @@ uint8 *g_tilesPixels = tileData, *g_iconRPAL = palettes, *g_iconRTBL = paletteIn
 static uint16 s_tileByteSize = 128;
 static bool mono, reduced;
 static const uint8 *decodedSource;
-static uint8 decodedColour;
+static uint8 decodedColour, decodedBackground;
 static unsigned warnings;
 #define Video_Atari_Mono() (mono)
 static bool GFX_PlanarTilesReady(void) { return true; }
@@ -229,6 +230,7 @@ static void Video_Atari_DecodePlanarTile(const uint8 *src, const uint8 *pal, uin
     reduced = false;
     decodedSource = src;
     decodedColour = pal[1];
+    decodedBackground = pal[2];
     *dst = decodedColour;
 }
 static void Video_Atari_DecodePlanarBuildingTile(const uint8 *src, const uint8 *pal, uint16 *dst)
@@ -243,6 +245,8 @@ int main(void)
     map[ICM_ICONGROUP_LANDSCAPE] = 32;
     map[32 + 16] = 1;
     map[32 + 48] = 2;
+    map[32] = 3;
+    map[32 + 64] = 2;
     g_iconRTBL[2] = 1;
     g_iconRPAL[1] = 24;
     g_iconRPAL[17] = 98;
@@ -264,6 +268,25 @@ int main(void)
     GFX_FillPlanarTile(1, 0, 1);
     assert(!reduced && decodedSource == g_tilesPixels + 128 && decodedColour == 24);
     assert(s_planarTileReady[1] == PLANAR_TILE_MIXED && s_planarTileMasks[16] == 0x7fff);
+
+    g_iconRPAL[17] = 218;
+    g_iconRPAL[18] = 90;
+    GFX_InitPlanarSandArtwork(97);
+    GFX_FillPlanarTile(3, 0, 3);
+    assert(decodedSource == g_tilesPixels + 384 && decodedColour == 24);
+    mono = false;
+    GFX_InitPlanarSandArtwork(96);
+    assert(warnings == 2 && s_planarSandTile == 0xffff);
+    GFX_InitPlanarSandArtwork(97);
+    GFX_FillPlanarTile(3, 0, 3);
+    assert(decodedSource == g_tilesPixels + 256 && decodedColour == 88 && decodedBackground == 90);
+    assert(s_planarTileReady[3] == PLANAR_TILE_OPAQUE && s_planarTileMasks[48] == 0xffff);
+    GFX_FillPlanarTile(2, 0, 2);
+    assert(decodedSource == g_tilesPixels + 256 && decodedColour == 218 && decodedBackground == 90);
+    g_tilesPixels[384] = 0x01;
+    GFX_FillPlanarTile(3, 0, 3);
+    assert(decodedSource == g_tilesPixels + 384 && decodedColour == 24);
+    assert(s_planarTileReady[3] == PLANAR_TILE_MIXED && s_planarTileMasks[48] == 0x7fff);
     return 0;
 }
 """)

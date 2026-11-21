@@ -82,6 +82,7 @@ uint16 *s_planarTileHouse[HOUSE_MAX];	/* per-house base of s_planarTileIndex */
 static uint16 s_planarTileCount, s_planarVariants;
 static uint8 s_planarBuildingTiles[512 / 8];
 static uint16 s_planarRockTile = 0xffff, s_planarRockArtwork;
+static uint16 s_planarSandTile = 0xffff, s_planarSandArtwork;
 static uint16 s_viewportFogPixels[64], s_viewportFogMasks[16];
 static bool s_viewportFogReady;
 static uint16 s_fogWritable[17][16];
@@ -133,6 +134,7 @@ void GFX_FreePlanarTiles(void)
 	memset(s_planarTileHouse, 0, sizeof(s_planarTileHouse));
 	memset(s_planarBuildingTiles, 0, sizeof(s_planarBuildingTiles));
 	s_planarRockTile = 0xffff;
+	s_planarSandTile = 0xffff;
 	free(s_planarTiles);
 	free(s_planarTileMasks);
 	free(s_planarTileIndex);
@@ -195,6 +197,26 @@ bad_map:
 	Warning("Invalid ICON.MAP rock or mountain tile; keeping original rock artwork\n");
 }
 
+void GFX_InitPlanarSandArtwork(uint32 iconMapWords)
+{
+	enum { LIGHT_SPICE_INTERIOR = 49 + 15 };
+	uint16 landscape, sand, spice;
+
+	if (!GFX_PlanarTilesReady() || Video_Atari_Mono()) return;
+	if (iconMapWords <= ICM_ICONGROUP_LANDSCAPE) goto bad_map;
+	landscape = g_iconMap[ICM_ICONGROUP_LANDSCAPE];
+	if (landscape <= ICM_ICONGROUP_LANDSCAPE || (uint32)landscape + LIGHT_SPICE_INTERIOR >= iconMapWords) goto bad_map;
+	sand = g_iconMap[landscape] & 0x1ff;
+	spice = g_iconMap[landscape + LIGHT_SPICE_INTERIOR] & 0x1ff;
+	if (sand == 0 || spice == 0 || sand == spice || sand >= s_planarTileCount || spice >= s_planarTileCount) goto bad_map;
+	s_planarSandTile = sand;
+	s_planarSandArtwork = spice;
+	return;
+
+bad_map:
+	Warning("Invalid ICON.MAP sand or spice tile; keeping original sand artwork\n");
+}
+
 static uint16 GFX_FillPlanarTile(uint16 tileID, uint8 houseID, uint16 index)
 {
 	const uint8 *source, *palette;
@@ -224,6 +246,13 @@ static uint16 GFX_FillPlanarTile(uint16 tileID, uint8 houseID, uint16 index)
 		source = g_tilesPixels + (uint32)s_planarRockArtwork * s_tileByteSize;
 		palette = g_iconRPAL + (g_iconRTBL[s_planarRockArtwork] << 4);
 		Video_Atari_DecodePlanarBuildingTile(source, palette, s_planarTiles + (uint32)index * 64);
+	} else if (tileID == s_planarSandTile && allMask == 0xffff) {
+		enum { RED_SPICE = 218, LIGHT_SAND = 88 }; /* IBM.PAL indices */
+
+		source = g_tilesPixels + (uint32)s_planarSandArtwork * s_tileByteSize;
+		palette = g_iconRPAL + (g_iconRTBL[s_planarSandArtwork] << 4);
+		for (col = 0; col < 16; col++) colours[col] = palette[col] == RED_SPICE ? LIGHT_SAND : palette[col];
+		Video_Atari_DecodePlanarTile(source, colours, s_planarTiles + (uint32)index * 64);
 	} else if (tileID < 512 && (s_planarBuildingTiles[tileID >> 3] & (1u << (tileID & 7))) != 0)
 		Video_Atari_DecodePlanarBuildingTile(source, colours, s_planarTiles + (uint32)index * 64);
 	else
@@ -376,7 +405,7 @@ void GFX_DrawPlanarViewportFog(uint16 col, uint16 row)
 	    s_viewportFogPixels);
 }
 
-void GFX_DrawPlanarViewportTile(uint16 tileID, uint16 overlayID, uint16 col, uint16 row, uint8 houseID, uint16 packed, const uint16 *ripple)
+void GFX_DrawPlanarViewportTile(uint16 tileID, uint16 overlayID, uint16 col, uint16 row, uint8 houseID, uint16 packed, const VideoAtariTerrainRipple *ripple)
 {
 	uint16 index, slot;
 	const uint16 *pixels, *masks;
@@ -407,7 +436,7 @@ void GFX_DrawPlanarViewportTile(uint16 tileID, uint16 overlayID, uint16 col, uin
 	Video_Atari_DrawPlanarTile(pixels, masks, col << 4, (row << 4) + 40, NULL);
 }
 
-void GFX_DrawPlanarSelectionTile(uint16 tileID, uint16 overlayID, uint16 x, uint16 y, uint8 houseID, uint8 selection, uint8 pen, const uint16 *ripple)
+void GFX_DrawPlanarSelectionTile(uint16 tileID, uint16 overlayID, uint16 x, uint16 y, uint8 houseID, uint8 selection, uint8 pen, const VideoAtariTerrainRipple *ripple)
 {
 	const uint16 slot = selection & 15;
 	const uint32 tiles = tileID | ((uint32)overlayID << 16);

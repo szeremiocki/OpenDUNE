@@ -37,9 +37,12 @@ static void put(uint16 *p, unsigned stride, unsigned x, unsigned y, unsigned val
 class MonoRenderingTest(unittest.TestCase):
     def test_native_terrain_ripple(self):
         viewport = (ROOT / "src/gui/viewport.c").read_text()
+        header = (ROOT / "src/video/video.h").read_text()
+        ripple_type = header[header.index("typedef struct VideoAtariTerrainRipple"):
+                             header.index("extern void Video_Atari_DrawRippleTile")]
         stamps = viewport[viewport.index("typedef struct ViewportRipple"):
                           viewport.index("static bool GUI_Widget_Viewport_RippleRows")]
-        production = stamps + "\n".join((function(viewport, "GUI_Widget_Viewport_RippleRows"),
+        production = ripple_type + stamps + "\n".join((function(viewport, "GUI_Widget_Viewport_RippleRows"),
             function(VIDEO, "Video_Atari_PlanarMergePlain"), function(VIDEO, "Video_Atari_RippleTile")))
         run_harness(r"""
 #include <assert.h>
@@ -57,17 +60,20 @@ static const uint16 *GUI_ViewportSpriteOpacity(uint16 id, uint16 *w, uint16 *h)
 /* PRODUCTION */
 int main(void)
 {
-    uint16 ripple[16], opacity[16], fog[16], protected[16] = {0};
+    VideoAtariTerrainRipple ripple;
+    uint16 opacity[16], fog[16], protected[16] = {0};
     uint16 colour[64], mono[64] = {0};
     s_viewportRipplePosition = 0;
     s_viewportRippleCount = 2;
-    s_viewportRipples[0] = (ViewportRipple){-2, 39, 160};
-    s_viewportRipples[1] = (ViewportRipple){1, 41, 160};
-    assert(GUI_Widget_Viewport_RippleRows(0, 0, ripple));
-    assert(ripple[0] == 0xe000 && ripple[2] == 0xfc00 && ripple[4] == 0x7c00);
-    assert(ripple[1] == 0 && ripple[3] == 0 && ripple[6] == 0);
-    assert(!GUI_Widget_Viewport_RippleRows(1, 0, ripple));
-    assert(GUI_Widget_Viewport_RippleRows(0, 0, ripple));
+    s_viewportRipples[0] = (ViewportRipple){-2, 39, 160, 1};
+    s_viewportRipples[1] = (ViewportRipple){1, 41, 160, 0};
+    assert(GUI_Widget_Viewport_RippleRows(0, 0, &ripple));
+    assert(ripple.displacement[0] == 0xe000 && ripple.displacement[2] == 0xfc00 &&
+           ripple.displacement[4] == 0x7c00);
+    assert(ripple.displacement[1] == 0 && ripple.displacement[3] == 0 && ripple.displacement[6] == 0);
+    assert(ripple.worm[0] == 0xe000 && ripple.worm[2] == 0xe000 && ripple.worm[4] == 0);
+    assert(!GUI_Widget_Viewport_RippleRows(1, 0, &ripple));
+    assert(GUI_Widget_Viewport_RippleRows(0, 0, &ripple));
     memset(opacity, 0xff, sizeof(opacity));
     memset(fog, 0xff, sizeof(fog));
     fog[0] = 0x7fff; /* No writes into fog. */
@@ -75,11 +81,25 @@ int main(void)
     protected[0] = 0x2000;
     opacity[2] = 0x7fff;
     for (unsigned i = 0; i < 64; i++) colour[i] = (i & 4) ? 0xffff : 0;
-    Video_Atari_RippleTile(colour, opacity, ripple, fog, protected, false);
+    Video_Atari_RippleTile(colour, opacity, &ripple, fog, protected, false);
     assert(colour[0] == 0 && colour[4] == 0xffff && colour[8] == 0x7c00);
-    Video_Atari_RippleTile(mono, opacity, ripple, fog, protected, true);
+    Video_Atari_RippleTile(mono, opacity, &ripple, fog, protected, true);
     assert(mono[0] == 0x3000 && mono[1] == 0 && mono[2] == 0x3000 && mono[3] == 0);
     assert(mono[4] == 0 && mono[8] == 0x3ff0 && mono[10] == 0x3ff0);
+
+    memset(&ripple, 0, sizeof(ripple));
+    ripple.displacement[0] = ripple.displacement[2] = 0xffff;
+    ripple.worm[0] = 0xffff; /* Row 2 represents sonic-only displacement. */
+    memset(colour, 0, sizeof(colour));
+    for (unsigned y = 0; y < 16; y++) colour[y * 4 + 3] = 0xffff; /* Pen 8 */
+    colour[4] = colour[6] = 0x0002; /* One pen 13 fleck in the copied row. */
+    fog[1] = 0xffff;
+    protected[1] = 0x0400;
+    Video_Atari_RippleTile(colour, opacity, &ripple, fog, protected, false);
+    assert(colour[0] == 0x0022 && colour[1] == 0x0020 && colour[2] == 0x0022 &&
+           colour[3] == 0xffdf);
+    assert(colour[4] == 0x0002 && colour[7] == 0xffff);
+    assert(colour[8] == 0 && colour[9] == 0 && colour[10] == 0 && colour[11] == 0xffff);
     return 0;
 }
 """.replace("/* PRODUCTION */", production))
