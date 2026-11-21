@@ -117,8 +117,11 @@ static void recordTile(unsigned col, unsigned row) {
     assert(!(g_viewportTerrainDamage[row] & (1u << col)));
     repairs++;
 }
+static uint16 s_viewportRippleCount;
+#define GUI_Widget_Viewport_RippleRows(...) (assert(false), false)
 static void GFX_DrawPlanarSelectionTile(unsigned ground, unsigned fog, unsigned x,
-    unsigned y, unsigned house, unsigned edges, unsigned pen) {
+    unsigned y, unsigned house, unsigned edges, unsigned pen, const uint16 *ripple) {
+    assert(ripple == NULL);
     (void)ground; (void)fog; (void)house; (void)edges; (void)pen;
     recordTile(x >> 4, (y - 40) >> 4);
 }
@@ -127,7 +130,8 @@ static bool GFX_QueueViewportTileFast(unsigned ground, unsigned col, unsigned ro
     (void)ground; (void)house; recordTile(col,row); return true;
 }
 static void GFX_DrawPlanarViewportTile(unsigned ground, unsigned fog, unsigned x,
-    unsigned y, unsigned house, unsigned packed) {
+    unsigned y, unsigned house, unsigned packed, const uint16 *ripple) {
+    assert(ripple == NULL);
     (void)ground; (void)fog; (void)house; (void)packed;
     recordTile(x,y);
 }

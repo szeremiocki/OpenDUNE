@@ -222,6 +222,7 @@ extern bool GUI_DrawMinimapIcon(uint16 spriteID, uint16 x, uint16 y);
 extern void GUI_InitViewportSpriteCache(void);
 extern void GUI_FreeViewportSpriteCache(void);
 extern bool GUI_ViewportSpriteCacheReady(void);
+extern const uint16 *GUI_ViewportSpriteOpacity(uint16 spriteID, uint16 *width, uint16 *height);
 extern void GUI_SetViewportPlanar(bool active);
 #endif
 

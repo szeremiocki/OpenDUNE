@@ -376,7 +376,7 @@ void GFX_DrawPlanarViewportFog(uint16 col, uint16 row)
 	    s_viewportFogPixels);
 }
 
-void GFX_DrawPlanarViewportTile(uint16 tileID, uint16 overlayID, uint16 col, uint16 row, uint8 houseID, uint16 packed)
+void GFX_DrawPlanarViewportTile(uint16 tileID, uint16 overlayID, uint16 col, uint16 row, uint8 houseID, uint16 packed, const uint16 *ripple)
 {
 	uint16 index, slot;
 	const uint16 *pixels, *masks;
@@ -394,6 +394,10 @@ void GFX_DrawPlanarViewportTile(uint16 tileID, uint16 overlayID, uint16 col, uin
 		pixels = s_planarComposites[slot];
 		masks = s_planarCompositeMasks[slot];
 	}
+	if (ripple != NULL) {
+		Video_Atari_DrawRippleTile(pixels, masks, col, row, ripple, NULL);
+		return;
+	}
 	if (opacity == PLANAR_TILE_OPAQUE) {
 		if (overlayID != 0 && GFX_QueueViewportPixelsFast((unsigned long)pixels, col, row)) return;
 		if (Video_Atari_QueueViewportTile(pixels, col, row)) return;
@@ -403,7 +407,7 @@ void GFX_DrawPlanarViewportTile(uint16 tileID, uint16 overlayID, uint16 col, uin
 	Video_Atari_DrawPlanarTile(pixels, masks, col << 4, (row << 4) + 40, NULL);
 }
 
-void GFX_DrawPlanarSelectionTile(uint16 tileID, uint16 overlayID, uint16 x, uint16 y, uint8 houseID, uint8 selection, uint8 pen)
+void GFX_DrawPlanarSelectionTile(uint16 tileID, uint16 overlayID, uint16 x, uint16 y, uint8 houseID, uint8 selection, uint8 pen, const uint16 *ripple)
 {
 	const uint16 slot = selection & 15;
 	const uint32 tiles = tileID | ((uint32)overlayID << 16);
@@ -446,6 +450,17 @@ void GFX_DrawPlanarSelectionTile(uint16 tileID, uint16 overlayID, uint16 x, uint
 		s_selectionTiles[slot].tiles = tiles;
 		s_selectionTiles[slot].style = style;
 		s_selectionTiles[slot].opaque = allMask == 0xffff;
+	}
+	if (ripple != NULL && overlayID != 0xffff) {
+		uint16 row, protected[16];
+		uint16 edge = ((selection & GFX_SELECTION_LEFT) ? 0x8000 : 0) |
+		              ((selection & GFX_SELECTION_RIGHT) ? 1 : 0);
+		for (row = 0; row < 16; row++) protected[row] = edge;
+		if (selection & GFX_SELECTION_TOP) protected[0] = 0xffff;
+		if (selection & GFX_SELECTION_BOTTOM) protected[15] = 0xffff;
+		Video_Atari_DrawRippleTile(s_selectionTiles[slot].pixels, s_selectionTiles[slot].masks,
+		    x >> 4, (y - 40) >> 4, ripple, protected);
+		return;
 	}
 	Video_Atari_DrawPlanarTile(s_selectionTiles[slot].pixels, s_selectionTiles[slot].masks, x, y,
 	    s_selectionTiles[slot].opaque ? s_selectionTiles[slot].pixels : NULL);

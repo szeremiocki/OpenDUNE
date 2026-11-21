@@ -35,6 +35,55 @@ static void put(uint16 *p, unsigned stride, unsigned x, unsigned y, unsigned val
 
 
 class MonoRenderingTest(unittest.TestCase):
+    def test_native_terrain_ripple(self):
+        viewport = (ROOT / "src/gui/viewport.c").read_text()
+        stamps = viewport[viewport.index("typedef struct ViewportRipple"):
+                          viewport.index("static bool GUI_Widget_Viewport_RippleRows")]
+        production = stamps + "\n".join((function(viewport, "GUI_Widget_Viewport_RippleRows"),
+            function(VIDEO, "Video_Atari_PlanarMergePlain"), function(VIDEO, "Video_Atari_RippleTile")))
+        run_harness(r"""
+#include <assert.h>
+#include <string.h>
+#include "atari_mono.h"
+#define min(a,b) ((a) < (b) ? (a) : (b))
+#define max(a,b) ((a) > (b) ? (a) : (b))
+static const uint16 *GUI_ViewportSpriteOpacity(uint16 id, uint16 *w, uint16 *h)
+{
+    static const uint16 rows[] = {0xf800, 0xf800, 0xf800, 0xf800};
+    assert(id == 160);
+    *w = 5; *h = 4;
+    return rows;
+}
+/* PRODUCTION */
+int main(void)
+{
+    uint16 ripple[16], opacity[16], fog[16], protected[16] = {0};
+    uint16 colour[64], mono[64] = {0};
+    s_viewportRipplePosition = 0;
+    s_viewportRippleCount = 2;
+    s_viewportRipples[0] = (ViewportRipple){-2, 39, 160};
+    s_viewportRipples[1] = (ViewportRipple){1, 41, 160};
+    assert(GUI_Widget_Viewport_RippleRows(0, 0, ripple));
+    assert(ripple[0] == 0xe000 && ripple[2] == 0xfc00 && ripple[4] == 0x7c00);
+    assert(ripple[1] == 0 && ripple[3] == 0 && ripple[6] == 0);
+    assert(!GUI_Widget_Viewport_RippleRows(1, 0, ripple));
+    assert(GUI_Widget_Viewport_RippleRows(0, 0, ripple));
+    memset(opacity, 0xff, sizeof(opacity));
+    memset(fog, 0xff, sizeof(fog));
+    fog[0] = 0x7fff; /* No writes into fog. */
+    fog[1] = 0xbfff; /* Colour cannot sample fog either. */
+    protected[0] = 0x2000;
+    opacity[2] = 0x7fff;
+    for (unsigned i = 0; i < 64; i++) colour[i] = (i & 4) ? 0xffff : 0;
+    Video_Atari_RippleTile(colour, opacity, ripple, fog, protected, false);
+    assert(colour[0] == 0 && colour[4] == 0xffff && colour[8] == 0x7c00);
+    Video_Atari_RippleTile(mono, opacity, ripple, fog, protected, true);
+    assert(mono[0] == 0x3000 && mono[1] == 0 && mono[2] == 0x3000 && mono[3] == 0);
+    assert(mono[4] == 0 && mono[8] == 0x3ff0 && mono[10] == 0x3ff0);
+    return 0;
+}
+""".replace("/* PRODUCTION */", production))
+
     def test_semantic_highlights_preserve_native_effects(self):
         recipes = VIDEO[VIDEO.index("#define HL_ZERO"):
                         VIDEO.index("\nvoid Video_Atari_SetSpriteHighlight")]

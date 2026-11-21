@@ -415,6 +415,8 @@ int main(void) {
 #include <string.h>
 typedef uint8_t uint8;
 typedef uint16_t uint16;
+typedef uint16 tile32;
+#define lengthof(a) (sizeof(a) / sizeof((a)[0]))
 typedef struct {
     struct {
         struct { struct { bool used, isNotOnMap, isDirty; } s; } flags;
@@ -438,6 +440,11 @@ static struct { uint16 indexStart, indexEnd, groundSpriteID; } g_table_unitInfo[
 static struct { bool isUnveiled; } g_map[4096];
 static uint8 pixels[112], *g_sprites[112];
 static bool g_debugScenario, visible[4096];
+#ifdef TOS
+static bool planarViewport, s_viewportSpriteNeedsRedraw;
+#define VIDEO_ATARI_DISPLAY_SPRITE_BYTES 1
+static void Video_Atari_DisplayListCheck(unsigned bytes) { assert(bytes); }
+#endif
 static uint16 g_validateStrictIfZero;
 static unsigned peeks, draws, checks;
 static uint16 drawn[8], checked[8];
@@ -601,8 +608,13 @@ static bool g_debugScenario, s_viewportRepairActive;
 static uint16 g_viewportTerrainDamage[10];
 static uint32 g_viewportCandidateDamage[13];
 static uint8 s_viewportSelectionTiles[10][15], s_viewportSelectionPen;
+static uint16 s_viewportRippleCount;
+#define GUI_Widget_Viewport_RippleRows(...) (assert(false), false)
+#define VIDEO_ATARI_DISPLAY_TILE_ROW_BYTES 1
+static void Video_Atari_DisplayListCheck(unsigned bytes) { assert(bytes); }
 static void GFX_DrawPlanarSelectionTile(uint16 id, uint16 overlay, uint16 x, uint16 y,
-                                        uint8 house, uint8 selection, uint8 pen) {
+                                        uint8 house, uint8 selection, uint8 pen, const uint16 *ripple) {
+    assert(ripple == NULL);
     (void)id; (void)overlay; (void)x; (void)y; (void)house; (void)selection; (void)pen;
     assert(false);
 }
@@ -640,7 +652,8 @@ static bool GFX_QueueViewportTileFast(uint16 id, uint16 col, uint16 row, uint8 h
     return true;
 }
 static void GFX_DrawPlanarViewportTile(uint16 id, uint16 overlay, uint16 col, uint16 row,
-                                      uint8 house, uint16 packed) {
+                                      uint8 house, uint16 packed, const uint16 *ripple) {
+    assert(ripple == NULL);
     GFX_DrawPlanarTileFogged(id, overlay, col * 16, 40 + row * 16, house, packed);
 }
 static void GUI_DrawFilledRectangle(uint16 l, uint16 t, uint16 r, uint16 b, uint8 c) {
@@ -903,8 +916,13 @@ typedef struct { uint16 groundTileID, overlayTileID; uint8 houseID; } Tile;
 static bool s_viewportRepairActive, g_debugScenario;
 static uint16 g_viewportTerrainDamage[10];
 static uint8 s_viewportSelectionTiles[10][15], s_viewportSelectionPen;
+static uint16 s_viewportRippleCount;
+#define GUI_Widget_Viewport_RippleRows(...) (assert(false), false)
+#define VIDEO_ATARI_DISPLAY_TILE_ROW_BYTES 1
+static void Video_Atari_DisplayListCheck(unsigned bytes) { assert(bytes); }
 static void GFX_DrawPlanarSelectionTile(uint16 id, uint16 overlay, uint16 x, uint16 y,
-                                        uint8 house, uint8 selection, uint8 pen) {
+                                        uint8 house, uint8 selection, uint8 pen, const uint16 *ripple) {
+    assert(ripple == NULL);
     (void)id; (void)overlay; (void)x; (void)y; (void)house; (void)selection; (void)pen;
     assert(false);
 }
@@ -944,7 +962,8 @@ static bool GFX_QueueViewportTileFast(uint16 id, uint16 col, uint16 row, uint8 h
     return true;
 }
 static void GFX_DrawPlanarViewportTile(uint16 id, uint16 overlay, uint16 col, uint16 row,
-                                      uint8 house, uint16 packed) {
+                                      uint8 house, uint16 packed, const uint16 *ripple) {
+    assert(ripple == NULL);
     (void)packed;
     GFX_DrawPlanarTileFogged(id, overlay, col * 16, 40 + row * 16, house);
 }

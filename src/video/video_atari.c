@@ -4853,6 +4853,48 @@ static void __attribute__((noinline)) Video_Atari_PublishViewportCursorRect(
 	GFX_Screen_ClearDirtyRect(first * 16, top, end * 16, bottom);
 }
 
+static void Video_Atari_RippleTile(uint16 pixels[64], const uint16 *opacity,
+    const uint16 *ripple, const uint16 *writable, const uint16 *protected, bool mono)
+{
+	uint16 row, plane;
+
+	for (row = 0; row < 16; row += 2) {
+		uint16 mask = ripple[row] & opacity[row];
+		uint16 *dst = pixels + row * 4;
+		if (!mono) mask &= opacity[row + 1];
+		if (writable != NULL) {
+			mask &= writable[row];
+			if (!mono) mask &= writable[row + 1];
+		}
+		if (protected != NULL) {
+			mask &= ~protected[row];
+			if (!mono) mask &= ~protected[row + 1];
+		}
+		if (mask == 0) continue;
+		if (mono) {
+			uint16 expanded[4];
+			Video_Atari_MonoMaskWords(mask, expanded);
+			for (plane = 0; plane < 4; plane++) dst[plane] ^= expanded[plane];
+		} else {
+			Video_Atari_PlanarMergePlain(dst, mask, dst + 4);
+		}
+	}
+}
+
+void Video_Atari_DrawRippleTile(const uint16 *pixels, const uint16 *masks,
+    uint16 col, uint16 row, const uint16 *ripple, const uint16 *protected)
+{
+	uint16 result[64], y = 40 + 16 * row;
+	uint8 *base = Video_Atari_PlanarBase();
+
+	memcpy(result, pixels, sizeof(result));
+	Video_Atari_RippleTile(result, masks, ripple, Video_Atari_ViewportWritable(col, row),
+	    protected, Video_Atari_Mono());
+	/* Publish synchronously: the modified tile lives on the stack. */
+	Video_Atari_PublishViewportCursorRect(base, result, masks, 1, col, col + 1, y, y + 16,
+	    Video_Atari_TileOverlaysOverlap(base, col * 16, y));
+}
+
 void Video_Atari_DrawPlanarTile(const uint16 *pixels, const uint16 *masks, uint16 x, uint16 y,
                               const uint16 *copyPixels)
 {

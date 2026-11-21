@@ -329,13 +329,17 @@ static bool GFX_QueueViewportTileFast(uint16 id, uint16 col, uint16 row, uint8 h
 }
 #define VIDEO_ATARI_DISPLAY_TILE_ROW_BYTES 1
 static void Video_Atari_DisplayListCheck(unsigned bytes) { assert(bytes != 0); }
+static uint16 s_viewportRippleCount;
+#define GUI_Widget_Viewport_RippleRows(...) (assert(false), false)
 static void GFX_DrawPlanarViewportTile(uint16 id, uint16 overlay, uint16 col, uint16 row,
-                                      uint8 house, uint16 packed) {
+                                      uint8 house, uint16 packed, const uint16 *ripple) {
+    assert(ripple == NULL);
     (void)packed;
     GFX_DrawPlanarTileFogged(id, overlay, col * 16, 40 + row * 16, house);
 }
 static void GFX_DrawPlanarSelectionTile(uint16 id, uint16 overlay, uint16 x, uint16 y,
-                                       uint8 house, uint8 token, uint8 pen) {
+                                       uint8 house, uint8 token, uint8 pen, const uint16 *ripple) {
+    assert(ripple == NULL);
     assert(house == 2);
     selectedDraws++; lastOverlay = overlay;
     paint(x, y, overlay == 0xffff || overlay == 97 ? 12 : overlay ? overlay : id);

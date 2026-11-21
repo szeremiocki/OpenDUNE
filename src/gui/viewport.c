@@ -437,6 +437,45 @@ static void GUI_Widget_Viewport_PrepareSelection(void)
 	}
 }
 
+typedef struct ViewportRipple {
+	int16 x, y;
+	uint16 spriteID;
+} ViewportRipple;
+
+/* Two worms with three stamps apiece, plus the four projectile slots. */
+static ViewportRipple s_viewportRipples[10];
+static uint16 s_viewportRippleCount, s_viewportRipplePosition;
+
+static bool GUI_Widget_Viewport_RippleRows(uint16 col, uint16 row, uint16 masks[16])
+{
+	uint16 i;
+	bool any = false;
+	int16 x = col * 16, y = 40 + row * 16;
+
+	memset(masks, 0, 16 * sizeof(*masks));
+	for (i = 0; i < s_viewportRippleCount; i++) {
+		const ViewportRipple *stamp = &s_viewportRipples[i];
+		uint16 width, height, groups, shift;
+		int16 sx = x - stamp->x, sy = y - stamp->y, line, end, group;
+		const uint16 *src = GUI_ViewportSpriteOpacity(stamp->spriteID, &width, &height);
+
+		if (src == NULL || sx <= -16 || sx >= width || sy <= -16 || sy >= height) continue;
+		groups = (width + 15) >> 4;
+		shift = (uint16)sx & 15;
+		group = sx >> 4;
+		line = (max(0, -sy) + 1) & ~1;
+		end = min(16, height - sy);
+		for (; line < end; line += 2) {
+			const uint16 *words = src + (sy + line) * groups;
+			uint16 mask = group >= 0 ? (uint16)(words[group] << shift) : 0;
+			if (shift != 0 && group + 1 < groups) mask |= words[group + 1] >> (16 - shift);
+			masks[line] |= mask;
+			any |= mask != 0;
+		}
+	}
+	return any;
+}
+
 void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 bottom)
 {
 	uint16 x, y, first, end, endMask, firstColumn;
@@ -467,6 +506,8 @@ void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 b
 			if ((remaining & 1) == 0) continue;
 			packed = packedRow + x;
 			uint16 tileLeft = x << 4, tileTop = (y << 4) + 40;
+			uint16 rippleMasks[16];
+			const uint16 *ripple = NULL;
 			Tile *t;
 
 			/* Consume before drawing: later foreground must not restore
@@ -476,18 +517,20 @@ void GUI_Widget_Viewport_RepairTiles(int16 left, int16 top, int16 right, int16 b
 #endif
 			g_viewportTerrainDamage[y] &= (uint16)~column;
 			t = &g_map[packed];
+			if (s_viewportRippleCount != 0 && GUI_Widget_Viewport_RippleRows(x, y, rippleMasks))
+				ripple = rippleMasks;
 			if (s_viewportSelectionTiles[y][x] != 0) {
 				uint16 overlay = g_debugScenario ? 0 : t->overlayTileID;
 				if (!g_debugScenario && (overlay == g_veiledTileID || overlay == fullyFoggedTileID)) overlay = 0xffff;
 				GFX_DrawPlanarSelectionTile(t->groundTileID, overlay, tileLeft, tileTop,
-				    t->houseID, s_viewportSelectionTiles[y][x], s_viewportSelectionPen);
+				    t->houseID, s_viewportSelectionTiles[y][x], s_viewportSelectionPen, ripple);
 			} else {
 				uint16 overlay = g_debugScenario ? 0 : t->overlayTileID;
 				if (!g_debugScenario && (overlay == g_veiledTileID || overlay == fullyFoggedTileID)) {
 					GFX_DrawPlanarViewportFog(x, y);
 				} else {
-					if (overlay != 0 || !GFX_QueueViewportTileFast(t->groundTileID, x, y, t->houseID))
-						GFX_DrawPlanarViewportTile(t->groundTileID, overlay, x, y, t->houseID, packed);
+					if (ripple != NULL || overlay != 0 || !GFX_QueueViewportTileFast(t->groundTileID, x, y, t->houseID))
+						GFX_DrawPlanarViewportTile(t->groundTileID, overlay, x, y, t->houseID, packed, ripple);
 				}
 			}
 		}
@@ -1290,6 +1333,79 @@ static bool GUI_Widget_Viewport_PlacementPrepare(void)
 	if (!show) Video_Atari_PlacementCursor(false);
 	return show;
 }
+
+static void GUI_Widget_Viewport_AddRipple(ViewportRipple *stamps, uint16 *count,
+                                          uint16 spriteID, tile32 position)
+{
+	uint16 x, y, width, height;
+	int16 left, top;
+
+	if ((position.x == 0 && position.y == 0) || !Map_IsPositionInViewport(position, &x, &y)) return;
+	if (GUI_ViewportSpriteOpacity(spriteID, &width, &height) == NULL) return;
+	left = (int16)x + (g_widgetProperties[2].xBase << 3) - width / 2;
+	top = (int16)y + g_widgetProperties[2].yBase - height / 2;
+	if (left >= 240 || top >= 200 || left + width <= 0 || top + height <= 40) return;
+	assert(*count < lengthof(s_viewportRipples));
+	stamps[(*count)++] = (ViewportRipple){left, top, spriteID};
+}
+
+static void GUI_Widget_Viewport_DirtyRipples(const ViewportRipple *stamps, uint16 count)
+{
+	uint16 i;
+
+	for (i = 0; i < count; i++) {
+		uint16 width, height;
+		const ViewportRipple *stamp = &stamps[i];
+		int16 x = stamp->x, y = stamp->y;
+
+		if (GUI_ViewportSpriteOpacity(stamp->spriteID, &width, &height) == NULL) continue;
+		GUI_Widget_Viewport_PlacementDirty(x & ~15, ((y - 40) & ~15) + 40,
+		    ((x + width + 15) & ~15) - (x & ~15),
+		    ((y - 40 + height + 15) & ~15) - ((y - 40) & ~15));
+	}
+}
+
+static void GUI_Widget_Viewport_PrepareRipples(bool forceRedraw)
+{
+	ViewportRipple stamps[lengthof(s_viewportRipples)];
+	const UnitInfo *worm = &g_table_unitInfo[UNIT_SANDWORM];
+	const UnitInfo *sonic = &g_table_unitInfo[UNIT_SONIC_BLAST];
+	uint16 i, count = 0;
+
+	for (i = worm->indexStart; i <= worm->indexEnd; i++) {
+		Unit *u = Unit_Get_ByIndex(i);
+		if (!u->o.flags.s.used || u->o.type != UNIT_SANDWORM ||
+		    (u->o.flags.s.isNotOnMap && g_validateStrictIfZero == 0)) continue;
+		if (!g_map[Unit_PackedTile(u)].isUnveiled && !g_debugScenario) continue;
+		GUI_Widget_Viewport_AddRipple(stamps, &count, worm->groundSpriteID, u->o.position);
+		GUI_Widget_Viewport_AddRipple(stamps, &count, worm->groundSpriteID, u->targetLast);
+		GUI_Widget_Viewport_AddRipple(stamps, &count, worm->groundSpriteID, u->targetPreLast);
+	}
+	for (i = sonic->indexStart; i <= sonic->indexEnd; i++) {
+		Unit *u = Unit_Get_ByIndex(i);
+		int flags;
+		uint16 spriteID;
+		if (!u->o.flags.s.used || u->o.flags.s.isNotOnMap || u->o.type != UNIT_SONIC_BLAST) continue;
+		if (!g_map[Unit_PackedTile(u)].isUnveiled && !g_debugScenario) continue;
+		spriteID = GUI_Widget_Viewport_AirSprite(u, &flags);
+		GUI_Widget_Viewport_AddRipple(stamps, &count, spriteID, u->o.position);
+	}
+	if (!forceRedraw) {
+		int16 dx = (Tile_GetPackedX(s_viewportRipplePosition) - Tile_GetPackedX(g_viewportPosition)) * 16;
+		int16 dy = (Tile_GetPackedY(s_viewportRipplePosition) - Tile_GetPackedY(g_viewportPosition)) * 16;
+		for (i = 0; i < s_viewportRippleCount; i++) {
+			s_viewportRipples[i].x += dx;
+			s_viewportRipples[i].y += dy;
+		}
+		if (s_viewportRippleCount != count || memcmp(s_viewportRipples, stamps, count * sizeof(*stamps)) != 0) {
+			GUI_Widget_Viewport_DirtyRipples(s_viewportRipples, s_viewportRippleCount);
+			GUI_Widget_Viewport_DirtyRipples(stamps, count);
+		}
+	}
+	memcpy(s_viewportRipples, stamps, count * sizeof(*stamps));
+	s_viewportRippleCount = count;
+	s_viewportRipplePosition = g_viewportPosition;
+}
 #endif
 
 /**
@@ -1356,6 +1472,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 	s_viewportRepairActive = planarViewport;
 	if (planarViewport) {
 		Map_SetViewportDamagePosition(g_viewportPosition);
+		GUI_Widget_Viewport_PrepareRipples(forceRedraw);
 		GUI_Widget_Viewport_PrepareSelection();
 		GUI_Widget_Viewport_TileCursorPrepare(GUI_Widget_Viewport_PlacementPrepare());
 		GFX_PrepareViewportProtection(forceRedraw || hasScrolled);
@@ -1462,30 +1579,29 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 		if (u == NULL) break;
 #endif
 
+#ifdef TOS
+		s_viewportSpriteNeedsRedraw = u->o.flags.s.isDirty || forceRedraw;
+		if (!s_viewportSpriteNeedsRedraw && (!planarViewport || u != g_unitSelected)) continue;
+#else
 		if (!u->o.flags.s.isDirty && !forceRedraw) continue;
+#endif
 		u->o.flags.s.isDirty = false;
 
 		if (!g_map[Tile_PackTile(u->o.position)].isUnveiled && !g_debugScenario) continue;
 
-		sprite = g_sprites[g_table_unitInfo[u->o.type].groundSpriteID];
-
-		if (Map_IsPositionInViewport(u->o.position, &x, &y)) {
 #ifdef TOS
-			if (planarViewport) Video_Atari_DisplayListCheck(VIDEO_ATARI_DISPLAY_SPRITE_BYTES);
+		if (!planarViewport)
 #endif
-			GUI_DrawSprite(SCREEN_ACTIVE, sprite, g_table_unitInfo[u->o.type].groundSpriteID, GUI_SPRITE_COLOUR_EMBEDDED, x, y, 2, DRAWSPRITE_FLAG_BLUR | DRAWSPRITE_FLAG_WIDGETPOS | DRAWSPRITE_FLAG_CENTER);
-		}
-		if (Map_IsPositionInViewport(u->targetLast, &x, &y)) {
-#ifdef TOS
-			if (planarViewport) Video_Atari_DisplayListCheck(VIDEO_ATARI_DISPLAY_SPRITE_BYTES);
-#endif
-			GUI_DrawSprite(SCREEN_ACTIVE, sprite, g_table_unitInfo[u->o.type].groundSpriteID, GUI_SPRITE_COLOUR_EMBEDDED, x, y, 2, DRAWSPRITE_FLAG_BLUR | DRAWSPRITE_FLAG_WIDGETPOS | DRAWSPRITE_FLAG_CENTER);
-		}
-		if (Map_IsPositionInViewport(u->targetPreLast, &x, &y)) {
-#ifdef TOS
-			if (planarViewport) Video_Atari_DisplayListCheck(VIDEO_ATARI_DISPLAY_SPRITE_BYTES);
-#endif
-			GUI_DrawSprite(SCREEN_ACTIVE, sprite, g_table_unitInfo[u->o.type].groundSpriteID, GUI_SPRITE_COLOUR_EMBEDDED, x, y, 2, DRAWSPRITE_FLAG_BLUR | DRAWSPRITE_FLAG_WIDGETPOS | DRAWSPRITE_FLAG_CENTER);
+		{
+			uint16 id = g_table_unitInfo[u->o.type].groundSpriteID;
+			const tile32 positions[] = {u->o.position, u->targetLast, u->targetPreLast};
+			uint16 j;
+			sprite = g_sprites[id];
+			for (j = 0; j < lengthof(positions); j++) {
+				if (Map_IsPositionInViewport(positions[j], &x, &y))
+					GUI_DrawSprite(SCREEN_ACTIVE, sprite, id, GUI_SPRITE_COLOUR_EMBEDDED, x, y, 2,
+					    DRAWSPRITE_FLAG_BLUR | DRAWSPRITE_FLAG_WIDGETPOS | DRAWSPRITE_FLAG_CENTER);
+			}
 		}
 		if (u == g_unitSelected && Map_IsPositionInViewport(u->o.position, &x, &y)) {
 #ifdef TOS
@@ -1689,6 +1805,10 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool planarShi
 #ifdef TOS
 			u = &g_unitArray[airSlot];
 			if (!u->o.flags.s.used || u->o.flags.s.isNotOnMap) continue;
+			if (planarViewport && u->o.type == UNIT_SONIC_BLAST) {
+				u->o.flags.s.isDirty = false;
+				continue;
+			}
 #else
 			u = Unit_Find(&find);
 
