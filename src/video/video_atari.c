@@ -5454,6 +5454,79 @@ void Video_Atari_PresentPlanarSpriteUnshifted(const uint16 *pixels, const uint16
 	GFX_Screen_ClearDirtyRect(first * 16, y, (first + words) * 16, y + height);
 }
 
+static bool __attribute__((noinline)) Video_Atari_QueueMonoFogFragment(
+    uint8 *base, const uint16 *pixels, const uint16 *masks, uint16 sourceWidth,
+    uint16 sourceX, uint16 left, uint16 top, uint16 right, uint16 bottom,
+    const uint16 *writable, const Video_Atari_SpriteBlitCode *code)
+{
+	enum { monoFogMaskedBytes = 48 + 102 + 2 * 30, monoFogClearBytes = 78 };
+	struct { uint16 x, y, w, h; bool masked; } pieces[4];
+	uint16 pattern[16] = {0};
+	uint16 x, y, count = 0, mixed = 0, bytes = 0;
+
+	for (y = top; y < bottom; ) {
+		uint16 endY = min(bottom, 40 + (((y - 40) | 7) + 1));
+		for (x = left; x < right; ) {
+			uint16 endX = min(right, (x | 7) + 1);
+			uint16 edge = s_blitterLeftMasks[x & 15] & s_blitterRightMasks[endX & 15];
+			uint16 any = 0, all = edge, line;
+			bool masked;
+
+			for (line = y; line < endY; line++) {
+				uint16 word = writable[(line - 40) & 15];
+				any |= word;
+				all &= word;
+			}
+			if ((any & edge) == 0) {
+				x = endX;
+				continue;
+			}
+			masked = all != edge;
+			if (masked && ++mixed > 1) return false;
+			pieces[count].x = x;
+			pieces[count].y = y;
+			pieces[count].w = endX - x;
+			pieces[count].h = endY - y;
+			pieces[count++].masked = masked;
+			bytes += masked ? monoFogMaskedBytes : monoFogClearBytes;
+			x = endX;
+		}
+		y = endY;
+	}
+	if (g_videoDisplayListLimit - g_videoDisplayListNext < bytes / 2) return false;
+	for (x = 0; x < count; x++) {
+		uint16 px = pieces[x].x, py = pieces[x].y;
+		uint16 sx = sourceX + px - left;
+		uint16 offset = (py - top) * (sourceWidth / 4) + Video_Atari_SpriteWordOffset(sx);
+		Video_Atari_SpriteBlitPlan plan;
+
+		Video_Atari_BuildSpriteBlitPlan(&plan, sourceWidth, sx, pieces[x].w, px & 15);
+		assert(plan.words == 1);
+		if (!pieces[x].masked) {
+			Video_Atari_QueueSpriteBlitCode(code, pixels + offset, masks + offset,
+			    (uint16 *)base + (uint32)py * 80 + px / 8, pieces[x].h * 2, &plan);
+		} else {
+			uint16 line;
+			/* One halftone word per physical row; the emitter copies the pattern. */
+			for (line = 0; line < pieces[x].h; line++) {
+				uint16 words[4];
+				Video_Atari_MonoMaskWords(writable[(py + line - 40) & 15], words);
+				pattern[line * 2] = pattern[line * 2 + 1] = words[(px >> 3) & 1];
+			}
+			s_planarBlit.plan = &plan;
+			s_planarBlit.pixels = pixels + offset;
+			s_planarBlit.masks = masks + offset;
+			s_planarBlit.dst = (uint16 *)base + (uint32)py * 80 + px / 8;
+			s_planarBlit.height = pieces[x].h * 2;
+			s_planarBlit.code = code;
+			s_planarBlit.writable = pattern;
+			s_planarBlit.firstLine = 0;
+			Video_Atari_QueueMaskedBlit(true);
+		}
+	}
+	return true;
+}
+
 /* Only rectangles intersecting protection are split; clear runs still use the
  * ordinary publishers. Cached source pixels and opacity remain immutable. */
 static void Video_Atari_PresentProtectedSprite(const uint16 *pixels, const uint16 *masks,
@@ -5494,6 +5567,14 @@ static void Video_Atari_PresentProtectedSprite(const uint16 *pixels, const uint1
 				bool hardware = expanded && s_viewportBlitter && !placement &&
 				    s_planarBackend->blitterProtectedSprites &&
 				    (s_spriteHighlightEffect == 0 || s_planarBackend->blitterSpriteEffects);
+				if (Video_Atari_Mono() && expanded && s_viewportBlitter &&
+				    g_videoDisplayListActive && !cursor && !placement && s_spriteHighlightEffect == 0 &&
+				    Video_Atari_QueueMonoFogFragment(base, srcPixels, srcMasks, sourceWidth,
+				        srcX, left, top, end, bottom, writable, code)) {
+					GFX_Screen_ClearDirtyRect(col * 16, top, (col + 1) * 16, bottom);
+					left = end;
+					continue;
+				}
 				if (hardware) {
 					Video_Atari_SpriteBlitPlan plan;
 					Video_Atari_BuildSpriteBlitPlan(&plan, sourceWidth, srcX, end - left, left & 15);

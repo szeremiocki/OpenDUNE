@@ -284,6 +284,7 @@ static void Video_Atari_RefreshViewportCursor(uint8 *b, uint16 f, uint16 e,
 static void Video_Atari_BlitProtectedSprite(void) { assert(false); }
 #define Atari_SupervisorExec(callback) (callback)()
 #define Video_Atari_QueueMaskedBlit(protected) ((void)(protected), assert(false))
+#define Video_Atari_QueueMonoFogFragment(...) (assert(false), false)
 /* PRODUCTION */
 static void clear(const uint16 *p, const uint16 *m, uint16 sw, uint16 sx,
     uint16 w, uint16 h, uint16 x, uint16 y, bool expanded)
@@ -376,6 +377,83 @@ int main(void)
                     .replace("/* TABLES */", tables).replace("/* PLAN */", plan)
                     .replace("/* PRODUCTION */", production)
                     .replace("/* SPLITTER */", function(VIDEO, "Video_Atari_PresentProtectedSprite")))
+
+    def test_queued_mono_fog_quadrants_preserve_visibility(self):
+        tables = VIDEO[VIDEO.index("static const uint16 s_blitterLeftMasks[16]"):
+                       VIDEO.index("static PlanarBlit s_planarBlit;")]
+        plan = VIDEO[VIDEO.index("typedef struct PlanarBlit {"):
+                     VIDEO.index("} PlanarBlit;") + len("} PlanarBlit;")]
+        harness = COMMON + blit_plan_type() + tables + plan + r"""
+enum { ST_PLANAR_LINE_BYTES = 160 };
+static PlanarBlit s_planarBlit;
+static uint16 screen[16000], marked[16000], pixels[256], masks[256], stream[512];
+static uint16 *g_videoDisplayListNext, *g_videoDisplayListLimit;
+static unsigned mixed, clear;
+static void record(const uint16 *p, const uint16 *m, uint16 *dst, uint16 height,
+    const Video_Atari_SpriteBlitPlan *plan, const uint16 *fog)
+{
+    assert(plan->words == 1 && plan->destinationYinc == 80 && height <= 16);
+    assert(p - pixels == m - masks);
+    unsigned offset = dst - screen, y = offset / 40, word = offset % 40;
+    assert(p - pixels == (int)((y / 2 - 43) * 8 + (word * 8 < 24 ? 1 : 2)));
+    for (unsigned line = 0; line < height; line++) {
+        uint16 *out = marked + offset + line * 40;
+        uint16 coverage = plan->firstMask & (fog ? fog[line] : 0xffff);
+        assert((*out & coverage) == 0);
+        *out |= coverage;
+    }
+}
+static void Video_Atari_QueueSpriteBlitCode(const Video_Atari_SpriteBlitCode *code,
+    const uint16 *p, const uint16 *m, uint16 *dst, uint16 height,
+    const Video_Atari_SpriteBlitPlan *plan)
+{
+    (void)code;
+    clear++;
+    record(p, m, dst, height, plan, NULL);
+    g_videoDisplayListNext += 39;
+}
+static void Video_Atari_QueueMaskedBlit(bool protected)
+{
+    assert(protected && s_planarBlit.firstLine == 0);
+    mixed++;
+    record(s_planarBlit.pixels, s_planarBlit.masks, s_planarBlit.dst,
+        s_planarBlit.height, s_planarBlit.plan, s_planarBlit.writable);
+    g_videoDisplayListNext += 105;
+}
+/* PRODUCTION */
+int main(void)
+{
+    uint16 fog[16] = {0};
+    (void)s_monoWhiteIsOne; (void)put;
+    for (unsigned i = 3; i < 8; i++) fog[i] = 0xff00 | (0x81 >> (i & 1));
+    for (unsigned i = 8; i < 12; i++) fog[i] = 0xff00;
+    g_videoDisplayListNext = stream;
+    g_videoDisplayListLimit = stream + 182;
+    assert(!Video_Atari_QueueMonoFogFragment((uint8 *)screen, pixels, masks,
+        32, 10, 18, 43, 31, 52, fog, NULL));
+    assert(g_videoDisplayListNext == stream && mixed == 0 && clear == 0);
+    g_videoDisplayListLimit = stream + 183;
+    assert(Video_Atari_QueueMonoFogFragment((uint8 *)screen, pixels, masks,
+        32, 10, 18, 43, 31, 52, fog, NULL));
+    assert(mixed == 1 && clear == 2);
+    for (unsigned y = 80; y < 112; y++)
+        for (unsigned x = 32; x < 64; x++) {
+            unsigned lx = x / 2, ly = y / 2;
+            bool want = lx >= 18 && lx < 31 && ly >= 43 && ly < 52 &&
+                (fog[ly - 40] & (0x8000u >> (lx & 15))) != 0;
+            assert(pixel(marked, 40, x, y) == want);
+        }
+    fog[8] |= 0x20;
+    g_videoDisplayListNext = stream;
+    assert(!Video_Atari_QueueMonoFogFragment((uint8 *)screen, pixels, masks,
+        32, 10, 18, 43, 31, 52, fog, NULL));
+    assert(g_videoDisplayListNext == stream);
+    return 0;
+}
+"""
+        run_harness(harness.replace("/* PRODUCTION */", "\n".join(
+            function(VIDEO, name) for name in ("Video_Atari_BuildSpriteBlitPlan",
+                "Video_Atari_SpriteWordOffset", "Video_Atari_QueueMonoFogFragment"))))
 
     def test_native_rectangles_share_bulk_and_edges(self):
         copies = "\n".join(function(VIDEO, name) for name in (
@@ -994,6 +1072,7 @@ static void Video_Atari_QueueSpriteBlitCode(const Video_Atari_SpriteBlitCode *,
 static void Video_Atari_QueueSpriteBlitGeometry(const Video_Atari_SpriteBlitCode *,
     const uint16 *, const uint16 *, uint16 *, uint16, const Video_Atari_SpriteBlitGeometry *);
 static void Video_Atari_BlitProtectedSprite(void) { assert(false); }
+#define Video_Atari_QueueMonoFogFragment(...) false
 #define Video_Atari_QueueMaskedBlit(protected) ((void)(protected), assert(false))
 #define Video_Atari_GroupWords() (nativeMono ? 2 : 4)
 /* REFRESH ARGS */
