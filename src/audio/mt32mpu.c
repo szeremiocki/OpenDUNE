@@ -88,6 +88,12 @@ static bool s_mpu_initialized;
 
 static bool s_mpuIgnore = false;
 
+#ifdef TOS
+static MSData *s_mpuQuietSequence;
+static uint16 s_mpuQuietTicks;
+static uint16 s_mpuDeferredTicks;
+#endif
+
 static void MPU_Send(uint8 status, uint8 data1, uint8 data2)
 {
 	s_mpuIgnore = true;
@@ -498,7 +504,70 @@ static uint16 MPU_XMIDIMeta(MSData *data)
 	return len + data_len;
 }
 
+static inline void MPU_AdvanceBeat(MSData *data)
+{
+	uint32 value = data->beatFraction + data->timeFraction;
+
+	if ((int32)value >= (int32)data->timePerBeat) {
+		value -= data->timePerBeat;
+		if (++data->beatCount >= data->timeNumerator) {
+			data->beatCount = 0;
+			data->measureCount++;
+		}
+	}
+	data->beatFraction = value;
+}
+
+#ifdef TOS
+/* Apply the elapsed quiet ticks before processing a due tick or changing
+ * playback state. No event, note-off or ramp can fall inside this interval. */
+static void MPU_Wake(void)
+{
+	uint16 ticks = s_mpuDeferredTicks;
+
+	s_mpuQuietTicks = 0;
+	if (ticks != 0) {
+		MSData *data = s_mpuQuietSequence;
+		uint16 i;
+
+		data->delay -= ticks;
+		for (i = 0; i < data->noteOnEnd; i++) {
+			if (data->noteOnChans[i] != 0xFF) data->noteOnDuration[i] -= ticks;
+		}
+		do {
+			MPU_AdvanceBeat(data);
+		} while (--ticks != 0);
+		s_mpuDeferredTicks = 0;
+	}
+}
+
+static void MPU_ScheduleQuietTicks(MSData *data)
+{
+	uint16 ticks;
+	uint16 i;
+
+	if (s_mpu_msdataSize != 1 || data->delay <= 1 ||
+	    data->tempoPercent != 100 || data->tempoTarget != 100 ||
+	    data->tempoError >= 100 || data->globalVolume != data->globalVolumeTarget) return;
+
+	/* A delay of N is due in N ticks; a remaining note duration of N
+	 * becomes negative in N+1 ticks. Skip only the ticks strictly before that. */
+	ticks = data->delay - 1;
+	for (i = 0; i < data->noteOnEnd; i++) {
+		int32 duration = data->noteOnDuration[i];
+		if (data->noteOnChans[i] == 0xFF) continue;
+		if (duration <= 0) return;
+		if (duration < ticks) ticks = duration;
+	}
+
+	s_mpuQuietSequence = data;
+	s_mpuQuietTicks = ticks;
+}
+
+static __attribute__((noinline)) void MPU_RunTick(void)
+#else
 void MPU_Interrupt(void)
+#endif
 {
 	static bool locked = false;
 	uint16 count;
@@ -507,6 +576,9 @@ void MPU_Interrupt(void)
 	if (locked) return;
 	locked = true;
 
+#ifdef TOS
+	if (s_mpuDeferredTicks != 0) MPU_Wake();
+#endif
 	s_mpu_msdataCurrent = -1;
 	count = s_mpu_msdataSize;
 	while (count-- != 0) {
@@ -527,23 +599,10 @@ void MPU_Interrupt(void)
 		data->tempoError += data->tempoPercent;
 
 		while (data->tempoError >= 0x64) {	/* 0x64 == 100 */
-			uint32 value;
 			uint16 noteEnd;
 
 			data->tempoError -= 0x64;	/* 0x64 == 100 */
-
-			value = data->beatFraction;
-			value += data->timeFraction;
-
-			if ((int32)value >= (int32)data->timePerBeat) {
-				value -= data->timePerBeat;
-				if (++data->beatCount >= data->timeNumerator) {
-					data->beatCount = 0x0;
-					data->measureCount++;
-				}
-			}
-
-			data->beatFraction = value;
+			MPU_AdvanceBeat(data);
 
 			/* Handle note length */
 			noteEnd = data->noteOnEnd;
@@ -700,12 +759,28 @@ void MPU_Interrupt(void)
 				MPU_ApplyVolume(data);
 			}
 		}
+#ifdef TOS
+		MPU_ScheduleQuietTicks(data);
+#endif
 	}
 
 	locked = false;
 
 	return;
 }
+
+#ifdef TOS
+void MPU_Interrupt(void)
+{
+	if (s_mpuIgnore || s_mpu_msdataSize == 0) return;
+	if (s_mpuQuietTicks != 0) {
+		s_mpuQuietTicks--;
+		s_mpuDeferredTicks++;
+		return;
+	}
+	MPU_RunTick();
+}
+#endif
 
 static void *MPU_FindSoundStart(uint8 *file, uint16 index)
 {
@@ -822,6 +897,9 @@ void MPU_Play(uint16 index)
 
 	data = s_mpu_msdata[index];
 
+#ifdef TOS
+	MPU_Wake();
+#endif
 	if (data->playing == 1) MPU_Stop(index);
 
 	MPU_InitData(data);
@@ -865,6 +943,9 @@ void MPU_Stop(uint16 index)
 
 	if (data->playing != 1) return;
 
+#ifdef TOS
+	MPU_Wake();
+#endif
 	MPU_StopAllNotes(data);
 	MPU_ResetSequence(data);
 
@@ -925,6 +1006,11 @@ bool MPU_Init(void)
 	s_mpu_msdataSize = 0;
 	s_mpu_msdataCurrent = 0;
 	memset(s_mpu_msdata, 0, sizeof(s_mpu_msdata));
+#ifdef TOS
+	s_mpuQuietSequence = NULL;
+	s_mpuQuietTicks = 0;
+	s_mpuDeferredTicks = 0;
+#endif
 
 	memset(s_mpu_controls,   0xFF, sizeof(s_mpu_controls));
 	memset(s_mpu_programs,   0xFF, sizeof(s_mpu_programs));
@@ -1035,6 +1121,9 @@ void MPU_SetVolume(uint16 index, uint16 volume, uint16 time)
 
 	data = s_mpu_msdata[index];
 
+#ifdef TOS
+	MPU_Wake();
+#endif
 	data->globalVolumeTarget = volume;	/* volume target */
 
 	if (time == 0) {
