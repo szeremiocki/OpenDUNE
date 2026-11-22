@@ -31,6 +31,9 @@ uint16 g_tileCursorPen = 4;
 uint16 g_tileCursorTargetPen = 4;
 bool g_enableSoundMusic = true;
 bool g_enableVoices = true;
+#ifdef TOS
+bool g_atariDropPriorityMidi;
+#endif
 /* Options load before Video_Init; resolve the default after machine detection. */
 static int16 s_viewportFade = -1;
 

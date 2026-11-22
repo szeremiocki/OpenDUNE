@@ -228,6 +228,9 @@ static void Drivers_Reset(void)
 void Drivers_All_Init(void)
 {
 	Drivers_Reset();
+#ifdef TOS
+	g_atariDropPriorityMidi = IniFile_GetInteger("atari_drop_priority_midi", 0) != 0;
+#endif
 
 	// Must call SDL_InitSubSystem() before enabling MIDI.
 	g_enableVoices = Drivers_Voice_Init(g_enableVoices);

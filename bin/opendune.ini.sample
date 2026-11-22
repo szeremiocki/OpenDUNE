@@ -19,6 +19,9 @@
 ; set mt32midi=1 if you output music to a MT-32 device or compatible
 ; default setting is for GeneralMidi music (Roland SC55)
 ;mt32midi=1
+; Atari DMA: drop loaded effects rejected by voice priority rather than
+; replaying them over MIDI. Useful without a MIDI synth. Default is 0.
+;atari_drop_priority_midi=1
 ; Path to MT32 ROMs (needed when built with munt library)
 ;mt32rompath=/home/user/mt32roms
 ; FluidSynth settings

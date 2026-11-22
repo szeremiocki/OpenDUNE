@@ -47,6 +47,9 @@ extern uint16 g_tileCursorTargetPen;
 
 extern bool g_enableSoundMusic;
 extern bool g_enableVoices;
+#ifdef TOS
+extern bool g_atariDropPriorityMidi;
+#endif
 
 extern bool Config_Read(const char *filename, DuneCfg *config);
 extern bool Config_Write(const char *filename, DuneCfg *config);

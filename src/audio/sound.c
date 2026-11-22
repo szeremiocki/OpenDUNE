@@ -137,9 +137,16 @@ void Voice_PlayAtTile(int16 voiceID, tile32 position)
 {
 	uint16 index;
 	uint16 volume;
+	bool sampleAvailable;
 
 	if (voiceID < 0 || voiceID >= 120) return;
 	if (!g_gameConfig.sounds) return;
+
+	index = g_table_voiceMapping[voiceID];
+	sampleAvailable = g_enableVoices != 0 && index != 0xFFFF && g_voiceData[index] != NULL;
+#ifdef TOS
+	if (g_atariDropPriorityMidi && sampleAvailable && g_table_voices[index].priority < s_currentVoicePriority) return;
+#endif
 
 	volume = 255;
 	if (position.x != 0 || position.y != 0) {
@@ -149,9 +156,7 @@ void Voice_PlayAtTile(int16 voiceID, tile32 position)
 		volume = 255 - (volume * 255 / 80);
 	}
 
-	index = g_table_voiceMapping[voiceID];
-
-	if (g_enableVoices != 0 && index != 0xFFFF && g_voiceData[index] != NULL && g_table_voices[index].priority >= s_currentVoicePriority) {
+	if (sampleAvailable && g_table_voices[index].priority >= s_currentVoicePriority) {
 		s_currentVoicePriority = g_table_voices[index].priority;
 
 #ifdef TOS
