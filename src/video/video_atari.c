@@ -2854,18 +2854,15 @@ static void Video_Atari_SetHalftonePattern(const uint16 *pattern)
 	s_blitterHalftonePattern = pattern;
 }
 
-static void Video_Atari_QueueTintBlit(const uint16 *pattern, uint16 operation)
+static void Video_Atari_QueueTintBlit(const Video_Atari_SpriteBlitPlan *plan,
+                                    const uint16 *pattern, uint16 operation,
+                                    uint16 *dst, uint16 height)
 {
-	Video_Atari_SpriteBlitPlan plan = {
-		8, 8, 0xffff, 0xffff, 0xffff, 8,
-		ST_PLANAR_LINE_BYTES - (s_placeTint.words - 1) * 8, s_placeTint.words, 0
-	};
 	uint16 *out = g_videoDisplayListNext;
 	assert(g_videoDisplayListLimit - out >= VIDEO_ATARI_DISPLAY_TINT_BYTES / 2);
-	out = Video_Atari_DisplayGeometry(out, &plan);
+	out = Video_Atari_DisplayGeometry(out, plan);
 	out = Video_Atari_DisplayPattern(out, pattern);
-	out = Video_Atari_DisplayPlane(out, NULL, (uint16 *)s_placeTint.dst,
-	    s_placeTint.height, operation, 0xc0);
+	out = Video_Atari_DisplayPlane(out, NULL, dst, height, operation, 0xc0);
 	g_videoDisplayListNext = out;
 }
 
@@ -2891,8 +2888,8 @@ static void Video_Atari_PlacementTintBlit(void)
 	*BLITTER_HOP = 2;
 }
 
-/* OR a checkerboard into one bitplane of the 16-aligned footprint (viewport
- * coordinates, clipped to the viewport). Idempotent, so it may be repeated. */
+/* Tint a checkerboard in the footprint (viewport coordinates, clipped to
+ * the viewport). Idempotent, so it may be repeated. */
 void Video_Atari_PlacementTint(int16 x, int16 y, uint16 width, uint16 height, bool invalid)
 {
 	static const uint16 checkerboard[16] = {
@@ -2911,6 +2908,29 @@ void Video_Atari_PlacementTint(int16 x, int16 y, uint16 width, uint16 height, bo
 	if (x >= right || y >= bottom) return;
 	if (Video_Atari_Mono()) {
 		uint16 row, col;
+		uint8 *base = Video_Atari_PlanarBase();
+		if (g_videoDisplayListActive && !Video_Atari_PlanarOverlaysOverlap(base, x, y, right - x, bottom - y)) {
+			static const uint16 monoSet[16] = {
+				0xcccc, 0xcccc, 0x3333, 0x3333, 0xcccc, 0xcccc, 0x3333, 0x3333,
+				0xcccc, 0xcccc, 0x3333, 0x3333, 0xcccc, 0xcccc, 0x3333, 0x3333
+			};
+			static const uint16 monoKeep[16] = {
+				0x3333, 0x3333, 0xcccc, 0xcccc, 0x3333, 0x3333, 0xcccc, 0xcccc,
+				0x3333, 0x3333, 0xcccc, 0xcccc, 0x3333, 0x3333, 0xcccc, 0xcccc
+			};
+			bool set = invalid != s_monoWhiteIsOne;
+			uint16 first = 0xffffu >> ((x & 7) * 2);
+			uint16 last = (uint16)(0xffffu << (((-right) & 7) * 2));
+			uint16 count = (right + 7) / 8 - x / 8;
+			Video_Atari_SpriteBlitPlan plan = {
+				2, 2, count == 1 ? first & last : first, 0xffff, last, 2,
+				80 - (count - 1) * 2, count, 0
+			};
+			Video_Atari_DisplayListCheck(VIDEO_ATARI_DISPLAY_TINT_BYTES);
+			Video_Atari_QueueTintBlit(&plan, set ? monoSet : monoKeep, set ? 0x0107 : 0x0101,
+			    (uint16 *)base + (uint32)y * 80 + x / 8, (bottom - y) * 2);
+			return;
+		}
 		Video_Atari_DisplayListFlush();
 		for (row = y; row < bottom; row++) {
 			for (col = x / 16; col < (right + 15) / 16; col++) {
@@ -2934,11 +2954,15 @@ void Video_Atari_PlacementTint(int16 x, int16 y, uint16 width, uint16 height, bo
 		s_placeTint.height = lines;
 		s_blitterTileSetup = false;
 		if (g_videoDisplayListActive) {
+			Video_Atari_SpriteBlitPlan plan = {
+				8, 8, 0xffff, 0xffff, 0xffff, 8,
+				ST_PLANAR_LINE_BYTES - (words - 1) * 8, words, 0
+			};
 			uint16 operation = 0x0107;
 #ifdef VIEWPORT_DEBUG_DAMAGE
 			if (s_damageDebugOverlay) operation = 0x0106;
 #endif
-			Video_Atari_QueueTintBlit(s_placeTint.pattern, operation);
+			Video_Atari_QueueTintBlit(&plan, checkerboard, operation, (uint16 *)dst, lines);
 		} else {
 			Atari_SupervisorExec(Video_Atari_PlacementTintBlit);
 		}

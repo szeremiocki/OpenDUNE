@@ -360,7 +360,8 @@ int main(void) {
             "Video_Atari_BlitMaskedHighlight", "Video_Atari_SpriteWordOffset",
             "Video_Atari_PresentPlanarSpriteUnshifted",
             "Video_Atari_SetHalftonePattern",
-            "Video_Atari_QueueTintBlit", "Video_Atari_PlacementTintBlit"))
+            "Video_Atari_QueueTintBlit", "Video_Atari_PlacementTintBlit",
+            "Video_Atari_PlacementTint"))
         production += "\n" + video[video.index("static const uint8 s_tileCursorOperations"):
                                   video.index("static const uint16 *s_viewportFogWritable")]
         macros = video[video.index("#define BLITTER_SRC_XINC"):video.index("#define BLITTER_SKEW")]
@@ -406,6 +407,15 @@ static const uint16 *s_displayStream;
 #define Video_Atari_PlacementRectOverlap(...) false
 #define Video_Atari_PlanarOverlaysOverlap(...) false
 static unsigned unexpectedFallback;
+static bool s_monoWhiteIsOne, tintOverlap;
+static uint16 g_placementInvalidPlane, g_placementValidPlane;
+#undef Video_Atari_PlanarOverlaysOverlap
+#define Video_Atari_PlanarOverlaysOverlap(...) tintOverlap
+#define Video_Atari_MonoPenWords(...) (unexpectedFallback++)
+#define Video_Atari_PlanarMergeGroup(...) (unexpectedFallback++)
+void Video_Atari_DisplayListCheck(uint16 bytes) {
+    if (g_videoDisplayListLimit - g_videoDisplayListNext < bytes / 2) unexpectedFallback++;
+}
 void Video_Atari_DisplayListFlush(void) { unexpectedFallback++; }
 #define Video_Atari_PresentProtectedSprite(...) (unexpectedFallback++)
 #define Video_Atari_RefreshViewportCursorUnshifted(...) (unexpectedFallback++)
@@ -442,9 +452,13 @@ void TestMasked(const uint16 *pixels, const uint16 *masks, uint16 *dst,
     Video_Atari_QueueMaskedBlit(protected);
 }
 void TestTint(uint16 *dst, const uint16 *pattern) {
-    s_placeTint.dst=(uint8 *)dst; s_placeTint.pattern=pattern;
-    s_placeTint.words=2; s_placeTint.height=4;
-    Video_Atari_QueueTintBlit(pattern, 0x0107);
+    Video_Atari_SpriteBlitPlan plan = {8,8,0xffff,0xffff,0xffff,8,152,2,0};
+    Video_Atari_QueueTintBlit(&plan, pattern, 0x0107, dst, 4);
+}
+void TestMonoTint(uint32 x, uint32 y, uint32 width, uint32 height, uint32 flags) {
+    s_monoWhiteIsOne = (flags & 2) != 0;
+    tintOverlap = (flags & 4) != 0;
+    Video_Atari_PlacementTint(x, y, width, height, flags & 1);
 }
 void TestQueueSprite(const Video_Atari_SpriteBlitCode *code,
     const uint16 *pixels, const uint16 *masks, uint16 *dst, uint16 height,
@@ -475,7 +489,7 @@ void TestCursorFrame(uint8 *dst, const uint16 *pattern, uint16 pen) {
             directory = Path(directory)
             cfile, cobj = directory / "test.c", directory / "test.o"
             cfile.write_text(source)
-            subprocess.run([tools[0], "-std=gnu17", "-m68000", "-msoft-float", "-O2", "-DNDEBUG", "-DTOS",
+            subprocess.run([tools[0], "-std=gnu17", "-m68000", "-msoft-float", "-fleading-underscore", "-O2", "-DNDEBUG", "-DTOS",
                             "-fomit-frame-pointer", "-I" + str(ROOT), "-I" + str(ROOT / "include"),
                             "-c", str(cfile), "-o", str(cobj)], check=True)
             objects = [cobj]
@@ -564,7 +578,8 @@ void TestCursorFrame(uint8 *dst, const uint16 *pattern, uint16 pen) {
                             shifted = (latch >> (skew & 15)) & 0xffff
                             if hop == 3:
                                 shifted &= read(b + ((line + y) & 15) * 2, 2)
-                        result = shifted if op == 3 else old & ~shifted if op == 4 else old | shifted
+                        result = (old & shifted if op == 1 else shifted if op == 3 else
+                                  old & ~shifted if op == 4 else old | shifted)
                         mask = read(b + (0x28 if x == 0 else 0x2c if x + 1 == words else 0x2a), 2)
                         write(dst, (old & ~mask) | (result & mask), 2)
                         if hop != 1:
@@ -1071,6 +1086,38 @@ void TestCursorFrame(uint8 *dst, const uint16 *pattern, uint16 pen) {
                         self.assertEqual(bytes(cpu.mem_read(0x62002,len(packed))),packed)
                         for name,value in saved.items():
                             self.assertEqual(cpu.reg_read(reg(name)),value,name)
+
+            write(symbols["_g_videoAtariMono"], 1, 1)
+            write(symbols["_g_videoPlanarBase"], 0x40000, 4)
+            write(symbols["_g_videoDisplayListActive"], 1, 1)
+            write(symbols["_g_videoDisplayListLimit"], 0x70200, 4)
+            for x, y, w, h in ((3, 45, 3, 3), (7, 45, 19, 3), (232, 38, 16, 5)):
+                for flags in range(4):
+                    start_x, end_x = max(0, x) * 2, min(240, x + w) * 2
+                    start_y, end_y = max(40, y) * 2, (y + h) * 2
+                    address = 0x40000 + (start_y - 1) * 80
+                    original = bytes((i * 111 + 37) & 255 for i in range((end_y - start_y + 2) * 80))
+                    expected = bytearray(original)
+                    value = bool(flags & 1) != bool(flags & 2)
+                    for py in range(start_y, end_y):
+                        for px in range(start_x, end_x):
+                            if ((px // 2) ^ ((py - start_y) // 2)) & 1:
+                                continue
+                            index = (py - start_y + 1) * 80 + px // 8
+                            bit = 0x80 >> (px & 7)
+                            expected[index] = expected[index] | bit if value else expected[index] & ~bit
+                    cpu.mem_write(address, original)
+                    write(symbols["_g_videoDisplayListNext"], 0x70000, 4)
+                    call("_TestMonoTint", (x, y, w, h, flags))
+                    end = read(symbols["_g_videoDisplayListNext"], 4)
+                    self.assertEqual(end - 0x70000, 180)
+                    self.assertEqual(bytes(cpu.mem_read(address, len(original))), original)
+                    write(end, 0x4e75, 2)
+                    cpu.ctl_remove_cache(0x70000, end + 2)
+                    hardware_launches.clear()
+                    call("_Video_Atari_RunDisplayList", (0x70000,))
+                    self.assertEqual(len(hardware_launches), 1)
+                    self.assertEqual(bytes(cpu.mem_read(address, len(original))), expected)
 
             # CPU-only playback needs no BLITTER hardware state or backend selection.
             for destination in (0x40002, 0x48072):
