@@ -5237,10 +5237,11 @@ void Video_Atari_PresentPlanarText(const uint16 *pixels, const uint16 *masks,
 	assert((width & 15) == 0 && (x & 15) == 0 &&
 	       (uint32)x + width <= SCREEN_WIDTH && (uint32)y + height <= SCREEN_HEIGHT);
 	overlays = Video_Atari_PlanarOverlaysOverlap(base, x, y, width, height);
-	if (g_videoDisplayListActive && s_planarBackend->maskedQueue && !overlays) {
+	if (g_videoDisplayListActive && !overlays) {
+		uint16 *dst = (uint16 *)base + (uint32)y * 80 + first * Video_Atari_GroupWords();
 		Video_Atari_DisplayListCheck(VIDEO_ATARI_DISPLAY_TEXT_BYTES);
-		Video_Atari_QueueMaskedRect(pixels, masks,
-		    (uint16 *)base + (uint32)y * 80 + first * Video_Atari_GroupWords(), groups, height);
+		if (Video_Atari_Mono()) Video_Atari_QueueMonoMaskedRect(pixels, masks, dst, groups, height);
+		else Video_Atari_QueueMaskedRect(pixels, masks, dst, groups, height);
 		GFX_Screen_ClearDirtyRect(x, y, x + width, y + height);
 		return;
 	}

@@ -1119,6 +1119,42 @@ void TestCursorFrame(uint8 *dst, const uint16 *pattern, uint16 pen) {
                     self.assertEqual(len(hardware_launches), 1)
                     self.assertEqual(bytes(cpu.mem_read(address, len(original))), expected)
 
+            # Mono uses two physical rows and distinct left/right opacity words.
+            for groups, rows in ((1, 1), (3, 6), (5, 16), (15, 16)):
+                image = bytes((i * 157 + 19) & 255 for i in range(groups * rows * 8))
+                opacity = [((0, 0xffff, 0x8001, 0xa503, 0x53a0)[i % 5])
+                           for i in range(groups * rows)]
+                initial = bytes((i * 113 + 17) & 255 for i in range(160 * rows))
+                destination = 0x44002
+                cpu.mem_write(destination - 2, b"\x13\x57" + initial + b"\x24\x68")
+                cpu.mem_write(0x58002, image)
+                cpu.mem_write(0x62002, struct.pack(f">{len(opacity)}H", *opacity))
+                expected = bytearray(initial)
+                for y in range(rows):
+                    for group in range(groups):
+                        mask = opacity[y * groups + group]
+                        for dy in range(2):
+                            for x in range(32):
+                                if not mask & (0x8000 >> (x // 2)):
+                                    continue
+                                dst = (y * 2 + dy) * 80 + group * 4 + x // 8
+                                src = ((y * 2 + dy) * groups + group) * 4 + x // 8
+                                bit = 0x80 >> (x % 8)
+                                expected[dst] = (expected[dst] & ~bit) | (image[src] & bit)
+                hardware = bytes(cpu.mem_read(0xffff8a00, 64))
+                write(symbols["_g_videoBlitterTileSetup"], 1, 1)
+                write(symbols["_g_videoDisplayListNext"], 0x70000, 4)
+                call("_Video_Atari_QueueMonoMaskedRect", (0x58002, 0x62002, destination, groups, rows), saved)
+                self.assertEqual(read(symbols["_g_videoDisplayListNext"], 4), 0x70020)
+                self.assertEqual(bytes(cpu.mem_read(destination, len(initial))), initial)
+                write(0x70020, 0x4e75, 2)
+                cpu.ctl_remove_cache(0x70000, 0x70022)
+                call("_Video_Atari_RunDisplayList", (0x70000,), saved)
+                self.assertEqual(bytes(cpu.mem_read(destination - 2, len(initial) + 4)),
+                                 b"\x13\x57" + bytes(expected) + b"\x24\x68")
+                self.assertEqual(bytes(cpu.mem_read(0xffff8a00, 64)), hardware)
+                self.assertEqual(read(symbols["_g_videoBlitterTileSetup"], 1), 1)
+
             # CPU-only playback needs no BLITTER hardware state or backend selection.
             for destination in (0x40002, 0x48072):
                 for mask_rows in ((0,) * 16, (0xffff,) * 16, tile_masks):

@@ -930,15 +930,14 @@ static void GUI_DrawChar(unsigned char c, uint16 x, uint16 y)
 #define TEXT_PLANAR_ENTRIES 4
 #define TEXT_PLANAR_STRIP_WIDTH 80
 #define TEXT_PLANAR_STRIP_WORDS (TEXT_PLANAR_STRIP_WIDTH / 16 * TEXT_PLANAR_HEIGHT * 5)
-#define TEXT_PLANAR_MAX_WIDTH 128
+#define TEXT_PLANAR_MAX_WIDTH 240
 #define TEXT_PLANAR_HEIGHT 16
 
 typedef struct TextPlanarEntry {
 	const char *text; /* key: String_Get_ByIndex() pointers are stable after String_Init() */
 	uint16 x, top, width, height;
-	/* Per strip: planar pixels, then one mask word per 16 pixel group. Strip 1 starts at
-	 * TEXT_PLANAR_STRIP_WORDS and only needs the remaining 3 groups. */
-	uint16 store[TEXT_PLANAR_STRIP_WORDS + (TEXT_PLANAR_MAX_WIDTH - TEXT_PLANAR_STRIP_WIDTH) / 16 * TEXT_PLANAR_HEIGHT * 5];
+	/* Per strip: native pixels, then one logical opacity word per group. */
+	uint16 store[TEXT_PLANAR_MAX_WIDTH / 16 * TEXT_PLANAR_HEIGHT * 5];
 } TextPlanarEntry;
 
 static TextPlanarEntry s_textPlanar[TEXT_PLANAR_ENTRIES];
@@ -1019,18 +1018,21 @@ static bool GUI_DrawTextPlanarCached(const char *string, int16 left, int16 top)
 
 	{
 		const char *s;
-		uint16 phase = left & 15, x = phase, extent = phase, width;
+		uint16 phase = left & 15, x = phase, extent = phase, count = 0, width;
 
 		for (s = string; *s != '\0'; s++) {
 			const FontChar *fc = &font->chars[(unsigned char)*s];
 			int advance = (int)fc->width + g_fontCharOffset;
 
 			if (*s == '\n' || *s == '\r' || advance < 0) return false;
-			if (fc->data != NULL && x + fc->width > extent) extent = x + fc->width;
+			if (fc->data != NULL) {
+				if (++count > GLYPH_MAX_CHARS) return false;
+				if (x + fc->width > extent) extent = x + fc->width;
+			}
 			x += advance;
 			if (x > 240) return false;
 		}
-		if (extent == phase || (left & ~15) + ((extent + 15) & ~15) > 240) return false;
+		if (extent == phase || (left & ~15) + ((extent + 15) & ~15) > TEXT_PLANAR_MAX_WIDTH) return false;
 		memset(canvas.masks, 0, sizeof(canvas.masks));
 		width = GUI_Glyph_Line(font, g_colours, string, phase, TEXT_PLANAR_MAX_WIDTH / 16, height, canvas.pixels,
 		                       TEXT_PLANAR_MAX_WIDTH / 4, canvas.masks, TEXT_PLANAR_MAX_WIDTH / 16);
@@ -7729,7 +7731,7 @@ void GUI_InvalidateViewportMessage(void)
 
 		if (!s_viewportMessageDrawn) return;
 		/* The retained pixels still belong to the last displayed origin. */
-		for (x = 0; x < 14; x++) Map_Update(g_minimapPosition + x + 6 * 64, 0, true);
+		for (x = 0; x < TEXT_PLANAR_MAX_WIDTH / 16; x++) Map_Update(g_minimapPosition + x + 6 * 64, 0, true);
 		return;
 	}
 #endif
@@ -7849,7 +7851,11 @@ void GUI_DrawScreen(Screen screenID)
 #ifdef TOS
 		if (!Video_Atari_CursorDirect() || s_viewportMessageDrawn)
 #endif
+#ifdef TOS
+		for (xpos = 0; xpos < (nativeViewport ? TEXT_PLANAR_MAX_WIDTH / 16 : 14); xpos++) {
+#else
 		for (xpos = 0; xpos < 14; xpos++) {
+#endif
 			uint16 v = g_minimapPosition + xpos + 6*64;
 
 #ifdef TOS
@@ -7876,7 +7882,11 @@ void GUI_DrawScreen(Screen screenID)
 		if (!Video_Atari_CursorDirect() || s_viewportMessageDrawn ||
 		    ((g_viewportMessageCounter & 1) != 0 && g_viewportMessageText != NULL))
 #endif
+#ifdef TOS
+		for (xpos = 0; xpos < (nativeViewport ? TEXT_PLANAR_MAX_WIDTH / 16 : 14); xpos++) {
+#else
 		for (xpos = 0; xpos < 14; xpos++) {
+#endif
 			Map_Update(g_viewportPosition + xpos + 6 * 64, 0, true);
 		}
 	}

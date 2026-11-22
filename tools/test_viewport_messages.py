@@ -42,11 +42,12 @@ class ViewportMessagesTest(unittest.TestCase):
 #define ST_PLANAR_LINE_BYTES 160
 #define min(a,b) ((a)<(b)?(a):(b))
 bool g_videoViewportBlitter = true;
+bool g_videoAtariMono;
 bool g_screenViewportPlanar = true;
 static uint16 screen[16000], saved[16000];
 static bool overlays, s_textPlanarAllowed, cursorDamaged = true;
 static uint16 *s_planarTarget;
-static unsigned executions, commands, tails, rasterizations, restores, refreshed;
+static unsigned executions, commands, tails, rasterizations, restores, refreshed, monoQueued;
 static uint8 fontData;
 static FontChar chars[256];
 static Font font = { .height = 6, .chars = chars };
@@ -58,6 +59,15 @@ static uint16 g_viewportMessageCounter, s_tileCursorCol = 4, s_tileCursorRow = 6
 static bool s_tileCursorShown = true, s_viewportSpriteFilterActive;
 static VideoAtariTileCursorShape s_tileCursorShape;
 static uint8 *Video_Atari_PlanarBase(void) { return (uint8 *)screen; }
+static bool Video_Atari_CursorRectOverlap(uint8 *base, uint16 first, uint16 end, uint16 y, uint16 h) {
+    (void)base; (void)first; (void)end; (void)y; (void)h; return true;
+}
+static unsigned Video_Atari_GroupWords(void) { return g_videoAtariMono ? 2 : 4; }
+static void Video_Atari_PublishMonoRows(uint8 *base, const uint16 *pixels, const uint16 *masks,
+    uint16 stride, uint16 first, uint16 end, uint16 top, uint16 bottom, bool protected) {
+    (void)base; (void)pixels; (void)masks; (void)stride; (void)first; (void)end;
+    (void)top; (void)bottom; (void)protected; abort();
+}
 bool Video_Atari_CursorDirect(void) { return true; }
 static bool GUI_Sidebar_Active(void) { return false; }
 bool GFX_Screen_IsActive(Screen screenID) { return screenID == SCREEN_0; }
@@ -111,6 +121,13 @@ void Video_Atari_QueueMaskedRect(const uint16 *pixels, const uint16 *masks, uint
     *g_videoDisplayListNext++=HTOBE16(next++);
     for (unsigned i=0;i<14;i++) *g_videoDisplayListNext++=0;
 }
+void Video_Atari_QueueMonoMaskedRect(const uint16 *pixels, const uint16 *masks, uint16 *dst,
+                                    uint16 groups, uint16 rows) {
+    (void)pixels; (void)masks;
+    assert(dst == screen+139*80+8 && groups == 1 && rows == 1);
+    monoQueued++;
+    for (unsigned i=0;i<16;i++) *g_videoDisplayListNext++=HTOBE16(0x4e71);
+}
 void Video_Atari_ExecuteDisplayList(const uint16 *stream) {
     assert(!g_videoDisplayListActive); executions++;
     while (true) {
@@ -140,7 +157,7 @@ uint16 GUI_Glyph_Line(const Font *f, const uint8 colours[16], const char *text,
     uint16 phase, uint16 maxGroups, uint16 rows, uint16 *pixels, uint16 pixelStride,
     uint16 *masks, uint16 maskStride) {
     (void)colours; (void)phase; assert(f == &font && rows == f->height);
-    uint16 groups=text[0] == 'W' ? 8 : 2; assert(groups <= maxGroups);
+    uint16 groups=text[0] == 'W' ? 11 : 2; assert(groups <= maxGroups);
     rasterizations++;
     for (unsigned row=0;row<rows;row++) for (unsigned group=0;group<groups;group++) {
         masks[row*maskStride+group]=(row+group)%3 == 0 ? 0 : 0xa55a;
@@ -158,11 +175,22 @@ void Video_Atari_EncodePlanar(const uint8 *src, uint16 *pixels, uint16 width, ui
             pixels[row*groups*4+(col/16)*4+p] |= 0x8000u>>(col&15);
     }
 }
+void Video_Atari_PreparePlanar(const AtariDitherSource *source, const AtariDitherLookup *lookup,
+                              uint16 *pixels) {
+    (void)lookup;
+    Video_Atari_EncodePlanar(source->pixels, pixels, source->width, source->height);
+}
+void Video_Atari_CopyPlanar(uint16 *dst, uint16 dstStride, uint16 dx, uint16 dy,
+    const uint16 *src, uint16 srcStride, uint16 sx, uint16 sy, uint16 width, uint16 height) {
+    assert(dx == 0 && dy == 0 && sy == 0);
+    for (unsigned row=0;row<height;row++)
+        memcpy(dst+row*dstStride, src+row*srcStride+sx/4, width/2);
+}
 void GUI_DrawText_Wrapper(const char *text, int16 left, int16 top, uint8 fg, uint8 bg, int flags, ...);
 /* PRODUCTION */
 void GUI_DrawText_Wrapper(const char *text, int16 left, int16 top, uint8 fg, uint8 bg, int flags, ...) {
     assert(left == 112 && top == 139 && fg == 15 && bg == 0 && flags == 0x132);
-    assert(GUI_DrawTextPlanarCached(text,64,top));
+    assert(GUI_DrawTextPlanarCached(text,64,top) || GUI_DrawTextPlanarLive(text,64,top));
 }
 static void finish(bool planarViewport) {
     /* RENDERER */
@@ -191,7 +219,7 @@ int main(void) {
         uint16 old=p == 2 ? 0xffff : 0;
         assert(screen[139*80+16+p] == ((old & (uint16)~mask) | (entry->store[p] & mask)));
     }
-    /* A warm wide message is two commands; capacity drains do not inject cursors. */
+    /* A warm wide message is three commands; capacity drains do not inject cursors. */
     Video_Atari_DisplayListBegin();
     GUI_DrawText_Planar(strings[5],112,139,15,0,0x132);
     Video_Atari_DisplayListFlush();
@@ -201,7 +229,7 @@ int main(void) {
     GUI_DrawText_Planar(strings[5],112,139,15,0,0x132);
     assert(tails == 1 && rasterizations == before);
     Video_Atari_EndViewportProtection(); Video_Atari_DisplayListEnd();
-    assert(commands == oldCommands+2 && tails == 1);
+    assert(commands == oldCommands+3 && tails == 1);
     /* Stack glyph data are consumed offscreen, never referenced by the list. */
     uint8 glyph[32*32], original[32*32];
     for (unsigned i=0;i<sizeof(glyph);i++) glyph[i]=i%5 == 0 ? 0 : i%31+1;
@@ -231,6 +259,13 @@ int main(void) {
     overlays=false; before=refreshed;
     Video_Atari_PresentPlanarText(pixel,&mask,16,1,64,139);
     assert(refreshed == before+1 && !restores);
+    g_videoAtariMono=true;
+    before=executions;
+    Video_Atari_DisplayListBegin();
+    Video_Atari_PresentPlanarText(pixel,&mask,16,1,64,139);
+    assert(monoQueued == 1 && executions == before && Video_Atari_DisplayListPending());
+    Video_Atari_DisplayListEnd();
+    assert(executions == before+1);
     Video_Atari_DisplayListFree();
     return 0;
 }
@@ -441,19 +476,19 @@ int main(void) {
     g_viewportMessageCounter = 3;
     Sound_Output_Feedback(1);
     assert(!g_viewport_forceRedraw && !g_dirtyViewportCount);
-    /* Visible replacements and cancellations repair 14 tiles, with the halo. */
+    /* Visible replacements and cancellations repair the full message row, with the halo. */
     for (unsigned cancel = 0; cancel < 2; cancel++) {
         reset(); show();
         Sound_Output_Feedback(cancel ? 0xfffe : 1);
-        assert(!g_viewport_forceRedraw && g_dirtyViewportCount == 14);
+        assert(!g_viewport_forceRedraw && g_dirtyViewportCount == 15);
         draw();
-        assert(terrain == 14 && candidates == 48 && !fullDraws);
+        assert(terrain == 15 && candidates == 51 && !fullDraws);
         check_pixels(false);
         reset(); show();
         g_viewportPosition += 64; /* Target changed before feedback, old pixels not yet shifted. */
         Sound_Output_Feedback(cancel ? 0xfffe : 1);
-        assert(!g_viewport_forceRedraw && g_dirtyViewportCount == 14);
-        assert(count(g_dirtyMinimap) == 14 && count(g_dirtyViewport) == 48);
+        assert(!g_viewport_forceRedraw && g_dirtyViewportCount == 15);
+        assert(count(g_dirtyMinimap) == 15 && count(g_dirtyViewport) == 51);
         assert(BitArray_Test(g_dirtyMinimap, g_minimapPosition + 6 * 64));
         assert(!BitArray_Test(g_dirtyMinimap, g_viewportPosition + 6 * 64));
         draw();
@@ -476,7 +511,7 @@ int main(void) {
     Sound_Output_Feedback(1);
     g_timerGUI = 1000;
     draw();
-    assert(g_viewportMessageCounter == 3 && terrain == 14 && !fullDraws);
+    assert(g_viewportMessageCounter == 3 && terrain == 15 && !fullDraws);
     check_pixels(true);
     /* Blink appearance and disappearance; publication still happens on every visible pass. */
     reset();
@@ -485,7 +520,7 @@ int main(void) {
     for (unsigned next = 3;; next--) {
         g_timerGUI = 2000 + (3 - next) * 61;
         draw();
-        assert(g_viewportMessageCounter == next && terrain == 14 && candidates == 48);
+        assert(g_viewportMessageCounter == next && terrain == 15 && candidates == 51);
         assert(!fullDraws);
         check_pixels((next & 1) != 0);
         if (next == 0) break;
@@ -559,7 +594,8 @@ int main(void) {
         harness = harness.replace("/* UPDATE */", function(
             (ROOT / "src/map.c").read_text(), "Map_Update"))
         harness = harness.replace(
-            "/* INVALIDATE */", function(gui, "GUI_InvalidateViewportMessage"))
+            "/* INVALIDATE */", "#define TEXT_PLANAR_MAX_WIDTH 240\n" +
+            function(gui, "GUI_InvalidateViewportMessage"))
         harness = harness.replace("/* SCREEN */", function(gui, "GUI_DrawScreen"))
         harness = harness.replace("/* SOUND */", function(
             (ROOT / "src/audio/sound.c").read_text(), "Sound_Output_Feedback"))

@@ -376,6 +376,8 @@ extern void Video_Atari_QueueTile(const uint16 *pixels, uint16 *dst);
 extern void Video_Atari_QueueMaskedTile(const uint16 *pixels, const uint16 *masks, uint16 *dst);
 extern void Video_Atari_QueueMaskedRect(const uint16 *pixels, const uint16 *masks, uint16 *dst,
                                       uint16 groups, uint16 rows);
+extern void Video_Atari_QueueMonoMaskedRect(const uint16 *pixels, const uint16 *masks, uint16 *dst,
+                                          uint16 groups, uint16 rows);
 extern void Video_Atari_QueueTileCursor(void);
 typedef struct Video_Atari_SpriteBlitPlan {
 	/* Hardware order for paired longword writes in atari_sprite_blit.s. */

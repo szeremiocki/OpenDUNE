@@ -1102,6 +1102,7 @@ static uint16 commands[32], *g_videoDisplayListNext = commands, *g_videoDisplayL
 #define Video_Atari_QueueTile(p,d) ((void)(p), (void)(d), assert(false))
 #define Video_Atari_QueueMaskedTile(p,m,d) ((void)(p), (void)(m), (void)(d), assert(false))
 #define Video_Atari_QueueMaskedRect(p,m,d,g,h) ((void)(p), (void)(m), (void)(d), (void)(g), (void)(h), assert(false))
+#define Video_Atari_QueueMonoMaskedRect Video_Atari_QueueMaskedRect
 #define Video_Atari_BlitTile(p,b,x,y) ((void)(p), (void)(b), (void)(x), (void)(y), assert(false))
 static uint8 *Video_Atari_PlanarBase(void) { return (uint8 *)screen; }
 static bool Video_Atari_CursorDirect(void) { return true; }

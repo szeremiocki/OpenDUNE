@@ -6,6 +6,7 @@
 	xdef	_Video_Atari_QueueMaskedTile
 	xdef	_Video_Atari_MaskedTileCode
 	xdef	_Video_Atari_QueueMaskedRect
+	xdef	_Video_Atari_QueueMonoMaskedRect
 	xdef	_Video_Atari_MaskedRectCode
 	xdef	_Video_Atari_BlitTileCode
 	xdef	_Video_Atari_BlitPlaneCode
@@ -149,6 +150,11 @@ _Video_Atari_MaskedTileCode:
 
 ; C ABI: pixels, packed masks, destination, groups, rows. One 32-byte command.
 _Video_Atari_QueueMaskedRect:
+	move.l	#_Video_Atari_MaskedRectCode,d0
+	bra.s	queue_masked_rect
+_Video_Atari_QueueMonoMaskedRect:
+	move.l	#mono_masked_rect_code,d0
+queue_masked_rect:
 	move.l	a5,-(sp)
 	move.l	_g_videoDisplayListNext,a5
 	move.w	#$207c,(a5)+
@@ -162,7 +168,7 @@ _Video_Atari_QueueMaskedRect:
 	move.w	#$383c,(a5)+
 	move.w	26(sp),(a5)+
 	move.w	#$4eb9,(a5)+
-	move.l	#_Video_Atari_MaskedRectCode,(a5)+
+	move.l	d0,(a5)+
 	move.l	a5,_g_videoDisplayListNext
 	move.l	(sp)+,a5
 	rts
@@ -201,6 +207,69 @@ _Video_Atari_MaskedRectCode:
 	adda.w	d6,a2
 	dbra	d4,.row
 	rts
+
+; Mono uses the same commands and compact masks, but a group spans two
+; words on each physical row. a3/a4 track the lower source/screen row.
+mono_masked_rect_code:
+	move.w	d3,d6
+	lsl.w	#2,d6
+	move.w	d6,d7
+	neg.w	d6
+	add.w	#80,d6
+	lea	mono_opacity(pc),a5
+	subq.w	#1,d3
+	subq.w	#1,d4
+.row:
+	lea	(a0,d7.w),a3
+	lea	80(a2),a4
+	move.w	d3,d5
+.group:
+	tst.w	(a1)
+	beq.s	.empty
+	moveq	#0,d0
+	move.b	(a1)+,d0
+	add.w	d0,d0
+	move.w	(a5,d0.w),d0
+	swap	d0
+	moveq	#0,d1
+	move.b	(a1)+,d1
+	add.w	d1,d1
+	move.w	(a5,d1.w),d0
+	move.l	(a2),d2
+	move.l	(a0)+,d1
+	eor.l	d2,d1
+	and.l	d0,d1
+	eor.l	d1,d2
+	move.l	d2,(a2)+
+	move.l	(a4),d2
+	move.l	(a3)+,d1
+	eor.l	d2,d1
+	and.l	d0,d1
+	eor.l	d1,d2
+	move.l	d2,(a4)+
+	bra.s	.next
+.empty:
+	addq.l	#2,a1
+	addq.l	#4,a0
+	addq.l	#4,a3
+	addq.l	#4,a2
+	addq.l	#4,a4
+.next:
+	dbra	d5,.group
+	move.l	a3,a0
+	lea	(a4,d6.w),a2
+	dbra	d4,.row
+	rts
+
+mono_opacity:
+mask_byte	set	0
+	rept	256
+mask_bits	set	(mask_byte|(mask_byte<<4))&$0f0f
+mask_bits	set	(mask_bits|(mask_bits<<2))&$3333
+mask_bits	set	(mask_bits|(mask_bits<<1))&$5555
+	dc.w	mask_bits|(mask_bits<<1)
+mask_byte	set	mask_byte+1
+	endr
 
 ; a0 pixels, a2 destination. Retain the existing opaque-tile setup cache.
 _Video_Atari_BlitTileCode:
