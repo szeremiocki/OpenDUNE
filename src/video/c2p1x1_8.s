@@ -2,8 +2,10 @@
 	xdef	_c2p1x1_8_falcon	;export symbol
 	xdef	_c2p1x1_8_tt		;export symbol
 	xdef	_c2p1x1_8_tt_partial		;export symbol
-	xdef	_c2p1x1_4_st		;export symbol
-	xdef	_c2p1x1_4_st_strided
+	xdef	_c2p1x1_4_st_pens
+	xdef	_c2p1x1_4_st_pens_strided
+	xdef	_c2p1x1_4_st_byte
+	xdef	_c2p1x1_4_st_byte_strided
 	xdef	_c2p1x1_1_st
 	;code
 
@@ -11,9 +13,6 @@
 ; prototypes :
 ; void c2p1x1_8_falcon(const void * chunky, void * planar, long screen_size);
 ; void c2p1x1_8_tt(const void * chunky, void * planar, long screen_size);
-; void c2p1x1_4_st(void * planar, const void * chunky, long screen_size, const uint16 * pal64k);
-; pal64k is a 65536-entry (128KB) word table indexed by a pixel-pair
-; (chunky[i]<<8 | chunky[i+1]): pal64k[idx] = (remap[chunky[i]]<<8) | remap[chunky[i+1]]
 ;
 ; c2p1x1_8_tt function double each 320 pixel line in the planar buffer,
 ; so a 320x200(320x240) screen is converted to 320x400(320x480) to
@@ -634,7 +633,11 @@ _c2p1x1_8_tt_partial:
 
 
 
-; void c2p1x1_4_st(void *planar, void *chunky, uint32 count, uint32 lines, void *pal)
+; void c2p1x1_4_st_byte(void *planar, const void *chunky, uint32 count,
+;                       uint32 lines, const uint8 *pal)
+; The _byte entries map chunky indices through a 256-byte pen table.
+; The _pens entries omit the palette argument. Their source is word-aligned
+; and already contains one hardware pen (0..15) per byte.
 ;
 ; Converts `count` chunky bytes per scanline for `lines` consecutive
 ; scanlines, advancing by one ST-Low line (320 chunky bytes in, 160 planar
@@ -651,61 +654,30 @@ _c2p1x1_8_tt_partial:
 ;
 ; Registers a4/a5/a6 are free for the line loop: the 4-plane body below
 ; only touches d0-d7 and a0-a3.
-; Expand the same pixel kernel for both entries: the fixed screen path
-; retains its exact instructions, without per-row stride dispatch.
+C2P4_MAP_BYTES macro
+	move.b	(a0)+,d4
+	move.b	(a3,d4.w),\1
+	rept	3
+	lsl.l	#8,\1
+	move.b	(a0)+,d4
+	or.b	(a3,d4.w),\1
+	endr
+	endm
+
+; Only the loads differ; every entry uses the same transpose.
 C2P4_PIXELS macro
 .start:
-	; read pixels 0-3 (as 2 pixel-pairs) and reduce to 16 colors
-	; a3 = word-indexed 64K pair LUT: pal_word[(pixA<<8)|pixB] = (remap[pixA]<<8)|remap[pixB]
-	; NOTE: (a3,d4.l) is an UNSCALED index on 68000 (no x2 scale factor,
-	; that's 68020+ only) -- d4 must be doubled to a byte offset first,
-	; since the LUT holds 16-bit words, or odd pixel-pair values cause
-	; an odd effective address -> Address Error.
-	; NOTE 2: MOVE.W into d4 only writes the low word, so d4's high word
-	; must be re-cleared every time before doubling -- otherwise a carry
-	; out of a previous iteration's ADD.L (whenever a pixel-pair value
-	; was >= $8000) would leak into the next lookup's offset.
-	moveq.l	#0,d4			; cheap: clear high word (4c) before word load
-	move.w	(a0)+,d4
-	add.l	d4,d4			; scale word-index to byte offset
-	move.w	(a3,d4.l),d0		; d0 low word = [remap(pix0)<<8 | remap(pix1)]
-	swap	d0			; move that word into d0's high half
-	moveq.l	#0,d4
-	move.w	(a0)+,d4
-	add.l	d4,d4
-	move.w	(a3,d4.l),d0		; d0 low word = [remap(pix2)<<8 | remap(pix3)]
-	; d0 bytes (MSB..LSB) = remap(pix0),remap(pix1),remap(pix2),remap(pix3)
-	; -- identical layout to the old 4x byte-lookup version.
-	; read pixels 4-7 (as 2 pixel-pairs) and reduce to 16 colors
-	moveq.l	#0,d4
-	move.w	(a0)+,d4
-	add.l	d4,d4
-	move.w	(a3,d4.l),d2
-	swap	d2
-	moveq.l	#0,d4
-	move.w	(a0)+,d4
-	add.l	d4,d4
-	move.w	(a3,d4.l),d2
-	; read pixels 8-11 (as 2 pixel-pairs) and reduce to 16 colors
-	moveq.l	#0,d4
-	move.w	(a0)+,d4
-	add.l	d4,d4
-	move.w	(a3,d4.l),d1
-	swap	d1
-	moveq.l	#0,d4
-	move.w	(a0)+,d4
-	add.l	d4,d4
-	move.w	(a3,d4.l),d1
-	; read pixels 12-15 (as 2 pixel-pairs) and reduce to 16 colors
-	moveq.l	#0,d4
-	move.w	(a0)+,d4
-	add.l	d4,d4
-	move.w	(a3,d4.l),d3
-	swap	d3
-	moveq.l	#0,d4
-	move.w	(a0)+,d4
-	add.l	d4,d4
-	move.w	(a3,d4.l),d3
+	ifne	\1
+	C2P4_MAP_BYTES d0
+	C2P4_MAP_BYTES d2
+	C2P4_MAP_BYTES d1
+	C2P4_MAP_BYTES d3
+	else
+	move.l	(a0)+,d0
+	move.l	(a0)+,d2
+	move.l	(a0)+,d1
+	move.l	(a0)+,d3
+	endif
 
 	lsl.l	#4,d0								; shift into high nibble
 	lsl.l	#4,d1								; shift into high nibble
@@ -767,9 +739,12 @@ C2P4_PIXELS macro
 	bne.w	.start
 	endm
 
-_c2p1x1_4_st:
+; \1 selects byte mapping; \2 selects runtime strides.
+C2P4_LINES macro
 	movem.l	d2-d7/a2-a6,-(sp)
+	ifne	\1
 	move.l	64(sp),a3
+	endif
 	move.l	56(sp),d0
 	move.l	52(sp),a4
 	move.l	48(sp),a5
@@ -777,20 +752,30 @@ _c2p1x1_4_st:
 	move.l	d0,a6
 	tst.l	d1
 	beq.w	.noline
+	ifne	\2
+	mulu.w	66+4*\1(sp),d1						; low word of source stride, before srcEnd push
+	else
 	mulu.w	#320,d1
+	endif
 	add.l	a4,d1
 	move.l	d1,-(sp)
 	move.l	#$00ff00ff,d5
 	move.l	#$55555555,d6
+	ifne	\1
 	moveq.l	#0,d4
+	endif
 .nextline:
 	move.l	a4,a0
 	move.l	a5,a1
 	lea		(a0,a6.l),a2
-	C2P4_PIXELS
-
+	C2P4_PIXELS \1
+	ifne	\2
+	adda.l	68+4*\1(sp),a4						; source stride, after srcEnd push
+	adda.l	72+4*\1(sp),a5						; destination stride
+	else
 	lea		320(a4),a4							; next chunky scanline
 	lea		160(a5),a5							; next planar scanline
+	endif
 	cmpa.l	(sp),a4
 	bne.w	.nextline
 
@@ -798,39 +783,22 @@ _c2p1x1_4_st:
 .noline:
 	movem.l	(sp)+,d2-d7/a2-a6
 	rts
+	endm
 
-; Same first five arguments, followed by uint32 source and destination
+_c2p1x1_4_st_pens:
+	C2P4_LINES 0,0
+
+; Both strided entries append uint32 source and destination
 ; byte strides. Source stride must fit 16 bits; strides are even and at
 ; least count and count/2 respectively. Count is a positive multiple of 16.
-_c2p1x1_4_st_strided:
-	movem.l	d2-d7/a2-a6,-(sp)
-	move.l	64(sp),a3
-	move.l	56(sp),d0
-	move.l	52(sp),a4
-	move.l	48(sp),a5
-	move.l	60(sp),d1
-	move.l	d0,a6
-	tst.l	d1
-	beq.w	.noline
-	mulu.w	70(sp),d1							; low word of source stride, before srcEnd push
-	add.l	a4,d1
-	move.l	d1,-(sp)
-	move.l	#$00ff00ff,d5
-	move.l	#$55555555,d6
-	moveq.l	#0,d4
-.nextline:
-	move.l	a4,a0
-	move.l	a5,a1
-	lea		(a0,a6.l),a2
-	C2P4_PIXELS
-	adda.l	72(sp),a4							; source stride, after srcEnd push
-	adda.l	76(sp),a5							; destination stride
-	cmpa.l	(sp),a4
-	bne.w	.nextline
-	addq.l	#4,sp
-.noline:
-	movem.l	(sp)+,d2-d7/a2-a6
-	rts
+_c2p1x1_4_st_pens_strided:
+	C2P4_LINES 0,1
+
+_c2p1x1_4_st_byte:
+	C2P4_LINES 1,0
+
+_c2p1x1_4_st_byte_strided:
+	C2P4_LINES 1,1
 
 ;	bss
 ;offset_end:

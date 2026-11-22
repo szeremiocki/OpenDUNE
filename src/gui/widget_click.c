@@ -661,11 +661,8 @@ static void GUI_Widget_GameControls_Click(Widget *w)
 static void ShadeScreen(void)
 {
 #ifdef TOS
-	/* On ST/STE, skip the 256-entry software halving + full re-quantize/
-	 * pair-LUT rebuild entirely: shade the 16 hardware pens directly and
-	 * instantly instead (see Video_Atari_ShadeHwPalette() in video_atari.c).
-	 * This is what previously produced the ~1s freeze+dim+freeze+restore
-	 * seen when returning from the in-game Options panel. Note this can't
+	/* On ST/STE, shade the 16 hardware pens directly instead of
+	 * requantizing the 256-entry logical palette. This can't
 	 * preserve the "except colors 231-238" exemption the software path
 	 * has, since only 16 pens exist in hardware and those indices already
 	 * collide with shaded ones after quantization in most cases anyway. */

@@ -136,7 +136,7 @@ extern void Video_Atari_DebugDamageEnd(void);
  * common case (cutscene and house-selection fade in/out); the intro's
  * fade-to-white flash and the fade back out of it are the same shape with
  * a different intensity. For any such fade the 16 fixed hardware pens
- * never need to be re-quantized nor the 65536-entry c2p pair-LUT rebuilt
+ * never need to be re-quantized
  * while the fade is in progress: a uniform logical palette means every
  * pixel shows the same colour regardless of which pen it maps to, so only
  * the actual RGB output of the 16 Setcolor() registers needs to ramp, in
@@ -150,7 +150,7 @@ extern bool Video_Atari_TryPaletteFadeUniform(uint8 *data, const uint8 *palette,
 
 /* Fast path for ShadeScreen()/UnshadeScreen() (options-menu dim/restore):
  * on ST/STE the "shade" effect (subtract one intensity level, restore
- * later) never needs the 256-entry quantization/pair-LUT machinery either
+ * later) does not need to requantize the 256-entry logical palette
  * - the 16 hardware pens can be dimmed/restored directly, instantly (no
  * ramp - the original effect is an immediate, one-shot palette swap, not
  * an animation). Outside of an active fade the 16 registers always sit at
@@ -189,7 +189,7 @@ extern void Video_Atari_ShadeHwPalette(bool shade);
  * rectangle cannot be handled; the caller's chunky write happens either
  * way, so the fallback is simply to let Video_Tick() do the conversion.
  * Video_Atari_PresentChunky() handles any x and width, using a masked
- * read-modify-write for the edge groups that c2p1x1_4_st() -- which
+ * read-modify-write for the edge groups that c2p1x1_4_st_byte() -- which
  * converts whole 16 pixel groups only -- cannot write directly. */
 extern bool Video_Atari_PresentEnter(void);
 extern void Video_Atari_PresentLeave(void);

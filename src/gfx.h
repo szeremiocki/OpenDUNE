@@ -194,8 +194,7 @@ extern void GFX_Screen_ClearDirtyBattlefield(void);
  * unbuffered Warning() and is only meant for tracing palette/fade
  * behaviour. This is what identified the "intro cutscene stays black"
  * bug (hardware registers left at black while a non-uniform fade took
- * the software-only fallback path), and what measured the pair-LUT
- * rebuild counts that motivated the uniform fast path, so it is kept
+ * the software-only fallback path), so it is kept
  * for the next time fade behaviour needs investigating. */
 /* #define PALETTE_FADE_DEBUG 1 */
 #ifdef GFX_DIRTY_SOURCE_STATS

@@ -39,9 +39,13 @@ extern void uninstall_ikbd_handler(void);
 extern void c2p1x1_8_falcon(void * planar, void * chunky, uint32 count);
 extern void c2p1x1_8_tt(void * planar, void * chunky, uint32 count);
 extern void c2p1x1_8_tt_partial(void * planar, void * chunky, uint32 count);
-extern void c2p1x1_4_st(void * planar, const void * chunky, uint32 count, uint32 lines, const void * pal);
-extern void c2p1x1_4_st_strided(void *planar, const void *chunky, uint32 count, uint32 lines,
-                               const void *pal, uint32 srcStride, uint32 dstStride);
+extern void c2p1x1_4_st_pens(void *planar, const uint8 *pens, uint32 count, uint32 lines);
+extern void c2p1x1_4_st_pens_strided(void *planar, const uint8 *pens, uint32 count, uint32 lines,
+                                    uint32 srcStride, uint32 dstStride);
+extern void c2p1x1_4_st_byte(void *planar, const void *chunky, uint32 count, uint32 lines,
+                            const uint8 *pal);
+extern void c2p1x1_4_st_byte_strided(void *planar, const void *chunky, uint32 count, uint32 lines,
+                                    const uint8 *pal, uint32 srcStride, uint32 dstStride);
 
 /* switch FPS display */
 extern void Video_SwitchFPSDisplay(uint8 key);
@@ -629,19 +633,9 @@ const uint8 s_palette4BitPC[16*4] =
 static uint8 s_palette4BitMap[256];
 static uint8 s_paletteMonoCoverage[256];
 
-/* 64K word pair-LUT for c2p1x1_4_st: indexed by a chunky pixel-pair
- * (pixelA<<8 | pixelB), returns (remap[pixelA]<<8 | remap[pixelB]).
- * Patched incrementally from s_palette4BitMap whenever the palette
- * changes - see Rebuild_Palette4BitPairMap(). 128KB resident. */
-static uint16 s_palette4BitPairMap[65536];
-
 static AtariDitherLookup s_palette4BitDither = {.flat = true}, s_tileDither = {.flat = true};
 static AtariMonoPackedLookup s_paletteMonoPacked, s_tileMonoPacked, s_unitMonoPacked;
 static AtariMonoPackedLookup s_buildingMonoPacked;
-/* Prepared asset pixels are 0..15; the assembly's pair index still
- * has a 256-word row stride, so only the first 16 rows are needed. */
-static uint16 s_penPairMap[16 * 256];
-static bool s_penPairMapReady;
 
 typedef struct AtariPlanarBackend {
 	void (*prepare)(const AtariDitherSource *, const AtariDitherLookup *, uint16 *, uint16);
@@ -1054,16 +1048,9 @@ void Video_Atari_ExpandSpriteMasks(uint16 *pixels, uint16 *expanded,
 	}
 }
 
-/* Only the rows/columns touched by the changed color range [from, from+length)
- * need patching: entries where hi (pixelA) is in range are a full contiguous
- * 256-word row each; entries where lo (pixelB) is in range are one column
- * across all 256 rows. For small changes (typical: 1-8 colors from palette
- * animation/cycling) this is orders of magnitude cheaper than rebuilding all
- * 65536 entries. Falls back to a full rebuild when length is large enough
- * (e.g. fades) that the row+column patch would touch most of the table anyway. */
-static void Rebuild_Palette4BitPairMap(int from, int length)
+static void Video_Atari_UpdatePaletteLookups(int from, int length)
 {
-	int hi, lo;
+	int hi;
 	int to = from + length;
 
 	if (Video_Atari_Mono()) {
@@ -1080,46 +1067,6 @@ static void Rebuild_Palette4BitPairMap(int from, int length)
 	if (from == 0 && length == 256) s_palette4BitDither.flat = true;
 	for (hi = from; hi < to; hi++)
 		Video_Atari_DitherSetPen(&s_palette4BitDither, hi, s_palette4BitMap[hi]);
-
-	if (length >= 64) {
-		/* large change (fade etc.): full rebuild is simpler and not much
-		 * costlier than the partial patch would be at this size */
-		for (hi = 0; hi < 256; hi++) {
-			uint16 h = (uint16)(s_palette4BitMap[hi] << 8);
-			uint16 *row = &s_palette4BitPairMap[hi << 8];
-
-			for (lo = 0; lo < 256; lo++) {
-				row[lo] = h | s_palette4BitMap[lo];
-			}
-		}
-		return;
-	}
-
-	/* patch every row for each changed hi (pixelA) */
-	for (hi = from; hi < to; hi++) {
-		uint16 h = (uint16)(s_palette4BitMap[hi] << 8);
-		uint16 *row = &s_palette4BitPairMap[hi << 8];
-
-		for (lo = 0; lo < 256; lo++) {
-			row[lo] = h | s_palette4BitMap[lo];
-		}
-	}
-
-	/* patch the changed lo (pixelB) column in every row not already
-	 * fully rewritten above */
-	for (hi = 0; hi < 256; hi++) {
-		uint16 h;
-		uint16 *row;
-
-		if (hi >= from && hi < to) continue; /* already handled above */
-
-		h = (uint16)(s_palette4BitMap[hi] << 8);
-		row = &s_palette4BitPairMap[hi << 8];
-
-		for (lo = from; lo < to; lo++) {
-			row[lo] = h | s_palette4BitMap[lo];
-		}
-	}
 }
 
 static inline uint8 Palette_FindClosestColor(uint8 r, uint8 g, uint8 b)
@@ -1176,8 +1123,8 @@ static inline uint16 Video_Atari_HwColorWord(uint8 r3, uint8 g3, uint8 b3)
  * currently are (s_hwPalette) towards target[16*3] (also 0-7/channel),
  * using the same additive step-size/clamp-on-overshoot scheme as the
  * software 256-entry fade in GUI_SetPaletteAnimated() - just applied to
- * 48 bytes instead of 768, and with no palette quantization or c2p
- * pair-LUT rebuild anywhere in the loop. */
+ * 48 bytes instead of 768, without changing the logical-to-hardware
+ * pen mapping during the ramp. */
 static void Video_Atari_HwPaletteRamp(const uint8 *target, int16 ticksOfAnimation)
 {
 	int16 highestDiff = 0;
@@ -1367,7 +1314,7 @@ bool Video_Atari_TryPaletteFadeUniform(uint8 *data, const uint8 *palette, int16 
 
 	if (toUniform >= 0) {
 		/* Fade out to a uniform colour (black, white, ...): the on-screen
-		 * quantization/pair-LUT already matches "data" (the current, still
+		 * pen mapping already matches "data" (the current, still
 		 * fully-lit picture) and stays valid - every pixel simply ends up
 		 * showing the same colour, so there is nothing to re-quantize.
 		 * Just ramp all 16 registers to that one intensity. The logical
@@ -1649,7 +1596,7 @@ bool Video_Init(int screen_magnification, VideoScaleFilter filter)
 		/* the mouse cursor is composited straight into the planar screen */
 		s_curDirect = true;
 		if (Video_Atari_Mono()) {
-			Rebuild_Palette4BitPairMap(0, 256);
+			Video_Atari_UpdatePaletteLookups(0, 256);
 			Warning("ST-High mono backend: 640x400, native 1-plane assets, white bit %u\n", s_monoWhiteIsOne);
 		}
 	} else {
@@ -3842,29 +3789,17 @@ uint8 Video_Atari_GetPalettePen(uint8 colour)
 	return s_palette4BitMap[colour];
 }
 
-static void Video_Atari_EncodePlanarWithLookup(const uint8 *src, uint16 *pixels,
-                                              uint16 width, uint16 height, const uint16 *lookup,
-                                              uint16 srcStride)
+static void Video_Atari_EncodePlanarPens(const uint8 *pens, uint16 *pixels,
+                                        uint16 width, uint16 height, uint16 dstStride)
 {
-	assert(Video_Atari_CursorDirect() && src != NULL && pixels != NULL);
-	assert(((uint32)src & 1) == 0 && height != 0 && height <= SCREEN_HEIGHT);
+	assert(Video_Atari_CursorDirect() && pens != NULL && pixels != NULL);
+	assert(((size_t)pens & 1) == 0 && height != 0 && height <= SCREEN_HEIGHT);
 	assert(width != 0 && width <= SCREEN_WIDTH && (width & 15) == 0);
-	assert(srcStride >= width && (srcStride & 1) == 0);
-	if ((width == SCREEN_WIDTH && srcStride == SCREEN_WIDTH) || height == 1) {
-		c2p1x1_4_st(pixels, src, width, height, lookup);
-	} else {
-		c2p1x1_4_st_strided(pixels, src, width, height, lookup, srcStride, width / 2);
-	}
-}
-
-static void Video_Atari_InitPenPairMap(void)
-{
-	uint16 hi, lo;
-
-	if (s_penPairMapReady) return;
-	for (hi = 0; hi < 16; hi++)
-		for (lo = 0; lo < 16; lo++) s_penPairMap[(hi << 8) | lo] = (hi << 8) | lo;
-	s_penPairMapReady = true;
+	assert(dstStride >= width / 2 && (dstStride & 1) == 0);
+	if (height == 1 || (width == SCREEN_WIDTH && dstStride == SCREEN_WIDTH / 2))
+		c2p1x1_4_st_pens(pixels, pens, width, height);
+	else
+		c2p1x1_4_st_pens_strided(pixels, pens, width, height, width, dstStride);
 }
 
 static void Video_Atari_ColourReadGroup(const uint16 *pixels, uint16 stride,
@@ -3894,9 +3829,9 @@ static void Video_Atari_ConvertColour(const AtariDitherSource *source,
 {
 	(void)lookup;
 	if (source->stride == SCREEN_WIDTH && stride == 80)
-		c2p1x1_4_st(pixels, source->pixels, source->width, source->height, s_palette4BitPairMap);
-	else c2p1x1_4_st_strided(pixels, source->pixels, source->width, source->height,
-		s_palette4BitPairMap, source->stride, stride * 2);
+		c2p1x1_4_st_byte(pixels, source->pixels, source->width, source->height, s_palette4BitMap);
+	else c2p1x1_4_st_byte_strided(pixels, source->pixels, source->width, source->height,
+		s_palette4BitMap, source->stride, stride * 2);
 }
 
 static void Video_Atari_PrepareMonoCustom(const AtariDitherSource *source,
@@ -3933,7 +3868,6 @@ static void Video_Atari_PrepareColour(const AtariDitherSource *source,
 	width = (source->width + 15) & ~15;
 	capacity = sizeof(pens.bytes) / width;
 	if (lookup == NULL) lookup = &s_palette4BitDither;
-	Video_Atari_InitPenPairMap();
 	while (row < source->height) {
 		AtariDitherSource band = *source;
 		AtariDitherTarget target = {pens.bytes, width, 1};
@@ -3949,11 +3883,8 @@ static void Video_Atari_PrepareColour(const AtariDitherSource *source,
 			for (line = 0; line < band.height; line++)
 				memset(pens.bytes + line * width + source->width, 0, width - source->width);
 		}
-		if (stride == width / 4)
-			Video_Atari_EncodePlanarWithLookup(pens.bytes, pixels + (uint32)row * stride,
-				width, band.height, s_penPairMap, width);
-		else c2p1x1_4_st_strided(pixels + (uint32)row * stride, pens.bytes,
-			width, band.height, s_penPairMap, width, stride * 2);
+		Video_Atari_EncodePlanarPens(pens.bytes, pixels + (uint32)row * stride,
+			width, band.height, stride * 2);
 		row += band.height;
 	}
 }
@@ -4260,8 +4191,7 @@ void Video_Atari_DecodePlanarTile(const uint8 *src, const uint8 *palette, uint16
 		uint16 colour;
 		for (colour = 0; colour < 16; colour++) pens[colour] = s_tileDither.pens[0][0][palette[colour]];
 		Video_Atari_ExpandTileNibbles(src, pens, chunky.bytes);
-		Video_Atari_InitPenPairMap();
-		Video_Atari_EncodePlanarWithLookup(chunky.bytes, pixels, 16, 16, s_penPairMap, 16);
+		Video_Atari_EncodePlanarPens(chunky.bytes, pixels, 16, 16, 8);
 		return;
 	}
 	Video_Atari_ExpandTileNibbles(src, palette, chunky.bytes);
@@ -6319,21 +6249,8 @@ void Video_SetPalette(void *palette, int from, int length)
 		uint8 red,green,blue;
 		int changedFrom = -1, changedTo = -1;
 
-		/* Quantization (Palette_FindClosestColor against the fixed 16-pen
-		 * table) must always run for every changed index - a color shift
-		 * can legitimately move an index to a different pen at any time.
-		 * But Rebuild_Palette4BitPairMap() is expensive (O(256) word
-		 * writes per changed index - see ATARI_PROFILE_FINDINGS.md /
-		 * ATARI_PALETTE_ANIMATION_OPTIMIZATION.md) and is only actually
-		 * needed for indices whose *pen assignment* changed as a result.
-		 * Small, incremental animations (GUI_PaletteAnimate's repair/
-		 * selection/windtrap color cycling) very often re-quantize to the
-		 * *same* pen they already had (the RGB moved, but not far enough
-		 * to cross into a different pen's territory) - in that case the
-		 * chunky-pixel-to-pen mapping truly didn't change anywhere, and
-		 * patching the pair-LUT would be a no-op. Track the actual
-		 * sub-range of indices whose pen assignment changed and only
-		 * patch that (possibly empty) range. */
+		/* Quantize every incoming RGB, but refresh derived lookups and
+		 * cached artwork only when a pen or mono coverage changes. */
 		for (i = from; i < from + length; i++)
 		{
 			uint8 pen;
@@ -6357,7 +6274,7 @@ void Video_SetPalette(void *palette, int from, int length)
 			}
 		}
 		if (changedFrom >= 0)
-			Rebuild_Palette4BitPairMap(changedFrom, changedTo - changedFrom + 1);
+			Video_Atari_UpdatePaletteLookups(changedFrom, changedTo - changedFrom + 1);
 		/* invalidate the cached bitplane form of the mouse cursor */
 		if (changedFrom >= 0) s_paletteGeneration++;
 		/* Eagerly rebuild the persistent per-icon pre-shift cache too: it

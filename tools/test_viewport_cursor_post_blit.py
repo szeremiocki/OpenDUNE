@@ -75,20 +75,20 @@ static uint16 s_placeBlockCount, s_placeDrawnWidth, s_placeDrawnHeight;
 static int16 s_placeDrawnX, s_placeDrawnY;
 static uint8 s_placePen = 5;
 static uint16 tile[64], fog[64], tileMasks[16], fogMasks[16];
-static uint16 sprite[640], spriteMasks[160], lookup[1];
+static uint16 sprite[640], spriteMasks[160];
 static uint8 chunky[64 * 32];
-#define s_palette4BitPairMap lookup
 static unsigned mergeCalls, repairCalls;
 static uint8 *Video_Atari_PlanarBase(void) { return (uint8 *)visible; }
 static void GFX_Screen_ClearDirtyRect(uint16 l, uint16 t, uint16 r, uint16 b) {
     assert(!(l & 15) && !(r & 15) && l < r && r <= 320 && t < b && b <= 200);
 }
-static void c2p1x1_4_st(uint16 *dst, const uint8 *src, uint16 width, uint16 height,
-                       const uint16 *map) {
-    assert(height == 1 && map == lookup);
-    memset(dst, 0, width / 2);
-    for (unsigned x = 0; x < width; x++) for (unsigned p = 0; p < 4; p++)
-        if (src[x] & (1u << p)) dst[x / 16 * 4 + p] |= 0x8000u >> (x & 15);
+static void Video_Atari_EncodePlanarStrided(const uint8 *src, uint16 stride,
+                                          uint16 *dst, uint16 width, uint16 height) {
+    for (unsigned y = 0; y < height; y++, src += stride, dst += width / 4) {
+        memset(dst, 0, width / 2);
+        for (unsigned x = 0; x < width; x++) for (unsigned p = 0; p < 4; p++)
+            if (src[x] & (1u << p)) dst[x / 16 * 4 + p] |= 0x8000u >> (x & 15);
+    }
 }
 /* VIDEO */
 static void composite(void) {

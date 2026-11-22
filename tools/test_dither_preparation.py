@@ -297,8 +297,8 @@ int main(void)
             "Video_Atari_MonoCoverage", "Video_Atari_SetMonoCoverage", "Video_Atari_ReducedMonoCoverage",
             "Video_Atari_SetPackedMonoCoverage",
             "Video_Atari_PrepareUnitPlanar",
-            "Rebuild_Palette4BitPairMap", "Video_Atari_EncodePlanarWithLookup",
-            "Video_Atari_InitPenPairMap", "Video_Atari_PreparePlanar",
+            "Video_Atari_UpdatePaletteLookups", "Video_Atari_EncodePlanarPens",
+            "Video_Atari_PreparePlanar",
             "Video_Atari_PrepareColour", "Video_Atari_PrepareMonoCustom",
             "Video_Atari_PrepareMono", "Video_Atari_ConvertColour", "Video_Atari_ColourReadGroup",
             "Video_Atari_EncodePlanar", "Video_Atari_EncodePlanarStrided",
@@ -347,10 +347,8 @@ static void Video_Atari_DirtySweepBand(uint32 mask, uint16 top, uint16 bottom, u
 static bool mono, s_monoWhiteIsOne;
 #define Video_Atari_Mono() mono
 static uint8 s_palette4BitMap[256], s_paletteMonoCoverage[256];
-static uint16 s_palette4BitPairMap[65536], s_penPairMap[4096];
 static AtariDitherLookup s_palette4BitDither = {.flat = true}, s_tileDither = {.flat = true};
 static AtariMonoPackedLookup s_paletteMonoPacked, s_tileMonoPacked, s_unitMonoPacked, s_buildingMonoPacked;
-static bool s_penPairMapReady;
 static unsigned mappedEncodes, penEncodes;
 /* BACKEND */
 static bool Video_Atari_CursorDirect(void) { return true; }
@@ -363,30 +361,39 @@ static void Video_Atari_ExpandTileNibbles(const uint8 *src, const uint8 *palette
         *dst++ = palette[src[i] & 15];
     }
 }
-static void encode(uint16 *dst, const uint8 *src, unsigned width, unsigned height,
-    const uint16 *lookup, unsigned srcStride, unsigned dstStride)
+static void c2p1x1_4_st_pens_strided(uint16 *dst, const uint8 *src, unsigned width, unsigned height,
+    unsigned srcStride, unsigned dstStride)
 {
-    assert(lookup == s_penPairMap || lookup == s_palette4BitPairMap);
-    if (lookup == s_penPairMap) penEncodes++; else mappedEncodes++;
+    penEncodes++;
     for (unsigned y = 0; y < height; y++) {
         memset(dst + y * dstStride / 2, 0, width / 2);
-        for (unsigned x = 0; x < width; x += 2) {
-            unsigned index = (src[y * srcStride + x] << 8) | src[y * srcStride + x + 1];
-            assert(lookup != s_penPairMap || index < 4096);
-            unsigned pair = lookup[index];
+        for (unsigned x = 0; x < width; x++) {
+            unsigned pen = src[y * srcStride + x];
+            assert(pen < 16);
             for (unsigned p = 0; p < 4; p++) {
                 uint16 *word = &dst[y * dstStride / 2 + (x / 16) * 4 + p];
-                if ((pair >> 8) & (1u << p)) *word |= 0x8000u >> (x & 15);
-                if (pair & (1u << p)) *word |= 0x4000u >> (x & 15);
+                if (pen & (1u << p)) *word |= 0x8000u >> (x & 15);
             }
         }
     }
 }
-static void c2p1x1_4_st(uint16 *dst, const uint8 *src, unsigned w, unsigned h, const uint16 *map)
-{ encode(dst, src, w, h, map, 320, 160); }
-static void c2p1x1_4_st_strided(uint16 *dst, const uint8 *src, unsigned w, unsigned h,
-    const uint16 *map, unsigned ss, unsigned ds)
-{ encode(dst, src, w, h, map, ss, ds); }
+static void c2p1x1_4_st_pens(uint16 *dst, const uint8 *src, unsigned w, unsigned h)
+{ c2p1x1_4_st_pens_strided(dst, src, w, h, 320, 160); }
+static void c2p1x1_4_st_byte_strided(uint16 *dst, const uint8 *src, unsigned w, unsigned h,
+    const uint8 *map, unsigned ss, unsigned ds)
+{
+    assert(map == s_palette4BitMap);
+    mappedEncodes++;
+    for (unsigned y = 0; y < h; y++, src += ss, dst += ds / 2) {
+        memset(dst, 0, w / 2);
+        for (unsigned x = 0; x < w; x++)
+            for (unsigned p = 0; p < 4; p++)
+                if (map[src[x]] & (1u << p))
+                    dst[x / 16 * 4 + p] |= 0x8000u >> (x & 15);
+    }
+}
+static void c2p1x1_4_st_byte(uint16 *dst, const uint8 *src, unsigned w, unsigned h, const uint8 *map)
+{ c2p1x1_4_st_byte_strided(dst, src, w, h, map, 320, 160); }
 /* PRODUCTION */
 enum { PLANAR_TILE_MIXED = 1, PLANAR_TILE_EMPTY, PLANAR_TILE_OPAQUE };
 /* TILE COMPOSITOR */
@@ -712,7 +719,7 @@ static void check_tiles(void)
                 Palette_FindClosestColor(p[0] & 63, p[1] & 63, p[2] & 63));
         }
     memset(s_palette4BitMap, 15, sizeof(s_palette4BitMap));
-    Rebuild_Palette4BitPairMap(0, 256);
+    Video_Atari_UpdatePaletteLookups(0, 256);
     Video_Atari_DecodePlanarTile(src, colours, after);
     assert(!memcmp(baseline, after, sizeof(baseline)));
     /* A nonconstant tile policy must see IBM indices, not prequantized pens. */
@@ -748,7 +755,7 @@ static void check_sweeps(void)
                 unsigned top = variant ? 7 : 136;
                 mono = mode; s_monoWhiteIsOne = polarity;
                 s_planarBackend = mode ? &s_monoBackend : &s_colourBackend;
-                Rebuild_Palette4BitPairMap(0, 256);
+                Video_Atari_UpdatePaletteLookups(0, 256);
                 for (unsigned i = 0; i < 16002; i++) guarded[i] = 0xa39fu;
                 for (unsigned y = 0; y < 200; y++)
                     blocks[y] = variant ? (y >= 7 && y < 18 ? 0x55555 :
@@ -872,7 +879,7 @@ static void check_frozen_mono_tiles(void)
             assert(((building[y * 2 + x / 16] >> (15 - (x & 15))) & 1) == expected);
         }
     for (unsigned c = 0; c < 256; c++) s_paletteMonoCoverage[c] = 16 - s_paletteMonoCoverage[c];
-    Rebuild_Palette4BitPairMap(0, 256);
+    Video_Atari_UpdatePaletteLookups(0, 256);
     Video_Atari_DecodePlanarTile(src, colours, after);
     assert(!memcmp(baseline, after, sizeof(baseline)));
     Video_Atari_DecodePlanarBuildingTile(src, colours, after);
@@ -891,21 +898,17 @@ int main(void)
             for (unsigned x = 0; x < 4; x++) patterns[c][y][x] = (y * 4 + x) ^ (c & 15);
     }
     Video_Atari_DitherPrepareLookup(&lookup, patterns);
-    Rebuild_Palette4BitPairMap(0, 256);
+    Video_Atari_UpdatePaletteLookups(0, 256);
     check_fused_colour();
     s_tileDither = s_palette4BitDither;
     for (unsigned stage = 0; stage < 3; stage++) {
         if (stage == 1) {
             s_palette4BitMap[17] = 3;
-            Rebuild_Palette4BitPairMap(17, 1);
+            Video_Atari_UpdatePaletteLookups(17, 1);
         } else if (stage == 2) {
             for (unsigned c = 0; c < 128; c++) s_palette4BitMap[c] = (c * 3) & 15;
-            Rebuild_Palette4BitPairMap(0, 128);
+            Video_Atari_UpdatePaletteLookups(0, 128);
         }
-        for (unsigned hi = 0; hi < 256; hi++)
-            for (unsigned lo = 0; lo < 256; lo++)
-                assert(s_palette4BitPairMap[hi * 256 + lo] ==
-                    (s_palette4BitMap[hi] << 8 | s_palette4BitMap[lo]));
         for (unsigned w = 0; w < sizeof(widths) / sizeof(*widths); w++) {
             check(patterns, NULL, widths[w], 67, -3, 32767, 1, 1);
             for (int oy = -3; oy <= 0; oy++)
@@ -931,7 +934,7 @@ int main(void)
     for (unsigned polarity = 0; polarity < 2; polarity++) {
         s_monoWhiteIsOne = polarity;
         for (unsigned c = 0; c < 256; c++) s_paletteMonoCoverage[c] = c % 17;
-        Rebuild_Palette4BitPairMap(0, 256);
+        Video_Atari_UpdatePaletteLookups(0, 256);
         check_unit_contrast();
         for (unsigned w = 0; w < sizeof(widths) / sizeof(*widths); w++) {
             check(patterns, NULL, widths[w], 67, -3, 32767, 1, 1);

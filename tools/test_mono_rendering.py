@@ -839,7 +839,7 @@ static void uninstall_ikbd_handler(void) { interrupts--; }
 static void Video_Atari_InitBlitterDestination(void) { configuredMono = Video_Atari_Mono(); }
 static void Video_Atari_InitTileCursorBackend(void)
 { assert(s_planarBackend == (Video_Atari_Mono() ? (const void *)&s_monoBackend : (const void *)&s_colourBackend)); }
-static void Rebuild_Palette4BitPairMap(int from, int count)
+static void Video_Atari_UpdatePaletteLookups(int from, int count)
 { assert(from == 0 && count == 256); lookupBuilds++; }
 static void Video_Atari_DisplayListFree(void) {}
 static void Video_Atari_ConfigureBlitterDestination(uint32 word, uint32 mono)
@@ -1035,9 +1035,9 @@ static PlacementBlock s_placeBlocks[6];
 static uint16 s_placeBlockCount, s_placeDrawnWidth, s_placeDrawnHeight;
 static int16 s_placeDrawnX, s_placeDrawnY;
 static uint8 s_placePen = 1;
+static uint8 s_palette4BitMap[256];
 static AtariDitherLookup s_palette4BitDither, s_tileDither;
 static AtariMonoPackedLookup s_paletteMonoPacked, s_tileMonoPacked;
-static uint16 s_palette4BitPairMap[1];
 static unsigned fastRows, slowCalls, convertedPixels;
 /* BACKEND */
 static void Video_Atari_PrepareColour(const AtariDitherSource *s,
@@ -1113,9 +1113,9 @@ static void Video_Atari_RestoreTileCursor(void);
 static bool Video_Atari_DisplayListPending(void);
 static void GFX_Screen_ClearDirtyRect(unsigned l, unsigned t, unsigned r, unsigned b)
 { assert(l < r && r <= 320 && t < b && b <= 200); }
-static void c2p1x1_4_st(void *dst, const void *src, uint32 w, uint32 h, const void *pal)
+static void c2p1x1_4_st_byte(void *dst, const void *src, uint32 w, uint32 h, const void *pal)
 { (void)dst; (void)src; (void)w; (void)h; (void)pal; assert(false); }
-static void c2p1x1_4_st_strided(void *dst, const void *src, uint32 w, uint32 h,
+static void c2p1x1_4_st_byte_strided(void *dst, const void *src, uint32 w, uint32 h,
     const void *pal, uint32 ss, uint32 ds)
 { (void)dst; (void)src; (void)w; (void)h; (void)pal; (void)ss; (void)ds; assert(false); }
 /* PRODUCTION */

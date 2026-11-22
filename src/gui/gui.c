@@ -1313,13 +1313,8 @@ void GUI_PaletteAnimate(void)
 	/* On Atari ST/STE, these small per-tick palette-index color-cycle
 	 * animations (repair-button flash, selection-rectangle pulse, windtrap
 	 * glow) are disabled entirely: the Amiga port of this game does not
-	 * animate these UI colors either, and on ST/STE each such change -
-	 * however small - forces a costly re-quantization + chunky-pixel pair-
-	 * LUT patch (see ATARI_PROFILE_FINDINGS.md / c2p1x1_4_st palette
-	 * pipeline). Skipping them altogether removes the single largest
-	 * measured cycle cost in profiled play sessions, matching the visual
-	 * behavior of another official port rather than introducing a
-	 * platform-specific visual regression. */
+	 * animate these UI colors either. Remapping a logical index would
+	 * not recolour existing planar pixels or pre-encoded artwork. */
 	static uint32 timerAnimation = 0;
 	static uint32 timerSelection = 0;
 	static uint32 timerToggle = 0;

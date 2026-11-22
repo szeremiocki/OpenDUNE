@@ -73,7 +73,7 @@ static uint16 s_tileWidth = 8, s_tileHeight = 16;
 static uint8 s_tileByteSize = 128, s_tileMode;
 static bool g_dune2_enhanced, direct = true;
 static uint8 s_tilePens[256];
-static uint16 s_tilePenPairMap[16 * 256], s_palette4BitPairMap[65536];
+static uint8 s_palette4BitMap[256];
 static unsigned allocations, failAllocation, warnings, mappings, conversions, publishes;
 static unsigned slots, stridedCalls;
 static const uint16 *lastPixels;
@@ -101,35 +101,29 @@ static uint8 pen(uint8 colour) {
     return ((p[0] & 63) * 3 + (p[1] & 63) * 5 + (p[2] & 63) * 7) & 15;
 }
 static void encode(uint16 *dst, const uint8 *src, uint16 width, uint16 height,
-                   const uint16 *lookup, unsigned srcStride, unsigned dstStride) {
+                   const uint8 *lookup, unsigned srcStride, unsigned dstStride) {
     assert(width != 0 && !(width & 15) && !((uintptr_t)src & 1));
-    if (lookup == s_tilePenPairMap)
+    if (lookup == NULL)
         assert(dst == s_viewportFogPixels ||
                (dst >= s_planarTiles && dst + (height - 1) * dstStride / 2 + 4 <= s_planarTiles + slots * 64));
     conversions++;
     for (unsigned row = 0; row < height; row++, src += srcStride, dst += dstStride / 2) {
         memset(dst, 0, width / 2);
-        for (unsigned x = 0; x < width; x += 2) {
-            unsigned index = ((unsigned)src[x] << 8) | src[x + 1];
-            if (lookup == s_tilePenPairMap) assert(index < 16 * 256);
-            unsigned mapped = lookup[index];
-            for (unsigned p = 0; p < 4; p++) {
-                if ((mapped >> 8) & (1u << p)) dst[(x >> 4) * 4 + p] |= 0x8000u >> (x & 15);
-                if (mapped & (1u << p)) dst[(x >> 4) * 4 + p] |= 0x4000u >> (x & 15);
-            }
+        for (unsigned x = 0; x < width; x++) {
+            unsigned mapped = lookup ? lookup[src[x]] : src[x];
+            assert(mapped < 16);
+            for (unsigned p = 0; p < 4; p++)
+                if (mapped & (1u << p)) dst[(x >> 4) * 4 + p] |= 0x8000u >> (x & 15);
         }
     }
 }
-static void c2p1x1_4_st(uint16 *dst, const uint8 *src, uint16 width, uint16 height,
-                       const uint16 *lookup) {
-    assert(height == 1 || width == 320);
-    encode(dst, src, width, height, lookup, 320, 160);
+static void c2p1x1_4_st_pens(uint16 *dst, const uint8 *src, uint16 width, uint16 height) {
+    encode(dst, src, width, height, NULL, 320, 160);
 }
-static void c2p1x1_4_st_strided(uint16 *dst, const uint8 *src, uint16 width, uint16 height,
-                               const uint16 *lookup, uint32 srcStride, uint32 dstStride) {
-    assert(height > 1 && srcStride >= width && !(srcStride & 1) && dstStride == width / 2);
+static void c2p1x1_4_st_pens_strided(uint16 *dst, const uint8 *src, uint16 width, uint16 height,
+                                    uint32 srcStride, uint32 dstStride) {
     stridedCalls++;
-    encode(dst, src, width, height, lookup, srcStride, dstStride);
+    encode(dst, src, width, height, NULL, srcStride, dstStride);
 }
 static const uint16 *copy_source(const uint16 *p, const uint16 *m,
                                  const uint16 *f, const uint16 *fm) {
@@ -275,7 +269,7 @@ int main(void) {
                     check_composite(ground, overlay, house);
         assert(compositeCollisions > 1000);
         /* Cache fills must ignore a currently displayed loading/fade palette. */
-        memset(s_palette4BitPairMap, 0xff, sizeof(s_palette4BitPairMap));
+        memset(s_palette4BitMap, 0xff, sizeof(s_palette4BitMap));
         unsigned beforeFogConversions = conversions, beforeFogPublishes = publishes;
         assert(!s_viewportFogReady);
         GFX_DrawPlanarFogTile(0, 40);
@@ -398,8 +392,7 @@ int main(void) {
     union { uint32 aligned; uint8 bytes[320 * 200]; } canvas;
     uint16 planar[320 * 200 / 4 + 4], expected[320 * 200 / 4];
     for (unsigned i = 0; i < sizeof(canvas.bytes); i++) canvas.bytes[i] = i * 11 + i / 31;
-    for (unsigned hi = 0; hi < 256; hi++) for (unsigned lo = 0; lo < 256; lo++)
-        s_palette4BitPairMap[hi * 256 + lo] = ((hi & 15) << 8) | (lo & 15);
+    for (unsigned colour = 0; colour < 256; colour++) s_palette4BitMap[colour] = colour & 15;
     const unsigned widths[] = {16, 32, 48, 64, 80, 160, 320};
     const unsigned heights[] = {1, 2, 16, 32, 64};
     for (unsigned w = 0; w < sizeof(widths) / sizeof(*widths); w++)
@@ -448,7 +441,7 @@ int main(void) {
 """
         harness = harness.replace("/* STATE */", state)
         harness = harness.replace("/* VIDEO */", "\n".join(function(video, name) for name in (
-            "Video_Atari_EncodePlanarWithLookup", "Video_Atari_EncodePlanar", "Video_Atari_EncodePlanarStrided",
+            "Video_Atari_EncodePlanarPens", "Video_Atari_EncodePlanar", "Video_Atari_EncodePlanarStrided",
             "Video_Atari_InitTileMapping", "Video_Atari_DecodePlanarTile")))
         harness = harness.replace("/* GFX */", colour_tile_compositor(video) + "\n" + "\n".join(function(gfx, name) for name in (
             "GFX_TileHouseColor", "GFX_FreePlanarTiles", "GFX_PlanarTilesReady",
