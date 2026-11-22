@@ -21,6 +21,9 @@
 #include "../string.h"
 #include "../tile.h"
 #include "../timer.h"
+#ifdef TOS
+#include "../video/video.h"
+#endif
 
 
 static void *g_voiceData[NUM_VOICES];            /*!< Preloaded Voices sound data */
@@ -137,6 +140,7 @@ void Voice_PlayAtTile(int16 voiceID, tile32 position)
 {
 	uint16 index;
 	uint16 volume;
+	int16 priority;
 	bool sampleAvailable;
 
 	if (voiceID < 0 || voiceID >= 120) return;
@@ -144,8 +148,11 @@ void Voice_PlayAtTile(int16 voiceID, tile32 position)
 
 	index = g_table_voiceMapping[voiceID];
 	sampleAvailable = g_enableVoices != 0 && index != 0xFFFF && g_voiceData[index] != NULL;
+	priority = sampleAvailable ? g_table_voices[index].priority : 0;
 #ifdef TOS
-	if (g_atariDropPriorityMidi && sampleAvailable && g_table_voices[index].priority < s_currentVoicePriority) return;
+	/* On STE DMA, let the mini-rocket launch, small impact and multigun tie. */
+	if (sampleAvailable && voiceID == 64 /* MISLTINP.VOC */ && Video_Atari_CursorDirect()) priority = 9;
+	if (g_atariDropPriorityMidi && sampleAvailable && priority < s_currentVoicePriority) return;
 #endif
 
 	volume = 255;
@@ -156,8 +163,8 @@ void Voice_PlayAtTile(int16 voiceID, tile32 position)
 		volume = 255 - (volume * 255 / 80);
 	}
 
-	if (sampleAvailable && g_table_voices[index].priority >= s_currentVoicePriority) {
-		s_currentVoicePriority = g_table_voices[index].priority;
+	if (sampleAvailable && priority >= s_currentVoicePriority) {
+		s_currentVoicePriority = priority;
 
 #ifdef TOS
 		Driver_Voice_Play(g_voiceData[index], s_currentVoicePriority);

@@ -35,7 +35,7 @@ class CreditsPSGTest(unittest.TestCase):
                     names.append("Driver_Sound_PlayCredits")
                 for name in names:
                     body = re.search(
-                        rf"<_{name}>:\n(.*?)(?=\n[0-9a-f]+ <_|\Z)",
+                        rf"<_?{name}>:\n(.*?)(?=\n[0-9a-f]+ <|\Z)",
                         assembly, re.S).group(1)
                     register = re.search(r"movew %sr,(%d\d)", body).group(1)
                     self.assertIn("oriw #1792,%sr", body)
