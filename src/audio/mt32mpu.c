@@ -50,7 +50,7 @@ typedef struct MSData {
 	bool   delayedClear;                                    /*!< post_release */
 	int16  delay;                                           /*!< Delay before reading next command. interval_cnt */
 	uint16 noteOnCount;                                     /*!< Number of notes currently on. note_count */
-	/*uint16 variable_0022;*/                               /*!< vol_error - unused */
+	uint16 noteOnEnd;                                       /*!< One past the highest occupied note slot. */
 	uint16 globalVolume;                                    /*!< Volume (percent) */
 	uint16 globalVolumeTarget;                              /*!< Volume target */
 	uint32 globalVolumeAcc;                                 /*!< Volume accumulator */
@@ -119,6 +119,13 @@ static void MPU_ApplyVolume(MSData *data)
 	}
 }
 
+static void MPU_TrimNoteOnEnd(MSData *data)
+{
+	uint16 end = data->noteOnEnd;
+	while (end != 0 && data->noteOnChans[end - 1] == 0xFF) end--;
+	data->noteOnEnd = end;
+}
+
 static uint16 MPU_NoteOn(MSData *data)
 {
 	uint8 chan;
@@ -139,14 +146,15 @@ static uint16 MPU_NoteOn(MSData *data)
 
 	if ((s_mpu_lockStatus[chan] & 0x80) != 0) return len;
 
-	for (i = 0; i < MAX_NOTES; i++) {
-		if (data->noteOnChans[i] == 0xFF) {
-			data->noteOnCount++;
-			break;
-		}
+	for (i = 0; i < data->noteOnEnd; i++) {
+		if (data->noteOnChans[i] == 0xFF) break;
 	}
-	if (i == MAX_NOTES) i = 0;
-
+	if (i == MAX_NOTES) {
+		i = 0;
+	} else {
+		data->noteOnCount++;
+	}
+	if (i == data->noteOnEnd) data->noteOnEnd++;
 	data->noteOnChans[i] = chan;
 	data->noteOnNotes[i] = note;
 	data->noteOnDuration[i] = duration - 1;
@@ -178,9 +186,9 @@ static void MPU_FlushChannel(uint8 channel)
 
 		data = s_mpu_msdata[index];
 
-		if (data->noteOnCount == 0) continue;
+		if (data->noteOnEnd == 0) continue;
 
-		for (i = 0; i < MAX_NOTES; i++) {
+		for (i = 0; i < data->noteOnEnd; i++) {
 			uint8 chan;
 			uint8 note;
 
@@ -197,6 +205,7 @@ static void MPU_FlushChannel(uint8 channel)
 
 			data->noteOnCount--;
 		}
+		if (data->noteOnChans[i - 1] == 0xFF) MPU_TrimNoteOnEnd(data);
 	}
 }
 
@@ -519,6 +528,7 @@ void MPU_Interrupt(void)
 
 		while (data->tempoError >= 0x64) {	/* 0x64 == 100 */
 			uint32 value;
+			uint16 noteEnd;
 
 			data->tempoError -= 0x64;	/* 0x64 == 100 */
 
@@ -536,15 +546,12 @@ void MPU_Interrupt(void)
 			data->beatFraction = value;
 
 			/* Handle note length */
-			index = -1;
-			while (data->noteOnCount != 0) {
+			noteEnd = data->noteOnEnd;
+			for (index = 0; index < noteEnd; index++) {
 				uint16 chan;
 				uint8 note;
-				while (++index < 0x20) {
-					if (data->noteOnChans[index] != 0xFF) break;
-				}
-				if (index == 0x20) break;
 
+				if (data->noteOnChans[index] == 0xFF) continue;
 				if (--data->noteOnDuration[index] >= 0) continue;
 
 				chan = data->chanMaps[data->noteOnChans[index]];
@@ -556,6 +563,7 @@ void MPU_Interrupt(void)
 				MPU_Send(0x80 | chan, note, 0);
 
 				data->noteOnCount--;
+				if (index + 1 == noteEnd) MPU_TrimNoteOnEnd(data);
 			}
 
 			if (--data->delay <= 0) {
@@ -753,6 +761,7 @@ static void MPU_InitData(MSData *data)
 
 	data->delay = 0;
 	data->noteOnCount = 0;
+	data->noteOnEnd = 0;
 	data->globalVolume = 0x5A;			/* 90% */
 	data->globalVolumeTarget = 0x5A;	/* 90% */
 	data->tempoError = 0;
@@ -826,7 +835,7 @@ static void MPU_StopAllNotes(MSData *data)
 {
 	uint8 i;
 
-	for (i = 0; i < MAX_NOTES; i++) {
+	for (i = 0; i < data->noteOnEnd; i++) {
 		uint8 note;
 		uint8 chan;
 
@@ -842,6 +851,7 @@ static void MPU_StopAllNotes(MSData *data)
 	}
 
 	data->noteOnCount = 0;
+	data->noteOnEnd = 0;
 }
 
 void MPU_Stop(uint16 index)
