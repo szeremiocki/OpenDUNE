@@ -10,6 +10,8 @@ extern bool DSP_Init(void);
 extern void DSP_Uninit(void);
 
 #ifdef TOS
+extern bool DSP_IsSamplePlaying(const void *sample);
+
 /* Resident samples must stay in DMA-visible ST RAM until playback ends.
  * FreeSample stops DMA first if it is still referencing this sample. */
 extern void *DSP_AllocSample(uint32 length);

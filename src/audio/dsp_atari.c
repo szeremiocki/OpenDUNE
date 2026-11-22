@@ -84,6 +84,12 @@ static uint8 *s_stRamBuffer;
 static uint32 s_stRamBufferSize;
 static const uint8 *s_playingSample;
 
+bool DSP_IsSamplePlaying(const void *sample)
+{
+	return sample != NULL && sample == s_playingSample &&
+	       (Atari_SupervisorRead(get_dma_status) & 1) != 0;
+}
+
 void DSP_Stop(void)
 {
 	Atari_SupervisorExec(stop_dma_sound);

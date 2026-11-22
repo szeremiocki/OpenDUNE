@@ -150,8 +150,15 @@ void Voice_PlayAtTile(int16 voiceID, tile32 position)
 	sampleAvailable = g_enableVoices != 0 && index != 0xFFFF && g_voiceData[index] != NULL;
 	priority = sampleAvailable ? g_table_voices[index].priority : 0;
 #ifdef TOS
-	/* On STE DMA, let the mini-rocket launch, small impact and multigun tie. */
-	if (sampleAvailable && voiceID == 64 /* MISLTINP.VOC */ && Video_Atari_CursorDirect()) priority = 9;
+	if (sampleAvailable && DSP_IsSamplePlaying(g_voiceData[index])) return;
+	if (sampleAvailable && Video_Atari_CursorDirect()) {
+		switch (voiceID) {
+			case 50: priority = 10; break; /* EXSMALL.VOC */
+			case 58: priority =  9; break; /* GUN.VOC */
+			case 59: priority =  8; break; /* GUNMULTI.VOC */
+			case 64: priority =  9; break; /* MISLTINP.VOC */
+		}
+	}
 	if (g_atariDropPriorityMidi && sampleAvailable && priority < s_currentVoicePriority) return;
 #endif
 
