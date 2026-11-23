@@ -66,6 +66,7 @@ static char *IniFile_GetString(const char *key, const char *fallback, char *out,
 static bool direct;
 static bool Video_Atari_CursorDirect(void) { return direct; }
 static void Video_Atari_PlacementHide(void) {}
+static void GUI_Widget_InvalidateIdleBattle(void) {}
 #endif
 /* CONFIG */
 typedef struct { int unused; } Unit;

@@ -215,6 +215,9 @@ extern Widget *GUI_Widget_GetNext(Widget *w);
 extern Widget *GUI_Widget_Get_ByIndex(Widget *w, uint16 index);
 extern uint16  GUI_Widget_HandleEvents(Widget *w);
 #ifdef TOS
+extern void GUI_Widget_InvalidateIdleBattle(void);
+#endif
+#ifdef TOS
 extern void GUI_Widget_PrepareSpriteDraws(Widget *w);
 extern void GUI_Widget_FreeSpriteDraws(void);
 #endif

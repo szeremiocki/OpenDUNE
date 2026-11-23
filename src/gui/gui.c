@@ -1436,6 +1436,9 @@ void GUI_UpdateProductionStringID(void)
 
 static void GUI_Widget_SetProperties(uint16 index, uint16 xpos, uint16 ypos, uint16 width, uint16 height)
 {
+#ifdef TOS
+	if (index == 0) GUI_Widget_InvalidateIdleBattle();
+#endif
 	g_widgetProperties[index].xBase  = xpos;
 	g_widgetProperties[index].yBase  = ypos;
 	g_widgetProperties[index].width  = width;
@@ -5121,6 +5124,7 @@ void GUI_ChangeSelectionType(uint16 selectionType)
 
 #ifdef TOS
 		/* Unit/target share the base widgets; the panel redraw handles their differences. */
+		GUI_Widget_InvalidateIdleBattle();
 		redrawAllWidgets = !(Video_Atari_CursorDirect()
 			&& ((oldSelectionType == SELECTIONTYPE_UNIT && selectionType == SELECTIONTYPE_TARGET)
 				|| (oldSelectionType == SELECTIONTYPE_TARGET && selectionType == SELECTIONTYPE_UNIT)));

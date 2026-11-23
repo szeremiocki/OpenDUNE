@@ -30,6 +30,7 @@ class SelectionTransitionTest(unittest.TestCase):
 #include <string.h>
 #include "types.h"
 #include "src/gui/widget.h"
+#include "src/gui/gui.h"
 #include "src/map.h"
 #include "src/scenario.h"
 #include "src/tile.h"
@@ -37,9 +38,11 @@ typedef struct XYPosition { int16 x, y; } XYPosition;
 WidgetProperties g_widgetProperties[22];
 Scenario g_scenario;
 uint16 g_minimapPosition, g_viewportPosition;
-static bool s_widgetReset;
+static bool s_widgetReset, s_idleBattleWidgets;
 static uint16 g_mouseX, g_mouseY, g_mouseClickX, g_mouseClickY, g_mouseDisabled;
-static uint16 inputKey, called, deliveredButtons, g_cursorSpriteID, g_cursorDefaultSpriteID;
+static uint16 inputKey, called, deliveredButtons, g_selectionType;
+Widget *g_widgetLinkedListHead;
+uint16 g_cursorSpriteID, g_cursorDefaultSpriteID;
 static uint32 s_tickCursor, g_timerGame;
 static bool direct = true;
 static uint8 *g_sprites[6];
@@ -66,7 +69,7 @@ bool GUI_Widget_Viewport_Click(Widget *w) {
     return true;
 }
 /* HANDLER */
-static Widget widgets[6];
+static Widget widgets[7];
 static void pointer(unsigned x, unsigned y, uint16 key, bool reset) {
     g_mouseX = g_mouseClickX = x;
     g_mouseY = g_mouseClickY = y;
@@ -77,14 +80,14 @@ static void view(unsigned x, unsigned y) {
     g_minimapPosition = Tile_PackXY(x,y);
 }
 int main(void) {
-    const unsigned geometry[6][4] = {
+    const unsigned geometry[7][4] = {
         {0,24,240,16}, {240,40,10,160}, {0,40,2,160},
-        {0,198,240,2}, {0,40,240,160}, {0,0,320,200}
+        {0,198,240,2}, {0,40,240,160}, {256,136,64,64}, {0,0,320,200}
     };
-    for (unsigned i = 0; i < 6; i++) {
-        widgets[i].index = i < 5 ? 39+i : 45;
+    for (unsigned i = 0; i < 7; i++) {
+        widgets[i].index = 39+i;
         widgets[i].clickProc = GUI_Widget_Viewport_Click;
-        widgets[i].next = i == 5 ? NULL : &widgets[i+1];
+        widgets[i].next = i == 6 ? NULL : &widgets[i+1];
         widgets[i].offsetX = geometry[i][0]; widgets[i].offsetY = geometry[i][1];
         widgets[i].width = geometry[i][2]; widgets[i].height = geometry[i][3];
         widgets[i].flags.buttonFilterLeft = 15;
@@ -179,6 +182,38 @@ int main(void) {
         assert(g_cursorSpriteID == 3);
         direct = true;
     }
+    g_widgetLinkedListHead = widgets;
+    g_selectionType = SELECTIONTYPE_UNIT;
+    view(g_mapInfos[2].minX+1,g_mapInfos[2].minY+1);
+    g_cursorDefaultSpriteID = g_cursorSpriteID = 0;
+    pointer(100,100,0,true); assert(called == 43);
+    pointer(100,100,0,false); assert(called == 0);
+    pointer(101,100,0,false); assert(called == 43);
+    pointer(101,100,0,false); assert(called == 0);
+    s_idleBattleWidgets = false;
+    pointer(101,100,0,false); assert(called == 43);
+    pointer(101,100,0x41,false); assert(called == 43 && (deliveredButtons & 1));
+    pointer(101,100,0,false); assert(called == 43 && (deliveredButtons & 2));
+    pointer(101,100,0x841,false); assert(called == 43 && (deliveredButtons & 4));
+    g_selectionType = SELECTIONTYPE_TARGET;
+    pointer(101,100,0,false); assert(called == 43);
+    pointer(101,100,0,false); assert(called == 43);
+    g_selectionType = SELECTIONTYPE_PLACE;
+    pointer(101,100,0,false); assert(called == 43);
+    pointer(101,100,0,false); assert(called == 43);
+    g_selectionType = SELECTIONTYPE_STRUCTURE;
+    view(g_mapInfos[2].minX,g_mapInfos[2].minY);
+    pointer(1,100,0,false); assert(called == 43);
+    view(g_mapInfos[2].minX+1,g_mapInfos[2].minY);
+    pointer(1,100,0,false); assert(called == 41);
+    g_cursorSpriteID = 0; g_cursorDefaultSpriteID = 5;
+    pointer(0,0,0,true); assert(called == 45 && g_cursorSpriteID == 0);
+    pointer(0,0,0,false); assert(called == 0);
+    pointer(270,150,0,false); assert(called == 44 && g_cursorSpriteID == 5);
+    pointer(270,150,0,false); assert(called == 0);
+    pointer(270,150,0x41,false); assert(called == 44 && (deliveredButtons & 1));
+    pointer(270,150,0,false); assert(called == 44 && (deliveredButtons & 2));
+    pointer(270,150,0x841,false); assert(called == 44 && (deliveredButtons & 4));
     return 0;
 }
 """
@@ -221,8 +256,12 @@ int main(void) {
 #include <string.h>
 #include "types.h"
 #include "src/gui/widget.h"
+#include "src/gui/gui.h"
 WidgetProperties g_widgetProperties[22];
-static bool s_widgetReset, reference_reset, direct;
+static bool s_widgetReset, reference_reset, direct, s_idleBattleWidgets;
+static uint16 g_selectionType;
+Widget *g_widgetLinkedListHead;
+uint16 g_cursorSpriteID, g_cursorDefaultSpriteID;
 static uint16 g_mouseX, g_mouseY, g_mouseClickX, g_mouseClickY, g_mouseDisabled;
 static uint16 inputKey;
 static unsigned mode, eventCount;
@@ -482,6 +521,9 @@ static void GUI_Widget_Draw(Widget *w) {
         pixels[w->index] = w->state.selected ? 2 : 1;
 }
 static Widget *GUI_Widget_GetNext(Widget *w) { return w->next; }
+#ifdef TOS
+static void GUI_Widget_InvalidateIdleBattle(void) {}
+#endif
 static void GUI_Widget_DrawAll(Widget *w) {
     fullPasses++;
     for (; w != NULL; w = w->next) GUI_Widget_Draw(w);

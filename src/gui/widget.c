@@ -70,6 +70,13 @@ uint8  g_curWidgetFGColourNormal; /*!< Normal colour of the currently selected w
 static bool s_widgetReset; /*!< If true, the widgets will be redrawn. */
 
 #ifdef TOS
+static bool s_idleBattleWidgets;
+
+void GUI_Widget_InvalidateIdleBattle(void)
+{
+	s_idleBattleWidgets = false;
+}
+
 typedef struct WidgetSpriteDraw {
 	GUI_PlanarSprite frame;
 	uint8 *sprite;
@@ -202,6 +209,9 @@ void GUI_Widget_MakeInvisible(Widget *w)
 {
 	if (w == NULL || w->flags.invisible) return;
 	w->flags.invisible = true;
+#ifdef TOS
+	GUI_Widget_InvalidateIdleBattle();
+#endif
 
 	GUI_Widget_Draw(w);
 }
@@ -214,6 +224,9 @@ void GUI_Widget_MakeVisible(Widget *w)
 {
 	if (w == NULL || !w->flags.invisible) return;
 	w->flags.invisible = false;
+#ifdef TOS
+	GUI_Widget_InvalidateIdleBattle();
+#endif
 
 	GUI_Widget_Draw(w);
 }
@@ -355,12 +368,29 @@ uint16 GUI_Widget_HandleEvents(Widget *w)
 	uint16 returnValue;
 	uint16 key;
 	bool fakeClick;
+#ifdef TOS
+	static uint16 l_idleX, l_idleY, l_idleSelection;
+	static bool l_idleBackground;
+	bool idleBattle = false;
+#endif
 
 	/* Get the key from the buffer, if there was any key pressed */
 	key = 0;
 	if (Input_IsInputAvailable() != 0) {
 		key = Input_Wait();
 	}
+#ifdef TOS
+	else if (w != NULL && w == g_widgetLinkedListHead &&
+	         l_widget_selected == NULL && l_widget_button_state == 0 && g_mouseDisabled == 0 &&
+	         (g_selectionType == SELECTIONTYPE_UNIT || g_selectionType == SELECTIONTYPE_STRUCTURE) &&
+	         Video_Atari_CursorDirect()) {
+		idleBattle = true;
+		if (s_idleBattleWidgets && w == l_widget_last && !s_widgetReset &&
+		    l_idleSelection == g_selectionType && l_idleX == g_mouseX && l_idleY == g_mouseY &&
+		    g_cursorSpriteID == (l_idleBackground ? 0 : g_cursorDefaultSpriteID)) return 0;
+	}
+	s_idleBattleWidgets = false;
+#endif
 
 	if (w == NULL) return key & 0x7FFF;
 
@@ -474,8 +504,10 @@ uint16 GUI_Widget_HandleEvents(Widget *w)
 			if (w->index == 43) {
 				/* Scroll bands extend beyond the drawable battlefield. */
 				widgetHover = mouseX < positionX + w->width && mouseY < positionY + w->height;
-			} else if (GUI_Widget_Viewport_ScrollBlocked(w->index)) {
-				widgetHover = false;
+			} else {
+				/* Even a blocked edge can become scrollable under a stationary mouse. */
+				idleBattle = false;
+				if (GUI_Widget_Viewport_ScrollBlocked(w->index)) widgetHover = false;
 			}
 		}
 #endif
@@ -620,7 +652,24 @@ uint16 GUI_Widget_HandleEvents(Widget *w)
 			w->state.buttonState = buttonState >> 8;
 
 			/* If Click was successful, don't handle any other widgets */
-			if (w->clickProc != NULL && w->clickProc(w)) break;
+			if (w->clickProc != NULL && w->clickProc(w)) {
+#ifdef TOS
+				/* Viewport, minimap and background hover only maintain the cursor here. */
+				if (idleBattle && buttonState == 0x8800 && w->index >= 43 && w->index <= 45 &&
+				    w->clickProc == GUI_Widget_Viewport_Click &&
+				    g_cursorSpriteID == (w->index == 45 ? 0 : g_cursorDefaultSpriteID)) {
+					l_idleX = mouseX;
+					l_idleY = mouseY;
+					l_idleSelection = g_selectionType;
+					l_idleBackground = w->index == 45;
+					s_idleBattleWidgets = true;
+				}
+#endif
+				break;
+			}
+#ifdef TOS
+			if (w->clickProc != NULL) idleBattle = false;
+#endif
 
 			/* On click, don't handle any other widgets */
 			if (w->flags.noClickCascade) break;

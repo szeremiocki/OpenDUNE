@@ -1090,7 +1090,10 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 		oldScreenID = GFX_Screen_SetActive(SCREEN_1);
 		oldWidgetID = Widget_SetCurrentWidget(6);
 #ifdef TOS
-		if (native) GUI_Sidebar_Begin(forceDraw);
+		if (native) {
+			GUI_Widget_InvalidateIdleBattle();
+			GUI_Sidebar_Begin(forceDraw);
+		}
 #endif
 
 		widget30 = GUI_Widget_Get_ByIndex(w, 7);
