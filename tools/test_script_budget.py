@@ -186,14 +186,15 @@ CONTEXT_CALLBACK(Script_General_DelayRandom)
 CONTEXT_CALLBACK(Script_General_GetDistanceToTile)
 CONTEXT_CALLBACK(Script_General_GetDistanceToObject)
 CONTEXT_CALLBACK(Script_General_NoOperation)
-CONTEXT_CALLBACK(Script_Unit_Rotate)
 CONTEXT_CALLBACK(Script_Unit_FindStructure)
 #undef CONTEXT_CALLBACK
+static uint16 rotateResult;
+uint16 Script_Unit_Rotate(ScriptEngine *script) { (void)script; return rotateResult; }
 static const ScriptFunction callbacks[SCRIPT_FUNCTIONS_COUNT] = {
     count_call, delay_call, unload_call, replace_call, clear_info_call,
     unload_delayed_call, jump_call, rewind_call, discard_code_call,
     recompile_call, uncached_replacement_call, Script_Unit_GetInfo,
-    Script_General_Delay
+    Script_General_Delay, Script_Unit_Rotate
 };
 static const ScriptFunction replacementCallbacks[SCRIPT_FUNCTIONS_COUNT] = {
     replacement_count_call
@@ -574,6 +575,41 @@ int main(void) {
     words[1] = inline_command(SCRIPT_FUNCTION, 11);
     compare(initial(), 3);
     g_scriptCurrentUnit = (struct Unit *)unitWords;
+    /* A callback block must retain the transient stack write and resume at
+     * the same original PC on either path, even with a short budget. */
+    for (unsigned invert = 0; invert < 2; invert++) {
+        fill();
+        words[0] = inline_command(SCRIPT_FUNCTION, 13);
+        words[1] = inline_command(SCRIPT_PUSH_RETURN_OR_LOCATION, 0);
+        if (invert) words[2] = inline_command(SCRIPT_UNARY, 0);
+        words[2 + invert] = HTOBE16(0x2000 | (SCRIPT_JUMP_NE << 8));
+        words[3 + invert] = HTOBE16(12);
+        for (rotateResult = 0; rotateResult < 2; rotateResult++) {
+            for (unsigned budget = 1; budget <= 5; budget++) compare(initial(), budget);
+            compare_steps(initial(), 5);
+            for (unsigned offset = 1; offset <= 3 + invert; offset++) {
+                script = initial();
+                script.script = words + offset;
+                compare(script, 4);
+            }
+            script = initial();
+            script.stackPointer = 0;
+            compare(script, 5);
+            script = initial();
+            script.stackPointer = 15;
+            compare(script, 5);
+        }
+#ifdef NATIVE_EMULATED
+        words[3 + invert] = HTOBE16(128);
+        rotateResult = invert;
+        script = initial();
+        errors = 0;
+        assert(Script_RunBudget(&script, 3 + invert));
+        assert(script.script == words + 128 && errors == 0);
+        assert(!Script_RunBudget(&script, 1));
+        assert(script.script == NULL && errors == 1);
+#endif
+    }
     /* Overlapping pairs execute left-to-right. Entering the middle still
      * enables its own pair, while budget two must not consume three opcodes. */
     fill();

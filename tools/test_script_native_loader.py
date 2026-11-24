@@ -367,7 +367,7 @@ int main(void) {
         harness = harness.replace("/* ENDIAN */", str(ROOT / "src/os/endian.h"))
         harness = harness.replace("/* FOURCC */", str(ROOT / "include/multichar.h"))
         harness = harness.replace("/* HANDLERS */",
-                                  ",".join(hex(0x100000 + i * 16) for i in range(58)))
+                                  ",".join(hex(0x100000 + i * 16) for i in range(60)))
         harness = harness.replace("/* PRODUCTION */", production)
         with tempfile.TemporaryDirectory(prefix="script-native-loader-") as directory:
             c_file = Path(directory) / "test.c"

@@ -684,6 +684,43 @@ NativeFusedJump:
 	subq.w	#1,d2
 	bra	NativeBranchNext
 
+; Rotate returns its condition in D0 without inspecting or changing the VM.
+; The push and branch pop cancel, but the written stack word remains observable.
+ROTATE_BLOCK macro
+	cmp.w	#\1,d2
+	bcs	NativeFunctionFast
+	moveq	#0,d4
+	move.b	13(a2),d4
+	beq	NativeFunctionFast
+	cmp.b	#15,d4
+	bhi	NativeFunctionFast
+	add.w	d4,d4
+	move.l	a2,-(sp)
+	jsr	(a1)
+	addq.l	#4,sp
+	move.w	d0,10(a2)
+	lea	16*(\1-1)(a6),a6
+	subq.w	#\1-1,d2
+	endm
+
+NativeFuseRotateJump:
+	ROTATE_BLOCK	3
+	bra	NativeRotateBranch
+NativeFuseRotateNotJump:
+	ROTATE_BLOCK	4
+	tst.w	d0
+	seq	d0
+	and.w	#1,d0
+NativeRotateBranch:
+	move.w	d0,22(a2,d4.w)
+	beq	.taken
+	moveq	#0,d7
+	move.b	1(a6),d7
+	bra	NativeLeanNext
+.taken:
+	move.l	4(a6),a6
+	bra	NativeBranchNext
+
 	data
 	even
 _Script_NativeHandlers:
@@ -706,6 +743,7 @@ _Script_NativeHandlers:
 	dc.l	NativeSentinel
 	dc.l	NativeFuseTargetAttack
 	dc.l	NativeFunctionResolved
+	dc.l	NativeFuseRotateJump,NativeFuseRotateNotJump
 
 	ifne	PAIRSTATS
 	bss

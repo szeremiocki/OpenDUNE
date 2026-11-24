@@ -145,6 +145,39 @@ bool Script_CompileNative(ScriptInfo *scriptInfo)
 		bool rewind = BETOH16(entry[1]) == 0x062A && BETOH16(entry[2]) == 1;
 		bool normal = BETOH16(entry[1]) == 0x323C && BETOH16(entry[3]) == 0x4EF9;
 
+		/* Rotate takes no VM arguments and leaves PC, stack and delay alone. */
+		if (words == 1 && i + 2 < scriptInfo->startCount &&
+		    BETOH16(entry[1]) == 0x227C &&
+		    (((uint32)BETOH16(entry[2]) << 16) | BETOH16(entry[3])) ==
+		        (uint32)(uintptr_t)Script_Unit_Rotate) {
+			const uint16 *push = entry + 8;
+			const uint16 *branch = push + 8;
+			uint16 handler = 58;
+
+			if (BETOH16(push[0]) != 0x7E10 || BETOH16(push[1]) != 0x323C ||
+			    BETOH16(push[2]) != 0 || BETOH16(push[3]) != 0x4EF9 ||
+			    (((uint32)BETOH16(push[4]) << 16) | BETOH16(push[5])) != Script_NativeHandlers[2])
+				continue;
+			if (i + 3 < scriptInfo->startCount &&
+			    BETOH16(branch[0]) == 0x7E10 && BETOH16(branch[1]) == 0x323C &&
+			    BETOH16(branch[3]) == 0x4EF9 &&
+			    (((uint32)BETOH16(branch[4]) << 16) | BETOH16(branch[5])) == Script_NativeHandlers[19]) {
+				branch += 8;
+				handler = 59;
+			}
+			if (BETOH16(branch[0]) != 0x7E00 && BETOH16(branch[1]) == 0x207C &&
+			    (((uint32)BETOH16(branch[5]) << 16) | BETOH16(branch[6])) ==
+			        Script_NativeHandlers[SCRIPT_JUMP_NE]) {
+				uint32 target = Script_NativeHandlers[handler];
+
+				entry[5] = HTOBE16(target >> 16);
+				entry[6] = HTOBE16(target);
+#ifdef SCRIPT_NATIVE_PAIR_STATS
+				entry[7] = HTOBE16(handler + 1);
+#endif
+			}
+			continue;
+		}
 		if ((!rewind && !normal) || words == 0 || i + words >= scriptInfo->startCount) continue;
 		next = code + (size_t)(i + words) * 8;
 		firstTarget = normal ? ((uint32)BETOH16(entry[4]) << 16) | BETOH16(entry[5]) : 0;
@@ -214,8 +247,8 @@ bool Script_CompileNative(ScriptInfo *scriptInfo)
 		if (BETOH16(entry[3]) == 0x4EF9) target = ((uint32)BETOH16(entry[4]) << 16) | BETOH16(entry[5]);
 		else if (BETOH16(entry[4]) == 0x4EF9) target = ((uint32)BETOH16(entry[5]) << 16) | BETOH16(entry[6]);
 		else continue;
-		for (h = 0; h < 58 && Script_NativeHandlers[h] != target; h++) {}
-		if (h >= 58) continue;
+		for (h = 0; h < 60 && Script_NativeHandlers[h] != target; h++) {}
+		if (h >= 60) continue;
 		entry[7] = HTOBE16((h == 14 || h == 45) ? 64 + callback : h + 1);
 	}
 #endif
@@ -241,14 +274,14 @@ uint16 Script_NativePeek(ScriptEngine *script, int position)
 #ifdef SCRIPT_NATIVE_PAIR_STATS
 static const char *Script_NativeCodeName(uint16 code, char *buffer)
 {
-	static const char *const names[58] = {
+	static const char *const names[60] = {
 		"JUMP", "SETRET", "PUSHRET", "PUSH", "PUSH2", "PUSHVAR", "PUSHLOC", "PUSHPAR",
 		"POPRET", "POPVAR", "POPLOC", "POPPAR", "REWIND", "FORWARD", "FUNC", "JUMPNE",
 		"INV", "INV", "RETURN", "NOT", "NEG", "COMPL", "AND", "OR", "EQ", "NE", "LT",
 		"LE", "GT", "GE", "ADD", "SUB", "MUL", "DIV", "SHR", "SHL", "BAND", "BOR",
 		"MOD", "XOR", "INV", "TRUNC", "NEXT1", "BININV", "NEXT2", "FUNCFAST",
 		"F_REWRET", "F_RETIMM", "F_RETJMP", "F_EQJ", "F_NEJ", "F_LTJ", "F_LEJ",
-		"F_GTJ", "F_GEJ", "SENTINEL", "F_TGT", "FUNCRES"
+		"F_GTJ", "F_GEJ", "SENTINEL", "F_TGT", "FUNCRES", "F_ROTJ", "F_ROTNJ"
 	};
 	if (code == 0) {
 		buffer[0] = '-'; buffer[1] = 0;

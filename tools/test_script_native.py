@@ -99,6 +99,8 @@ extern void test_fail(unsigned line);
                     fusion_handoffs = {"NativeLeanNext": 0, "_Script_NativeNext": 0}
                     callback_paths = {"NativeFunction": 0, "NativeFunctionFast": 0,
                                       "NativeFunctionResolved": 0}
+                    rotate_blocks = {"NativeFuseRotateJump": 0, "NativeFuseRotateNotJump": 0,
+                                     "NativeRotateBranch": 0}
                     fallthrough_pcs = []
 
                     def integer(address):
@@ -183,6 +185,13 @@ extern void test_fail(unsigned line);
                         cpu.hook_add(UC_HOOK_CODE, fusion_handoff_hook,
                                      begin=addresses[name], end=addresses[name])
 
+                    def rotate_block_hook(cpu, address, size, user_data):
+                        rotate_blocks[user_data] += 1
+
+                    for name in rotate_blocks:
+                        cpu.hook_add(UC_HOOK_CODE, rotate_block_hook, user_data=name,
+                                     begin=addresses[name], end=addresses[name])
+
                     def callback_hook(cpu, address, size, user_data):
                         name = next(name for name in callback_paths if addresses[name] == address)
                         callback_paths[name] += 1
@@ -216,6 +225,7 @@ extern void test_fail(unsigned line);
                     self.assertEqual(cpu.reg_read(UC_M68K_REG_D0), 0)
                     self.assertFalse(allocations, "Native code allocation leaked")
                     self.assertTrue(all(callback_paths.values()), callback_paths)
+                    self.assertTrue(all(rotate_blocks.values()), rotate_blocks)
                     self.assertFalse(fusion_pending)
                     self.assertGreater(fusion_handoffs["NativeLeanNext"], 0)
                     self.assertEqual(fusion_handoffs["_Script_NativeNext"], 0)
